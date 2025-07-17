@@ -33,9 +33,29 @@
     let observer;
     const ALIGNER_ROW_CLASS = 'version-aligner-row';
     const PLACEHOLDER_ID = 'version-aligner-placeholder';
+    
+    // Cache for expensive operations
+    let cachedVersionButton = null;
+    let cachedForwardButton = null;
+    let lastUrl = '';
 
     function findVersionSelector() {
         debugLog('[version-aligner] Finding version selector...');
+        
+        // Clear cache if URL changed (indicates page navigation)
+        if (window.location.href !== lastUrl) {
+            cachedVersionButton = null;
+            cachedForwardButton = null;
+            lastUrl = window.location.href;
+            debugLog('[version-aligner] URL changed, clearing cache');
+        }
+        
+        // Return cached result if available and element still exists in DOM
+        if (cachedVersionButton && document.contains(cachedVersionButton)) {
+            debugLog('[version-aligner] Using cached version button');
+            return cachedVersionButton;
+        }
+        
         const navBar = document.getElementById('navbar');
         if (!navBar) {
             debugLog('[version-aligner] ERROR: navbar not found');
@@ -71,9 +91,10 @@
         debugLog('[version-aligner] Version buttons found:', versionButtons.length, versionButtons);
         
         if (versionButtons.length > 0) {
+            cachedVersionButton = versionButtons[0]; // Cache the result
             debugLog('[version-aligner] Selected version button:', versionButtons[0]);
             debugLog('[version-aligner] Version button text:', versionButtons[0].textContent.trim());
-            return versionButtons[0];
+            return cachedVersionButton;
         }
         
         debugLog('[version-aligner] No version button found');
@@ -82,6 +103,13 @@
 
     function findForwardButton() {
         debugLog('[version-aligner] Finding forward button...');
+        
+        // Return cached result if available and element still exists in DOM
+        if (cachedForwardButton && document.contains(cachedForwardButton)) {
+            debugLog('[version-aligner] Using cached forward button');
+            return cachedForwardButton;
+        }
+        
         const sidebar = document.getElementById('sidebar-content');
         if (!sidebar) {
             debugLog('[version-aligner] ERROR: sidebar-content not found');
@@ -91,6 +119,7 @@
         
         const forwardButton = sidebar.querySelector('.nav-dropdown-trigger');
         if (forwardButton) {
+            cachedForwardButton = forwardButton; // Cache the result
             debugLog('[version-aligner] Forward button found:', forwardButton);
             debugLog('[version-aligner] Forward button text content:', forwardButton.textContent.trim());
         } else {
@@ -398,16 +427,46 @@
             debugLog('[version-aligner] Disconnected existing observer');
         }
 
-        observer = new MutationObserver(() => {
-            debugLog('[version-aligner] DOM mutation detected, triggering realign...');
-            triggerRealign();
+        observer = new MutationObserver((mutations) => {
+            // Filter out irrelevant mutations for better performance
+            const relevantMutation = mutations.some(mutation => {
+                // Only care about mutations in navbar or sidebar areas
+                const target = mutation.target;
+                return target.id === 'navbar' || 
+                       target.id === 'sidebar-content' || 
+                       target.closest('#navbar') || 
+                       target.closest('#sidebar-content') ||
+                       // Also watch for navigation-level changes that affect page structure
+                       target.tagName === 'BODY' || target.tagName === 'HTML';
+            });
+            
+            if (relevantMutation) {
+                debugLog('[version-aligner] Relevant DOM mutation detected, triggering realign...');
+                triggerRealign();
+            }
         });
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
+        // Observe more selectively - target specific areas instead of entire body
+        const navbar = document.getElementById('navbar');
+        const sidebar = document.getElementById('sidebar-content');
+        
+        if (navbar) {
+            observer.observe(navbar, { childList: true, subtree: true });
+            debugLog('[version-aligner] Observing navbar for changes');
+        }
+        
+        if (sidebar) {
+            observer.observe(sidebar, { childList: true, subtree: true });
+            debugLog('[version-aligner] Observing sidebar for changes');
+        }
+        
+        // Also observe body for high-level navigation changes, but with less sensitivity
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: false  // Only direct children, not deep subtree
         });
-        debugLog('[version-aligner] MutationObserver started and observing document.body');
+        
+        debugLog('[version-aligner] MutationObserver started with selective targeting');
     }
 
     // Initial run
