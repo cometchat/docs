@@ -122,37 +122,17 @@
 
 
 
-    // Determine which navigation item should be active based on current URL
-    function getActiveItem() {
-        const currentPath = window.location.pathname;
-        
-        // Check each navigation item to see if it matches the current path
-        for (const item of navConfig.items) {
-            if (item.type === 'link' && currentPath.startsWith(item.href)) {
-                return item.label;
-            } else if (item.type === 'dropdown' && item.items) {
-                // Check if any dropdown item matches
-                for (const dropdownItem of item.items) {
-                    if (currentPath.startsWith(dropdownItem.href)) {
-                        return item.label;
-                    }
-                }
-            }
-        }
-        
-        return null; // No active item
-    }
+
 
     // Create navigation HTML
     function createNavigation() {
         const nav = document.createElement('div');
         nav.className = 'custom-nav';
-        const activeItem = getActiveItem();
 
         navConfig.items.forEach(item => {
             if (item.type === 'link') {
                 const link = document.createElement('a');
-                link.className = `custom-nav-item ${activeItem === item.label ? 'active' : ''}`;
+                link.className = 'custom-nav-item';
                 link.href = item.href;
                 
                 // Add text content and bottom border div (matches original structure)
@@ -169,7 +149,7 @@
                 dropdownContainer.style.position = 'relative';
 
                 const trigger = document.createElement('div');
-                trigger.className = `custom-nav-item dropdown ${activeItem === item.label ? 'active' : ''}`;
+                trigger.className = 'custom-nav-item dropdown';
                 
                 // Add text content with dropdown arrow and bottom border div
                 const labelText = document.createTextNode(item.label);
@@ -397,7 +377,7 @@
             this.updateConfig(navConfig);
         },
 
-        // Refresh navigation (recalculates active state based on current URL)
+        // Refresh navigation
         refresh: function() {
             this.updateConfig(navConfig);
         }
