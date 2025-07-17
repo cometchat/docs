@@ -437,8 +437,8 @@
             debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
             debugLog(`  - Parent classes: ${parentClasses}`);
             
-            if (hasContent) {
-                debugLog(`🎯 Using mobile nav container ${index} (${isDesktopSidebar ? 'desktop sidebar' : 'mobile dialog'})`);
+            if (hasContent && !isDesktopSidebar) {
+                debugLog(`🎯 Using mobile nav container ${index} (mobile dialog)`);
                 
                 // Find the specific ul element that contains the main navigation
                 const mainNavUL = mobileNavContainer.querySelector('ul.mb-12');
@@ -500,7 +500,11 @@
                     }
                 }, 1000);
             } else {
-                debugLog(`⏭️ Skipping mobile nav container ${index} (no content)`);
+                if (isDesktopSidebar) {
+                    debugLog(`⏭️ Skipping mobile nav container ${index} (desktop sidebar - handled separately)`);
+                } else {
+                    debugLog(`⏭️ Skipping mobile nav container ${index} (no content)`);
+                }
             }
         });
         
@@ -698,12 +702,15 @@
             const existingMobileNav = mobileNavContainer.querySelector('.custom-mobile-nav');
             const isVisible = mobileNavContainer.offsetParent !== null;
             const hasContent = mobileNavContainer.innerHTML.trim().length > 0;
+            const parentClasses = mobileNavContainer.parentElement?.className || '';
+            const isDesktopSidebar = parentClasses.includes('lg:flex') && parentClasses.includes('hidden');
             
             debugLog(`  - Has existing custom nav: ${!!existingMobileNav}`);
             debugLog(`  - Is visible: ${isVisible}`);
             debugLog(`  - Has content: ${hasContent}`);
+            debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
             
-            if (isVisible && (existingMobileNav || hasContent)) {
+            if (isVisible && (existingMobileNav || hasContent) && !isDesktopSidebar) {
                 debugLog(`🎯 Recreating mobile nav in container ${index}`);
                 
                 // Find the specific ul element or existing custom nav to replace
@@ -731,7 +738,11 @@
                     debugLog('🔍 Recreation verification - Custom nav exists:', !!verifyNav);
                 }, 500);
             } else {
-                debugLog(`⏭️ Skipping mobile nav container ${index} during recreation`);
+                if (isDesktopSidebar) {
+                    debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (desktop sidebar - handled separately)`);
+                } else {
+                    debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (not visible, no content, or no custom nav)`);
+                }
             }
         });
         
@@ -857,7 +868,11 @@
                     debugLog(`🎯 Processing non-desktop navigation-items ${index} with main nav UL`);
                     replaceMobileDialogNavigation(container);
                 } else {
-                    debugLog(`⏭️ Skipping navigation-items ${index} (desktop: ${isDesktopSidebar}, hasCustom: ${hasExistingCustomNav}, hasUL: ${hasMainNavUL})`);
+                    if (isDesktopSidebar) {
+                        debugLog(`⏭️ Skipping navigation-items ${index} (desktop sidebar - handled separately)`);
+                    } else {
+                        debugLog(`⏭️ Skipping navigation-items ${index} (hasCustom: ${hasExistingCustomNav}, hasUL: ${hasMainNavUL})`);
+                    }
                 }
             });
         },
