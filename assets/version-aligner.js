@@ -137,12 +137,7 @@
         
         // Check if the URL indicates this is a versioned section
         const versionedPaths = [
-            '/docs/ui-kit/react/',
-            '/docs/ui-kit/react-native/',
-            '/docs/ui-kit/ios/',
-            '/docs/ui-kit/android/',
-            '/docs/ui-kit/flutter/',
-            '/docs/ui-kit/vue/',
+            '/docs/ui-kit/',
             '/docs/sdk/'
         ];
         
