@@ -35,14 +35,14 @@
                         description: 'Integrate chat using SDKs',
                         href: '/docs/sdk',
                         icon: 'code',
-                        external: true
+                        external: false
                     },
                     {
                         label: 'Widgets',
                         description: 'Integrate chat on no-code sites',
                         href: '/docs/widget',
                         icon: 'puzzle',
-                        external: true
+                        external: false
                     },
                     {
                         label: 'APIs',
