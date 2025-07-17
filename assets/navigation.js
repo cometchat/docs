@@ -11,6 +11,21 @@
     let isReplacingNavigation = false;
     let dialogWatcherSetup = false;
     let urlChangeListenerSetup = false;
+    let lastReplacementTime = 0;
+    let mobileButtonListenersSetup = false;
+    
+    // Debounce function to prevent rapid successive calls
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
     
     // Debug logging function
     function debugLog(...args) {
@@ -398,6 +413,13 @@
             return;
         }
         
+        const now = Date.now();
+        if (now - lastReplacementTime < 1000) {
+            debugLog('⚠️ Navigation replacement called too recently, skipping');
+            return;
+        }
+        lastReplacementTime = now;
+        
         isReplacingNavigation = true;
         debugLog('🔄 replaceNavigation() called');
         
@@ -498,19 +520,19 @@
                     }
                     
                     // Verify the navigation was actually added
-                    setTimeout(() => {
-                        const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
-                        const stillHasOriginalUL = mobileNavContainer.querySelector('ul.mb-12');
-                        debugLog('🔍 Verification - Custom nav exists:', !!verifyNav);
-                        debugLog('🔍 Verification - Original UL still exists:', !!stillHasOriginalUL);
-                        if (verifyNav && !stillHasOriginalUL) {
-                            debugLog('✅ Custom navigation replaced original UL successfully');
-                        } else if (verifyNav && stillHasOriginalUL) {
-                            debugLog('⚠️ Both custom nav and original UL exist - might be duplicate');
-                        } else {
-                            debugLog('❌ Custom navigation was removed or replacement failed');
-                        }
-                    }, 1000);
+                    // setTimeout(() => {
+                    //     const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
+                    //     const stillHasOriginalUL = mobileNavContainer.querySelector('ul.mb-12');
+                    //     debugLog('🔍 Verification - Custom nav exists:', !!verifyNav);
+                    //     debugLog('🔍 Verification - Original UL still exists:', !!stillHasOriginalUL);
+                    //     if (verifyNav && !stillHasOriginalUL) {
+                    //         debugLog('✅ Custom navigation replaced original UL successfully');
+                    //     } else if (verifyNav && stillHasOriginalUL) {
+                    //         debugLog('⚠️ Both custom nav and original UL exist - might be duplicate');
+                    //     } else {
+                    //         debugLog('❌ Custom navigation was removed or replacement failed');
+                    //     }
+                    // }, 1000);
                 } else {
                     if (isDesktopSidebar) {
                         debugLog(`⏭️ Skipping mobile nav container ${index} (desktop sidebar - handled separately)`);
@@ -568,14 +590,12 @@
                                 node.querySelector && node.querySelector('[id*="headlessui-dialog-panel"]')) {
                                 debugLog('🚨 Mobile dialog detected:', node);
                                 
-                                // Wait a bit for dialog to fully render
-                                setTimeout(() => {
-                                    const dialogNavItems = node.querySelector ? node.querySelector('#navigation-items') : null;
-                                    if (dialogNavItems && !dialogNavItems.querySelector('.custom-mobile-nav')) {
-                                        debugLog('📱 Found navigation-items in mobile dialog:', dialogNavItems);
-                                        replaceMobileDialogNavigation(dialogNavItems);
-                                    }
-                                }, 100);
+                                // Check immediately for navigation items
+                                const dialogNavItems = node.querySelector ? node.querySelector('#navigation-items') : null;
+                                if (dialogNavItems && !dialogNavItems.querySelector('.custom-mobile-nav')) {
+                                    debugLog('📱 Found navigation-items in mobile dialog:', dialogNavItems);
+                                    replaceMobileDialogNavigation(dialogNavItems);
+                                }
                             }
                             
                             // Also check if this node itself has navigation-items
@@ -586,11 +606,9 @@
                                 
                                 if (!isDesktopSidebar) {
                                     debugLog('🎯 This appears to be a mobile dialog navigation');
-                                    setTimeout(() => {
-                                        if (!node.querySelector('.custom-mobile-nav')) {
-                                            replaceMobileDialogNavigation(node);
-                                        }
-                                    }, 100);
+                                    if (!node.querySelector('.custom-mobile-nav')) {
+                                        replaceMobileDialogNavigation(node);
+                                    }
                                 }
                             }
                         }
@@ -696,12 +714,10 @@
             replaceNavigation();
             setupURLChangeListener();
             setupGlobalClickHandler();
-            // Set up mobile menu button listener after a short delay to ensure CustomNav is available
-            setTimeout(() => {
-                if (window.CustomNav && window.CustomNav.setupMobileMenuButtonListener) {
-                    window.CustomNav.setupMobileMenuButtonListener();
-                }
-            }, 100);
+            // Set up mobile menu button listener
+            if (window.CustomNav && window.CustomNav.setupMobileMenuButtonListener) {
+                window.CustomNav.setupMobileMenuButtonListener();
+            }
         }
     }
 
@@ -777,10 +793,10 @@
                     }
                     
                     // Verify the recreation
-                    setTimeout(() => {
-                        const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
-                        debugLog('🔍 Recreation verification - Custom nav exists:', !!verifyNav);
-                    }, 500);
+                    // setTimeout(() => {
+                    //     const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
+                    //     debugLog('🔍 Recreation verification - Custom nav exists:', !!verifyNav);
+                    // }, 500);
                 } else {
                     if (isDesktopSidebar) {
                         debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (desktop sidebar - handled separately)`);
@@ -798,6 +814,9 @@
         }
     }
 
+    // Debounced version of recreateNavigation
+    const debouncedRecreateNavigation = debounce(recreateNavigation, 500);
+
     // Listen for URL changes to update active state
     function setupURLChangeListener() {
         if (urlChangeListenerSetup) {
@@ -807,7 +826,7 @@
         urlChangeListenerSetup = true;
         
         // Handle browser back/forward buttons
-        window.addEventListener('popstate', recreateNavigation);
+        window.addEventListener('popstate', debouncedRecreateNavigation);
 
         // Handle programmatic navigation (for SPAs)
         const originalPushState = history.pushState;
@@ -815,12 +834,12 @@
 
         history.pushState = function() {
             originalPushState.apply(history, arguments);
-            recreateNavigation();
+            debouncedRecreateNavigation();
         };
 
         history.replaceState = function() {
             originalReplaceState.apply(history, arguments);
-            recreateNavigation();
+            debouncedRecreateNavigation();
         };
 
         // Watch for DOM changes that might remove our navigation
@@ -850,7 +869,7 @@
             
             if (navigationRemoved && (!document.querySelector('.custom-nav') || !document.querySelector('.custom-mobile-nav'))) {
                 debugLog('🔄 Navigation removed, recreating...');
-                recreateNavigation();
+                debouncedRecreateNavigation();
             }
         });
 
@@ -938,6 +957,12 @@
 
         // Check for mobile menu button and add click listener
         setupMobileMenuButtonListener: function() {
+            if (mobileButtonListenersSetup) {
+                debugLog('⚠️ Mobile menu button listener already setup, skipping');
+                return;
+            }
+            mobileButtonListenersSetup = true;
+
             debugLog('📱 Setting up mobile menu button listener');
             
             // Common selectors for mobile menu buttons
@@ -960,13 +985,13 @@
                     debugLog(`  - Aria label:`, button.getAttribute('aria-label'));
                     debugLog(`  - Classes:`, button.className);
                     
-                    // Add click listener
-                    button.addEventListener('click', () => {
-                        debugLog('🚨 Mobile menu button clicked, checking for dialog in 500ms');
-                        setTimeout(() => {
-                            this.triggerMobileDialogDetection();
-                        }, 500);
-                    });
+                    // Add click listener with debouncing
+                    const debouncedTrigger = debounce(() => {
+                        debugLog('🚨 Mobile menu button clicked, checking for dialog');
+                        this.triggerMobileDialogDetection();
+                    }, 300);
+                    
+                    button.addEventListener('click', debouncedTrigger);
                 });
             });
         },
@@ -1009,6 +1034,8 @@
             isReplacingNavigation = false;
             dialogWatcherSetup = false;
             urlChangeListenerSetup = false;
+            mobileButtonListenersSetup = false;
+            lastReplacementTime = 0;
             debugLog('🔄 All guards reset');
         },
 
@@ -1017,7 +1044,9 @@
             return {
                 isReplacingNavigation,
                 dialogWatcherSetup,
-                urlChangeListenerSetup
+                urlChangeListenerSetup,
+                mobileButtonListenersSetup,
+                lastReplacementTime
             };
         }
     };
@@ -1027,11 +1056,11 @@
     initialize();
 
     // Auto-debug after a delay to see what happened
-    setTimeout(() => {
-        debugLog('🔍 Auto-debug after 2 seconds:');
-        if (window.CustomNav && window.CustomNav.debug) {
-            window.CustomNav.debug();
-        }
-    }, 2000);
+    // setTimeout(() => {
+    //     debugLog('🔍 Auto-debug after 2 seconds:');
+    //     if (window.CustomNav && window.CustomNav.debug) {
+    //         window.CustomNav.debug();
+    //     }
+    // }, 2000);
 
 })();
