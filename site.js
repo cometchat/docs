@@ -27,18 +27,18 @@
             return null;
         }
         console.log('[version-aligner] navbar found:', navBar);
-
+        
         const allButtons = [...navBar.querySelectorAll('button')];
         console.log('[version-aligner] All buttons in navbar:', allButtons.length, allButtons);
-
+        
         const filteredButtons = allButtons
             .filter(el => !el.closest(`.${ALIGNER_ROW_CLASS}`));
         console.log('[version-aligner] Buttons not in aligner row:', filteredButtons.length, filteredButtons);
-
+        
         const menuButtons = filteredButtons
             .filter(el => el.getAttribute('aria-haspopup') === 'menu');
         console.log('[version-aligner] Buttons with aria-haspopup=menu:', menuButtons.length, menuButtons);
-
+        
         // Log the text content of each menu button for debugging
         menuButtons.forEach((btn, index) => {
             const rawText = btn.textContent.trim();
@@ -47,20 +47,20 @@
             console.log(`[version-aligner] Menu button ${index + 1} clean text:`, `"${cleanText}"`);
             console.log(`[version-aligner] Menu button ${index + 1} matches version regex:`, /^v\d+([\.-]\w+)*$/i.test(cleanText));
         });
-
+        
         const versionButtons = menuButtons
             .filter(el => {
                 const cleanText = el.textContent.trim().replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
                 return /^v\d+([\.-]\w+)*$/i.test(cleanText);
             });
         console.log('[version-aligner] Version buttons found:', versionButtons.length, versionButtons);
-
+        
         if (versionButtons.length > 0) {
             console.log('[version-aligner] Selected version button:', versionButtons[0]);
             console.log('[version-aligner] Version button text:', versionButtons[0].textContent.trim());
             return versionButtons[0];
         }
-
+        
         console.log('[version-aligner] No version button found');
         return null;
     }
@@ -73,7 +73,7 @@
             return null;
         }
         console.log('[version-aligner] sidebar-content found:', sidebar);
-
+        
         const forwardButton = sidebar.querySelector('.nav-dropdown-trigger');
         if (forwardButton) {
             console.log('[version-aligner] Forward button found:', forwardButton);
@@ -87,10 +87,10 @@
 
     function isVersionedPage() {
         console.log('[version-aligner] Checking if page is versioned...');
-
+        
         const currentPath = window.location.pathname;
         console.log('[version-aligner] Current path:', currentPath);
-
+        
         // Check if the URL indicates this is a versioned section
         const versionedPaths = [
             '/docs/ui-kit/react/',
@@ -101,32 +101,32 @@
             '/docs/ui-kit/vue/',
             '/docs/sdk/'
         ];
-
+        
         const isVersionedPath = versionedPaths.some(path => currentPath.startsWith(path));
         console.log('[version-aligner] Path-based versioned check:', isVersionedPath);
-
+        
         if (isVersionedPath) {
             console.log('[version-aligner] URL indicates versioned page - page IS versioned');
             return true;
         }
-
+        
         // Fallback: Check DOM for version dropdown (but don't rely on it solely)
         console.log('[version-aligner] URL check inconclusive, checking DOM as fallback...');
         const versionButton = findVersionSelector();
-
+        
         if (versionButton) {
             console.log('[version-aligner] Found version dropdown button in DOM - page IS versioned');
             console.log('[version-aligner] Version button text:', versionButton.textContent.trim());
             return true;
         }
-
+        
         console.log('[version-aligner] No version indicators found - page is NOT versioned');
         return false;
     }
-
+    
     function restoreOriginalLayout() {
         console.log('[version-aligner] Restoring original layout for small screen...');
-
+        
         const placeholder = document.getElementById(PLACEHOLDER_ID);
         if (!placeholder) {
             console.log('[version-aligner] No placeholder found, nothing to restore');
@@ -144,7 +144,7 @@
 
         const verBtn = previousRow.querySelector('[data-version-aligner-button]');
         const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
-
+        
         console.log('[version-aligner] Version button in row:', verBtn);
         console.log('[version-aligner] Forward button in row:', fwBtn);
 
@@ -181,7 +181,7 @@
 
     function _realign() {
         console.log('[version-aligner] Starting _realign function...');
-
+        
         // Check if dropdown is open
         if (document.querySelector('[role="menu"], [data-radix-popper-content-wrapper]')) {
             console.log('[version-aligner] Dropdown is open, skipping alignment');
@@ -202,11 +202,11 @@
             console.log('[version-aligner] Cleaning up previous alignment row');
             const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
             const verBtn = previousRow.querySelector('[data-version-aligner-button]');
-
+            
             // Check if current page is versioned to determine cleanup strategy
             const currentPageIsVersioned = isVersionedPage();
             console.log('[version-aligner] Current page versioned status for cleanup:', currentPageIsVersioned);
-
+            
             if (currentPageIsVersioned && fwBtn && previousRow.parentElement) {
                 // If we're moving to another versioned page, restore forward button normally
                 console.log('[version-aligner] Restoring forward button to original position for re-alignment');
@@ -219,7 +219,7 @@
                 console.log('[version-aligner] Moving to non-versioned page, keeping forward button in natural location');
                 // Don't restore fwBtn to sidebar - let it disappear naturally since page doesn't need it
             }
-
+            
             if (verBtn) {
                 console.log('[version-aligner] Restoring version button to original position');
                 const placeholder = document.getElementById(PLACEHOLDER_ID);
@@ -228,20 +228,20 @@
                     placeholder.parentElement.insertBefore(verBtn, placeholder);
                     verBtn.style.display = '';
                     verBtn.style.flex = '';
-
+                    
                     // Remove the React dropdown classes that were added
                     const reactClasses = [
-                        'group', 'bg-background-light', 'dark:bg-background-dark',
-                        'disabled:pointer-events-none', 'overflow-hidden', 'outline-none',
-                        'text-sm', 'text-gray-950/50', 'dark:text-white/50',
+                        'group', 'bg-background-light', 'dark:bg-background-dark', 
+                        'disabled:pointer-events-none', 'overflow-hidden', 'outline-none', 
+                        'text-sm', 'text-gray-950/50', 'dark:text-white/50', 
                         'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
-                        'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5',
-                        'rounded-[0.85rem]', 'border', 'border-gray-200/70',
-                        'dark:border-white/[0.07]', 'hover:bg-gray-600/5',
+                        'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5', 
+                        'rounded-[0.85rem]', 'border', 'border-gray-200/70', 
+                        'dark:border-white/[0.07]', 'hover:bg-gray-600/5', 
                         'dark:hover:bg-gray-200/5', 'gap-1'
                     ];
                     verBtn.classList.remove(...reactClasses);
-
+                    
                     delete verBtn.dataset.versionAlignerButton;
                     placeholder.remove();
                     console.log('[version-aligner] Version button restored and placeholder removed');
@@ -252,7 +252,7 @@
             }
             console.log('[version-aligner] Removing previous row');
             previousRow.remove();
-
+            
             // Exit early if current page is not versioned - no need to proceed with alignment
             if (!currentPageIsVersioned) {
                 console.log('[version-aligner] Current page is not versioned, cleanup complete');
@@ -292,7 +292,14 @@
         console.log('[version-aligner] Setting up version button...');
         verBtn.dataset.versionAlignerButton = 'true';
         verBtn.style.flex = '0 0 auto';
-
+        
+        // Remove the arrow (chevron) from the version button
+        const arrow = verBtn.querySelector('svg');
+        if (arrow) {
+            arrow.remove();
+            console.log('[version-aligner] Removed arrow from version button');
+        }
+        
         // Remove any existing inline styles that might conflict
         verBtn.style.removeProperty('height');
         verBtn.style.removeProperty('paddingTop');
@@ -304,30 +311,34 @@
         verBtn.style.removeProperty('padding');
         verBtn.style.removeProperty('backgroundColor');
         verBtn.style.removeProperty('color');
-
+        
         // Add the exact same classes as the React dropdown
         const reactClasses = [
-            'group', 'bg-background-light', 'dark:bg-background-dark',
-            'disabled:pointer-events-none', 'overflow-hidden', 'outline-none',
-            'text-sm', 'text-gray-950/50', 'dark:text-white/50',
+            'group', 'bg-background-light', 'dark:bg-background-dark', 
+            'disabled:pointer-events-none', 'overflow-hidden', 'outline-none', 
+            'text-sm', 'text-gray-950/50', 'dark:text-white/50', 
             'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
-            'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5',
-            'rounded-[0.85rem]', 'border', 'border-gray-200/70',
-            'dark:border-white/[0.07]', 'hover:bg-gray-600/5',
+            'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5', 
+            'rounded-[0.85rem]', 'border', 'border-gray-200/70', 
+            'dark:border-white/[0.07]', 'hover:bg-gray-600/5', 
             'dark:hover:bg-gray-200/5', 'gap-1'
         ];
-
+        
         // Remove any conflicting classes first
-        verBtn.className = verBtn.className.split(' ').filter(cls =>
-            !cls.includes('rounded') && !cls.includes('border') &&
+        verBtn.className = verBtn.className.split(' ').filter(cls => 
+            !cls.includes('rounded') && !cls.includes('border') && 
             !cls.includes('bg-') && !cls.includes('text-') &&
             !cls.includes('hover:') && !cls.includes('dark:')
         ).join(' ');
-
+        
         // Add the React dropdown classes
         verBtn.classList.add(...reactClasses);
-
-        console.log('[version-aligner] Version button styled to match React dropdown');
+        
+        // Apply custom styling - remove border and set custom padding
+        verBtn.style.border = '0';
+        verBtn.style.padding = '13px 7px';
+        
+        console.log('[version-aligner] Version button styled to match React dropdown with custom modifications');
 
         console.log('[version-aligner] Setting up forward button...');
         fwBtn.style.flex = '1 1 auto';
@@ -351,7 +362,7 @@
         console.log('[version-aligner] ===== REALIGN TRIGGERED =====');
         console.log('[version-aligner] Current URL:', window.location.href);
         console.log('[version-aligner] Screen width:', window.innerWidth);
-
+        
         if (observer) observer.disconnect();
         try {
             _realign();
@@ -399,14 +410,14 @@
     // Listen for SPA navigation changes
     console.log('[version-aligner] Setting up SPA navigation listeners...');
     const originalPushState = history.pushState;
-    history.pushState = function (...args) {
+    history.pushState = function(...args) {
         console.log('[version-aligner] history.pushState intercepted:', args[2]);
         originalPushState.apply(this, args);
         triggerRealign();
     };
 
     const originalReplaceState = history.replaceState;
-    history.replaceState = function (...args) {
+    history.replaceState = function(...args) {
         console.log('[version-aligner] history.replaceState intercepted:', args[2]);
         originalReplaceState.apply(this, args);
         triggerRealign();
@@ -425,6 +436,6 @@
 
     // Start observing DOM changes
     startObserver();
-
+    
     console.log('[version-aligner] ===== SCRIPT INITIALIZATION COMPLETE =====');
 })();
