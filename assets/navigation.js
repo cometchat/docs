@@ -33,14 +33,14 @@
                     {
                         label: 'SDKs',
                         description: 'Integrate chat using SDKs',
-                        href: '/docs/ui-kit/sdk',
+                        href: '/docs/sdk',
                         icon: 'code',
                         external: true
                     },
                     {
                         label: 'Widgets',
                         description: 'Integrate chat on no-code sites',
-                        href: '/docs/ui-kit/widget',
+                        href: '/docs/widget',
                         icon: 'puzzle',
                         external: true
                     },
