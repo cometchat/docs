@@ -308,18 +308,26 @@
         }
     }
 
+    // Recreate or update navigation
+    function recreateNavigation() {
+        const existingCustomNav = document.querySelector('.custom-nav');
+        const navContainer = document.querySelector('.nav-tabs');
+        
+        if (existingCustomNav) {
+            // Update existing navigation
+            const newNav = createNavigation();
+            existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
+        } else if (navContainer && navContainer.parentElement) {
+            // Navigation was removed, recreate it
+            const customNav = createNavigation();
+            navContainer.parentElement.appendChild(customNav);
+        }
+    }
+
     // Listen for URL changes to update active state
     function setupURLChangeListener() {
         // Handle browser back/forward buttons
-        window.addEventListener('popstate', () => {
-            setTimeout(() => {
-                const existingCustomNav = document.querySelector('.custom-nav');
-                if (existingCustomNav) {
-                    const newNav = createNavigation();
-                    existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
-                }
-            }, 100);
-        });
+        window.addEventListener('popstate', recreateNavigation);
 
         // Handle programmatic navigation (for SPAs)
         const originalPushState = history.pushState;
@@ -327,25 +335,42 @@
 
         history.pushState = function() {
             originalPushState.apply(history, arguments);
-            setTimeout(() => {
-                const existingCustomNav = document.querySelector('.custom-nav');
-                if (existingCustomNav) {
-                    const newNav = createNavigation();
-                    existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
-                }
-            }, 100);
+            recreateNavigation();
         };
 
         history.replaceState = function() {
             originalReplaceState.apply(history, arguments);
-            setTimeout(() => {
-                const existingCustomNav = document.querySelector('.custom-nav');
-                if (existingCustomNav) {
-                    const newNav = createNavigation();
-                    existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
-                }
-            }, 100);
+            recreateNavigation();
         };
+
+        // Watch for DOM changes that might remove our navigation
+        const observer = new MutationObserver((mutations) => {
+            let navigationRemoved = false;
+            
+            mutations.forEach((mutation) => {
+                if (mutation.type === 'childList') {
+                    // Check if any removed nodes contained our navigation
+                    mutation.removedNodes.forEach((node) => {
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (node.classList?.contains('custom-nav') || 
+                                node.querySelector?.('.custom-nav')) {
+                                navigationRemoved = true;
+                            }
+                        }
+                    });
+                }
+            });
+            
+            if (navigationRemoved && !document.querySelector('.custom-nav')) {
+                recreateNavigation();
+            }
+        });
+
+        // Start observing
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
     }
 
     // Public API for customization
