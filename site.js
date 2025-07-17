@@ -161,8 +161,16 @@
         debugLog('[version-aligner] Version button in row:', verBtn);
         debugLog('[version-aligner] Forward button in row:', fwBtn);
 
-        if (verBtn) {
+                 if (verBtn) {
             debugLog('[version-aligner] Moving version button back to placeholder location');
+            
+            // Clean up arrow observer if it exists
+            if (verBtn._arrowObserver) {
+                verBtn._arrowObserver.disconnect();
+                delete verBtn._arrowObserver;
+                debugLog('[version-aligner] Cleaned up arrow observer');
+            }
+            
             placeholder.parentNode.insertBefore(verBtn, placeholder);
             verBtn.style.display = '';
             delete verBtn.dataset.versionAlignerButton;
@@ -233,8 +241,16 @@
                 // Don't restore fwBtn to sidebar - let it disappear naturally since page doesn't need it
             }
             
-            if (verBtn) {
+                         if (verBtn) {
                 debugLog('[version-aligner] Restoring version button to original position');
+                
+                // Clean up arrow observer if it exists
+                if (verBtn._arrowObserver) {
+                    verBtn._arrowObserver.disconnect();
+                    delete verBtn._arrowObserver;
+                    debugLog('[version-aligner] Cleaned up arrow observer');
+                }
+                
                 const placeholder = document.getElementById(PLACEHOLDER_ID);
                 if (placeholder && placeholder.parentElement) {
                     // Move version button back to its original location
@@ -312,6 +328,33 @@
             arrow.remove();
             debugLog('[version-aligner] Removed arrow from version button');
         }
+        
+        // Set up observer to continuously remove any arrows that get added back
+        const arrowObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        // Check if the added node is an SVG (arrow)
+                        if (node.tagName === 'SVG' || node.querySelector && node.querySelector('svg')) {
+                            const svg = node.tagName === 'SVG' ? node : node.querySelector('svg');
+                            if (svg) {
+                                svg.remove();
+                                debugLog('[version-aligner] Removed dynamically added arrow from version button');
+                            }
+                        }
+                    }
+                });
+            });
+        });
+        
+        // Start observing the version button for arrow additions
+        arrowObserver.observe(verBtn, {
+            childList: true,
+            subtree: true
+        });
+        
+        // Store the observer so we can clean it up later if needed
+        verBtn._arrowObserver = arrowObserver;
         
         // Remove any existing inline styles that might conflict
         verBtn.style.removeProperty('height');
