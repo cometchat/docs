@@ -7,6 +7,11 @@
     // Debug control - can be toggled from browser console with: window.CustomNavDebug = true/false
     let debugEnabled = false;
     
+    // Guards to prevent infinite loops
+    let isReplacingNavigation = false;
+    let dialogWatcherSetup = false;
+    let urlChangeListenerSetup = false;
+    
     // Debug logging function
     function debugLog(...args) {
         if (debugEnabled) {
@@ -388,151 +393,172 @@
 
     // Replace existing navigation
     function replaceNavigation() {
+        if (isReplacingNavigation) {
+            debugLog('⚠️ Navigation replacement already in progress, skipping');
+            return;
+        }
+        
+        isReplacingNavigation = true;
         debugLog('🔄 replaceNavigation() called');
         
-        // Debug: Show all possible navigation containers
-        const allNavigationItems = document.querySelectorAll('#navigation-items');
-        debugLog('🔍 Found', allNavigationItems.length, 'elements with ID navigation-items');
+        try {
+            // Debug: Show all possible navigation containers
+            const allNavigationItems = document.querySelectorAll('#navigation-items');
+            debugLog('🔍 Found', allNavigationItems.length, 'elements with ID navigation-items');
         
-        allNavigationItems.forEach((container, index) => {
-            debugLog(`📍 Container ${index}:`, container);
-            debugLog(`  - Parent:`, container.parentElement);
-            debugLog(`  - Parent classes:`, container.parentElement?.className);
-            debugLog(`  - Visible:`, container.offsetParent !== null);
-            debugLog(`  - Display:`, getComputedStyle(container).display);
-            debugLog(`  - innerHTML preview:`, container.innerHTML.substring(0, 100) + '...');
-        });
-        
-        debugLog('🖥️ All elements with navigation-related IDs/classes:');
-        debugLog('  .nav-tabs:', document.querySelector('.nav-tabs'));
-        debugLog('  #navigation:', document.querySelector('#navigation'));
-        debugLog('  [class*="nav"]:', document.querySelectorAll('[class*="nav"]'));
-        
-        const existingNavContainer = document.querySelector('.nav-tabs');
-        debugLog('🖥️ Desktop nav container:', existingNavContainer);
-        
-        if (existingNavContainer && existingNavContainer.parentElement) {
-            // Create desktop navigation
-            const customNav = createNavigation();
-            existingNavContainer.parentElement.appendChild(customNav);
-            debugLog('✅ Desktop navigation created and added');
-        } else {
-            debugLog('❌ Desktop nav container not found or no parent');
-        }
+            allNavigationItems.forEach((container, index) => {
+                debugLog(`📍 Container ${index}:`, container);
+                debugLog(`  - Parent:`, container.parentElement);
+                debugLog(`  - Parent classes:`, container.parentElement?.className);
+                debugLog(`  - Visible:`, container.offsetParent !== null);
+                debugLog(`  - Display:`, getComputedStyle(container).display);
+                debugLog(`  - innerHTML preview:`, container.innerHTML.substring(0, 100) + '...');
+            });
+            
+            debugLog('🖥️ All elements with navigation-related IDs/classes:');
+            debugLog('  .nav-tabs:', document.querySelector('.nav-tabs'));
+            debugLog('  #navigation:', document.querySelector('#navigation'));
+            debugLog('  [class*="nav"]:', document.querySelectorAll('[class*="nav"]'));
+            
+            const existingNavContainer = document.querySelector('.nav-tabs');
+            debugLog('🖥️ Desktop nav container:', existingNavContainer);
+            
+            if (existingNavContainer && existingNavContainer.parentElement) {
+                // Create desktop navigation
+                const customNav = createNavigation();
+                existingNavContainer.parentElement.appendChild(customNav);
+                debugLog('✅ Desktop navigation created and added');
+            } else {
+                debugLog('❌ Desktop nav container not found or no parent');
+            }
 
-        // Handle mobile navigation - target both desktop sidebar and mobile dialog
-        let mobileNavReplaced = false;
-        
-        allNavigationItems.forEach((mobileNavContainer, index) => {
-            debugLog(`📱 Processing mobile nav container ${index}:`, mobileNavContainer);
+            // Handle mobile navigation - target both desktop sidebar and mobile dialog
+            let mobileNavReplaced = false;
             
-            // Check if this container is visible and likely the active one
-            const isVisible = mobileNavContainer.offsetParent !== null;
-            const hasContent = mobileNavContainer.innerHTML.trim().length > 0;
-            const parentClasses = mobileNavContainer.parentElement?.className || '';
-            const isDesktopSidebar = parentClasses.includes('lg:flex') && parentClasses.includes('hidden');
-            
-            debugLog(`  - Is visible: ${isVisible}`);
-            debugLog(`  - Has content: ${hasContent}`);
-            debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
-            debugLog(`  - Parent classes: ${parentClasses}`);
-            
-            if (hasContent && !isDesktopSidebar) {
-                debugLog(`🎯 Using mobile nav container ${index} (mobile dialog)`);
+            allNavigationItems.forEach((mobileNavContainer, index) => {
+                debugLog(`📱 Processing mobile nav container ${index}:`, mobileNavContainer);
                 
-                // Find the specific ul element that contains the main navigation
-                const mainNavUL = mobileNavContainer.querySelector('ul.mb-12');
-                debugLog('🎯 Found main navigation UL in container', index, ':', mainNavUL);
+                // Check if this container is visible and likely the active one
+                const isVisible = mobileNavContainer.offsetParent !== null;
+                const hasContent = mobileNavContainer.innerHTML.trim().length > 0;
+                const parentClasses = mobileNavContainer.parentElement?.className || '';
+                const isDesktopSidebar = parentClasses.includes('lg:flex') && parentClasses.includes('hidden');
                 
-                if (mainNavUL) {
-                    debugLog('📋 Main nav UL innerHTML before replace:', mainNavUL.innerHTML.substring(0, 200) + '...');
+                debugLog(`  - Is visible: ${isVisible}`);
+                debugLog(`  - Has content: ${hasContent}`);
+                debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
+                debugLog(`  - Parent classes: ${parentClasses}`);
+                
+                if (hasContent && !isDesktopSidebar) {
+                    debugLog(`🎯 Using mobile nav container ${index} (mobile dialog)`);
                     
-                    // Create our custom navigation
-                    const customMobileNav = createMobileNavigation();
-                    debugLog('🏗️ Created mobile navigation:', customMobileNav);
+                    // Find the specific ul element that contains the main navigation
+                    const mainNavUL = mobileNavContainer.querySelector('ul.mb-12');
+                    debugLog('🎯 Found main navigation UL in container', index, ':', mainNavUL);
                     
-                    // Add a distinguishing attribute to help identify our navigation
-                    customMobileNav.setAttribute('data-custom-nav', 'true');
-                    customMobileNav.setAttribute('data-container-type', isDesktopSidebar ? 'desktop-sidebar' : 'mobile-dialog');
-                    customMobileNav.style.position = 'relative';
-                    customMobileNav.style.zIndex = '1000';
-                    
-                    // Replace the UL element instead of clearing entire container
-                    mainNavUL.parentElement.replaceChild(customMobileNav, mainNavUL);
-                    debugLog('✅ Mobile navigation UL replaced in container', index);
-                    
-                    mobileNavReplaced = true;
-                } else {
-                    debugLog('❌ Could not find main navigation UL (ul.mb-12) in container', index);
-                    
-                    // Fallback: look for any ul element with navigation links
-                    const fallbackUL = mobileNavContainer.querySelector('ul');
-                    if (fallbackUL) {
-                        debugLog('🎯 Found fallback UL element in container', index, ':', fallbackUL);
+                    if (mainNavUL) {
+                        debugLog('📋 Main nav UL innerHTML before replace:', mainNavUL.innerHTML.substring(0, 200) + '...');
                         
+                        // Create our custom navigation
                         const customMobileNav = createMobileNavigation();
+                        debugLog('🏗️ Created mobile navigation:', customMobileNav);
+                        
+                        // Add a distinguishing attribute to help identify our navigation
                         customMobileNav.setAttribute('data-custom-nav', 'true');
                         customMobileNav.setAttribute('data-container-type', isDesktopSidebar ? 'desktop-sidebar' : 'mobile-dialog');
                         customMobileNav.style.position = 'relative';
                         customMobileNav.style.zIndex = '1000';
                         
-                        fallbackUL.parentElement.replaceChild(customMobileNav, fallbackUL);
-                        debugLog('✅ Fallback UL replaced in container', index);
+                        // Replace the UL element instead of clearing entire container
+                        mainNavUL.parentElement.replaceChild(customMobileNav, mainNavUL);
+                        debugLog('✅ Mobile navigation UL replaced in container', index);
                         
                         mobileNavReplaced = true;
                     } else {
-                        debugLog('❌ No suitable UL element found in container', index);
+                        debugLog('❌ Could not find main navigation UL (ul.mb-12) in container', index);
+                        
+                        // Fallback: look for any ul element with navigation links
+                        const fallbackUL = mobileNavContainer.querySelector('ul');
+                        if (fallbackUL) {
+                            debugLog('🎯 Found fallback UL element in container', index, ':', fallbackUL);
+                            
+                            const customMobileNav = createMobileNavigation();
+                            customMobileNav.setAttribute('data-custom-nav', 'true');
+                            customMobileNav.setAttribute('data-container-type', isDesktopSidebar ? 'desktop-sidebar' : 'mobile-dialog');
+                            customMobileNav.style.position = 'relative';
+                            customMobileNav.style.zIndex = '1000';
+                            
+                            fallbackUL.parentElement.replaceChild(customMobileNav, fallbackUL);
+                            debugLog('✅ Fallback UL replaced in container', index);
+                            
+                            mobileNavReplaced = true;
+                        } else {
+                            debugLog('❌ No suitable UL element found in container', index);
+                        }
                     }
-                }
-                
-                // Verify the navigation was actually added
-                setTimeout(() => {
-                    const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
-                    const stillHasOriginalUL = mobileNavContainer.querySelector('ul.mb-12');
-                    debugLog('🔍 Verification - Custom nav exists:', !!verifyNav);
-                    debugLog('🔍 Verification - Original UL still exists:', !!stillHasOriginalUL);
-                    if (verifyNav && !stillHasOriginalUL) {
-                        debugLog('✅ Custom navigation replaced original UL successfully');
-                    } else if (verifyNav && stillHasOriginalUL) {
-                        debugLog('⚠️ Both custom nav and original UL exist - might be duplicate');
-                    } else {
-                        debugLog('❌ Custom navigation was removed or replacement failed');
-                    }
-                }, 1000);
-            } else {
-                if (isDesktopSidebar) {
-                    debugLog(`⏭️ Skipping mobile nav container ${index} (desktop sidebar - handled separately)`);
+                    
+                    // Verify the navigation was actually added
+                    setTimeout(() => {
+                        const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
+                        const stillHasOriginalUL = mobileNavContainer.querySelector('ul.mb-12');
+                        debugLog('🔍 Verification - Custom nav exists:', !!verifyNav);
+                        debugLog('🔍 Verification - Original UL still exists:', !!stillHasOriginalUL);
+                        if (verifyNav && !stillHasOriginalUL) {
+                            debugLog('✅ Custom navigation replaced original UL successfully');
+                        } else if (verifyNav && stillHasOriginalUL) {
+                            debugLog('⚠️ Both custom nav and original UL exist - might be duplicate');
+                        } else {
+                            debugLog('❌ Custom navigation was removed or replacement failed');
+                        }
+                    }, 1000);
                 } else {
-                    debugLog(`⏭️ Skipping mobile nav container ${index} (no content)`);
+                    if (isDesktopSidebar) {
+                        debugLog(`⏭️ Skipping mobile nav container ${index} (desktop sidebar - handled separately)`);
+                    } else {
+                        debugLog(`⏭️ Skipping mobile nav container ${index} (no content)`);
+                    }
                 }
-            }
-        });
-        
-        // Also watch for mobile dialog navigation
-        setupMobileDialogWatcher();
-        
-        if (!mobileNavReplaced) {
-            debugLog('❌ No suitable mobile nav container found');
-            
-            // Fallback: try to find any navigation container
-            const fallbackContainers = document.querySelectorAll('[class*="navigation"], [id*="navigation"]');
-            debugLog('🔍 Fallback: Found', fallbackContainers.length, 'navigation-related elements');
-            
-            fallbackContainers.forEach((container, index) => {
-                debugLog(`📍 Fallback container ${index}:`, container);
-                debugLog(`  - Tag:`, container.tagName);
-                debugLog(`  - ID:`, container.id);
-                debugLog(`  - Classes:`, container.className);
-                debugLog(`  - Visible:`, container.offsetParent !== null);
             });
+            
+            // Also watch for mobile dialog navigation
+            setupMobileDialogWatcher();
+            
+            if (!mobileNavReplaced) {
+                debugLog('❌ No suitable mobile nav container found');
+                
+                // Fallback: try to find any navigation container
+                const fallbackContainers = document.querySelectorAll('[class*="navigation"], [id*="navigation"]');
+                debugLog('🔍 Fallback: Found', fallbackContainers.length, 'navigation-related elements');
+                
+                fallbackContainers.forEach((container, index) => {
+                    debugLog(`📍 Fallback container ${index}:`, container);
+                    debugLog(`  - Tag:`, container.tagName);
+                    debugLog(`  - ID:`, container.id);
+                    debugLog(`  - Classes:`, container.className);
+                    debugLog(`  - Visible:`, container.offsetParent !== null);
+                });
+            }
+        } finally {
+            isReplacingNavigation = false;
         }
     }
 
     // Watch for mobile dialog navigation appearing
     function setupMobileDialogWatcher() {
+        if (dialogWatcherSetup) {
+            debugLog('⚠️ Mobile dialog watcher already setup, skipping');
+            return;
+        }
+        dialogWatcherSetup = true;
+
         debugLog('👀 Setting up mobile dialog watcher');
         
         const dialogObserver = new MutationObserver((mutations) => {
+            if (isReplacingNavigation) {
+                debugLog('⚠️ Skipping dialog observer action - replacement in progress');
+                return;
+            }
+            
             mutations.forEach((mutation) => {
                 if (mutation.type === 'childList') {
                     mutation.addedNodes.forEach((node) => {
@@ -542,12 +568,14 @@
                                 node.querySelector && node.querySelector('[id*="headlessui-dialog-panel"]')) {
                                 debugLog('🚨 Mobile dialog detected:', node);
                                 
-                                // Look for navigation-items within this dialog
-                                const dialogNavItems = node.querySelector ? node.querySelector('#navigation-items') : null;
-                                if (dialogNavItems) {
-                                    debugLog('📱 Found navigation-items in mobile dialog:', dialogNavItems);
-                                    replaceMobileDialogNavigation(dialogNavItems);
-                                }
+                                // Wait a bit for dialog to fully render
+                                setTimeout(() => {
+                                    const dialogNavItems = node.querySelector ? node.querySelector('#navigation-items') : null;
+                                    if (dialogNavItems && !dialogNavItems.querySelector('.custom-mobile-nav')) {
+                                        debugLog('📱 Found navigation-items in mobile dialog:', dialogNavItems);
+                                        replaceMobileDialogNavigation(dialogNavItems);
+                                    }
+                                }, 100);
                             }
                             
                             // Also check if this node itself has navigation-items
@@ -558,7 +586,11 @@
                                 
                                 if (!isDesktopSidebar) {
                                     debugLog('🎯 This appears to be a mobile dialog navigation');
-                                    replaceMobileDialogNavigation(node);
+                                    setTimeout(() => {
+                                        if (!node.querySelector('.custom-mobile-nav')) {
+                                            replaceMobileDialogNavigation(node);
+                                        }
+                                    }, 100);
                                 }
                             }
                         }
@@ -578,6 +610,11 @@
 
     // Replace navigation in mobile dialog
     function replaceMobileDialogNavigation(container) {
+        if (isReplacingNavigation) {
+            debugLog('⚠️ Dialog navigation replacement skipped - already in progress');
+            return;
+        }
+        
         debugLog('🔄 replaceMobileDialogNavigation() called for:', container);
         
         if (container && !container.querySelector('.custom-mobile-nav')) {
@@ -670,89 +707,105 @@
 
     // Recreate or update navigation
     function recreateNavigation() {
+        if (isReplacingNavigation) {
+            debugLog('⚠️ Recreation skipped - replacement already in progress');
+            return;
+        }
+        
+        isReplacingNavigation = true;
         debugLog('🔄 recreateNavigation() called');
         
-        // Handle desktop navigation
-        const existingCustomNav = document.querySelector('.custom-nav');
-        const navContainer = document.querySelector('.nav-tabs');
-        debugLog('🖥️ Existing desktop nav:', existingCustomNav);
-        debugLog('🖥️ Desktop nav container:', navContainer);
-        
-        if (existingCustomNav) {
-            // Update existing desktop navigation
-            const newNav = createNavigation();
-            existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
-            debugLog('✅ Desktop navigation updated');
-        } else if (navContainer && navContainer.parentElement) {
-            // Desktop navigation was removed, recreate it
-            const customNav = createNavigation();
-            navContainer.parentElement.appendChild(customNav);
-            debugLog('✅ Desktop navigation recreated');
-        }
-
-        // Handle mobile navigation - check all navigation-items containers
-        const allNavigationItems = document.querySelectorAll('#navigation-items');
-        debugLog('🔍 Found', allNavigationItems.length, 'navigation-items containers for recreation');
-        
-        let mobileNavRecreated = false;
-        
-        allNavigationItems.forEach((mobileNavContainer, index) => {
-            debugLog(`📱 Processing mobile nav container ${index} for recreation:`, mobileNavContainer);
+        try {
+            // Handle desktop navigation
+            const existingCustomNav = document.querySelector('.custom-nav');
+            const navContainer = document.querySelector('.nav-tabs');
+            debugLog('🖥️ Existing desktop nav:', existingCustomNav);
+            debugLog('🖥️ Desktop nav container:', navContainer);
             
-            const existingMobileNav = mobileNavContainer.querySelector('.custom-mobile-nav');
-            const isVisible = mobileNavContainer.offsetParent !== null;
-            const hasContent = mobileNavContainer.innerHTML.trim().length > 0;
-            const parentClasses = mobileNavContainer.parentElement?.className || '';
-            const isDesktopSidebar = parentClasses.includes('lg:flex') && parentClasses.includes('hidden');
-            
-            debugLog(`  - Has existing custom nav: ${!!existingMobileNav}`);
-            debugLog(`  - Is visible: ${isVisible}`);
-            debugLog(`  - Has content: ${hasContent}`);
-            debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
-            
-            if (isVisible && (existingMobileNav || hasContent) && !isDesktopSidebar) {
-                debugLog(`🎯 Recreating mobile nav in container ${index}`);
-                
-                // Find the specific ul element or existing custom nav to replace
-                let targetElement = existingMobileNav || mobileNavContainer.querySelector('ul.mb-12') || mobileNavContainer.querySelector('ul');
-                
-                if (targetElement) {
-                    debugLog('🎯 Found target element to replace:', targetElement);
-                    
-                    const customMobileNav = createMobileNavigation();
-                    customMobileNav.setAttribute('data-custom-nav', 'true');
-                    customMobileNav.style.position = 'relative';
-                    customMobileNav.style.zIndex = '1000';
-                    
-                    targetElement.parentElement.replaceChild(customMobileNav, targetElement);
-                    debugLog('✅ Mobile navigation recreated in container', index);
-                    
-                    mobileNavRecreated = true;
-                } else {
-                    debugLog('❌ No suitable target element found for recreation in container', index);
-                }
-                
-                // Verify the recreation
-                setTimeout(() => {
-                    const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
-                    debugLog('🔍 Recreation verification - Custom nav exists:', !!verifyNav);
-                }, 500);
-            } else {
-                if (isDesktopSidebar) {
-                    debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (desktop sidebar - handled separately)`);
-                } else {
-                    debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (not visible, no content, or no custom nav)`);
-                }
+            if (existingCustomNav) {
+                // Update existing desktop navigation
+                const newNav = createNavigation();
+                existingCustomNav.parentElement.replaceChild(newNav, existingCustomNav);
+                debugLog('✅ Desktop navigation updated');
+            } else if (navContainer && navContainer.parentElement) {
+                // Desktop navigation was removed, recreate it
+                const customNav = createNavigation();
+                navContainer.parentElement.appendChild(customNav);
+                debugLog('✅ Desktop navigation recreated');
             }
-        });
-        
-        if (!mobileNavRecreated) {
-            debugLog('❌ No mobile navigation was recreated');
+
+            // Handle mobile navigation - check all navigation-items containers
+            const allNavigationItems = document.querySelectorAll('#navigation-items');
+            debugLog('🔍 Found', allNavigationItems.length, 'navigation-items containers for recreation');
+            
+            let mobileNavRecreated = false;
+            
+            allNavigationItems.forEach((mobileNavContainer, index) => {
+                debugLog(`📱 Processing mobile nav container ${index} for recreation:`, mobileNavContainer);
+                
+                const existingMobileNav = mobileNavContainer.querySelector('.custom-mobile-nav');
+                const isVisible = mobileNavContainer.offsetParent !== null;
+                const hasContent = mobileNavContainer.innerHTML.trim().length > 0;
+                const parentClasses = mobileNavContainer.parentElement?.className || '';
+                const isDesktopSidebar = parentClasses.includes('lg:flex') && parentClasses.includes('hidden');
+                
+                debugLog(`  - Has existing custom nav: ${!!existingMobileNav}`);
+                debugLog(`  - Is visible: ${isVisible}`);
+                debugLog(`  - Has content: ${hasContent}`);
+                debugLog(`  - Is desktop sidebar: ${isDesktopSidebar}`);
+                
+                if (isVisible && (existingMobileNav || hasContent) && !isDesktopSidebar) {
+                    debugLog(`🎯 Recreating mobile nav in container ${index}`);
+                    
+                    // Find the specific ul element or existing custom nav to replace
+                    let targetElement = existingMobileNav || mobileNavContainer.querySelector('ul.mb-12') || mobileNavContainer.querySelector('ul');
+                    
+                    if (targetElement) {
+                        debugLog('🎯 Found target element to replace:', targetElement);
+                        
+                        const customMobileNav = createMobileNavigation();
+                        customMobileNav.setAttribute('data-custom-nav', 'true');
+                        customMobileNav.style.position = 'relative';
+                        customMobileNav.style.zIndex = '1000';
+                        
+                        targetElement.parentElement.replaceChild(customMobileNav, targetElement);
+                        debugLog('✅ Mobile navigation recreated in container', index);
+                        
+                        mobileNavRecreated = true;
+                    } else {
+                        debugLog('❌ No suitable target element found for recreation in container', index);
+                    }
+                    
+                    // Verify the recreation
+                    setTimeout(() => {
+                        const verifyNav = mobileNavContainer.querySelector('.custom-mobile-nav');
+                        debugLog('🔍 Recreation verification - Custom nav exists:', !!verifyNav);
+                    }, 500);
+                } else {
+                    if (isDesktopSidebar) {
+                        debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (desktop sidebar - handled separately)`);
+                    } else {
+                        debugLog(`⏭️ Skipping mobile nav container ${index} during recreation (not visible, no content, or no custom nav)`);
+                    }
+                }
+            });
+            
+            if (!mobileNavRecreated) {
+                debugLog('❌ No mobile navigation was recreated');
+            }
+        } finally {
+            isReplacingNavigation = false;
         }
     }
 
     // Listen for URL changes to update active state
     function setupURLChangeListener() {
+        if (urlChangeListenerSetup) {
+            debugLog('⚠️ URL change listener already setup, skipping');
+            return;
+        }
+        urlChangeListenerSetup = true;
+        
         // Handle browser back/forward buttons
         window.addEventListener('popstate', recreateNavigation);
 
@@ -772,6 +825,11 @@
 
         // Watch for DOM changes that might remove our navigation
         const observer = new MutationObserver((mutations) => {
+            if (isReplacingNavigation) {
+                debugLog('⚠️ Skipping MutationObserver action - replacement in progress');
+                return;
+            }
+            
             let navigationRemoved = false;
             
             mutations.forEach((mutation) => {
@@ -791,6 +849,7 @@
             });
             
             if (navigationRemoved && (!document.querySelector('.custom-nav') || !document.querySelector('.custom-mobile-nav'))) {
+                debugLog('🔄 Navigation removed, recreating...');
                 recreateNavigation();
             }
         });
@@ -943,6 +1002,23 @@
         // Get current config
         getConfig: function() {
             return navConfig;
+        },
+
+        // Reset guards (emergency function if system gets stuck)
+        resetGuards: function() {
+            isReplacingNavigation = false;
+            dialogWatcherSetup = false;
+            urlChangeListenerSetup = false;
+            debugLog('🔄 All guards reset');
+        },
+
+        // Check guard status
+        getGuardStatus: function() {
+            return {
+                isReplacingNavigation,
+                dialogWatcherSetup,
+                urlChangeListenerSetup
+            };
         }
     };
 
