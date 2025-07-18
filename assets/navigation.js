@@ -446,6 +446,12 @@
             debugLog('🖥️ Desktop nav container:', existingNavContainer);
             
             if (existingNavContainer && existingNavContainer.parentElement) {
+                // Remove any existing custom navigation first
+                const existingCustomNav = existingNavContainer.parentElement.querySelector('.custom-nav');
+                if (existingCustomNav) {
+                    existingCustomNav.remove();
+                }
+                
                 // Create desktop navigation
                 const customNav = createNavigation();
                 existingNavContainer.parentElement.appendChild(customNav);
