@@ -853,10 +853,10 @@
                 }
             });
             
-                         if (navigationRemoved && (!document.querySelector('.custom-nav') || !document.querySelector('.custom-mobile-nav'))) {
-                 debugLog('🔄 Navigation removed, recreating...');
-                 replaceNavigation();
-             }
+            if (navigationRemoved && (!document.querySelector('.custom-nav') || !document.querySelector('.custom-mobile-nav'))) {
+                debugLog('🔄 Navigation removed, recreating...');
+                debouncedRecreateNavigation();
+            }
         });
 
         // Start observing
