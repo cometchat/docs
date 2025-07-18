@@ -828,42 +828,9 @@
         // Note: Removed navigation recreation on URL changes to prevent visual flicker
         // The navigation is static and doesn't need to be recreated on every page change
 
-        // Watch for DOM changes that might remove our navigation
-        const observer = new MutationObserver((mutations) => {
-            if (isReplacingNavigation) {
-                debugLog('⚠️ Skipping MutationObserver action - replacement in progress');
-                return;
-            }
-            
-            let navigationRemoved = false;
-            
-            mutations.forEach((mutation) => {
-                if (mutation.type === 'childList') {
-                    // Check if any removed nodes contained our navigation
-                    mutation.removedNodes.forEach((node) => {
-                        if (node.nodeType === Node.ELEMENT_NODE) {
-                            if (node.classList?.contains('custom-nav') || 
-                                node.querySelector?.('.custom-nav') ||
-                                node.classList?.contains('custom-mobile-nav') || 
-                                node.querySelector?.('.custom-mobile-nav')) {
-                                navigationRemoved = true;
-                            }
-                        }
-                    });
-                }
-            });
-            
-            if (navigationRemoved && (!document.querySelector('.custom-nav') || !document.querySelector('.custom-mobile-nav'))) {
-                debugLog('🔄 Navigation removed, recreating...');
-                debouncedRecreateNavigation();
-            }
-        });
-
-        // Start observing
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        // Note: Disabled MutationObserver to prevent unnecessary navigation recreation
+        // that was causing visual flicker during SPA navigation.
+        // The navigation is stable and doesn't need constant monitoring.
     }
 
     // Public API for customization
