@@ -825,22 +825,8 @@
         }
         urlChangeListenerSetup = true;
         
-        // Handle browser back/forward buttons
-        window.addEventListener('popstate', debouncedRecreateNavigation);
-
-        // Handle programmatic navigation (for SPAs)
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
-
-        history.pushState = function() {
-            originalPushState.apply(history, arguments);
-            debouncedRecreateNavigation();
-        };
-
-        history.replaceState = function() {
-            originalReplaceState.apply(history, arguments);
-            debouncedRecreateNavigation();
-        };
+        // Note: Removed navigation recreation on URL changes to prevent visual flicker
+        // The navigation is static and doesn't need to be recreated on every page change
 
         // Watch for DOM changes that might remove our navigation
         const observer = new MutationObserver((mutations) => {
