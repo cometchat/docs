@@ -815,7 +815,7 @@
     }
 
     // Debounced version of recreateNavigation
-    const debouncedRecreateNavigation = debounce(recreateNavigation, 500);
+    const debouncedRecreateNavigation = debounce(recreateNavigation, 10);
 
     // Listen for URL changes to update active state
     function setupURLChangeListener() {
