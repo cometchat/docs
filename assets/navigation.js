@@ -828,26 +828,26 @@
         // Note: Removed navigation recreation on URL changes to prevent visual flicker
         // The navigation is static and doesn't need to be recreated on every page change
 
-        // Debounced navigation check - only runs after DOM changes settle
-        const debouncedNavCheck = debounce(() => {
+        // Watch for navigation containers being rebuilt during SPA navigation
+        const observer = new MutationObserver((mutations) => {
             if (isReplacingNavigation) {
                 return;
             }
             
-            const hasDesktopNav = document.querySelector('.custom-nav');
-            const hasMobileNav = document.querySelector('.custom-mobile-nav');
-            const hasDesktopContainer = document.querySelector('.nav-tabs');
-            const hasMobileContainer = document.querySelector('#navigation-items');
-            
-            // Only recreate if containers exist but our navigation is missing
-            if ((hasDesktopContainer && !hasDesktopNav) || (hasMobileContainer && !hasMobileNav)) {
-                debugLog('🔄 Navigation containers detected without custom nav, recreating...');
-                replaceNavigation();
-            }
-        }, 500); // Wait for all DOM changes to settle
-
-        // Watch for navigation containers being rebuilt during SPA navigation  
-        const observer = new MutationObserver(debouncedNavCheck);
+            // Only check if navigation is actually missing, not on every DOM change
+            setTimeout(() => {
+                const hasDesktopNav = document.querySelector('.custom-nav');
+                const hasMobileNav = document.querySelector('.custom-mobile-nav');
+                const hasDesktopContainer = document.querySelector('.nav-tabs');
+                const hasMobileContainer = document.querySelector('#navigation-items');
+                
+                // Only recreate if containers exist but our navigation is missing
+                if ((hasDesktopContainer && !hasDesktopNav) || (hasMobileContainer && !hasMobileNav)) {
+                    debugLog('🔄 Navigation containers detected without custom nav, recreating...');
+                    replaceNavigation();
+                }
+            }, 200); // Longer delay to let page transitions complete
+        });
 
         // Start observing with reduced sensitivity
         observer.observe(document.body, {
