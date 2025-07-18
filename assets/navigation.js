@@ -698,6 +698,22 @@
         });
     }
 
+    // Setup viewport change listener to handle mobile/desktop switching
+    function setupViewportChangeListener() {
+        let isDesktop = window.innerWidth >= 1024;
+        
+        window.addEventListener('resize', debounce(() => {
+            const wasDesktop = isDesktop;
+            isDesktop = window.innerWidth >= 1024;
+            
+            // If switching from mobile to desktop, force refresh navigation
+            if (!wasDesktop && isDesktop) {
+                debugLog('🔄 Switched from mobile to desktop, forcing navigation refresh');
+                replaceNavigation();
+            }
+        }, 100));
+    }
+
     // Initialize when DOM is ready
     function initialize() {
         debugLog('🚀 initialize() called');
@@ -710,6 +726,7 @@
                 replaceNavigation();
                 setupURLChangeListener();
                 setupGlobalClickHandler();
+                setupViewportChangeListener();
                 // Set up mobile menu button listener
                 if (window.CustomNav && window.CustomNav.setupMobileMenuButtonListener) {
                     window.CustomNav.setupMobileMenuButtonListener();
@@ -720,6 +737,7 @@
             replaceNavigation();
             setupURLChangeListener();
             setupGlobalClickHandler();
+            setupViewportChangeListener();
             // Set up mobile menu button listener
             if (window.CustomNav && window.CustomNav.setupMobileMenuButtonListener) {
                 window.CustomNav.setupMobileMenuButtonListener();
