@@ -1,8 +1,34 @@
-# CometChat Docs
+# CometChat Documentation
 
-This repo contains the source code for [CometChat's Documentation](https://www.cometchat.com/docs).
+This repository contains the source code for [CometChat's Documentation](https://www.cometchat.com/docs).
 
-Please open Pull Requests to suggest helpful changes!
+We welcome contributions from the community! If you'd like to contribute to the CometChat documentation, please read our [Contributing Guidelines](CONTRIBUTING.md).
+
+## Quick Start for Contributors
+
+1. Fork this repository
+2. Create a new branch for your changes
+3. Make your changes to the documentation
+4. Submit a pull request
+
+For more detailed instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Code of Conduct
+
+Please review our [Code of Conduct](CODE_OF_CONDUCT.md) before participating in this project.
+
+## Documentation Structure
+
+The documentation is organized into the following main sections:
+
+- **Platform** - Core concepts, features, and implementation guides
+- **UI Kits** - Integration guides for various platforms
+- **SDKs** - SDK documentation for different platforms
+- **REST APIs** - API reference documentation
+
+## Issues and Feedback
+
+If you find any issues with the documentation or have suggestions for improvement, please [submit an issue](https://github.com/cometchat/docs/issues/new/choose).
 
 ### Development
 
