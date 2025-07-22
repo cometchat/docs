@@ -21,10 +21,15 @@ Please review our [Code of Conduct](CODE_OF_CONDUCT.md) before participating in 
 
 The documentation is organized into the following main sections:
 
-- **Platform** - Core concepts, features, and implementation guides
-- **UI Kits** - Integration guides for various platforms
-- **SDKs** - SDK documentation for different platforms
-- **REST APIs** - API reference documentation
+- **Fundamentals** - Core concepts, features, and implementation guides
+- **UI Kit** - Integration guides for pre-built UI components across web and mobile platforms
+- **SDK** - Comprehensive SDK documentation for all supported platforms
+- **REST APIs** - Complete API reference for server-side implementation
+- **AI Chatbots** - Implementation guides for AI-powered conversational interfaces
+- **Moderation** - Tools and features for content moderation
+- **Notifications** - Push/Email/SMS notification integration and management across platforms
+- **Widget** - Pre-built chat widget implementation for websites
+- **Articles** - In-depth guides, migration information, and best practices
 
 ## Issues and Feedback
 
