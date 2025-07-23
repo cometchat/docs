@@ -21,6 +21,7 @@
 <!-- Please check all applicable items by putting an "x" in the brackets -->
 
 - [ ] I have read the [CONTRIBUTING](../CONTRIBUTING.md) document
+- [ ] My branch name follows the [naming convention](.github/branch-naming-convention.md)
 - [ ] My changes follow the documentation style guide
 - [ ] I have checked for spelling and grammar errors
 - [ ] All links in my changes are valid and working

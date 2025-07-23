@@ -35,6 +35,10 @@ Please [submit an issue](https://github.com/cometchat/docs/issues/new) with the 
 
 1. **Fork the repository** to your GitHub account.
 2. **Create a new branch** from the `main` branch for your changes.
+   - Use descriptive branch names following our [branch naming convention](.github/branch-naming-convention.md)
+   - For community contributors: `fix/description`, `docs/improvement-description`, or `community/contribution-description`
+   - Examples: `fix/typo-in-getting-started`, `docs/clarify-authentication-steps`, `community/add-code-example`
+   - Note: `feature/`, `release/`, `chore/` and `hotfix/` branches are restricted to CometChat organization members only
 3. **Make your changes** to the documentation.
 4. **Commit your changes** with a clear commit message.
 5. **Push your changes** to your fork.
