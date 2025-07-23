@@ -3,6 +3,8 @@ name: Branch Permission Check
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    # Temporarily disabled - uncomment to re-enable
+    # branches-ignore: ['**']
 
 jobs:
   check-branch-permissions:
@@ -15,6 +17,7 @@ jobs:
           BRANCH_NAME="${{ github.head_ref }}"
           ACTOR="${{ github.actor }}"
           REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
 
           echo "Checking permissions for branch: $BRANCH_NAME"
           echo "PR author: $ACTOR"
@@ -24,23 +27,29 @@ jobs:
             "https://api.github.com/orgs/$REPO_OWNER/members/$ACTOR" \
             -w "%{http_code}" -o /dev/null)
 
-          IS_ORG_MEMBER=false
-          if [ "$MEMBERSHIP_STATUS" = "204" ]; then
-            IS_ORG_MEMBER=true
-            echo "✅ User $ACTOR is an organization member"
-          else
-            echo "ℹ️ User $ACTOR is not an organization member (external contributor)"
-          fi
+          # Check if user is a repository collaborator
+          COLLABORATOR_STATUS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/collaborators/$ACTOR" \
+            -w "%{http_code}" -o /dev/null)
 
-          # Check if branch requires org membership
+          IS_AUTHORIZED=false
+          if [ "$MEMBERSHIP_STATUS" = "204" ]; then
+            IS_AUTHORIZED=true
+            echo "✅ User $ACTOR is an organization member"
+          elif [ "$COLLABORATOR_STATUS" = "204" ]; then
+            IS_AUTHORIZED=true
+            echo "✅ User $ACTOR is a repository collaborator"
+          else
+            echo "ℹ️ User $ACTOR is not an organization member or repository collaborator (external contributor)"
+          fi          # Check if branch requires org membership
           REQUIRES_ORG_MEMBERSHIP=false
           if [[ $BRANCH_NAME =~ ^feature/ ]] || [[ $BRANCH_NAME =~ ^release/ ]] || [[ $BRANCH_NAME =~ ^chore/ ]] || [[ $BRANCH_NAME =~ ^hotfix/ ]]; then
             REQUIRES_ORG_MEMBERSHIP=true
           fi
 
           # Validate permissions
-          if [ "$REQUIRES_ORG_MEMBERSHIP" = true ] && [ "$IS_ORG_MEMBER" = false ]; then
-            echo "❌ ERROR: Branch '$BRANCH_NAME' can only be created by CometChat organization members."
+          if [ "$REQUIRES_ORG_MEMBERSHIP" = true ] && [ "$IS_AUTHORIZED" = false ]; then
+            echo "❌ ERROR: Branch '$BRANCH_NAME' can only be created by CometChat organization members or repository collaborators."
             echo ""
             echo "📋 External contributors should use:"
             echo "- fix/ (for bug fixes, typos, broken links)"
