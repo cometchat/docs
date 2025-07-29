@@ -53,3 +53,4 @@ mint dev
 
 - Mintlify dev isn't running - Run `npm i -g mint@latest` it'll re-install dependencies.
 - Page loads as a 404 - Make sure you are running in a folder with `docs.json`
+
