@@ -1,0 +1,336 @@
+---
+title: "Integrate an AI Agent into the Chat Widget"
+sidebarTitle: "AI Agent + Widget"
+description: "Add an AI Agent (Mastra) to the CometChat Chat Widget using the no‑code builder and a simple embed."
+---
+
+<Note>
+AI Agents currently support **Mastra**. Additional providers are coming soon.
+</Note>
+
+## Prerequisites
+
+- CometChat app (App ID, Region, Auth Key).
+- Chat Widget variant (will produce a Widget / Variant ID).
+- A running Mastra agent endpoint (public or tunneled URL).
+- Mastra Agent ID (e.g. `chef`) and any required API key(s).
+- (Optional) Frontend Action definitions if you want UI‑bound behaviors.
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
+</h3>
+
+## Create / Verify Your Mastra Agent
+
+Have a Mastra project ready (example using the “Chef” agent):
+
+<AccordionGroup>
+  <Accordion title="Minimal example (tools + agent)">
+```ts
+// tools/suggest-substitute.ts & tools/recipe-from-pantry.ts (omitted for brevity)
+// agents/chef-agent.ts (export chefAgent)
+// mastra/index.ts
+import { Mastra } from '@mastra/core/mastra';
+import { chefAgent } from './agents/chef-agent';
+
+export const mastra = new Mastra({
+  agents: { chef: chefAgent } // 'chef' becomes /api/agents/chef/*
+});
+```
+  </Accordion>
+  <Accordion title="Local run & test">
+```bash
+npx mastra dev
+curl -X POST http://localhost:4111/api/agents/chef/generate \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello chef"}]}'
+```
+  </Accordion>
+</AccordionGroup>
+
+You now have:
+- Agent ID (e.g. `chef`)
+- Base URL (e.g. `http://localhost:4111/api` or public tunnel)
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
+</h3>
+
+## Deploy / Expose Your Agent
+
+Choose one path so the Dashboard & Widget can reach your Mastra endpoint.
+
+<AccordionGroup>
+  <Accordion title="Option A: Quick tunnel (development)">
+Install a tunnel & expose port 4111 (pick one):
+
+```bash
+# ngrok
+ngrok http 4111
+
+# cloudflared
+cloudflared tunnel --url http://localhost:4111
+
+# loca.lt
+ssh -R 80:localhost:4111 nokey@localhost.run
+```
+
+Copy the public HTTPS URL (e.g. `https://abc123.ngrok.io`) – this becomes your **Deployment URL**.
+  </Accordion>
+  <Accordion title="Option B: Vercel serverless (Edge/Node)">
+Project structure (excerpt):
+
+```txt
+mastra/ (project root)
+api/agents/[agent]/generate.ts  (Vercel function)
+```
+
+Example handler:
+
+```ts
+// api/agents/[agent]/generate.ts
+import { mastra } from '../../mastra/index';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).end();
+  const { agent } = req.query;
+  const body = req.body;
+  try {
+    const response = await mastra.agents[agent].generate(body);
+    res.json(response);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+```
+
+Deploy:
+
+```bash
+vercel deploy --prod
+```
+
+Use the deployed base URL (e.g. `https://your-app.vercel.app/api`).
+  </Accordion>
+  <Accordion title="Option C: Docker container">
+Add a simple Express server & Dockerfile:
+
+```ts
+// server.ts
+import express from 'express';
+import bodyParser from 'body-parser';
+import { mastra } from './mastra';
+
+const app = express();
+app.use(bodyParser.json());
+
+app.post('/api/agents/:agent/generate', async (req, res) => {
+  const agent = req.params.agent;
+  try {
+    const out = await mastra.agents[agent].generate(req.body);
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(4111, () => console.log('Mastra listening on 4111'));
+```
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+EXPOSE 4111
+CMD ["node","dist/server.js"]
+```
+
+Build & run:
+
+```bash
+docker build -t mastra-agent .
+docker run -p 4111:4111 mastra-agent
+```
+  </Accordion>
+  <Accordion title="Optional: Security hardening">
+  <ul>
+    <li>Add an auth layer (Bearer token) that the Dashboard/Widget includes.</li>
+    <li>Enable basic rate limiting (e.g. 60 req/min per IP).</li>
+    <li>Log tool invocations (duration + errors) for observability.</li>
+  </ul>
+  </Accordion>
+</AccordionGroup>
+
+<Callout>
+For fastest iteration start with a tunnel, then move to serverless or container for staging/production.
+</Callout>
+
+You now have a **public base URL** to use in the Dashboard.
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
+</h3>
+
+## Configure in CometChat 
+<Steps>
+  <Step title="Open Dashboard">Open the <a href="https://app.cometchat.com/" target="_blank" rel="noreferrer">CometChat Dashboard</a>.</Step>
+  <Step title="Navigate">Go to your App → <b>AI Agents</b>.</Step>
+  <Step title="Add agent">Set <b>Provider</b>=Mastra, <b>Agent ID</b>=<code>chef</code>, <b>Deployment URL</b>=public base URL from Step 2.</Step>
+  <Step title="(Optional) Enhancements">Add greeting, starter prompts, or map frontend actions/tools for richer UI.</Step>
+  <Step title="Enable">Save and ensure the agent toggle shows <b>Enabled</b>.</Step>
+</Steps>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
+</h3>
+
+## Attach Agent in Chat Builder (No‑Code)
+<Steps>
+  <Step title="Open Chat Builder">Launch <b>Chat Builder</b> from the Dashboard.</Step>
+  <Step title="Select or create variant">Choose an existing <b>Widget Variant</b> or create a new one.</Step>
+  <Step title="Enable agent">In the <b>AI / Agents</b> panel toggle on your Mastra agent.</Step>
+  <Step title="(Optional) Identity">Set display name & avatar so users recognize the agent.</Step>
+  <Step title="Save variant">Save to persist the agent attachment.</Step>
+</Steps>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5 (Optional)</span>
+</h3>
+
+## Frontend Actions & Tools
+<Steps>
+  <Step title="Define actions">In Dashboard add actions (name + optional schema) that represent UI behaviors.</Step>
+  <Step title="Map to tools">Ensure Mastra tool <code>id</code> matches the action name for invocation context.</Step>
+  <Step title="Handle on frontend (optional)">Implement handlers in custom UI or rely on widget defaults when available.</Step>
+</Steps>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 6</span>
+</h3>
+
+## Customize in Chat Builder
+<Steps>
+  <Step title="Open variant">From <b>AI Agents</b> click the variant (or Get Started) to enter Chat Builder.</Step>
+  <Step title="Customize & Deploy">Select <b>Customize and Deploy</b>.</Step>
+  <Step title="Adjust settings">Theme, layout, features; ensure the Mastra agent is attached.</Step>
+  <Step title="Preview & Save">Use live preview to validate responses and appearance, then save.</Step>
+</Steps>
+
+<Frame>
+  <img src="/images/ai-agent-chat-builder-preview.png" />
+</Frame>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 7</span>
+</h3>
+
+## Export & Embed
+
+In Chat Builder click **Get Embedded Code** → copy credentials:
+- App ID
+- Auth Key
+- Region
+- Variant ID
+
+Example embed (HTML):
+
+<Steps>
+  <Step title="Include script (&lt;head&gt;)">Add script tag in document head (see snippet below).</Step>
+  <Step title="Initialize (&lt;body&gt; end)">Add mount div + init script before closing body.</Step>
+</Steps>
+
+```html
+<script defer src="https://cdn.jsdelivr.net/npm/@cometchat/chat-embed@latest/dist/main.js"></script>
+```
+
+```html
+<div id="cometChatMount"></div>
+<script>
+  const COMETCHAT_CREDENTIALS = {
+    appID:     "<YOUR_APP_ID>",
+    appRegion: "<YOUR_APP_REGION>",
+    authKey:   "<YOUR_AUTH_KEY>",
+  };
+
+  const COMETCHAT_USER_UID = "UID"; // Replace with your user UID
+
+  const COMETCHAT_LAUNCH_OPTIONS = {
+    targetElementID: "cometChatMount",
+    isDocked: true,
+    width: "700px",
+    height: "500px",
+    // variantID: "YOUR_VARIANT_ID",
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
+    CometChatApp.init(COMETCHAT_CREDENTIALS)
+      .then(() => CometChatApp.login({ uid: COMETCHAT_USER_UID }))
+      .then(() => CometChatApp.launch(COMETCHAT_LAUNCH_OPTIONS))
+      .catch(console.error);
+  });
+</script>
+```
+
+> Replace placeholders (`<YOUR_APP_ID>`, etc.) with real values.
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 8</span>
+</h3>
+
+## Verify
+
+| Check | How |
+|-------|-----|
+| Agent appears | Open widget → new conversation / agent entry available |
+| Basic reply | Send a prompt → response under a few seconds |
+| Tool logic works | Ask for ingredient substitution / recipe (Chef example) |
+| Error free | Browser console + Mastra logs have no unhandled errors |
+
+<Note>
+If responses fail, confirm the endpoint is publicly reachable and the Agent ID matches the Dashboard configuration.
+</Note>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Troubleshooting</span>
+</h3>
+
+| Issue | Fix |
+|-------|-----|
+| Agent not listed | Confirm it’s enabled in Dashboard + variant saved |
+| 404 from Mastra | Endpoint path or agent key mismatch |
+| Timeout | Expose via a tunnel or deploy to a public host |
+| Tool not invoked | Ensure tool ID referenced in agent instructions & code |
+| Auth error | Re-check Auth Key / App credentials in embed snippet |
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Next Steps</span>
+</h3>
+
+- Add more tools (search, summarization, domain knowledge).  
+- Introduce Frontend Actions for richer UI control.  
+- Move from tunnel to production deployment.  
+- Add analytics / observability (latency, error tracking).  
+
+Need code export (React UI Kit) instead of Widget? See the “Export & Integrate” guide in AI Agents
