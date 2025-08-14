@@ -1,194 +1,206 @@
 ---
 title: "Build Your Chef Agent with Mastra"
-description: "Follow these steps to wrap up a culinary‑wise Mastra agent that helps users cook with what’s in their pantry—and get it ready to deploy with a slick React chat UI."
+description: "Follow these steps to create a Chef Agent in Mastra that can suggest ingredient substitutions, build recipes from a pantry list, and integrate into your app."
 ---
 
 # Build Your Chef Agent with Mastra
 
-Imagine a virtual sous‑chef who listens to your ingredient list and responds with suggestion, technique, or even a full‑blown recipe—all served via a slick chat UI.
+Imagine a virtual sous-chef who listens to your ingredient list and responds with suggestions, techniques, or even a full recipe—all served via a chat UI.
 
 ---
 
 ## What You’ll Build
 
-* A Mastra agent that thinks like a seasoned home cook.
-* Tools (actions) for helpful interactive features—substitute ingredients, view recipes, generate shopping lists.
-* A conversational UI embedded using a React Chat Widget (with optional CometChat).
-* A deployable chat component, ready to plug into your app or site.
+- A **Mastra agent** that thinks like a seasoned home cook.
+- **Tools** for helpful interactive features—substitute ingredients, create recipes.
+- A conversational UI (React example provided).
+- A deployable agent available via Mastra’s API.
 
 ---
 
 ## Prerequisites
 
-* A Mastra account with agent‑maker access.
-* Node.js project scaffold (TypeScript or JavaScript).
-* OpenAI API key in `OPENAI_API_KEY` environment variable.
-* A React app (or any front‑end) for integration.
-* Optional: Familiarity with Zod schema for structured output.
+- A Mastra project (`npx mastra init my-app`).
+- Node.js installed.
+- OpenAI API key in `.env` as `OPENAI_API_KEY`.
+- Optional: Familiarity with Zod schema for structured output.
 
 ---
 
-## Step 1  
-### Define Your Chef Agent
+## Step 1 — Create the Tools
 
-Declare your AI chef using Mastra’s toolkit. In `src/mastra/chefAgent.ts`:
-
+**`src/tools/suggest-substitute-tool.ts`**:
 ```ts
-import { defineAgent } from "mastra";
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
 
-export const chefAgent = defineAgent({
-  name: "Chef Agent",
-  instructions: "You are a friendly, clever home chef. Help users cook meals based on the ingredients they have. Offer substitutions if needed, and respond with steps.",
-  tools: [
-    {
-      name: "suggest_substitute",
-      description: "Suggest a substitute for an ingredient.",
-      parameters: {
-        type: "object",
-        required: ["ingredient"],
-        properties: {
-          ingredient: { type: "string" },
-        },
-      },
-    },
-  ],
+export const suggestSubstituteTool = createTool({
+  id: 'suggest-substitute',
+  description: 'Suggest a substitute for an ingredient.',
+  inputSchema: z.object({
+    ingredient: z.string().describe('Ingredient to substitute'),
+  }),
+  outputSchema: z.object({
+    substitute: z.string(),
+    reason: z.string(),
+  }),
+  execute: async ({ context }) => {
+    const ingredient = context.ingredient.toLowerCase();
+    const map: Record<string, { substitute: string; reason: string }> = {
+      milk: { substitute: 'almond milk', reason: 'Similar texture and flavor' },
+      butter: { substitute: 'margarine', reason: 'Same fat profile for cooking/baking' },
+    };
+    return map[ingredient] || {
+      substitute: 'No direct match',
+      reason: 'Choose an ingredient with similar flavor or texture.',
+    };
+  },
+});
+```
+
+**`src/tools/recipe-from-pantry-tool.ts`**:
+```ts
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+
+export const recipeFromPantryTool = createTool({
+  id: 'recipe-from-pantry',
+  description: 'Generate a simple recipe using available ingredients.',
+  inputSchema: z.object({
+    ingredients: z.array(z.string()).min(1),
+  }),
+  outputSchema: z.object({
+    title: z.string(),
+    steps: z.array(z.string()),
+  }),
+  execute: async ({ context }) => {
+    const { ingredients } = context;
+    return {
+      title: 'Pantry Special',
+      steps: [
+        `Use ${ingredients.join(', ')}.`,
+        'Cook and enjoy!',
+      ],
+    };
+  },
 });
 ```
 
 ---
 
-## Step 2  
-### Stand Up the Agent Server
+## Step 2 — Create the Agent
 
-In `server.ts`, wrap your agent in a simple HTTP endpoint:
-
+**`src/agents/chef-agent.ts`**:
 ```ts
-import express from "express";
-import { chefAgent } from "./mastra/chefAgent";
+import { openai } from '@ai-sdk/openai';
+import { Agent } from '@mastra/core/agent';
+import { Memory } from '@mastra/memory';
+import { LibSQLStore } from '@mastra/libsql';
 
-const app = express();
-app.use(express.json());
+import { suggestSubstituteTool } from '../tools/suggest-substitute-tool';
+import { recipeFromPantryTool } from '../tools/recipe-from-pantry-tool';
 
-app.post("/mastra/chef-agent", async (req, res) => {
-  const { messages } = req.body;
-  const result = await chefAgent.respond({ messages });
-  res.json(result);
+export const chefAgent = new Agent({
+  name: 'Chef Agent',
+  instructions: `
+You are a friendly home chef. Help users cook based on their available ingredients.
+Use 'suggest-substitute' to offer alternatives.
+Use 'recipe-from-pantry' to build recipes from their list.
+Keep answers short and clear.
+  `,
+  model: openai('gpt-5'),
+  tools: {
+    'suggest-substitute': suggestSubstituteTool,
+    'recipe-from-pantry': recipeFromPantryTool,
+  },
+  memory: new Memory({
+    storage: new LibSQLStore({ url: 'file:../mastra.db' }),
+  }),
 });
-
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Chef Agent ready on port ${port}`));
 ```
-
-Deploy this (Vercel, Render, Fly, etc.) and copy the public URL to use as your **Deployment URL**. Also note your **Mastra Agent ID** from the dashboard.
 
 ---
 
-## Step 3 (Optional)  
-### Add Frontend Actions (Tools) 
+## Step 3 — Register the Agent in Mastra
 
-Sleeve‑roll optionality: let your chef send interactive “cooking actions” to UI—like showing substitutions or saving recipes.
+**`src/mastra/index.ts`**:
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { PinoLogger } from '@mastra/loggers';
+import { LibSQLStore } from '@mastra/libsql';
 
-In Mastra console under “Actions,” add an action:
+import { chefAgent } from '../agents/chef-agent';
 
-* **Display Name**: Suggest substitute
-* **Name (code)**: `suggest_substitute`
-* **Description**: “Recommend an alternative ingredient.”
-* **Parameters Schema**:
-```json
-{
-  "type": "object",
-  "required": ["ingredient"],
-  "properties": {
-    "ingredient": { "type": "string", "description": "Ingredient to substitute" }
-  }
-}
+export const mastra = new Mastra({
+  agents: { chef: chefAgent }, // "chef" is the REST id
+  storage: new LibSQLStore({ url: 'file:../mastra.db' }),
+  logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
+});
 ```
 
-On the UI side, listen for this action and display suggestions in context.
+> The **key** in `agents: { chef: chefAgent }` determines the API path: `/api/agents/chef/*`.
 
 ---
 
-## Step 4  
-### Test Your Agent Manually
+## Step 4 — Run the Agent
 
-Use a client or straight `curl` to feed your agent some ingredient chatter:
+From your project root:
+```bash
+rm -rf .mastra/output
+npx mastra dev
+```
+You should see:
+```
+Mastra API running on port http://localhost:4111/api
+```
+
+---
+
+## Step 5 — Test via API
 
 ```bash
-curl -X POST https://<your-deployment>/mastra/chef-agent   -H "Content-Type: application/json"   -d '{
+curl -X POST http://localhost:4111/api/agents/chef/generate   -H "Content-Type: application/json"   -d '{
     "messages": [
-      { "role": "user", "content": "I have potatoes, garlic, and olive oil—what can I make?" }
+      { "role": "user", "content": "I have pasta, tomatoes, garlic — make me dinner" }
     ]
   }'
 ```
 
-Expect a response with a recipe idea or directions. If it invokes your tool, your UI should catch that and act.
+---
+
+## Step 6 — Configure in CometChat 
+
 
 ---
 
-## Step 5  
-### Embed in Your UI (React Widget)
+## Step 7 — Customise in the Agent Builder
 
-In your React app, turn chefAgent into a chat experience. For example:
-
-```tsx
-import { Chat } from "@your-chat-ui";
-import React from "react";
-
-export function ChefChat() {
-  return (
-    <Chat
-      endpoint="https://<your-deployment>/mastra/chef-agent"
-      agentName="Chef Agent"
-      onAction={(action) => {
-        if (action.name === "suggest_substitute") {
-          alert(`Try substituting "${action.params.ingredient}" with something local!`);
-        }
-      }}
-    />
-  );
-}
-```
-
-Paste this into your app and watch your kitchen agent spring to life.
 
 ---
 
-## Quick Mastra Setup (For Reference)
+## Step 8 — Integrate
 
-```ts
-// src/mastra/chefAgent.ts
-import { defineAgent } from "mastra";
-export const chefAgent = defineAgent({
-  name: "Chef Agent",
-  instructions: "You are a helpful cooking assistant—use your chef tricks to answer.",
-  tools: [ /* same as above */ ],
-});
-```
 
 ---
 
 ## Test Checklist
 
-* Agent responds accurately to ingredient queries.
-* Optional substitute actions appear and get handled by your UI.
-* Agent maintains tone—helpful, inventive, clever.
-* UI is styled so conversation feels like cooking together.
+- `/api/agents` lists `"chef"`.
+- POST to `/api/agents/chef/generate` returns a recipe or suggestion.
+- UI handles `suggest-substitute` action gracefully.
 
 ---
 
 ## Troubleshooting
 
-* **No response**? Check that your Deployment URL is live, the server is running, and there are no console errors.
-* **Tool not firing**? Ensure tool `name` matches exactly, and your UI listens for that name in action callbacks.
-* **Api key errors**? Confirm `OPENAI_API_KEY` is set correctly and env vars are loaded on your server.
+- **Agent not found**: Check the `agents` map in `mastra/index.ts`.
+- **Tool not firing**: Ensure the `id` matches exactly between the tool file and the agent.
+- **API key errors**: Confirm `OPENAI_API_KEY` is set.
 
 ---
 
 ## Next Steps
 
-* Add actions like “Add to shopping list,” “Scale recipe,” or “Switch diet style (vegan/vegetarian).”
-* Use Zod schema to return structured JSON (ingredients, steps, cooking time).
-* Localize responses or theme the UI for fun (spicy vs mild).
-* Track analytics: popular queries, tool usage, user satisfaction.
-
----
+- Add more tools (e.g., nutritional info, shopping list builder).
+- Add a workflow to decide automatically between quick tips and full recipes.
+- Localize outputs for different languages.
