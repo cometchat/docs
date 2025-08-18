@@ -95,28 +95,34 @@ Create **`src/agents/knowledge/retriever.ts`**:
 import fs from 'fs';
 import path from 'path';
 
-const KB_DIR = path.join(__dirname, '../../kb');
+// Resolve against project root so bundling / transpilation does not break relative paths.
+const KB_DIR = path.join(process.cwd(), 'src', 'kb');
 
-function tokens(s: string) {
+function tokenize(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
 }
+
 function score(query: string, doc: string) {
-  const q = new Set(tokens(query));
-  const d = tokens(doc);
+  const q = new Set(tokenize(query));
+  const d = tokenize(doc);
+  if (!d.length) return 0;
   let hits = 0;
   for (const t of d) if (q.has(t)) hits++;
-  return hits / Math.sqrt(d.length || 1);
+  return hits / Math.sqrt(d.length);
 }
 
 export function loadDocs() {
+  if (!fs.existsSync(KB_DIR)) return [];
   const files = fs.readdirSync(KB_DIR).filter(f => f.endsWith('.md'));
   return files.map(f => ({
-    title: f.replace('.md', ''),
+    id: f,
+    title: f.replace(/\.md$/i, ''),
     content: fs.readFileSync(path.join(KB_DIR, f), 'utf8'),
   }));
 }
 
 export function retrieve(query: string, topK = 3) {
+  if (!query.trim()) return [];
   return loadDocs()
     .map(d => ({ ...d, _score: score(query, d.content) }))
     .sort((a, b) => b._score - a._score)
@@ -169,9 +175,15 @@ import { kbRetrieveTool } from '../../tools/kb-retrieve';
 
 export const knowledgeAgent = new Agent({
   name: 'knowledge',
-  instructions: `You are a precise knowledge agent.\nAlways call kb-retrieve first for context. If docs lack answer say: "I don't have that in my notes."`,
+  instructions: [
+    'You are a precise knowledge agent for product docs.',
+    'Always call the kb-retrieve tool first to gather context before answering.',
+    'If the docs do not contain the answer respond exactly: "I\'t have that in my notes."',
+    'Answer succinctly. Provide a Sources list if any docs were used.'
+  ].join('\n'),
   model: openai('gpt-4o-mini'),
-  tools: { 'kb-retrieve': kbRetrieveTool }
+  tools: { 'kb-retrieve': kbRetrieveTool },
+  // temperature or other model params can be added here if supported
 });
 ```
 
@@ -187,10 +199,18 @@ export const knowledgeAgent = new Agent({
 ```ts
 import { Mastra } from '@mastra/core/mastra';
 import { knowledgeAgent } from '../agents/knowledge/agent';
+// (Optional) retain scaffolded weather agent if it still exists
+// import { weatherAgent } from '../agents/weather-agent';
 
 export const mastra = new Mastra({
-  agents: { knowledge: knowledgeAgent }
+  agents: {
+    knowledge: knowledgeAgent,
+    // weather: weatherAgent, // uncomment if keeping the scaffold example
+  },
 });
+
+// Some tooling prefers a default export; keeping both is safe.
+export default mastra;
 ```
 
 > Key name `knowledge` defines the REST path: `/api/agents/knowledge/*`. The CLI resolves this file at `src/mastra/index.(ts|js)`.
@@ -362,7 +382,7 @@ curl -s http://localhost:4111/api/agents/knowledge/generate \
 
 ## Troubleshooting
 
-- **Agent not found**: Check `agents` map in `mastra.ts`.
+- **Agent not found**: Verify `src/mastra/index.ts` exists, the `agents` map includes `knowledge`, then restart (`CTRL+C` + `npx mastra dev`). If you added the file after first run, remove `.mastra/output` to clear stale build.
 - **No sources returned**: Ensure tool id `kb-retrieve` is registered & docs exist in `src/kb`.
 - **Empty answers**: Add more docs or move to embeddings.
 - **Auth / 401**: Verify `OPENAI_API_KEY`.
