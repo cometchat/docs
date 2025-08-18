@@ -62,19 +62,25 @@ echo "OPENAI_API_KEY=sk-xxxxx" > .env
   </li>
   <li>
 
-**Project layout** (add folders shown below)
+**Project layout** (after `npx create-mastra@latest` + manual knowledge additions)
 
 ```
 my-mastra-app/
-  .env
+  .env                       # add OPENAI_API_KEY here
+  package.json
+  tsconfig.json
+  mastra.config.ts           # global Mastra configuration (env, logging, etc.)
   src/
-    server.ts
+    mastra.ts                # exports new Mastra({ agents, tools, ... }) instance
+    server.ts                # Express bootstrap (chosen during init)
     agents/
       knowledge/
-        index.ts
-        config.ts
-        retriever.ts        # added later (RAG-lite)
-    kb/                     # your docs live here
+        config.ts            # agent name/system/model config
+        index.ts             # express router (generate endpoint)
+        retriever.ts         # added later (RAG-lite retrieval)
+    tools/                   # (optional) generic tools live here
+    workflows/               # (optional) multi-step orchestrations
+    kb/                      # your markdown docs (knowledge base)
       getting-started.md
       pricing.md
 ```
@@ -84,70 +90,95 @@ my-mastra-app/
 
 ## Create the Agent
 
-Create **`src/agents/knowledge/config.ts`**:
+Instead of a custom Express router, define a Mastra Agent and register it in `mastra.ts`.
+
+Create **`src/agents/knowledge/agent.ts`**:
 
 ```ts
-export const knowledgeAgent = {
-  name: "knowledge",
-  system: `
-You are a precise knowledge agent for our product.
-If unsure or out-of-scope, say: "I don't have that in my notes."
-Keep answers concise and cite doc titles when possible.
-`.trim(),
-  model: { provider: "openai", name: "gpt-4o-mini" },
-};
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
+
+export const knowledgeAgent = new Agent({
+  name: 'knowledge',
+  instructions: `You are a precise knowledge agent for our product.\nIf unsure or out-of-scope, reply: "I don't have that in my notes."\nCite doc titles concisely when possible.`,
+  model: openai('gpt-4o-mini')
+});
 ```
 
-Create **`src/agents/knowledge/index.ts`**:
+Add a lightweight retrieval utility (RAG‑lite) as **`src/agents/knowledge/retriever.ts`** (same as earlier, kept below – unchanged) and a helper tool the agent can invoke.
+
+Create **`src/tools/kb-retrieve.ts`**:
 
 ```ts
-import { Router } from "express";
-import OpenAI from "openai";
-import { knowledgeAgent as cfg } from "./config";
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+import { retrieve } from '../agents/knowledge/retriever';
 
-export function mountKnowledgeAgent() {
-  const router = Router();
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-  router.post("/generate", async (req, res) => {
-    try {
-      const messages = req.body?.messages ?? [];
-      const completion = await openai.chat.completions.create({
-        model: cfg.model.name,
-        messages: [
-          { role: "system", content: cfg.system },
-          ...messages,
-        ],
-      });
-      res.json({
-        reply: completion.choices[0]?.message?.content ?? "",
-        meta: { agent: cfg.name, model: cfg.model.name },
-      });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  return { basePath: `/api/agents/${cfg.name}`, router };
-}
+export const kbRetrieveTool = createTool({
+  id: 'kb-retrieve',
+  description: 'Return top matching knowledge base markdown docs.',
+  inputSchema: z.object({ query: z.string().min(1) }),
+  outputSchema: z.object({
+    sources: z.array(z.object({ title: z.string(), content: z.string() }))
+  }),
+  execute: async ({ context }) => {
+    const docs = retrieve(context.query, 3);
+    return { sources: docs };
+  }
+});
 ```
 
-Create **`src/server.ts`**:
+Update **`src/agents/knowledge/agent.ts`** to include the tool:
 
 ```ts
-import express from "express";
-import bodyParser from "body-parser";
-import { mountKnowledgeAgent } from "./agents/knowledge";
+// ...existing imports...
+import { kbRetrieveTool } from '../../tools/kb-retrieve';
+
+export const knowledgeAgent = new Agent({
+  name: 'knowledge',
+  instructions: `You are a precise knowledge agent for our product.\nAlways call kb-retrieve first to gather context before answering.\nIf docs lack the answer say: "I don't have that in my notes."`,
+  model: openai('gpt-4o-mini'),
+  tools: { 'kb-retrieve': kbRetrieveTool }
+});
+```
+
+Create **`src/mastra.ts`**:
+
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { knowledgeAgent } from './agents/knowledge/agent';
+
+export const mastra = new Mastra({
+  agents: { knowledge: knowledgeAgent }
+});
+```
+
+Create **`src/server.ts`** (Express runner calling the agent via Mastra):
+
+```ts
+import express from 'express';
+import bodyParser from 'body-parser';
+import { mastra } from './mastra';
 
 const app = express();
 app.use(bodyParser.json());
 
-const knowledge = mountKnowledgeAgent();
-app.use(knowledge.basePath, knowledge.router);
+app.post('/api/agents/knowledge/generate', async (req, res) => {
+  try {
+    const { messages = [] } = req.body || {};
+    // Call the Mastra agent (tool usage decided automatically by model)
+    const result = await mastra.agents.knowledge.respond({ messages });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-const PORT = process.env.PORT ?? 4111;
+const PORT = process.env.PORT || 4111;
 app.listen(PORT, () => console.log(`Mastra API running on :${PORT}`));
 ```
+
+> During development you can also run `npx mastra dev` which spins up a similar API automatically.
 
 **Run**
 
@@ -211,7 +242,27 @@ export function retrieve(query: string, topK = 3) {
 }
 ```
 
-Update **`src/agents/knowledge/index.ts`** to inject context:
+Update **`src/tools/kb-retrieve.ts`** or the retriever logic if you need embeddings later; for now the earlier simple tokenizer stays.
+
+If you prefer NOT to rely on the model to choose the retrieval tool, you can orchestrate manually before calling `respond`:
+
+```ts
+// Manual orchestration example (optional)
+const docs = retrieve(userQuery, 3);
+const systemAugment = `Docs:\n${docs.map(d=>`### ${d.title}\n${d.content}`).join('\n\n---\n\n')}`;
+const result = await mastra.agents.knowledge.respond({
+  messages: [
+    { role: 'system', content: systemAugment },
+    ...messages
+  ]
+});
+```
+
+Previous inlined router-based retrieval example (kept here for reference) can be removed once you adopt the tool flow.
+
+<Callout>
+The retrieval tool keeps the agent stateless and transparent. You can log tool calls and later swap in a vector DB without changing the agent wiring.
+</Callout>
 
 ```ts
 import { Router } from "express";
