@@ -1,6 +1,6 @@
 ---
-title: "Build a Knowledge Agent with Mastra"
-description: "Create a Mastra agent that answers questions from your docs, test it locally, and connect it to CometChat."
+title: "Build Your Knowledge Agent with Mastra"
+description: "Create a Mastra agent that retrieves answers from local markdown docs (RAG‑lite), test it, deploy it, and connect it to CometChat."
 canonical: "https://www.cometchat.com/docs/ai-agents/mastra-knowledge-agent"
 ---
 
@@ -29,86 +29,100 @@ This guide mirrors the **Chef Agent** walkthrough and swaps the domain for **kno
     - Connect the agent in the dashboard using Agent ID + Deployment URL.
     - Use in 1:1 or group chats.
   </Card>
-</CardGroup>
+ </CardGroup>
+---
 
-## Prerequisites
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
+</h3>
 
-- Node.js 18+
-- An OpenAI API key stored as `OPENAI_API_KEY` in `.env`
-- Mastra CLI (installed by the init script below)
-- Optional: CometChat app (connect later)
-
-## Run the Agent
+## Create Project & Docs (RAG-lite Base)
 
 <Steps>
-  <li>
-
-**Create a new Mastra app**
-
-```bash
-npx create-mastra@latest
-```
-
-  - Follow prompts to name your app (e.g., `my-mastra-app`).
-  - Choose **Express** as the backend framework.
-  - Select **OpenAI** as the AI provider.
-
-```bash
-cd my-mastra-app
-npm i openai
-echo "OPENAI_API_KEY=sk-xxxxx" > .env
-```
-
-  </li>
-  <li>
-
-**Project layout** (after `npx create-mastra@latest` + manual knowledge additions)
-
-```
-my-mastra-app/
-  .env                       # add OPENAI_API_KEY here
-  package.json
-  tsconfig.json
-  mastra.config.ts           # global Mastra configuration (env, logging, etc.)
-  src/
-    mastra.ts                # exports new Mastra({ agents, tools, ... }) instance
-    server.ts                # Express bootstrap (chosen during init)
-    agents/
-      knowledge/
-        config.ts            # agent name/system/model config
-        index.ts             # express router (generate endpoint)
-        retriever.ts         # added later (RAG-lite retrieval)
-    tools/                   # (optional) generic tools live here
-    workflows/               # (optional) multi-step orchestrations
-    kb/                      # your markdown docs (knowledge base)
-      getting-started.md
-      pricing.md
-```
-
-  </li>
+  <Step title="Scaffold app">Run <code>npx create-mastra@latest</code> and choose Express + OpenAI.</Step>
+  <Step title="Set env">Add <code>OPENAI_API_KEY</code> to <code>.env</code>.</Step>
+  <Step title="Add kb docs">Create <code>src/kb/</code> and add markdown files.</Step>
+  <Step title="Review layout">Confirm generated structure matches below.</Step>
 </Steps>
 
-## Create the Agent
-
-Instead of a custom Express router, define a Mastra Agent and register it in `mastra.ts`.
-
-Create **`src/agents/knowledge/agent.ts`**:
-
-```ts
-import { Agent } from '@mastra/core/agent';
-import { openai } from '@ai-sdk/openai';
-
-export const knowledgeAgent = new Agent({
-  name: 'knowledge',
-  instructions: `You are a precise knowledge agent for our product.\nIf unsure or out-of-scope, reply: "I don't have that in my notes."\nCite doc titles concisely when possible.`,
-  model: openai('gpt-4o-mini')
-});
+Project layout (condensed):
+```txt
+my-mastra-app/
+  .env
+  mastra.config.ts
+  src/
+    mastra.ts
+    server.ts
+    agents/knowledge/
+      agent.ts
+      retriever.ts        # retrieval utility (add)
+    tools/
+      kb-retrieve.ts      # retrieval tool (add)
+    kb/
+      pricing.md
+      getting-started.md
 ```
 
-Add a lightweight retrieval utility (RAG‑lite) as **`src/agents/knowledge/retriever.ts`** (same as earlier, kept below – unchanged) and a helper tool the agent can invoke.
+Example doc `src/kb/pricing.md`:
+```md
+## Pricing
+- Free: 100 chats/month
+- Pro: 10,000 chats/month, priority support, webhooks
+- Enterprise: Custom plan with SSO and SLA
+```
 
-Create **`src/tools/kb-retrieve.ts`**:
+---
 
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
+</h3>
+
+## Create Retrieval Utility
+
+Create **`src/agents/knowledge/retriever.ts`**:
+```ts
+import fs from 'fs';
+import path from 'path';
+
+const KB_DIR = path.join(__dirname, '../../kb');
+
+function tokens(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+}
+function score(query: string, doc: string) {
+  const q = new Set(tokens(query));
+  const d = tokens(doc);
+  let hits = 0;
+  for (const t of d) if (q.has(t)) hits++;
+  return hits / Math.sqrt(d.length || 1);
+}
+
+export function loadDocs() {
+  const files = fs.readdirSync(KB_DIR).filter(f => f.endsWith('.md'));
+  return files.map(f => ({
+    title: f.replace('.md', ''),
+    content: fs.readFileSync(path.join(KB_DIR, f), 'utf8'),
+  }));
+}
+
+export function retrieve(query: string, topK = 3) {
+  return loadDocs()
+    .map(d => ({ ...d, _score: score(query, d.content) }))
+    .sort((a, b) => b._score - a._score)
+    .slice(0, topK)
+    .map(({ title, content }) => ({ title, content }));
+}
+```
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
+</h3>
+
+## Create Retrieval Tool
+
+**`src/tools/kb-retrieve.ts`**:
 ```ts
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
@@ -128,22 +142,37 @@ export const kbRetrieveTool = createTool({
 });
 ```
 
-Update **`src/agents/knowledge/agent.ts`** to include the tool:
+---
 
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
+</h3>
+
+## Create the Agent
+
+**`src/agents/knowledge/agent.ts`**:
 ```ts
-// ...existing imports...
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
 import { kbRetrieveTool } from '../../tools/kb-retrieve';
 
 export const knowledgeAgent = new Agent({
   name: 'knowledge',
-  instructions: `You are a precise knowledge agent for our product.\nAlways call kb-retrieve first to gather context before answering.\nIf docs lack the answer say: "I don't have that in my notes."`,
+  instructions: `You are a precise knowledge agent.\nAlways call kb-retrieve first for context. If docs lack answer say: "I don't have that in my notes."`,
   model: openai('gpt-4o-mini'),
   tools: { 'kb-retrieve': kbRetrieveTool }
 });
 ```
 
-Create **`src/mastra.ts`**:
+---
 
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5</span>
+</h3>
+
+## Register the Agent in Mastra
+
+**`src/mastra.ts`**:
 ```ts
 import { Mastra } from '@mastra/core/mastra';
 import { knowledgeAgent } from './agents/knowledge/agent';
@@ -153,8 +182,17 @@ export const mastra = new Mastra({
 });
 ```
 
-Create **`src/server.ts`** (Express runner calling the agent via Mastra):
+> Key name `knowledge` defines the REST path: `/api/agents/knowledge/*`.
 
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 6</span>
+</h3>
+
+## Run the Agent
+
+**`src/server.ts`**:
 ```ts
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -166,7 +204,6 @@ app.use(bodyParser.json());
 app.post('/api/agents/knowledge/generate', async (req, res) => {
   try {
     const { messages = [] } = req.body || {};
-    // Call the Mastra agent (tool usage decided automatically by model)
     const result = await mastra.agents.knowledge.respond({ messages });
     res.json(result);
   } catch (e: any) {
@@ -178,34 +215,155 @@ const PORT = process.env.PORT || 4111;
 app.listen(PORT, () => console.log(`Mastra API running on :${PORT}`));
 ```
 
-> During development you can also run `npx mastra dev` which spins up a similar API automatically.
+Run & ping:
+```bash
+npx mastra dev
+curl -s http://localhost:4111/api/agents/knowledge/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"What’s included in pricing?"}]}' | jq .
+```
 
-**Run**
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 7</span>
+</h3>
+
+## Deploy & Production
+
+<AccordionGroup>
+  <Accordion title="Ping test">
+```bash
+curl -X POST http://localhost:4111/api/agents/knowledge/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"ping"}]}'
+```
+  </Accordion>
+  <Accordion title="Temporary public tunnel">
+```bash
+ngrok http 4111
+cloudflared tunnel --url http://localhost:4111
+loca.lt --port 4111
+```
+Append <code>/api/agents/knowledge/generate</code> and copy the HTTPS URL into the Dashboard.
+  </Accordion>
+  <Accordion title="Vercel serverless example (TypeScript)">
+```ts
+// api/agents/knowledge/generate.ts
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { knowledgeAgent } from '../../../src/agents/knowledge/agent';
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  try {
+    const { messages } = req.body || {};
+    const result = await knowledgeAgent.respond({ messages });
+    return res.status(200).json(result);
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message || 'Agent error' });
+  }
+}
+```
+  </Accordion>
+  <Accordion title="Production patterns">
+    <ul>
+      <li><b>Serverless:</b> One lightweight function per agent.</li>
+      <li><b>Container:</b> Long‑lived process; add health checks & logging.</li>
+      <li><b>Edge:</b> Keep retrieval tool stateless; externalize persistence.</li>
+    </ul>
+  </Accordion>
+  <Accordion title="Security essentials">
+    <ul>
+      <li>Rate‑limit (per IP + user).</li>
+      <li>Add auth (Bearer/JWT) for non-public usage.</li>
+      <li>Log tool calls (name, duration, success/error).</li>
+    </ul>
+  </Accordion>
+  <Accordion title="CometChat mapping">
+    Deployment URL = public HTTPS endpoint + <code>/api/agents/knowledge/generate</code>. Mastra Agent ID = <code>knowledge</code>.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 8</span>
+</h3>
+
+## Configure in CometChat 
+<Steps>
+  <Step title="Open Dashboard">Open the <a href="https://app.cometchat.com/" target="_blank" rel="noreferrer">CometChat Dashboard</a>.</Step>
+  <Step title="Navigate">App → <b>AI Agents</b>.</Step>
+  <Step title="Add agent">Provider=Mastra, Agent ID=<code>knowledge</code>, Deployment URL=public generate endpoint.</Step>
+  <Step title="(Optional) Enhancements">Add greeting & starter prompts.</Step>
+  <Step title="Enable">Save and ensure status is <b>Enabled</b>.</Step>
+</Steps>
+
+---
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 9</span>
+</h3>
+
+## Customize in Chat Builder
+<Steps>
+  <Step title="Open variant">From <b>AI Agents</b> click the variant (or Get Started).</Step>
+  <Step title="Customize & Deploy">Select <b>Customize and Deploy</b>.</Step>
+  <Step title="Adjust settings">Theme, layout, features; ensure the knowledge agent is attached.</Step>
+  <Step title="Preview">Validate responses & sources display.</Step>
+</Steps>
+
+<Frame>
+  <img src="/images/ai-agent-chat-builder-preview.png" />
+</Frame>
+
+---
+
+## Integrate
+
+Use the widget or UI kit. Display sources as reference chips.
+
+<CardGroup>
+  <Card title="Widget" href="/widget/ai-agents" icon="/images/icons/ai-agents.svg" description="Embed quickly with script" />
+</CardGroup>
+
+> The configured Mastra agent is already bundled—users can query it immediately.
+
+---
+
+## Test Your Setup
+
+<Steps>
+  <Step title="API responds">`/api/agents/knowledge/generate` returns an answer.</Step>
+  <Step title="Tool invoked">Sources array present (tool executed).</Step>
+  <Step title="Fallback phrase">Out-of-scope query returns: "I don't have that in my notes."</Step>
+  <Step title="CometChat reply">Agent responds inside widget / chat builder variant.</Step>
+</Steps>
 
 ```bash
-npm run dev   # or: ts-node src/server.ts / node dist/server.js
+curl -s http://localhost:4111/api/agents/knowledge/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"What does Pro include?"}]}' | jq .
 ```
 
-**Test**
+---
 
-```bash
-curl -s http://localhost:4111/api/agents/knowledge/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"What’s included in pricing?"}]}' | jq .
-```
+## Troubleshooting
 
-You should receive a short, model-only answer. Next, you’ll ground responses in your docs.
+- **Agent not found**: Check `agents` map in `mastra.ts`.
+- **No sources returned**: Ensure tool id `kb-retrieve` is registered & docs exist in `src/kb`.
+- **Empty answers**: Add more docs or move to embeddings.
+- **Auth / 401**: Verify `OPENAI_API_KEY`.
 
-## Create the Tools
+---
 
-Place some docs in **`src/kb/*.md`**. Example: **`src/kb/pricing.md`**
+## Next Steps
 
-```md
-## Pricing
-- Free: 100 chats/month
-- Pro: 10,000 chats/month, priority support, webhooks
-- Enterprise: Custom plan with SSO and SLA
-```
-
-Create **`src/agents/knowledge/retriever.ts`**:
+- Swap retrieval for embeddings + vector DB (Pinecone, pgvector, LanceDB).
+- Add guardrails / evals for hallucination reduction.
+- Introduce additional tools (search, analytics) or workflows.
+- Implement caching layer for frequent queries.
+ - Implement caching layer for frequent queries.
 
 ```ts
 import fs from "fs";
@@ -242,26 +400,8 @@ export function retrieve(query: string, topK = 3) {
 }
 ```
 
-Update **`src/tools/kb-retrieve.ts`** or the retriever logic if you need embeddings later; for now the earlier simple tokenizer stays.
-
-If you prefer NOT to rely on the model to choose the retrieval tool, you can orchestrate manually before calling `respond`:
-
-```ts
-// Manual orchestration example (optional)
-const docs = retrieve(userQuery, 3);
-const systemAugment = `Docs:\n${docs.map(d=>`### ${d.title}\n${d.content}`).join('\n\n---\n\n')}`;
-const result = await mastra.agents.knowledge.respond({
-  messages: [
-    { role: 'system', content: systemAugment },
-    ...messages
-  ]
-});
-```
-
-Previous inlined router-based retrieval example (kept here for reference) can be removed once you adopt the tool flow.
-
 <Callout>
-The retrieval tool keeps the agent stateless and transparent. You can log tool calls and later swap in a vector DB without changing the agent wiring.
+Retrieval approach is intentionally simple—swap in vector search later without changing the agent or CometChat integration flow.
 </Callout>
 
 ```ts
