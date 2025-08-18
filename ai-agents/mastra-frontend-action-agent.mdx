@@ -1,0 +1,180 @@
+---
+title: "Build Your Frontend Action Agent with Mastra"
+description: "Follow these steps to create a Frontend Action Agent in Mastra that emits JSON actions (navigate, open modal, toggle theme) which your UI can safely execute."
+---
+
+Imagine a virtual assistant living inside your app that doesn’t just chat—it **controls your UI**. Ask it to “open settings,” “take me to billing,” or “switch to dark mode,” and it responds with structured JSON actions for your frontend dispatcher.
+
+***
+
+## What You’ll Build
+
+* A **Mastra agent** that outputs structured JSON actions.  
+* **Dispatcher logic** in your frontend to safely execute those actions.  
+* A deployable agent available via Mastra’s API.  
+* Optional integration into **CometChat**, so users can trigger UI actions from chat.  
+
+***
+
+## Prerequisites
+
+* A Mastra project (`npx mastra init my-app`).  
+* Node.js installed.  
+* OpenAI API key in `.env` as `OPENAI_API_KEY`.  
+* A frontend app (React/Next.js works well) to wire the dispatcher.  
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
+</h3>
+
+## Create the Agent
+
+**`src/agents/frontend-action-agent.ts`**:
+
+```ts
+import { openai } from '@ai-sdk/openai';
+import { Agent } from '@mastra/core/agent';
+
+export const frontendActionAgent = new Agent({
+  name: 'Frontend Action Agent',
+  instructions: `
+You are a UI Action Agent.
+Always respond with JSON only. Never output natural language.
+Schema:
+{
+  "type": "navigate" | "openModal" | "toggleTheme",
+  "to"?: string,
+  "id"?: string
+}
+Examples:
+{"type":"navigate","to":"/billing"}
+{"type":"openModal","id":"invite"}
+{"type":"toggleTheme"}
+  `,
+  model: openai('gpt-4o-mini'),
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
+</h3>
+
+## Register the Agent in Mastra
+
+**`src/mastra/index.ts`**:
+
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { PinoLogger } from '@mastra/loggers';
+import { LibSQLStore } from '@mastra/libsql';
+
+import { frontendActionAgent } from '../agents/frontend-action-agent';
+
+export const mastra = new Mastra({
+  agents: { 'frontend-action': frontendActionAgent }, // API path: /api/agents/frontend-action/*
+  storage: new LibSQLStore({ url: 'file:../mastra.db' }),
+  logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
+</h3>
+
+## Run the Agent
+
+```bash
+rm -rf .mastra/output
+npx mastra dev
+```
+
+You should see:
+
+```
+Mastra API running on port http://localhost:4111/api
+```
+
+Test it locally:
+
+```bash
+curl -X POST http://localhost:4111/api/agents/frontend-action/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"Take me to billing"}]}'
+```
+
+Expected output:
+
+```json
+{ "type": "navigate", "to": "/billing" }
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
+</h3>
+
+## Add a Frontend Dispatcher
+
+**`src/agentDispatcher.ts`**:
+
+```ts
+type Action =
+  | { type: "navigate"; to: string }
+  | { type: "openModal"; id: string }
+  | { type: "toggleTheme" };
+
+export function dispatchAction(action: Action) {
+  switch (action.type) {
+    case "navigate":
+      window.location.href = action.to;
+      break;
+    case "openModal":
+      document.dispatchEvent(new CustomEvent("open-modal", { detail: { id: action.id } }));
+      break;
+    case "toggleTheme":
+      document.body.classList.toggle("dark");
+      break;
+    default:
+      console.warn("Unknown action", action);
+  }
+}
+```
+
+Now your frontend can safely interpret agent responses.
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5</span>
+</h3>
+
+## Deploy & Connect
+
+* Deploy the API (`/api/agents/frontend-action/generate`) using Render, Railway, Vercel, or any host.  
+* In **CometChat Dashboard → AI Agents**, create an agent with:  
+  * **Provider**: Mastra  
+  * **Agent ID**: `frontend-action`  
+  * **Deployment URL**: public endpoint from your host  
+
+Now users in chat can type “open invite modal” and your app runs `dispatchAction({type:"openModal",id:"invite"})`.
+
+***
+
+## Troubleshooting
+
+* **Agent outputs text instead of JSON**: Ensure the system prompt forbids natural language, and set `response_format: { type: "json_object" }`.  
+* **Frontend crashes**: Validate JSON before executing; add a safe default case.  
+* **Security**: Only allow whitelisted actions. Never execute arbitrary JSON.  
+
+***
+
+## Next Steps
+
+* Add more action types (e.g., play video, refresh data).  
+* Combine with Knowledge Agent (Agent 1) so it can both answer and act.  
+* Add guardrails with Zod schemas for strong JSON validation.  

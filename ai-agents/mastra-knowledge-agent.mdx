@@ -1,0 +1,324 @@
+---
+title: "Build a Knowledge Agent with Mastra"
+description: "Create a Mastra agent that answers questions from your docs, test it locally, and connect it to CometChat."
+canonical: "https://www.cometchat.com/docs/ai-agents/mastra-knowledge-agent"
+---
+
+
+# Build Your Knowledge Agent with Mastra
+
+Turn your product docs into a friendly chat teammate. This guide mirrors the Chef Agent format: you’ll start with a minimal OpenAI-only agent, add a lightweight knowledge tool (RAG‑lite) to read your Markdown docs, then connect the agent to CometChat.
+
+---
+
+import { Card, CardGroup, Callout, Steps, Tabs, Tab, Columns, Accordion, AccordionGroup, Icon } from 'mintlify';
+
+<Callout>
+This guide mirrors the **Chef Agent** walkthrough and swaps the domain for **knowledge retrieval**. You’ll build a minimal agent first, then add doc-based retrieval (RAG-lite), and finally connect it to **CometChat**.
+</Callout>
+
+## What You’ll Build
+
+<CardGroup>
+  <Card title="Mastra Agent" icon="/images/icons/mastra.svg">
+    - A small agent powered by OpenAI.
+    - Answers questions with short, accurate responses.
+  </Card>
+  <Card title="RAG-lite Retrieval">
+    - Read local Markdown files as your knowledge base.
+    - Return answers with a source list.
+  </Card>
+  <Card title="CometChat Integration" icon="/images/icons/ai-agents.svg">
+    - Connect the agent in the dashboard using Agent ID + Deployment URL.
+    - Use in 1:1 or group chats.
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+- Node.js 18+
+- An OpenAI API key stored as `OPENAI_API_KEY` in `.env`
+- Mastra CLI (installed by the init script below)
+- Optional: CometChat app (connect later)
+
+## Run the Agent
+
+<Steps>
+  <li>
+
+**Create a new Mastra app**
+
+```bash
+npx create-mastra@latest
+```
+
+  - Follow prompts to name your app (e.g., `my-mastra-app`).
+  - Choose **Express** as the backend framework.
+  - Select **OpenAI** as the AI provider.
+
+```bash
+cd my-mastra-app
+npm i openai
+echo "OPENAI_API_KEY=sk-xxxxx" > .env
+```
+
+  </li>
+  <li>
+
+**Project layout** (add folders shown below)
+
+```
+my-mastra-app/
+  .env
+  src/
+    server.ts
+    agents/
+      knowledge/
+        index.ts
+        config.ts
+        retriever.ts        # added later (RAG-lite)
+    kb/                     # your docs live here
+      getting-started.md
+      pricing.md
+```
+
+  </li>
+</Steps>
+
+## Create the Agent
+
+Create **`src/agents/knowledge/config.ts`**:
+
+```ts
+export const knowledgeAgent = {
+  name: "knowledge",
+  system: `
+You are a precise knowledge agent for our product.
+If unsure or out-of-scope, say: "I don't have that in my notes."
+Keep answers concise and cite doc titles when possible.
+`.trim(),
+  model: { provider: "openai", name: "gpt-4o-mini" },
+};
+```
+
+Create **`src/agents/knowledge/index.ts`**:
+
+```ts
+import { Router } from "express";
+import OpenAI from "openai";
+import { knowledgeAgent as cfg } from "./config";
+
+export function mountKnowledgeAgent() {
+  const router = Router();
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  router.post("/generate", async (req, res) => {
+    try {
+      const messages = req.body?.messages ?? [];
+      const completion = await openai.chat.completions.create({
+        model: cfg.model.name,
+        messages: [
+          { role: "system", content: cfg.system },
+          ...messages,
+        ],
+      });
+      res.json({
+        reply: completion.choices[0]?.message?.content ?? "",
+        meta: { agent: cfg.name, model: cfg.model.name },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  return { basePath: `/api/agents/${cfg.name}`, router };
+}
+```
+
+Create **`src/server.ts`**:
+
+```ts
+import express from "express";
+import bodyParser from "body-parser";
+import { mountKnowledgeAgent } from "./agents/knowledge";
+
+const app = express();
+app.use(bodyParser.json());
+
+const knowledge = mountKnowledgeAgent();
+app.use(knowledge.basePath, knowledge.router);
+
+const PORT = process.env.PORT ?? 4111;
+app.listen(PORT, () => console.log(`Mastra API running on :${PORT}`));
+```
+
+**Run**
+
+```bash
+npm run dev   # or: ts-node src/server.ts / node dist/server.js
+```
+
+**Test**
+
+```bash
+curl -s http://localhost:4111/api/agents/knowledge/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"What’s included in pricing?"}]}' | jq .
+```
+
+You should receive a short, model-only answer. Next, you’ll ground responses in your docs.
+
+## Create the Tools
+
+Place some docs in **`src/kb/*.md`**. Example: **`src/kb/pricing.md`**
+
+```md
+## Pricing
+- Free: 100 chats/month
+- Pro: 10,000 chats/month, priority support, webhooks
+- Enterprise: Custom plan with SSO and SLA
+```
+
+Create **`src/agents/knowledge/retriever.ts`**:
+
+```ts
+import fs from "fs";
+import path from "path";
+
+const KB_DIR = path.join(__dirname, "../../kb");
+
+function tokens(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+}
+function score(query: string, doc: string) {
+  const q = new Set(tokens(query));
+  const d = tokens(doc);
+  let hits = 0;
+  for (const t of d) if (q.has(t)) hits++;
+  return hits / Math.sqrt(d.length || 1);
+}
+
+export function loadDocs() {
+  const files = fs.readdirSync(KB_DIR).filter(f => f.endsWith(".md"));
+  return files.map(f => ({
+    title: f.replace(".md", ""),
+    content: fs.readFileSync(path.join(KB_DIR, f), "utf8"),
+  }));
+}
+
+export function retrieve(query: string, topK = 3) {
+  const docs = loadDocs();
+  return docs
+    .map(d => ({ ...d, _score: score(query, d.content) }))
+    .sort((a, b) => b._score - a._score)
+    .slice(0, topK)
+    .map(({ title, content }) => ({ title, content }));
+}
+```
+
+Update **`src/agents/knowledge/index.ts`** to inject context:
+
+```ts
+import { Router } from "express";
+import OpenAI from "openai";
+import { knowledgeAgent as cfg } from "./config";
+import { retrieve } from "./retriever";
+
+export function mountKnowledgeAgent() {
+  const router = Router();
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  router.post("/generate", async (req, res) => {
+    try {
+      const messages = req.body?.messages ?? [];
+      const lastUser = [...messages].reverse().find(m => m.role === "user");
+      const query = lastUser?.content ?? "";
+
+      const top = retrieve(query, 3);
+      const context = top.map(d => `### ${d.title}\n${d.content}`).join("\n\n---\n\n");
+
+      const completion = await openai.chat.completions.create({
+        model: cfg.model.name,
+        messages: [
+          { role: "system", content: cfg.system },
+          { role: "system", content: `Use ONLY the docs below. If missing, say "I don't have that in my notes."\n\n${context}` },
+          ...messages,
+        ],
+      });
+
+      res.json({
+        reply: completion.choices[0]?.message?.content ?? "",
+        sources: top.map(d => d.title),
+        meta: { agent: cfg.name, model: cfg.model.name },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  return { basePath: `/api/agents/${cfg.name}`, router };
+}
+```
+
+**Test with retrieval**
+
+```bash
+curl -s http://localhost:4111/api/agents/knowledge/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"What does Pro include?"}]}' | jq .
+```
+
+Expected: an answer citing the **pricing** doc and a `sources` array like `["pricing"]`.
+
+<Callout>
+This retriever is intentionally simple. Swap it later for Pinecone, Postgres + pgvector, LanceDB, or Elasticsearch. Keep the function signature `retrieve(query, topK)` and the API will remain stable.
+</Callout>
+
+## Deploy & Production
+
+<Columns cols={2}>
+  <Card title="Deploy the agent">
+    - Use your preferred host (Render, Fly.io, Railway, Vercel functions, etc.).  
+    - Ensure the `/api/agents/knowledge/generate` endpoint is public.  
+    - Keep `OPENAI_API_KEY` in server-side env only.
+  </Card>
+  <Card title="Connect in CometChat">
+    - Go to **CometChat Dashboard → AI Agents**.  
+    - Create/Select an agent and set **Provider: Mastra**.  
+    - Enter **Agent ID** and **Deployment URL** (your public base URL).  
+    - Save, then test in a 1:1 or group conversation.
+  </Card>
+</Columns>
+
+## Integrate
+
+- Show `sources` as inline chips or “References” links.
+- In group chats, allow mentions like `@knowledge What’s our Pro limit?`.
+- For safety, add a token/secret expected by your API and include it in CometChat’s outgoing hook.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="HTTP 404: Agent not found">
+    Ensure your server mounts the router at `/api/agents/knowledge`. Recheck `basePath`.
+  </Accordion>
+  <Accordion title="401 Unauthorized from OpenAI">
+    Verify `OPENAI_API_KEY` in `.env` and that your host exposes it to the runtime.
+  </Accordion>
+  <Accordion title="Empty or irrelevant answers">
+    Add more docs to `src/kb/`. For better ranking, move to embeddings + a vector DB.
+  </Accordion>
+  <Accordion title="CORS errors in browser calls">
+    Route calls through your backend or enable CORS for your domain on the server.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<Tabs>
+  <Tab title="Frontend Actions">
+    Teach the agent to emit JSON actions like `{type:"openModal", id:"invite"}` and execute via a client-side dispatcher (whitelisted).
+  </Tab>
+  <Tab title="Vector DB Retrieval">
+    Replace `retriever.ts` with embeddings + Pinecone/pgvector for semantic search and larger corpora.
+  </Tab>
+  <Tab title="Eval & Guardrails">
+    Add prompt tests, refusal patterns, and output validators (Zod) for structured responses.
+  </Tab>
+</Tabs>
