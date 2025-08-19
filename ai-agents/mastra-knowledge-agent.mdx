@@ -1,294 +1,292 @@
----
-title: "Build Your Knowledge Agent with Mastra"
-description: "Follow these steps to create a Knowledge Agent in Mastra that can answer from your docs (website + markdown), cite sources, and integrate into your app."
----
+# Mastra Knowledge Agent
 
-import { Steps, Step, AccordionGroup, Accordion, CardGroup, Card } from 'mintlify';
+A production-ready agent that answers questions grounded in your local
+documents. It ships with:
 
-Imagine a teammate who actually reads your docs. This guide shows how to build a **Mastra Knowledge Agent** that answers user questions using your documentation (public site + Markdown) and always cites its sources.
+-   **Ingestion tool** to convert PDFs/HTML/Text to markdown in
+    `knowledge/<namespace>`.
+-   **Lightweight retriever** that searches those markdown files.
+-   **Knowledge Agent** that cites sources and asks for new docs only
+    when nothing relevant is found.
+-   **HTTP endpoints** for ingestion and chat.
+-   **CometChat integration pattern** identical to Chef Agent.
 
----
+------------------------------------------------------------------------
 
-## What You’ll Build
+## 1) Quick Start
 
-- A **Mastra agent** that performs retrieval-augmented answers.
-- A **Docs Tool** that can crawl a site, load local Markdown, or both.
-- An HTTP endpoint (`/api/agents/knowledge/generate`).
-- A deployable agent configurable inside CometChat.
+### Prereqs
 
----
+-   Node 18+\
+-   `OPENAI_API_KEY` in `.env`
 
-## Prerequisites
-
-- A Mastra project (`npx create-mastra@latest knowledge-agent`).
-- Node.js installed.
-- OpenAI API key in `.env` as `OPENAI_API_KEY`.
-- Access to a docs website OR a folder of Markdown.
-
-> Scaffold note: `npx create-mastra@latest` currently generates a sample **weather** agent at `src/mastra/agents/weather-agent.ts` plus a tool & workflow under `src/mastra/tools` and `src/mastra/workflows`. In this guide you'll **replace** those with a knowledge agent. You can delete the weather files or keep them while adding the new ones.
-
----
-
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
-</h3>
-
-## Create the Docs Tool
-
-<Steps>
-  <Step title="Pick a source: website">
-  Use a public docs site (must be crawlable).
-  </Step>
-  <Step title="Pick a source: markdown folder">
-  Point at local exported docs.
-  </Step>
-  <Step title="Mix sources">
-  Combine website + local markdown.
-  </Step>
-</Steps>
-
-**`src/mastra/tools/docs-tool.ts`** (choose ONE of the `source` configurations; you can later switch to an array):
-```ts
-import { DocsTool } from '@mastra/tools-docs';
-
-// Single website crawl
-export const docsTool = new DocsTool({
-  source: 'https://docs.yourcompany.com',
-  options: {
-    maxDepth: 3,
-    include: ['**/*'],
-    exclude: ['**/blog/**', '**/changelog/**'],
-    chunk: { size: 800, overlap: 80 },
-  },
-});
-
-/*
-// Local markdown folder
-export const docsTool = new DocsTool({
-  source: './knowledge/**/*.md',
-  options: { chunk: { size: 700, overlap: 80 } },
-});
-
-// Mixed sources (site + folder)
-export const docsTool = new DocsTool({
-  source: [
-    'https://docs.yourcompany.com',
-    './knowledge/**/*.md',
-  ],
-  options: { maxDepth: 2, chunk: { size: 900, overlap: 100 } },
-});
-*/
+``` bash
+cp .env.example .env
+# edit .env and add OPENAI_API_KEY=sk-...
 ```
 
----
+### Install & Run
 
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
-</h3>
+``` bash
+pnpm i
+npx mastra dev
+# Playground: http://localhost:4111
+# Knowledge chat: http://localhost:4111/agents/knowledge/chat/new
+```
 
-## Create the Agent
+> The Playground chat page uses your registered `knowledge` agent.
 
-**`src/mastra/agents/knowledge-agent.ts`** (new file):
-```ts
+------------------------------------------------------------------------
+
+## 2) Project Layout
+
+``` text
+.
+├─ knowledge/
+│  ├─ default/
+│  └─ nasaMars/
+│     ├─ journey-to-mars-pdf.md
+│     ├─ mars-2020-concept-pdf.md
+│     └─ perseverance-facts-pdf.md
+└─ src/mastra/
+   ├─ index.ts                 # Mastra server + custom API routes
+   ├─ agents/
+   │  ├─ index.ts              # exports { knowledge: knowledgeAgent }
+   │  └─ knowledge-agent.ts    # the agent definition
+   └─ tools/
+      ├─ index.ts              # export * from './ingest-sources' & './docs-retriever'
+      ├─ ingest-sources.ts     # URLs & files -> markdown in knowledge/<namespace>
+      └─ docs-retriever.ts     # local RAG over markdown/txt
+```
+
+------------------------------------------------------------------------
+
+## 3) Agent
+
+``` ts
+// src/mastra/agents/knowledge-agent.ts
 import { openai } from '@ai-sdk/openai';
-import { Agent } from '@mastra/core/agent';
-import { docsTool } from '../tools/docs-tool'; // relative inside src/mastra
+import { Agent } from '@mastra/core';
+import { docsRetriever, ingestSources } from '../tools';
+
+const DEFAULT_NAMESPACE = 'nasaMars';
 
 export const knowledgeAgent = new Agent({
-  name: 'Knowledge Agent',
-  instructions: `You are a precise documentation assistant.\nAlways consult the docs tool first.\nProvide concise answers.\nAdd a final line: Sources: <list headings/URLs>.\nIf the answer is not in the docs, say so clearly.`,
-  model: openai('gpt-5'),
-  tools: { docs: docsTool },
+  name: 'knowledge',
+  instructions: `
+You are a precise documentation and research assistant.
+
+- Default namespace: "${DEFAULT_NAMESPACE}".
+- On every user question, call docsRetriever with this namespace and the user's query.
+- Ground your response strictly in retrieved snippets; keep answers concise.
+- End with bullet citations (filenames).
+- If zero relevant snippets are found, then ask the user to provide sources and call ingestSources with a namespace they choose.
+  `,
+  tools: { docsRetriever, ingestSources },
+  model: openai('gpt-4o'), // or 'gpt-5' if your key supports it
 });
 ```
 
----
+``` ts
+// src/mastra/agents/index.ts
+export { knowledgeAgent as knowledge } from './knowledge-agent';
+```
 
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
-</h3>
+------------------------------------------------------------------------
 
-## Register the Agent in Mastra
+## 4) Server & Routes
 
-**`src/mastra/index.ts`**:
-```ts
+``` ts
+// src/mastra/index.ts
 import { Mastra } from '@mastra/core/mastra';
 import { PinoLogger } from '@mastra/loggers';
 import { LibSQLStore } from '@mastra/libsql';
-
-import { knowledgeAgent } from './agents/knowledge-agent';
+import { knowledge } from './agents';
 
 export const mastra = new Mastra({
-  agents: { knowledge: knowledgeAgent }, // "knowledge" is the REST id
+  agents: { knowledge }, // <-- Agent key must be "knowledge"
   storage: new LibSQLStore({ url: 'file:../mastra.db' }),
   logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
+  server: {
+    build: { swaggerUI: true }, // http://localhost:4111/swagger-ui
+    apiRoutes: [
+      // Convert URLs or local file paths to markdown
+      {
+        method: 'POST',
+        path: '/api/tools/ingestSources',
+        handler: async (c) => {
+          const body = await c.req.json();
+          const { ingestSources } = await import('./tools/ingest-sources');
+          const result = await ingestSources.execute({
+            input: {
+              sources: body.sources ?? [],
+              files: body.files ?? [],
+              namespace: body.namespace ?? 'default',
+              allowInsecureTLS: !!body.allowInsecureTLS,
+            },
+          });
+          return c.json(result);
+        },
+      },
+      // Optional debug: ad-hoc doc search
+      {
+        method: 'POST',
+        path: '/api/tools/searchDocs',
+        handler: async (c) => {
+          const body = await c.req.json();
+          const { docsRetriever } = await import('./tools/docs-retriever');
+          const out = await docsRetriever.execute({
+            input: {
+              query: body.query,
+              namespace: body.namespace ?? 'default',
+              maxResults: body.maxResults ?? 5,
+            },
+          });
+          return c.json(out);
+        },
+      },
+    ],
+  },
 });
 ```
 
-> The **key** in `agents: { knowledge: knowledgeAgent }` determines the API path: `/api/agents/knowledge/*`.
+------------------------------------------------------------------------
 
----
+## 5) Ingestion
 
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
-</h3>
+### Option A --- Seed example NASA docs (optional)
 
-## Run the Agent
+``` bash
+mkdir -p knowledge/nasaMars/raw
 
-From your project root:
-```bash
-rm -rf .mastra/output
-npx mastra dev
-```
-You should see:
-```
-Mastra API running on port http://localhost:4111/api
-```
+curl -L -o knowledge/nasaMars/raw/journey-to-mars.pdf   https://www.nasa.gov/wp-content/uploads/2017/11/journey-to-mars-next-steps-20151008_508.pdf
+curl -L -o knowledge/nasaMars/raw/mars-2020-concept.pdf   https://www.nasa.gov/wp-content/uploads/2015/04/mission_concept_mars_2020.pdf
+curl -L -o knowledge/nasaMars/raw/perseverance-facts.pdf   https://mars.nasa.gov/files/mars2020/Mars2020_Fact_Sheet.pdf
 
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5</span>
-</h3>
-
-## Deploy & Production
-
-<AccordionGroup>
-  <Accordion title="Ping test">
-```bash
-curl -X POST http://localhost:4111/api/agents/knowledge/generate \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"ping"}]}'
-```
-  </Accordion>
-  <Accordion title="Temporary public tunnel">
-    <p>Use a tunnel to test the agent before full deployment:</p>
-```bash
-ngrok http 4111
-cloudflared tunnel --url http://localhost:4111
-loca.lt --port 4111
-```
-    <p>Append <code>/api/agents/knowledge/generate</code> and copy the HTTPS URL into the Dashboard.</p>
-  </Accordion>
-  <Accordion title="Vercel serverless example (TypeScript)">
-```ts
-// api/agents/knowledge/generate.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { knowledgeAgent } from '../../../src/mastra/agents/knowledge-agent';
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  try {
-    const { messages } = req.body || {};
-    const result = await knowledgeAgent.respond({ messages });
-    return res.status(200).json(result);
-  } catch (e: any) {
-    return res.status(500).json({ error: e.message || 'Agent error' });
-  }
-}
-```
-  </Accordion>
-  <Accordion title="Production patterns">
-    <ul>
-      <li><b>Serverless:</b> Lightweight function calling the agent.</li>
-      <li><b>Container:</b> Long‑lived process; add health checks & logging.</li>
-      <li><b>Edge:</b> Keep retrieval stateless; externalize persistence.</li>
-    </ul>
-  </Accordion>
-  <Accordion title="Security essentials">
-    <ul>
-      <li>Rate‑limit (per IP + user).</li>
-      <li>Add auth (Bearer/JWT) for non-public usage.</li>
-      <li>Log tool calls (query, passages, latency).</li>
-    </ul>
-  </Accordion>
-  <Accordion title="CometChat mapping">
-    Deployment URL = public HTTPS endpoint + <code>/api/agents/knowledge/generate</code>. Mastra Agent ID = <code>knowledge</code>.
-  </Accordion>
-</AccordionGroup>
-
----
-
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 6</span>
-</h3>
-
-## Configure in CometChat 
-<Steps>
-  <Step title="Open Dashboard">Open the <a href="https://app.cometchat.com/" target="_blank" rel="noreferrer">CometChat Dashboard</a>.</Step>
-  <Step title="Navigate">Go to your App → <b>AI Agents</b>.</Step>
-  <Step title="Add agent">Set <b>Provider</b>=Mastra, <b>Agent ID</b>=<code>knowledge</code>, <b>Deployment URL</b>=your public generate endpoint.</Step>
-  <Step title="(Optional) Enhancements">Add greeting, prompts, and configure actions/tools if you use frontend tools.</Step>
-  <Step title="Enable">Save and ensure the agent toggle shows <b>Enabled</b>.</Step>
-</Steps>
-
----
-
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 7</span>
-</h3>
-
-## Customize in Chat Builder
-<Steps>
-  <Step title="Open variant">From <b>AI Agents</b> click the variant (or Get Started) to enter Chat Builder.</Step>
-  <Step title="Customize & Deploy">Select <b>Customize and Deploy</b>.</Step>
-  <Step title="Adjust settings">Theme, layout, features; ensure the Mastra agent is attached.</Step>
-  <Step title="Preview">Use live preview to validate retrieval quality & prompt adherence.</Step>
-</Steps>
-
----
-
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 8</span>
-</h3>
-
-## Integrate
-
-Once your agent is configured, you can integrate it into your app using the CometChat No Code - Widget
-
-<CardGroup>
-  <Card title="No Code - Widget" icon={<img src="/docs/images/icons/ai-agents.svg" alt="Widget" />} description="No‑code" href="/widget/ai-agents" horizontal />
-</CardGroup>
-
-> **Note:** The **Mastra agent** you connected in earlier steps is already part of the exported configuration, so your end-users will chat with that agent immediately.
-
----
-
-<h3 className="text-2xl font-semibold mb-6 mt-8">
-  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 9</span>
-</h3>
-
-## Test Your Setup
-
-<Steps>
-  <Step title="API generates response">POST to <code>/api/agents/knowledge/generate</code> returns a sourced answer.</Step>
-  <Step title="Agent listed"><code>/api/agents</code> includes <code>"knowledge"</code>.</Step>
-  <Step title="Sources appended">Response includes a final line listing sources.</Step>
-  <Step title="Full sample test (run curl)">See curl command below.</Step>
-</Steps>
-
-```bash
-curl -X POST http://localhost:4111/api/agents/knowledge/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      { "role": "user", "content": "How do I enable SSO?" }
-    ]
+curl -X POST http://localhost:4111/api/tools/ingestSources   -H 'Content-Type: application/json'   -d '{
+    "files": [
+      "knowledge/nasaMars/raw/journey-to-mars.pdf",
+      "knowledge/nasaMars/raw/mars-2020-concept.pdf",
+      "knowledge/nasaMars/raw/perseverance-facts.pdf"
+    ],
+    "namespace": "nasaMars"
   }'
 ```
 
----
+This generates markdown files in `knowledge/nasaMars/` that the agent
+will search.
 
-## Troubleshooting
+### Option B --- Runtime ingestion (users upload new sources)
 
-- **Agent not found**: Check the `agents` map in `mastra/index.ts`.
-- **Empty answers**: Reduce `chunk.size`, increase `overlap`, or verify crawl depth.
-- **Slow first answer**: Initial crawl/index happens lazily; warm it during deploy.
-- **Missing sources line**: Recheck `instructions` formatting.
+Post to `/api/tools/ingestSources` with `sources` (URLs or raw text) or
+`files` (local paths), and a `namespace` to separate datasets.
 
----
+------------------------------------------------------------------------
 
-## Next Steps
+## 6) Ask Questions
 
-- Tune `chunk` sizes vs. answer quality.
-- Add a re-ingestion script to refresh the index on deploy.
-- Add auth + rate limiting middleware.
-- Extend retrieval to additional internal wikis or Confluence exports.
+### A) Playground
+
+Open: `http://localhost:4111/agents/knowledge/chat/new` and ask: \>
+"Summarize NASA's plan for reaching Mars and the role of Mars 2020."
+
+The agent will retrieve from `knowledge/nasaMars/*` and answer with
+citations.
+
+### B) REST (for integrations)
+
+``` bash
+curl -sS -X POST http://localhost:4111/agents/knowledge/generate   -H 'Content-Type: application/json'   -d '{
+    "input": {
+      "messages": [
+        { "role": "user", "content": "What is Mars 2020 and how does it fit the Mars plan?" }
+      ]
+    },
+    "context": { "namespace": "nasaMars" }
+  }'
+```
+
+**Important:** `generate` expects `input.messages` (chat format).\
+Use `context.namespace` to select a dataset at runtime (defaults to the
+agent's prompt value).
+
+------------------------------------------------------------------------
+
+## 7) CometChat Integration (same pattern as Chef)
+
+**Server-side webhook pattern**
+
+1.  Create a CometChat bot / extension that forwards user messages to
+    your Mastra agent:
+
+    ``` http
+    POST http://<your-mastra-host>/agents/knowledge/generate
+    Content-Type: application/json
+
+    {
+      "input": { "messages": [{ "role": "user", "content": "<USER_MESSAGE>" }] },
+      "context": { "namespace": "nasaMars" }
+    }
+    ```
+
+2.  Send the `assistant` reply back into the CometChat conversation.
+
+**Notes**
+
+-   Keep Mastra private; sign webhook requests (HMAC/JWT).
+-   If you support multiple datasets, map CometChat rooms → `namespace`.
+
+------------------------------------------------------------------------
+
+## 8) Troubleshooting
+
+-   **"Agent with name knowledge not found"**\
+    Ensure:
+
+    ``` ts
+    // src/mastra/agents/index.ts
+    export { knowledgeAgent as knowledge } from './knowledge-agent';
+    // src/mastra/index.ts
+    agents: { knowledge }
+    ```
+
+-   **Playground shows tool validation error**\
+    That appears only if the model chooses `ingestSources` without
+    inputs. Our prompt discourages this unless retrieval returns zero
+    results.
+
+-   **Files not found during ingestion**\
+    We handle repo-root resolution in `ingest-sources.ts`. Use
+    repo-relative paths like `knowledge/nasaMars/raw/*.pdf` or absolute
+    paths.
+
+-   **No answers / empty retrieval**\
+    Confirm docs exist:
+
+    ``` bash
+    curl -sS -X POST http://localhost:4111/api/tools/searchDocs     -H 'Content-Type: application/json'     -d '{"query":"Mars 2020","namespace":"nasaMars","maxResults":3}'
+    ```
+
+------------------------------------------------------------------------
+
+## 9) Extending
+
+-   Swap `docsRetriever` for a vector DB retriever later.
+-   Add namespaces per tenant or channel.
+-   Add `/api/ask` facade if you prefer a simpler input schema for
+    clients.
+
+------------------------------------------------------------------------
+
+## 10) Security & Ops
+
+-   Put Mastra behind your API gateway.
+-   Don't expose your `OPENAI_API_KEY` to clients.
+-   Log only what you need; redact user PII before storing traces.
+
+------------------------------------------------------------------------
+
+**You're done.** With the files already ingested, your agent will answer
+immediately on\
+`http://localhost:4111/agents/knowledge/chat/new` and via the `generate`
+endpoint above.
