@@ -1,27 +1,31 @@
 ---
-title: "Build Your Chef Agent with Mastra"
-description: "Follow these steps to create a Chef Agent in Mastra that can suggest ingredient substitutions, build recipes from a pantry list, and integrate into your app."
+title: "Build Your Knowledge Agent with Mastra"
+description: "Follow these steps to create a Knowledge Agent in Mastra that can answer from your docs (website + markdown), cite sources, and integrate into your app."
 ---
 
-Imagine a virtual sous-chef who listens to your ingredient list and responds with suggestions, techniques, or even a full recipe—all served via a chat UI.
+import { Steps, Step, AccordionGroup, Accordion, CardGroup, Card } from 'mintlify';
+
+Imagine a teammate who actually reads your docs. This guide shows how to build a **Mastra Knowledge Agent** that answers user questions using your documentation (public site + Markdown) and always cites its sources.
 
 ---
 
 ## What You’ll Build
 
-- A **Mastra agent** that thinks like a seasoned home cook.
-- **Tools** for helpful interactive features—substitute ingredients, create recipes.
-- A conversational UI (React example provided).
-- A deployable agent available via Mastra’s API.
+- A **Mastra agent** that performs retrieval-augmented answers.
+- A **Docs Tool** that can crawl a site, load local Markdown, or both.
+- An HTTP endpoint (`/api/agents/knowledge/generate`).
+- A deployable agent configurable inside CometChat.
 
 ---
 
 ## Prerequisites
 
-- A Mastra project (`npx create-mastra@latest my-mastra-app`).
+- A Mastra project (`npx create-mastra@latest knowledge-agent`).
 - Node.js installed.
 - OpenAI API key in `.env` as `OPENAI_API_KEY`.
-- Optional: Familiarity with Zod schema for structured output.
+- Access to a docs website OR a folder of Markdown.
+
+> Scaffold note: `npx create-mastra@latest` currently generates a sample **weather** agent at `src/mastra/agents/weather-agent.ts` plus a tool & workflow under `src/mastra/tools` and `src/mastra/workflows`. In this guide you'll **replace** those with a knowledge agent. You can delete the weather files or keep them while adding the new ones.
 
 ---
 
@@ -29,68 +33,51 @@ Imagine a virtual sous-chef who listens to your ingredient list and responds wit
   <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
 </h3>
 
-## Create the Tools
+## Create the Docs Tool
 
 <Steps>
-  <Step title="Substitute tool">Create a tool to suggest ingredient substitutions.</Step>
-  <Step title="Recipe tool">Create a tool that generates a simple recipe from a pantry list.</Step>
+  <Step title="Pick a source: website">
+  Use a public docs site (must be crawlable).
+  </Step>
+  <Step title="Pick a source: markdown folder">
+  Point at local exported docs.
+  </Step>
+  <Step title="Mix sources">
+  Combine website + local markdown.
+  </Step>
 </Steps>
 
-**`src/tools/suggest-substitute-tool.ts`**:
+**`src/mastra/tools/docs-tool.ts`** (choose ONE of the `source` configurations; you can later switch to an array):
 ```ts
-import { createTool } from '@mastra/core/tools';
-import { z } from 'zod';
+import { DocsTool } from '@mastra/tools-docs';
 
-export const suggestSubstituteTool = createTool({
-  id: 'suggest-substitute',
-  description: 'Suggest a substitute for an ingredient.',
-  inputSchema: z.object({
-    ingredient: z.string().describe('Ingredient to substitute'),
-  }),
-  outputSchema: z.object({
-    substitute: z.string(),
-    reason: z.string(),
-  }),
-  execute: async ({ context }) => {
-    const ingredient = context.ingredient.toLowerCase();
-    const map: Record<string, { substitute: string; reason: string }> = {
-      milk: { substitute: 'almond milk', reason: 'Similar texture and flavor' },
-      butter: { substitute: 'margarine', reason: 'Same fat profile for cooking/baking' },
-    };
-    return map[ingredient] || {
-      substitute: 'No direct match',
-      reason: 'Choose an ingredient with similar flavor or texture.',
-    };
+// Single website crawl
+export const docsTool = new DocsTool({
+  source: 'https://docs.yourcompany.com',
+  options: {
+    maxDepth: 3,
+    include: ['**/*'],
+    exclude: ['**/blog/**', '**/changelog/**'],
+    chunk: { size: 800, overlap: 80 },
   },
 });
-```
 
-**`src/tools/recipe-from-pantry-tool.ts`**:
-```ts
-import { createTool } from '@mastra/core/tools';
-import { z } from 'zod';
-
-export const recipeFromPantryTool = createTool({
-  id: 'recipe-from-pantry',
-  description: 'Generate a simple recipe using available ingredients.',
-  inputSchema: z.object({
-    ingredients: z.array(z.string()).min(1),
-  }),
-  outputSchema: z.object({
-    title: z.string(),
-    steps: z.array(z.string()),
-  }),
-  execute: async ({ context }) => {
-    const { ingredients } = context;
-    return {
-      title: 'Pantry Special',
-      steps: [
-        `Use ${ingredients.join(', ')}.`,
-        'Cook and enjoy!',
-      ],
-    };
-  },
+/*
+// Local markdown folder
+export const docsTool = new DocsTool({
+  source: './knowledge/**/*.md',
+  options: { chunk: { size: 700, overlap: 80 } },
 });
+
+// Mixed sources (site + folder)
+export const docsTool = new DocsTool({
+  source: [
+    'https://docs.yourcompany.com',
+    './knowledge/**/*.md',
+  ],
+  options: { maxDepth: 2, chunk: { size: 900, overlap: 100 } },
+});
+*/
 ```
 
 ---
@@ -101,32 +88,17 @@ export const recipeFromPantryTool = createTool({
 
 ## Create the Agent
 
-**`src/agents/chef-agent.ts`**:
+**`src/mastra/agents/knowledge-agent.ts`** (new file):
 ```ts
 import { openai } from '@ai-sdk/openai';
 import { Agent } from '@mastra/core/agent';
-import { Memory } from '@mastra/memory';
-import { LibSQLStore } from '@mastra/libsql';
+import { docsTool } from '../tools/docs-tool';
 
-import { suggestSubstituteTool } from '../tools/suggest-substitute-tool';
-import { recipeFromPantryTool } from '../tools/recipe-from-pantry-tool';
-
-export const chefAgent = new Agent({
-  name: 'Chef Agent',
-  instructions: `
-You are a friendly home chef. Help users cook based on their available ingredients.
-Use 'suggest-substitute' to offer alternatives.
-Use 'recipe-from-pantry' to build recipes from their list.
-Keep answers short and clear.
-  `,
+export const knowledgeAgent = new Agent({
+  name: 'Knowledge Agent',
+  instructions: `You are a precise documentation assistant.\nAlways call the 'docs' tool first to fetch relevant passages before answering.\nRespond concisely (3-6 sentences).\nEnd with: Sources: <list headings/URLs>.\nIf the answer is not in the docs, say so clearly and do not speculate.`,
   model: openai('gpt-5'),
-  tools: {
-    'suggest-substitute': suggestSubstituteTool,
-    'recipe-from-pantry': recipeFromPantryTool,
-  },
-  memory: new Memory({
-    storage: new LibSQLStore({ url: 'file:../mastra.db' }),
-  }),
+  tools: { docs: docsTool },
 });
 ```
 
@@ -144,16 +116,16 @@ import { Mastra } from '@mastra/core/mastra';
 import { PinoLogger } from '@mastra/loggers';
 import { LibSQLStore } from '@mastra/libsql';
 
-import { chefAgent } from '../agents/chef-agent';
+import { knowledgeAgent } from './agents/knowledge-agent';
 
 export const mastra = new Mastra({
-  agents: { chef: chefAgent }, // "chef" is the REST id
+  agents: { knowledge: knowledgeAgent }, // "knowledge" is the REST id
   storage: new LibSQLStore({ url: 'file:../mastra.db' }),
   logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
 });
 ```
 
-> The **key** in `agents: { chef: chefAgent }` determines the API path: `/api/agents/chef/*`.
+> The **key** in `agents: { knowledge: knowledgeAgent }` determines the API path: `/api/agents/knowledge/*`.
 
 ---
 
@@ -182,7 +154,7 @@ Mastra API running on port http://localhost:4111/api
 <AccordionGroup>
   <Accordion title="Ping test">
 ```bash
-curl -X POST http://localhost:4111/api/agents/chef/generate \
+curl -X POST http://localhost:4111/api/agents/knowledge/generate \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"ping"}]}'
 ```
@@ -194,19 +166,19 @@ ngrok http 4111
 cloudflared tunnel --url http://localhost:4111
 loca.lt --port 4111
 ```
-    <p>Append <code>/api/agents/chef/generate</code> and copy the HTTPS URL into the Dashboard.</p>
+    <p>Append <code>/api/agents/knowledge/generate</code> and copy the HTTPS URL into the Dashboard.</p>
   </Accordion>
   <Accordion title="Vercel serverless example (TypeScript)">
 ```ts
-// api/agents/chef/generate.ts
+// api/agents/knowledge/generate.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { chefAgent } from '../../../src/agents/chef-agent';
+import { knowledgeAgent } from '../../../src/mastra/agents/knowledge-agent';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   try {
     const { messages } = req.body || {};
-    const result = await chefAgent.respond({ messages });
+    const result = await knowledgeAgent.respond({ messages });
     return res.status(200).json(result);
   } catch (e: any) {
     return res.status(500).json({ error: e.message || 'Agent error' });
@@ -216,20 +188,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   </Accordion>
   <Accordion title="Production patterns">
     <ul>
-      <li><b>Serverless:</b> Single lightweight function calling the agent.</li>
+      <li><b>Serverless:</b> Lightweight function calling the agent.</li>
       <li><b>Container:</b> Long‑lived process; add health checks & logging.</li>
-      <li><b>Edge:</b> Keep tools stateless; externalize persistence.</li>
+      <li><b>Edge:</b> Keep retrieval stateless; externalize persistence.</li>
     </ul>
   </Accordion>
   <Accordion title="Security essentials">
     <ul>
       <li>Rate‑limit (per IP + user).</li>
       <li>Add auth (Bearer/JWT) for non-public usage.</li>
-      <li>Log tool calls (name, duration, success/error).</li>
+      <li>Log tool calls (query, passages, latency).</li>
     </ul>
   </Accordion>
   <Accordion title="CometChat mapping">
-    Deployment URL = public HTTPS endpoint + <code>/api/agents/chef/generate</code>. Mastra Agent ID = <code>chef</code>.
+    Deployment URL = public HTTPS endpoint + <code>/api/agents/knowledge/generate</code>. Mastra Agent ID = <code>knowledge</code>.
   </Accordion>
 </AccordionGroup>
 
@@ -243,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 <Steps>
   <Step title="Open Dashboard">Open the <a href="https://app.cometchat.com/" target="_blank" rel="noreferrer">CometChat Dashboard</a>.</Step>
   <Step title="Navigate">Go to your App → <b>AI Agents</b>.</Step>
-  <Step title="Add agent">Set <b>Provider</b>=Mastra, <b>Agent ID</b>=<code>chef</code>, <b>Deployment URL</b>=your public generate endpoint.</Step>
+  <Step title="Add agent">Set <b>Provider</b>=Mastra, <b>Agent ID</b>=<code>knowledge</code>, <b>Deployment URL</b>=your public generate endpoint.</Step>
   <Step title="(Optional) Enhancements">Add greeting, prompts, and configure actions/tools if you use frontend tools.</Step>
   <Step title="Enable">Save and ensure the agent toggle shows <b>Enabled</b>.</Step>
 </Steps>
@@ -259,12 +231,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   <Step title="Open variant">From <b>AI Agents</b> click the variant (or Get Started) to enter Chat Builder.</Step>
   <Step title="Customize & Deploy">Select <b>Customize and Deploy</b>.</Step>
   <Step title="Adjust settings">Theme, layout, features; ensure the Mastra agent is attached.</Step>
-  <Step title="Preview">Use live preview to validate responses & any tool triggers.</Step>
+  <Step title="Preview">Use live preview to validate retrieval quality & prompt adherence.</Step>
 </Steps>
-
-<Frame>
-  <img src="/images/ai-agent-chat-builder-preview.png" />
-</Frame>
 
 ---
 
@@ -291,18 +259,18 @@ Once your agent is configured, you can integrate it into your app using the Come
 ## Test Your Setup
 
 <Steps>
-  <Step title="API generates response">POST to <code>/api/agents/chef/generate</code> returns a recipe or suggestion.</Step>
-  <Step title="Agent listed"><code>/api/agents</code> includes <code>"chef"</code>.</Step>
-  <Step title="Tool action works">UI handles <code>suggest-substitute</code> tool invocation.</Step>
+  <Step title="API generates response">POST to <code>/api/agents/knowledge/generate</code> returns a sourced answer.</Step>
+  <Step title="Agent listed"><code>/api/agents</code> includes <code>"knowledge"</code>.</Step>
+  <Step title="Sources appended">Response includes a final line listing sources.</Step>
   <Step title="Full sample test (run curl)">See curl command below.</Step>
 </Steps>
 
 ```bash
-curl -X POST http://localhost:4111/api/agents/chef/generate \
+curl -X POST http://localhost:4111/api/agents/knowledge/generate \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
-      { "role": "user", "content": "I have pasta, tomatoes, garlic — make me dinner" }
+      { "role": "user", "content": "How do I enable SSO?" }
     ]
   }'
 ```
@@ -312,13 +280,15 @@ curl -X POST http://localhost:4111/api/agents/chef/generate \
 ## Troubleshooting
 
 - **Agent not found**: Check the `agents` map in `mastra/index.ts`.
-- **Tool not firing**: Ensure the `id` matches exactly between the tool file and the agent.
-- **API key errors**: Confirm `OPENAI_API_KEY` is set.
+- **Empty answers**: Reduce `chunk.size`, increase `overlap`, or verify crawl depth.
+- **Slow first answer**: Initial crawl/index happens lazily; warm it during deploy.
+- **Missing sources line**: Recheck `instructions` formatting.
 
 ---
 
 ## Next Steps
 
-- Add more tools (e.g., nutritional info, shopping list builder).
-- Add a workflow to decide automatically between quick tips and full recipes.
-- Localize outputs for different languages.
+- Tune `chunk` sizes vs. answer quality.
+- Add a re-ingestion script to refresh the index on deploy.
+- Add auth + rate limiting middleware.
+- Extend retrieval to additional internal wikis or Confluence exports.

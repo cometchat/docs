@@ -1,0 +1,186 @@
+---
+title: "Build Your Relay Agent with Mastra"
+description: "Follow these steps to create a Relay Agent in Mastra that can query multiple people, agents, or systems, and return a consolidated answer."
+---
+
+Imagine you ask: “Which team members are available tomorrow?” Instead of guessing, the agent **pings multiple sources** (calendars, teammates, sub-agents), collects their responses, and returns a single consolidated answer.
+
+***
+
+## What You’ll Build
+
+* A **Mastra agent** with a relay tool that queries multiple sources.  
+* Example: Ask three mock APIs (Alice, Bob, Charlie) about availability.  
+* The agent aggregates answers into one message.  
+* Deployable endpoint via Mastra’s API.  
+* Optional: integrate into **CometChat** group chats so the agent mediates across members.  
+
+***
+
+## Prerequisites
+
+* A Mastra project (`npx create-mastra@latest my-mastra-app`).  
+* Node.js installed.  
+* OpenAI API key in `.env` as `OPENAI_API_KEY`.  
+* Optional: sample APIs or sub-agents to simulate responses.  
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
+</h3>
+
+## Create Relay Tool
+
+**`src/tools/relay-tool.ts`**:
+
+```ts
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+
+export const relayTool = createTool({
+  id: 'relay',
+  description: 'Ask multiple sources and combine their answers.',
+  inputSchema: z.object({
+    question: z.string().describe('Question to ask all sources'),
+  }),
+  outputSchema: z.object({
+    combined: z.string(),
+    sources: z.array(z.string()),
+  }),
+  execute: async ({ context }) => {
+    const { question } = context;
+
+    // Mock responses from 3 "sources"
+    const responses = [
+      { name: "Alice", answer: "Available after 2pm" },
+      { name: "Bob", answer: "Busy all day" },
+      { name: "Charlie", answer: "Free before noon" },
+    ];
+
+    const combined = responses.map(r => `${r.name}: ${r.answer}`).join("; ");
+    const sources = responses.map(r => r.name);
+
+    return { combined, sources };
+  },
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
+</h3>
+
+## Create the Agent
+
+**`src/agents/relay-agent.ts`**:
+
+```ts
+import { openai } from '@ai-sdk/openai';
+import { Agent } from '@mastra/core/agent';
+import { relayTool } from '../tools/relay-tool';
+
+export const relayAgent = new Agent({
+  name: 'Relay Agent',
+  instructions: `
+You are a mediator agent. 
+- When asked a question requiring multiple opinions, call the 'relay' tool.
+- Summarize combined responses clearly.
+  `,
+  model: openai('gpt-4o-mini'),
+  tools: {
+    'relay': relayTool,
+  },
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
+</h3>
+
+## Register the Agent in Mastra
+
+**`src/mastra/index.ts`**:
+
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { PinoLogger } from '@mastra/loggers';
+import { LibSQLStore } from '@mastra/libsql';
+
+import { relayAgent } from '../agents/relay-agent';
+
+export const mastra = new Mastra({
+  agents: { 'relay': relayAgent }, // API path: /api/agents/relay/*
+  storage: new LibSQLStore({ url: 'file:../mastra.db' }),
+  logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
+</h3>
+
+## Run the Agent
+
+```bash
+rm -rf .mastra/output
+npx mastra dev
+```
+
+You should see:
+
+```
+Mastra API running on port http://localhost:4111/api
+```
+
+Test it locally:
+
+```bash
+curl -X POST http://localhost:4111/api/agents/relay/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"Who is available tomorrow?"}]}'
+```
+
+Expected output:
+
+```json
+{
+  "combined": "Alice: Available after 2pm; Bob: Busy all day; Charlie: Free before noon",
+  "sources": ["Alice", "Bob", "Charlie"]
+}
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5</span>
+</h3>
+
+## Deploy & Connect
+
+* Deploy the API (`/api/agents/relay/generate`) using Render, Railway, Vercel, or any host.  
+* In **CometChat Dashboard → AI Agents**, create an agent with:  
+  * **Provider**: Mastra  
+  * **Agent ID**: `relay`  
+  * **Deployment URL**: public endpoint from your host  
+
+Now users can ask, “Who is free tomorrow?” and the Relay Agent will combine answers.
+
+***
+
+## Troubleshooting
+
+* **Only one response**: Ensure the tool queries multiple sources.  
+* **Agent doesn’t use tool**: Add clear instructions to always call `relay` when multiple opinions are needed.  
+* **Integration fails**: Verify deployment URL and CometChat Agent ID.  
+
+***
+
+## Next Steps
+
+* Connect Relay Agent to real APIs (calendars, ticketing systems).  
+* Add weighting rules (e.g., prioritize admins).  
+* Extend to group chats so the agent mediates in real-time discussions.  
