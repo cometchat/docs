@@ -6,10 +6,13 @@
 */
 (function () {
   try {
-    var lastAppliedFor = null;
+  var lastAppliedFor = null;
+  var INITIAL_STYLE_ID = 'cc-hide-all-nav-tabs';
+  var initialStyleRemoved = false;
 
-    var ALWAYS_KEEP_LABELS = ['home'];
-    var ALWAYS_KEEP_HREFS = ['/', '/index'];
+  // Always hide Home everywhere
+  var ALWAYS_HIDE_LABELS = ['home'];
+  var ALWAYS_HIDE_HREFS = ['/', '/index'];
 
     function getRouteKey(path) {
       if (!path) return null;
@@ -101,29 +104,27 @@
     function getTabControls() {
       var root = getTabsContainer();
       if (!root) return [];
-      // Include anchors and buttons, but only immediate nav-level controls
-      var ctrls = Array.prototype.slice.call(root.querySelectorAll('a,button'));
-      // Filter out items that are inside dropdown menus/popovers if they are not part of the top bar
-      ctrls = ctrls.filter(function (el) {
-        // Heuristic: top bar controls are visible and part of the first-level nav container
-        return el.offsetParent !== null && root.contains(el);
-      });
-      return ctrls;
+      // Include anchors and buttons under nav tabs
+      return Array.prototype.slice.call(root.querySelectorAll('a,button'));
     }
 
     function hide(el) { el.style.display = 'none'; }
     function show(el) { el.style.display = ''; }
 
     function resetFilter() {
-      getTabControls().forEach(show);
+      // Show all except Home (which stays hidden everywhere)
+      getTabControls().forEach(function (el) {
+        if (isAlwaysHide(el)) hide(el); else show(el);
+      });
       lastAppliedFor = null;
+      removeInitialStyle();
     }
 
-    function isAlwaysKeep(el) {
+    function isAlwaysHide(el) {
       var href = (el.getAttribute && el.getAttribute('href')) || '';
-      if (ALWAYS_KEEP_HREFS.indexOf(href) !== -1) return true;
+      if (ALWAYS_HIDE_HREFS.indexOf(href) !== -1) return true;
       var lbl = normalizeLabel(el);
-      return ALWAYS_KEEP_LABELS.indexOf(lbl) !== -1;
+      return ALWAYS_HIDE_LABELS.indexOf(lbl) !== -1;
     }
 
     function applyFilterFor(routeKey) {
@@ -131,12 +132,13 @@
       var ctrls = getTabControls();
       if (!ctrls.length) return false;
       ctrls.forEach(function (el) {
-        if (isAlwaysKeep(el)) { show(el); return; }
+        if (isAlwaysHide(el)) { hide(el); return; }
         var href = (el.getAttribute('href') || '').trim();
         var keep = isAllowedHref(routeKey, href) || isAllowedLabel(routeKey, el);
         if (keep) show(el); else hide(el);
       });
       lastAppliedFor = routeKey;
+      removeInitialStyle();
       return true;
     }
 
@@ -158,7 +160,24 @@
       }
     }, 50);
 
-    // Initial run and observers/hooks remain the same
+    // Inject an initial style to hide all nav items to avoid flicker; will be removed after first apply/reset
+    function injectInitialStyle() {
+      if (document.getElementById(INITIAL_STYLE_ID)) return;
+      var style = document.createElement('style');
+      style.id = INITIAL_STYLE_ID;
+      style.textContent = '.nav-tabs a, .nav-tabs button { display: none !important; }';
+      document.head.appendChild(style);
+    }
+    function removeInitialStyle() {
+      if (initialStyleRemoved) return;
+      var style = document.getElementById(INITIAL_STYLE_ID);
+      if (style && style.parentNode) {
+        style.parentNode.removeChild(style);
+      }
+      initialStyleRemoved = true;
+    }
+
+    injectInitialStyle();
     refresh();
 
     var observerTarget = document.getElementById('navbar') || document.body;
