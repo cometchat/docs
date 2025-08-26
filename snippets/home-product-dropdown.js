@@ -40,11 +40,11 @@
       'bg-background-light', 'dark:bg-background-dark',
       'disabled:pointer-events-none',
       '[&>span]:line-clamp-1',
-      'overflow-hidden', 'group', 'outline-none',
+      'overflow-hidden', 'outline-none',
       'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
-      'text-xs', 'gap-1.5', 'text-gray-500', 'dark:text-gray-400', 'leading-5', 'font-semibold',
+      'text-sm', 'gap-2', 'text-gray-600', 'dark:text-gray-300', 'leading-5', 'font-medium',
       'border', 'border-gray-200', 'dark:border-gray-800', 'hover:border-gray-300', 'dark:hover:border-gray-700',
-      'rounded-full', 'py-1', 'px-3', 'flex', 'items-center', 'space-x-2', 'whitespace-nowrap'
+      'rounded-full', 'py-1.5', 'px-3.5', 'flex', 'items-center', 'space-x-2', 'whitespace-nowrap', 'shadow-sm'
     ].join(' ');
     const span = DOC.createElement('span');
     span.textContent = label || 'Products';
@@ -72,19 +72,20 @@
     menu.role = 'menu';
     menu.tabIndex = -1;
     menu.dataset.ccHomeProductMenu = 'true';
+    menu.style.zIndex = '2147483647';
     menu.className = [
-      'z-50', 'absolute', 'mt-2', 'min-w-[12rem]', 'rounded-xl',
+      'absolute', 'mt-2', 'rounded-xl',
       'bg-white', 'dark:bg-background-dark', 'border', 'border-gray-200', 'dark:border-gray-800',
-      'shadow-lg', 'p-1'
+      'shadow-xl', 'p-1', 'min-w-[15rem]'
     ].join(' ');
 
     items.forEach(it => {
       const item = DOC.createElement('button');
       item.type = 'button';
       item.className = [
-        'w-full', 'text-left', 'px-3', 'py-1.5', 'rounded-lg', 'text-sm',
-        'text-gray-700', 'hover:text-gray-900', 'hover:bg-gray-50',
-        'dark:text-gray-300', 'dark:hover:text-gray-100', 'dark:hover:bg-white/10'
+        'w-full', 'text-left', 'px-3.5', 'py-2', 'rounded-lg', 'text-sm', 'whitespace-nowrap',
+        'text-gray-800', 'hover:text-gray-900', 'hover:bg-gray-50',
+        'dark:text-gray-200', 'dark:hover:text-gray-100', 'dark:hover:bg-white/10'
       ].join(' ');
       item.textContent = it.label || '';
       item.addEventListener('click', (e) => {
@@ -143,8 +144,16 @@
     container.querySelectorAll('[data-cc-home-product-button]')?.forEach(el => el.remove());
   }
 
+  // Cleanup helper for when we navigate away from the homepage in SPA flow
+  function cleanupAll() {
+    try {
+      DOC.querySelectorAll('[data-cc-home-product-button]')?.forEach(el => el.remove());
+      DOC.querySelectorAll('[data-cchpdm="menu"]')?.forEach(el => el.remove());
+    } catch (_) {}
+  }
+
   function inject() {
-    if (!isHome(WIN.location.pathname)) return;
+  if (!isHome(WIN.location.pathname)) { cleanupAll(); return; }
     const navbar = DOC.getElementById(NAVBAR_ID);
     const target = ensureContainer(navbar);
     if (!target) return;
@@ -165,7 +174,8 @@
     }
     function open() {
       if (openMenu) { closeMenu(); return; }
-      const menu = createMenu(ITEMS, () => closeMenu());
+  const menu = createMenu(ITEMS, () => closeMenu());
+  menu.setAttribute('data-cchpdm', 'menu');
       DOC.body.appendChild(menu);
       placeMenu(menu, btn);
       requestAnimationFrame(() => placeMenu(menu, btn));
