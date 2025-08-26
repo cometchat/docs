@@ -15,7 +15,7 @@
   var STORAGE_KEY = 'cc:last-product-key';
 
   // Routes shared across multiple products — keep dropdown visible and preserve last product context
-  var SHARED_PREFIXES = ['/chat-builder'];
+  var SHARED_PREFIXES = ['/chat-builder','/ui-kit','/sdk','/widget','/rest-api','/fundamentals'];
 
     // Target products and destinations
     var PRODUCTS = [

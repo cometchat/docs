@@ -12,7 +12,15 @@
   var STORAGE_KEY = 'cc:last-product-key';
 
   // Routes that are shared across multiple products; keep previous product context on these
-  var SHARED_PREFIXES = ['/chat-builder'];
+  // Add more shared roots as needed.
+  var SHARED_PREFIXES = [
+    '/chat-builder',
+    '/ui-kit',
+    '/sdk',
+    '/widget',
+    '/rest-api',
+    '/fundamentals'
+  ];
 
   // Always hide Home everywhere
   var ALWAYS_HIDE_LABELS = ['home'];
@@ -200,9 +208,11 @@
         var persisted = null;
         try { persisted = sessionStorage.getItem(STORAGE_KEY) || null; } catch (_) {}
         var useKey = lastAppliedFor && lastAppliedFor !== 'home' ? lastAppliedFor : persisted;
-        if (useKey) { applyFilterFor(useKey); return; }
-        // If we have no context yet, do nothing; leave initial hide removal to avoid flash
-        removeInitialStyle();
+        if (!useKey) {
+          // Default to Chat & Calling if no context exists to avoid a reset/flash
+          useKey = 'chat-call';
+        }
+        applyFilterFor(useKey);
         return;
       }
       // Always re-apply on route or structure changes
