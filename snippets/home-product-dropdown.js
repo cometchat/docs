@@ -90,19 +90,6 @@
       item.textContent = it.label || '';
       item.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Notify other scripts (nav filter) about selected product
-        try {
-          const key = (it.label || '').toLowerCase().includes('chat') ? 'chat-call'
-            : (it.label || '').toLowerCase().includes('agents') ? 'ai-agents'
-            : (it.label || '').toLowerCase().includes('moderation') ? 'moderation'
-            : (it.label || '').toLowerCase().includes('notification') ? 'notifications'
-            : (it.label || '').toLowerCase().includes('insights') ? 'insights'
-            : null;
-          if (key) {
-            const ce = new CustomEvent('cc:product-change', { detail: { key, href: it.href } });
-            window.dispatchEvent(ce);
-          }
-        } catch (_) {}
         if (it && it.href) {
           try {
             if (WIN.location.pathname !== it.href) {
@@ -113,6 +100,8 @@
             WIN.location.assign(it.href);
           }
         }
+        // Close any open menu after navigating
+        try { if (typeof onSelect === 'function') onSelect(); } catch (_) {}
       });
       menu.appendChild(item);
     });

@@ -146,13 +146,7 @@
         if (prod.key === currentKey) {
           a.className += ' cursor-default text-primary dark:text-primary-light';
         }
-        a.addEventListener('click', function (e) {
-          // Emit a product change event for the nav filter to react immediately
-          try {
-            var evt = new CustomEvent('cc:product-change', { detail: { key: prod.key, href: prod.href } });
-            window.dispatchEvent(evt);
-          } catch (_) {}
-        }, true);
+  // No custom events — clicking should only navigate the page.
         menu.appendChild(a);
       });
 
