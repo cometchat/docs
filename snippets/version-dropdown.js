@@ -160,11 +160,12 @@
       menu.setAttribute('role', 'menu');
       menu.style.display = 'none';
       menu.style.zIndex = '2147483647'; // ensure on top
+      menu.style.width = '160px'; // fixed width
       menu.className = [
         'absolute mt-2 right-0',
         'bg-background-light dark:bg-background-dark',
         'border border-gray-200 dark:border-gray-800 rounded-xl shadow-xl overflow-hidden',
-        'py-2 min-w-[15rem]'
+        'py-2'
       ].join(' ');
 
       PRODUCTS.forEach(function (prod) {
@@ -206,6 +207,7 @@
       function onKeydown(e) {
         if (e.key === 'Escape') close();
       }
+  // fixed width; no resize syncing needed
       btn.addEventListener('click', function (e) {
         e.preventDefault();
         var isOpen = btn.getAttribute('aria-expanded') === 'true';
