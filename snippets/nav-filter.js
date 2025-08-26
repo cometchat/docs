@@ -12,10 +12,27 @@
 
   // Always hide Home everywhere
   var ALWAYS_HIDE_LABELS = ['home'];
-  var ALWAYS_HIDE_HREFS = ['/', '/index'];
+
+  // Detect docs base path (e.g., '/docs') and strip it for routing logic
+  function getBasePrefix() {
+    try {
+      var p = location.pathname || '/';
+      return p.indexOf('/docs') === 0 ? '/docs' : '';
+    } catch (_) { return ''; }
+  }
+  function stripBase(pathname) {
+    var base = getBasePrefix();
+    if (!pathname) return '/';
+    var p = pathname;
+    try { p = new URL(pathname, location.origin).pathname; } catch (_) {}
+    if (base && p.indexOf(base) === 0) p = p.slice(base.length) || '/';
+    p = p.replace(/\/+$/, '') || '/';
+    return p;
+  }
 
     function getRouteKey(path) {
       if (!path) return null;
+      path = stripBase(path);
       if (path.startsWith('/chat-call')) return 'chat-call';
       if (path.startsWith('/ai-agents')) return 'ai-agents';
       if (path.startsWith('/ai-agents/mastra')) return 'ai-agents';
@@ -81,13 +98,15 @@
       if (!routeKey || !href) return false;
       try {
         // Only compare path part for absolute URLs
-        var u = href;
+        var p = href;
         if (/^https?:\/\//i.test(href)) {
-          u = new URL(href, location.origin).pathname;
+          p = new URL(href, location.origin).pathname;
         }
-        return allowedByRoute[routeKey].some(function (slug) { return u.indexOf(slug) === 0; });
+        p = stripBase(p);
+        return allowedByRoute[routeKey].some(function (slug) { return p.indexOf(slug) === 0; });
       } catch (_) {
-        return allowedByRoute[routeKey].some(function (slug) { return href.indexOf(slug) === 0; });
+        var q = stripBase(href);
+        return allowedByRoute[routeKey].some(function (slug) { return q.indexOf(slug) === 0; });
       }
     }
 
@@ -123,7 +142,11 @@
 
     function isAlwaysHide(el) {
       var href = (el.getAttribute && el.getAttribute('href')) || '';
-      if (ALWAYS_HIDE_HREFS.indexOf(href) !== -1) return true;
+      // Normalize and strip base to detect Home links consistently
+      var p = href;
+      try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
+      p = stripBase(p || '/');
+      if (p === '/' || p === '/index' || p === '/index.html') return true;
       var lbl = normalizeLabel(el);
       return ALWAYS_HIDE_LABELS.indexOf(lbl) !== -1;
     }
@@ -140,6 +163,8 @@
       });
       lastAppliedFor = routeKey;
       removeInitialStyle();
+      // Signal to theme runtime that nav is filtered and safe to reveal
+      try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: routeKey } })); } catch (_) {}
       return true;
     }
 
@@ -148,13 +173,15 @@
     }
 
   var refresh = debounce(function () {
-      var path = location.pathname || '';
+      var raw = location.pathname || '';
+      var path = stripBase(raw);
       var rk = getRouteKey(path);
       // If on homepage, hide all nav items (Home stays hidden globally anyway)
       if (normalizePathForHome(path)) {
-        getTabControls().forEach(hide);
+  getTabControls().forEach(hide);
         lastAppliedFor = 'home';
         removeInitialStyle();
+  try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: 'home' } })); } catch (_) {}
         return;
       }
       // Always re-apply on route or structure changes
@@ -185,14 +212,12 @@
 
     function normalizePathForHome(p){
       if (!p) return true;
-      try {
-        p = new URL(location.origin + p).pathname;
-      } catch(_) {}
+      try { p = stripBase(p); } catch (_) {}
       p = (p || '/').replace(/\/+$/, '') || '/';
       return p === '/' || p === '/index' || p === '/index.html';
     }
 
-    injectInitialStyle();
+  injectInitialStyle();
     refresh();
 
     var observerTarget = document.getElementById('navbar') || document.body;
@@ -217,5 +242,22 @@
     window.addEventListener('popstate', refresh, true);
     window.addEventListener('hashchange', refresh, true);
     document.addEventListener('visibilitychange', function(){ if (!document.hidden) refresh(); }, true);
+
+    // React to explicit product dropdown changes without relying solely on route
+    try {
+      window.addEventListener('cc:product-change', function (e) {
+        var key = e && e.detail && e.detail.key;
+        if (!key) return;
+        // If on homepage, keep hidden (navigation.js controls reveal); otherwise apply immediately
+        var p = location.pathname || '/';
+        if (normalizePathForHome(p)) {
+          getTabControls().forEach(hide);
+          lastAppliedFor = 'home';
+          removeInitialStyle();
+          return;
+        }
+        applyFilterFor(key);
+      });
+    } catch (_) {}
   } catch (_) { /* noop */ }
 })();

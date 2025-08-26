@@ -29,8 +29,25 @@
       return p || '/';
     }
 
+    function getBasePrefix() {
+      try {
+        var p = location.pathname || '/';
+        return p.indexOf('/docs') === 0 ? '/docs' : '';
+      } catch (_) { return ''; }
+    }
+    function stripBase(pathname) {
+      var base = getBasePrefix();
+      if (!pathname) return '/';
+      var p = pathname;
+      try { p = new URL(pathname, location.origin).pathname; } catch (_) {}
+      if (base && p.indexOf(base) === 0) p = p.slice(base.length) || '/';
+      p = p.replace(/\/+$/, '') || '/';
+      return p;
+    }
+
     function getRouteKey(path) {
       if (!path) return null;
+      path = stripBase(path);
       if (path.indexOf('/chat-call') === 0) return 'chat-call';
       if (path.indexOf('/ai-agents') === 0) return 'ai-agents';
       if (path.indexOf('/moderation') === 0) return 'moderation';
@@ -128,6 +145,13 @@
         if (prod.key === currentKey) {
           a.className += ' cursor-default text-primary dark:text-primary-light';
         }
+        a.addEventListener('click', function (e) {
+          // Emit a product change event for the nav filter to react immediately
+          try {
+            var evt = new CustomEvent('cc:product-change', { detail: { key: prod.key, href: prod.href } });
+            window.dispatchEvent(evt);
+          } catch (_) {}
+        }, true);
         menu.appendChild(a);
       });
 
@@ -177,7 +201,7 @@
 
     function apply() {
       var raw = location.pathname || '';
-      var path = normalizePath(raw);
+  var path = normalizePath(raw);
       if (!shouldDisplay(path)) {
         removeIfAny();
         return false;
