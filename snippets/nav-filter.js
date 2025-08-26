@@ -22,7 +22,7 @@
     '/fundamentals'
   ];
 
-  // Always hide Home everywhere
+  // Always hide Home on non-home pages; homepage will explicitly show it
   var ALWAYS_HIDE_LABELS = ['home'];
 
   // Detect docs base path (e.g., '/docs') and strip it for routing logic
@@ -164,7 +164,10 @@
       var p = href;
       try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
       p = stripBase(p || '/');
-      if (p === '/' || p === '/index' || p === '/index.html') return true;
+      // Hide Home on non-home pages only; homepage branch will decide explicitly
+      if (!normalizePathForHome(stripBase(location.pathname || '/'))) {
+        if (p === '/' || p === '/index' || p === '/index.html') return true;
+      }
       var lbl = normalizeLabel(el);
       return ALWAYS_HIDE_LABELS.indexOf(lbl) !== -1;
     }
@@ -195,12 +198,21 @@
       var raw = location.pathname || '';
       var path = stripBase(raw);
       var rk = getRouteKey(path);
-      // If on homepage, hide all nav items (Home stays hidden globally anyway)
+      // If on homepage, show only: Home, Chat & Calling, AI Agents, AI Moderation, Notifications, Insights
       if (normalizePathForHome(path)) {
-  getTabControls().forEach(hide);
+        var allowedHome = ['home','chat & calling','ai agents','ai moderation','notifications','insights'];
+        getTabControls().forEach(function(el){
+          var lbl = normalizeLabel(el);
+          var href = (el.getAttribute && el.getAttribute('href')) || '';
+          var p = href;
+          try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
+          p = stripBase(p || '/');
+          var isHomeLink = (p === '/' || p === '/index' || p === '/index.html');
+          if (isHomeLink || allowedHome.indexOf(lbl) !== -1) show(el); else hide(el);
+        });
         lastAppliedFor = 'home';
         removeInitialStyle();
-  try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: 'home' } })); } catch (_) {}
+        try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: 'home' } })); } catch (_) {}
         return;
       }
       // If route does not map to a single product but is a shared page, keep previous/persisted product context

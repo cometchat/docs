@@ -24,7 +24,6 @@
   }
 
   function markReady() {
-    if (isHome()) return; // never reveal on homepage
     d.documentElement.classList.add('cc-nav-ready');
   }
 
