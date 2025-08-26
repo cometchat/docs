@@ -22,8 +22,8 @@
     '/fundamentals'
   ];
 
-  // Always hide Home on non-home pages; homepage will explicitly show it
-  var ALWAYS_HIDE_LABELS = ['home'];
+  // Nothing is always hidden now
+  var ALWAYS_HIDE_LABELS = [];
 
   // Detect docs base path (e.g., '/docs') and strip it for routing logic
   function getBasePrefix() {
@@ -164,12 +164,19 @@
       var p = href;
       try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
       p = stripBase(p || '/');
-      // Hide Home on non-home pages only; homepage branch will decide explicitly
-      if (!normalizePathForHome(stripBase(location.pathname || '/'))) {
-        if (p === '/' || p === '/index' || p === '/index.html') return true;
-      }
       var lbl = normalizeLabel(el);
       return ALWAYS_HIDE_LABELS.indexOf(lbl) !== -1;
+    }
+
+    function isHomeItem(el) {
+      if (!el) return false;
+      var href = (el.getAttribute && el.getAttribute('href')) || '';
+      var p = href;
+      try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
+      p = stripBase(p || '/');
+      if (p === '/' || p === '/index' || p === '/index.html') return true;
+      var lbl = normalizeLabel(el);
+      return lbl === 'home';
     }
 
     function applyFilterFor(routeKey) {
@@ -177,7 +184,9 @@
       var ctrls = getTabControls();
       if (!ctrls.length) return false;
       ctrls.forEach(function (el) {
-        if (isAlwaysHide(el)) { hide(el); return; }
+  if (isAlwaysHide(el)) { hide(el); return; }
+  // Always keep Home visible on non-home pages
+  if (isHomeItem(el)) { show(el); return; }
         var href = (el.getAttribute('href') || '').trim();
         var keep = isAllowedHref(routeKey, href) || isAllowedLabel(routeKey, el);
         if (keep) show(el); else hide(el);
