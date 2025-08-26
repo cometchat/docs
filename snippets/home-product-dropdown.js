@@ -117,9 +117,19 @@
         if (it && it.href) {
           try {
             const dest = withBase(it.href);
-            if (WIN.location.pathname !== dest) {
+            // On homepage, prefer full navigation for first transition to ensure the app bootstraps correctly
+            if (isHome(WIN.location.pathname)) {
+              WIN.location.assign(dest);
+            } else if (WIN.location.pathname !== dest) {
+              const before = WIN.location.pathname;
               WIN.history.pushState({}, '', dest);
               WIN.dispatchEvent(new Event('popstate'));
+              // Fallback: if SPA router didn't take over promptly, force a navigation
+              setTimeout(() => {
+                if (WIN.location.pathname === before) {
+                  try { WIN.location.assign(dest); } catch (_) {}
+                }
+              }, 120);
             }
           } catch (_) {
             WIN.location.assign(withBase(it.href));

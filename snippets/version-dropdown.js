@@ -175,7 +175,7 @@
         if (prod.key === currentKey) {
           a.className += ' cursor-default text-primary dark:text-primary-light';
         }
-  // No custom events — clicking should only navigate the page.
+  // Use default anchor navigation for reliability.
         menu.appendChild(a);
       });
 
