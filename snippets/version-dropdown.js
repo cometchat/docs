@@ -12,6 +12,10 @@
     var DROPDOWN_ID = 'cc-product-dropdown';
     var BTN_ID = 'cc-product-dropdown-button';
     var WRAP_ID = 'cc-product-dropdown-wrap';
+  var STORAGE_KEY = 'cc:last-product-key';
+
+  // Routes shared across multiple products — keep dropdown visible and preserve last product context
+  var SHARED_PREFIXES = ['/chat-builder'];
 
     // Target products and destinations
     var PRODUCTS = [
@@ -50,6 +54,21 @@
       return p;
     }
 
+    function isSharedPath(path) {
+      if (!path) return false;
+      try { path = stripBase(path); } catch (_) {}
+      return SHARED_PREFIXES.some(function (pre) { return path.indexOf(pre) === 0; });
+    }
+
+    function getPersistedKey() {
+      try {
+        var k = sessionStorage.getItem(STORAGE_KEY) || null;
+        if (!k) return null;
+        // Validate against known products
+        return ['chat-call','ai-agents','moderation','notifications','insights'].indexOf(k) !== -1 ? k : null;
+      } catch (_) { return null; }
+    }
+
     function getRouteKey(path) {
       if (!path) return null;
       path = stripBase(path);
@@ -62,8 +81,8 @@
     }
 
     function shouldDisplay(path) {
-      // Show within the five product sections only
-      return !!getRouteKey(path);
+      // Show within product sections and on shared routes
+      return !!getRouteKey(path) || isSharedPath(path);
     }
 
     function getNavbarRoot() {
@@ -94,6 +113,11 @@
     }
 
     function buildDropdown(currentKey) {
+      // If on shared page with no currentKey, prefer persisted key for a better label
+      if (!currentKey) {
+        var persisted = getPersistedKey();
+        if (persisted) currentKey = persisted;
+      }
       var current = PRODUCTS.find(function (p) { return p.key === currentKey; });
       var btnLabel = current ? current.label : 'Products';
 
@@ -200,7 +224,7 @@
     }
 
     function apply() {
-      var raw = location.pathname || '';
+  var raw = location.pathname || '';
   var path = normalizePath(raw);
       if (!shouldDisplay(path)) {
         removeIfAny();

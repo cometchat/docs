@@ -9,6 +9,10 @@
   var lastAppliedFor = null;
   var INITIAL_STYLE_ID = 'cc-hide-all-nav-tabs';
   var initialStyleRemoved = false;
+  var STORAGE_KEY = 'cc:last-product-key';
+
+  // Routes that are shared across multiple products; keep previous product context on these
+  var SHARED_PREFIXES = ['/chat-builder'];
 
   // Always hide Home everywhere
   var ALWAYS_HIDE_LABELS = ['home'];
@@ -29,6 +33,12 @@
     p = p.replace(/\/+$/, '') || '/';
     return p;
   }
+
+    function isSharedPath(path) {
+      if (!path) return false;
+      try { path = stripBase(path); } catch (_) {}
+      return SHARED_PREFIXES.some(function (pre) { return path.indexOf(pre) === 0; });
+    }
 
     function getRouteKey(path) {
       if (!path) return null;
@@ -162,6 +172,7 @@
         if (keep) show(el); else hide(el);
       });
       lastAppliedFor = routeKey;
+  try { sessionStorage.setItem(STORAGE_KEY, routeKey); } catch (_) {}
       removeInitialStyle();
       // Signal to theme runtime that nav is filtered and safe to reveal
       try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: routeKey } })); } catch (_) {}
@@ -184,13 +195,18 @@
   try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: 'home' } })); } catch (_) {}
         return;
       }
-      // Always re-apply on route or structure changes
-      if (rk !== lastAppliedFor || !getTabControls().length) {
-        applyFilterFor(rk);
-      } else {
-        // Re-affirm after hydration updates
-        applyFilterFor(rk);
+      // If route does not map to a single product but is a shared page, keep previous/persisted product context
+      if (!rk && isSharedPath(path)) {
+        var persisted = null;
+        try { persisted = sessionStorage.getItem(STORAGE_KEY) || null; } catch (_) {}
+        var useKey = lastAppliedFor && lastAppliedFor !== 'home' ? lastAppliedFor : persisted;
+        if (useKey) { applyFilterFor(useKey); return; }
+        // If we have no context yet, do nothing; leave initial hide removal to avoid flash
+        removeInitialStyle();
+        return;
       }
+      // Always re-apply on route or structure changes
+      applyFilterFor(rk);
     }, 10);
 
     // Inject an initial style to hide all nav items to avoid flicker; will be removed after first apply/reset
@@ -248,6 +264,7 @@
       window.addEventListener('cc:product-change', function (e) {
         var key = e && e.detail && e.detail.key;
         if (!key) return;
+  try { sessionStorage.setItem(STORAGE_KEY, key); } catch (_) {}
         // If on homepage, keep hidden (navigation.js controls reveal); otherwise apply immediately
         var p = location.pathname || '/';
         if (normalizePathForHome(p)) {
