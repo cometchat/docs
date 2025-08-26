@@ -100,11 +100,11 @@
       btn.setAttribute('aria-expanded', 'false');
       btn.className = [
         'group bg-background-light dark:bg-background-dark disabled:pointer-events-none',
-        '[&>span]:line-clamp-1 overflow-hidden group outline-none',
+        '[&>span]:line-clamp-1 overflow-hidden outline-none',
         'group-hover:text-gray-950/70 dark:group-hover:text-white/70',
-        'text-xs gap-1.5 text-gray-500 dark:text-gray-400 leading-5 font-semibold',
+        'text-sm gap-2 text-gray-600 dark:text-gray-300 leading-5 font-medium',
         'border border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700',
-        'rounded-full py-1 px-3 flex items-center space-x-2 whitespace-nowrap'
+        'rounded-full py-1.5 px-3.5 flex items-center space-x-2 whitespace-nowrap shadow-sm'
       ].join(' ');
       var span = document.createElement('span');
       span.textContent = btnLabel;
@@ -130,17 +130,18 @@
       menu.id = DROPDOWN_ID;
       menu.setAttribute('role', 'menu');
       menu.style.display = 'none';
+      menu.style.zIndex = '2147483647'; // ensure on top
       menu.className = [
-        'absolute mt-2 right-0 z-[1000]',
+        'absolute mt-2 right-0',
         'bg-background-light dark:bg-background-dark',
-        'border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg',
-        'py-2 w-48'
+        'border border-gray-200 dark:border-gray-800 rounded-xl shadow-xl overflow-hidden',
+        'py-2 min-w-[12rem]'
       ].join(' ');
 
       PRODUCTS.forEach(function (prod) {
         var a = document.createElement('a');
         a.href = prod.href;
-        a.className = 'block px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-950/5 dark:hover:bg-white/5';
+        a.className = 'block px-3.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-950/5 dark:hover:bg-white/5';
         a.textContent = prod.label;
         if (prod.key === currentKey) {
           a.className += ' cursor-default text-primary dark:text-primary-light';
