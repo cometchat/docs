@@ -35,6 +35,11 @@
         return p.indexOf('/docs') === 0 ? '/docs' : '';
       } catch (_) { return ''; }
     }
+    function withBase(href) {
+      var base = getBasePrefix();
+      if (!base) return href;
+      return href.indexOf(base + '/') === 0 || href === base ? href : (base + href);
+    }
     function stripBase(pathname) {
       var base = getBasePrefix();
       if (!pathname) return '/';
@@ -140,7 +145,7 @@
 
       PRODUCTS.forEach(function (prod) {
         var a = document.createElement('a');
-        a.href = prod.href;
+        a.href = withBase(prod.href);
   a.className = 'block px-3.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-950/5 dark:hover:bg-white/5 whitespace-nowrap';
         a.textContent = prod.label;
         if (prod.key === currentKey) {
@@ -230,9 +235,27 @@
     refresh();
 
     // Observe navbar/hydration changes
-    var observerTarget = document.getElementById('navbar') || document.body;
-    var mo = new MutationObserver(function () { refresh(); });
-    mo.observe(observerTarget, { childList: true, subtree: true });
+    // Observe the navbar if available; otherwise, bootstrap-watch body until navbar appears
+    (function () {
+      var navbar = document.getElementById('navbar');
+      if (navbar) {
+        var mo = new MutationObserver(function () { refresh(); });
+        mo.observe(navbar, { childList: true, subtree: true });
+        return;
+      }
+      try {
+        var boot = new MutationObserver(function () {
+          var nb = document.getElementById('navbar');
+          if (nb) {
+            refresh();
+            boot.disconnect();
+            var slim = new MutationObserver(function () { refresh(); });
+            slim.observe(nb, { childList: true, subtree: true });
+          }
+        });
+        boot.observe(document.body, { childList: true, subtree: true });
+      } catch (_) {}
+    })();
 
     // SPA route changes
     function hookHistory(method) {

@@ -13,11 +13,33 @@
   const DOC = document;
   const WIN = window;
   const NAVBAR_ID = 'navbar';
+  const WRAP_ID = 'cc-home-product-wrap';
+  const BTN_DATA = 'data-cc-home-product-button';
+  const MENU_DATA = 'data-cchpdm';
+
+  // Global open state so we can manage listeners once
+  let openMenu = null;
+  let anchorBtn = null;
+  let globalHandlersBound = false;
 
   // Home path detection
   function isHome(pathname) {
     if (!pathname) return false;
     return pathname === '/' || pathname === '/index' || pathname === '/index.html' || pathname === '/docs' || pathname === '/docs/';
+  }
+
+  // Support deployments under /docs base path when navigating
+  function getBasePrefix() {
+    try {
+      const p = WIN.location.pathname || '/';
+      return p.indexOf('/docs') === 0 ? '/docs' : '';
+    } catch (_) { return ''; }
+  }
+  function withBase(href) {
+    const base = getBasePrefix();
+    if (!base) return href;
+    // If href already has base, keep as-is
+    return href.indexOf(base + '/') === 0 || href === base ? href : (base + href);
   }
 
   const ITEMS = [
@@ -88,16 +110,19 @@
         'dark:text-gray-200', 'dark:hover:text-gray-100', 'dark:hover:bg-white/10'
       ].join(' ');
       item.textContent = it.label || '';
+      item.setAttribute('role', 'menuitem');
+      item.tabIndex = -1;
       item.addEventListener('click', (e) => {
         e.stopPropagation();
         if (it && it.href) {
           try {
-            if (WIN.location.pathname !== it.href) {
-              WIN.history.pushState({}, '', it.href);
+            const dest = withBase(it.href);
+            if (WIN.location.pathname !== dest) {
+              WIN.history.pushState({}, '', dest);
               WIN.dispatchEvent(new Event('popstate'));
             }
           } catch (_) {
-            WIN.location.assign(it.href);
+            WIN.location.assign(withBase(it.href));
           }
         }
         // Close any open menu after navigating
@@ -119,18 +144,19 @@
   function ensureContainer(navbarRoot) {
     if (!navbarRoot) return null;
     // Try to find the standard container used near the logo
-    let container = navbarRoot.querySelector('.hidden.lg\\:flex.items-center.gap-x-2');
+    let container = navbarRoot.querySelector('#' + WRAP_ID) || navbarRoot.querySelector('.hidden.lg\\:flex.items-center.gap-x-2');
     if (container) return container;
     const logo = navbarRoot.querySelector('a[href="/"]');
     if (!logo) return null;
     container = DOC.createElement('div');
+    container.id = WRAP_ID;
     container.className = 'hidden lg:flex items-center gap-x-2';
     try { logo.parentElement.insertBefore(container, logo.nextSibling); } catch (_) {}
     return container;
   }
 
   function removeExisting(container) {
-    container.querySelectorAll('[data-cc-home-product-button]')?.forEach(el => el.remove());
+    container.querySelectorAll('[' + BTN_DATA + ']')?.forEach(el => el.remove());
   }
 
   // Cleanup helper for when we navigate away from the homepage in SPA flow
@@ -142,43 +168,81 @@
   }
 
   function inject() {
-  if (!isHome(WIN.location.pathname)) { cleanupAll(); return; }
+    if (!isHome(WIN.location.pathname)) { cleanupAll(); return; }
     const navbar = DOC.getElementById(NAVBAR_ID);
     const target = ensureContainer(navbar);
     if (!target) return;
     removeExisting(target);
 
     const btn = createButton('Products');
-    btn.setAttribute('data-cc-home-product-button', 'true');
+    btn.setAttribute(BTN_DATA, 'true');
     target.appendChild(btn);
 
-    let openMenu = null;
     function closeMenu() {
       if (openMenu) {
         openMenu.remove();
         openMenu = null;
-        btn.setAttribute('aria-expanded', 'false');
-        btn.setAttribute('data-state', 'closed');
+      }
+      if (anchorBtn) {
+        anchorBtn.setAttribute('aria-expanded', 'false');
+        anchorBtn.setAttribute('data-state', 'closed');
+        anchorBtn = null;
       }
     }
     function open() {
-      if (openMenu) { closeMenu(); return; }
-  const menu = createMenu(ITEMS, () => closeMenu());
-  menu.setAttribute('data-cchpdm', 'menu');
+      if (openMenu) { closeMenu(); }
+      const menu = createMenu(ITEMS, () => closeMenu());
+      menu.setAttribute(MENU_DATA, 'menu');
       DOC.body.appendChild(menu);
       placeMenu(menu, btn);
       requestAnimationFrame(() => placeMenu(menu, btn));
       openMenu = menu;
+      anchorBtn = btn;
       btn.setAttribute('aria-expanded', 'true');
       btn.setAttribute('data-state', 'open');
+      // Focus first item for accessibility
+      const firstItem = menu.querySelector('[role="menuitem"]');
+      if (firstItem) firstItem.focus();
     }
+    // Toggle via click
     btn.addEventListener('click', (e) => { e.stopPropagation(); open(); });
-    DOC.addEventListener('click', (e) => {
-      if (!openMenu) return;
-      if (e.target === btn || btn.contains(e.target)) return;
-      if (openMenu.contains(e.target)) return;
-      closeMenu();
-    });
+
+    // Bind global handlers once
+    if (!globalHandlersBound) {
+      globalHandlersBound = true;
+      // Outside click closes
+      DOC.addEventListener('click', (e) => {
+        if (!openMenu) return;
+        if (anchorBtn && (e.target === anchorBtn || anchorBtn.contains(e.target))) return;
+        if (openMenu.contains(e.target)) return;
+        closeMenu();
+      }, true);
+      // Escape / keyboard navigation
+      DOC.addEventListener('keydown', (e) => {
+        if (!openMenu) return;
+        if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); return; }
+        const items = Array.from(openMenu.querySelectorAll('[role="menuitem"]'));
+        if (!items.length) return;
+        const idx = items.indexOf(DOC.activeElement);
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const next = items[(idx + 1 + items.length) % items.length] || items[0];
+          next.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prev = items[(idx - 1 + items.length) % items.length] || items[items.length - 1];
+          prev.focus();
+        } else if (e.key === 'Home') {
+          e.preventDefault(); items[0].focus();
+        } else if (e.key === 'End') {
+          e.preventDefault(); items[items.length - 1].focus();
+        }
+      }, true);
+      // Reposition on resize/scroll
+      const reposition = () => { if (openMenu && anchorBtn) placeMenu(openMenu, anchorBtn); };
+      WIN.addEventListener('resize', reposition);
+      WIN.addEventListener('scroll', reposition, { passive: true });
+    }
   }
 
   // Debounce utility
@@ -190,9 +254,7 @@
     };
   }
 
-  const apply = debounce(() => {
-    inject();
-  }, 50);
+  const apply = debounce(() => { inject(); }, 50);
 
   if (DOC.readyState === 'loading') {
     DOC.addEventListener('DOMContentLoaded', apply);
@@ -211,8 +273,23 @@
   WIN.addEventListener('hashchange', apply);
   DOC.addEventListener('visibilitychange', () => { if (DOC.visibilityState === 'visible') apply(); });
 
+  // Observe for navbar availability; once found, narrow the scope to navbar only
   try {
-    const obs = new MutationObserver(debounce(apply, 50));
-    obs.observe(DOC.documentElement, { childList: true, subtree: true });
+    let bootObserver = null;
+    const startBootObserver = () => {
+      if (bootObserver) return;
+      bootObserver = new MutationObserver(debounce(() => {
+        const navbar = DOC.getElementById(NAVBAR_ID);
+        if (navbar) {
+          // Inject once found and swap to a lighter observer on the navbar
+          apply();
+          bootObserver.disconnect();
+          const slim = new MutationObserver(debounce(apply, 50));
+          slim.observe(navbar, { childList: true, subtree: true });
+        }
+      }, 50));
+      bootObserver.observe(DOC.body, { childList: true, subtree: true });
+    };
+    if (!DOC.getElementById(NAVBAR_ID)) startBootObserver(); else apply();
   } catch (_) {}
 })();
