@@ -95,10 +95,11 @@
     menu.tabIndex = -1;
     menu.dataset.ccHomeProductMenu = 'true';
     menu.style.zIndex = '2147483647';
+    menu.style.width = '160px';
     menu.className = [
       'absolute', 'mt-2', 'rounded-xl',
       'bg-white', 'dark:bg-background-dark', 'border', 'border-gray-200', 'dark:border-gray-800',
-      'shadow-xl', 'p-1', 'min-w-[15rem]'
+      'shadow-xl', 'p-1'
     ].join(' ');
 
     items.forEach(it => {
