@@ -95,10 +95,6 @@
     menu.tabIndex = -1;
     menu.dataset.ccHomeProductMenu = 'true';
     menu.style.zIndex = '2147483647';
-  menu.style.whiteSpace = 'nowrap';
-  menu.style.width = 'max-content';
-  menu.style.minWidth = '15rem';
-  menu.style.maxWidth = '24rem';
     menu.className = [
       'absolute', 'mt-2', 'rounded-xl',
       'bg-white', 'dark:bg-background-dark', 'border', 'border-gray-200', 'dark:border-gray-800',
