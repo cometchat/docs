@@ -17,9 +17,12 @@
     var home = isHome();
     if (home) {
       html.classList.add('cc-home');
+      // cc-nav-ready will be re-added after nav-filter finishes homepage filter
       html.classList.remove('cc-nav-ready');
     } else {
       html.classList.remove('cc-home');
+      // Remove cc-nav-ready before filtering to avoid flicker
+      html.classList.remove('cc-nav-ready');
     }
   }
 

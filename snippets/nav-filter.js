@@ -146,6 +146,19 @@
       return Array.prototype.slice.call(root.querySelectorAll('a,button'));
     }
 
+    // Transient hide to prevent flicker while we toggle items
+    var transientHidden = false;
+    function beginTransientHide() {
+      var root = getTabsContainer();
+      if (!root || transientHidden) return;
+      try { root.style.visibility = 'hidden'; transientHidden = true; } catch (_) {}
+    }
+    function endTransientHide() {
+      var root = getTabsContainer();
+      if (!root || !transientHidden) return;
+      try { root.style.visibility = ''; transientHidden = false; } catch (_) {}
+    }
+
     function hide(el) { el.style.display = 'none'; }
     function show(el) { el.style.display = ''; }
 
@@ -204,6 +217,7 @@
     }
 
   var refresh = debounce(function () {
+      beginTransientHide();
       var raw = location.pathname || '';
       var path = stripBase(raw);
       var rk = getRouteKey(path);
@@ -222,6 +236,7 @@
         lastAppliedFor = 'home';
         removeInitialStyle();
         try { window.dispatchEvent(new CustomEvent('cc:nav-ready', { detail: { routeKey: 'home' } })); } catch (_) {}
+        endTransientHide();
         return;
       }
       // If route does not map to a single product but is a shared page, keep previous/persisted product context
@@ -234,10 +249,12 @@
           useKey = 'chat-call';
         }
         applyFilterFor(useKey);
+        endTransientHide();
         return;
       }
       // Always re-apply on route or structure changes
       applyFilterFor(rk);
+      endTransientHide();
     }, 10);
 
     // Inject an initial style to hide all nav items to avoid flicker; will be removed after first apply/reset
