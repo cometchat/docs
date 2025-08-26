@@ -127,6 +127,7 @@
       btn.type = 'button';
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
+  btn.style.width = '150px';
       btn.className = [
         'group bg-background-light dark:bg-background-dark disabled:pointer-events-none',
         '[&>span]:line-clamp-1 overflow-hidden outline-none',
@@ -160,7 +161,7 @@
       menu.setAttribute('role', 'menu');
       menu.style.display = 'none';
       menu.style.zIndex = '2147483647'; // ensure on top
-      menu.style.width = '160px'; // fixed width
+  menu.style.width = '150px'; // fixed width
       menu.className = [
         'absolute mt-2 right-0',
         'bg-background-light dark:bg-background-dark',

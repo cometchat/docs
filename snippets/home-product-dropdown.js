@@ -95,7 +95,7 @@
     menu.tabIndex = -1;
     menu.dataset.ccHomeProductMenu = 'true';
     menu.style.zIndex = '2147483647';
-    menu.style.width = '160px';
+    menu.style.width = '150px';
     menu.className = [
       'absolute', 'mt-2', 'rounded-xl',
       'bg-white', 'dark:bg-background-dark', 'border', 'border-gray-200', 'dark:border-gray-800',
@@ -187,6 +187,7 @@
 
     const btn = createButton('Products');
     btn.setAttribute(BTN_DATA, 'true');
+  btn.style.width = '150px';
     target.appendChild(btn);
 
     function closeMenu() {
