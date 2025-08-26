@@ -135,13 +135,13 @@
         'absolute mt-2 right-0',
         'bg-background-light dark:bg-background-dark',
         'border border-gray-200 dark:border-gray-800 rounded-xl shadow-xl overflow-hidden',
-        'py-2 min-w-[12rem]'
+        'py-2 min-w-[15rem]'
       ].join(' ');
 
       PRODUCTS.forEach(function (prod) {
         var a = document.createElement('a');
         a.href = prod.href;
-        a.className = 'block px-3.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-950/5 dark:hover:bg-white/5';
+  a.className = 'block px-3.5 py-2 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-950/5 dark:hover:bg-white/5 whitespace-nowrap';
         a.textContent = prod.label;
         if (prod.key === currentKey) {
           a.className += ' cursor-default text-primary dark:text-primary-light';
