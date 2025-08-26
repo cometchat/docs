@@ -18,6 +18,7 @@
       if (!path) return null;
       if (path.startsWith('/chat-call')) return 'chat-call';
       if (path.startsWith('/ai-agents')) return 'ai-agents';
+      if (path.startsWith('/ai-agents/mastra')) return 'ai-agents';
       if (path.startsWith('/moderation')) return 'moderation';
       if (path.startsWith('/notifications')) return 'notifications';
       if (path.startsWith('/insights')) return 'insights';
@@ -146,26 +147,31 @@
       var t; return function () { clearTimeout(t); var a = arguments; t = setTimeout(function () { fn.apply(null, a); }, wait); };
     }
 
-    var refresh = debounce(function () {
+  var refresh = debounce(function () {
       var path = location.pathname || '';
       var rk = getRouteKey(path);
+      // If on homepage, hide all nav items (Home stays hidden globally anyway)
+      if (normalizePathForHome(path)) {
+        getTabControls().forEach(hide);
+        lastAppliedFor = 'home';
+        removeInitialStyle();
+        return;
+      }
       // Always re-apply on route or structure changes
       if (rk !== lastAppliedFor || !getTabControls().length) {
-        if (!applyFilterFor(rk)) {
-          setTimeout(function () { applyFilterFor(getRouteKey(location.pathname || '')); }, 75);
-        }
+        applyFilterFor(rk);
       } else {
         // Re-affirm after hydration updates
         applyFilterFor(rk);
       }
-    }, 50);
+    }, 10);
 
     // Inject an initial style to hide all nav items to avoid flicker; will be removed after first apply/reset
     function injectInitialStyle() {
       if (document.getElementById(INITIAL_STYLE_ID)) return;
       var style = document.createElement('style');
       style.id = INITIAL_STYLE_ID;
-      style.textContent = '.nav-tabs a, .nav-tabs button { display: none !important; }';
+      style.textContent = '#navbar .nav-tabs, #navbar .nav-tabs * { display: none !important; }';
       document.head.appendChild(style);
     }
     function removeInitialStyle() {
@@ -175,6 +181,15 @@
         style.parentNode.removeChild(style);
       }
       initialStyleRemoved = true;
+    }
+
+    function normalizePathForHome(p){
+      if (!p) return true;
+      try {
+        p = new URL(location.origin + p).pathname;
+      } catch(_) {}
+      p = (p || '/').replace(/\/+$/, '') || '/';
+      return p === '/' || p === '/index' || p === '/index.html';
     }
 
     injectInitialStyle();
