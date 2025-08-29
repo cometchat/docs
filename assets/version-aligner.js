@@ -276,10 +276,10 @@
                 if (b.classList.contains('cc-v-trigger')) return;
                 if (isVersionText(b)) {
                     b.classList.add('cc-dup-version');
-                    // Enforce only color inline; width will be default
-                    b.style.setProperty('background-color', '#dc2626', 'important');
-                    b.style.setProperty('color', '#fff', 'important');
-                    b.style.setProperty('justify-content', 'center', 'important');
+                    // No inline background/color; CSS controls layout only
+                    b.style.removeProperty('background-color');
+                    b.style.removeProperty('color');
+                    b.style.removeProperty('justify-content');
                 } else {
                     b.classList.remove('cc-dup-version');
                     b.style.removeProperty('background-color');
@@ -405,12 +405,12 @@
         // Add the React dropdown classes
         verBtn.classList.add(...reactClasses);
         
-    // Apply custom styling - remove border and set custom padding plus enforced visual styles
+    // Apply custom styling - remove border and set custom padding (no custom background/color)
     verBtn.style.border = '0';
     verBtn.style.padding = '13px 7px';
-    verBtn.style.setProperty('background-color', '#dc2626', 'important');
-    verBtn.style.setProperty('color', '#fff', 'important');
-    verBtn.style.setProperty('justify-content', 'center', 'important');
+    verBtn.style.removeProperty('background-color');
+    verBtn.style.removeProperty('color');
+    verBtn.style.removeProperty('justify-content');
     // leave width to default
         
         debugLog('[version-aligner] Version button styled to match React dropdown with custom modifications');
