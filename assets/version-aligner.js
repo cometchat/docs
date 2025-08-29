@@ -215,6 +215,11 @@
         if (!placeholder) {
             debugLog('[version-aligner] No placeholder found, nothing to restore');
             try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
+            // Also remove any duplicate-version markers we may have added in navbar
+            try {
+                const navBar = document.getElementById('navbar');
+                if (navBar) navBar.querySelectorAll('.cc-dup-version').forEach(el => el.classList.remove('cc-dup-version'));
+            } catch(_) {}
             return;
         }
         debugLog('[version-aligner] Placeholder found:', placeholder);
@@ -242,7 +247,28 @@
         debugLog('[version-aligner] Removing placeholder');
         placeholder.remove();
         try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
+        // Clean any duplicate marks after full restore
+        try {
+            const navBar = document.getElementById('navbar');
+            if (navBar) navBar.querySelectorAll('.cc-dup-version').forEach(el => el.classList.remove('cc-dup-version'));
+        } catch(_) {}
         debugLog('[version-aligner] Original layout restored');
+    }
+
+    // Mark version-like menu buttons in the NAVBAR as duplicates so CSS can hide only those
+    function markDuplicateVersionButtons() {
+        try {
+            const navBar = document.getElementById('navbar');
+            if (!navBar) return;
+            const buttons = [...navBar.querySelectorAll('button[aria-haspopup="menu"]')];
+            const isVersionText = (el) => /^v\d+([\.-]\w+)*$/i.test((el.textContent || '').replace(/[\u200E\u200F\u2060\u00A0\s]/g, ''));
+            buttons.forEach(b => {
+                // Do not consider any button we've moved or wrapped elsewhere
+                if (b.classList.contains('cc-v-trigger')) return;
+                if (isVersionText(b)) b.classList.add('cc-dup-version');
+                else b.classList.remove('cc-dup-version');
+            });
+        } catch (_) { /* noop */ }
     }
 
     function _realign() {
@@ -377,7 +403,10 @@
                             debugLog('[version-aligner] ERROR: Failed to insert version button after tech wrapper', e);
                         }
 
-        debugLog('[version-aligner] Alignment completed successfully!');
+    // Tag any leftover navbar version buttons as duplicates so only they get hidden via CSS
+    markDuplicateVersionButtons();
+
+    debugLog('[version-aligner] Alignment completed successfully!');
     }
 
     function realign() {
@@ -427,6 +456,8 @@
             
             if (relevantMutation) {
                 debugLog('[version-aligner] Relevant DOM mutation detected, triggering realign...');
+                // keep duplicate markers fresh between realignments
+                markDuplicateVersionButtons();
                 triggerRealign();
             }
         });
