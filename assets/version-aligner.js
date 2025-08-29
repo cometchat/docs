@@ -31,7 +31,7 @@
 
     
     let observer;
-    const ALIGNER_ROW_CLASS = 'version-aligner-row';
+    const ALIGNER_ROW_CLASS = 'cc-version-aligned-row';
     const PLACEHOLDER_ID = 'version-aligner-placeholder';
     
     // Cache for expensive operations
@@ -129,11 +129,56 @@
         return forwardButton;
     }
 
+    // Find the technology/framework dropdown button in the navbar (not the Radix version button)
+        function findTechButtonInNavbar() {
+        debugLog('[version-aligner] Finding technology dropdown in navbar...');
+        const navBar = document.getElementById('navbar');
+        if (!navBar) {
+            debugLog('[version-aligner] navbar not found for tech button');
+            return null;
+        }
+                const tabs = navBar.querySelector('.nav-tabs') || navBar;
+                // Prefer explicit class used by technology selector
+                let tech = tabs.querySelector('button.nav-dropdown-trigger');
+                if (tech && !tech.closest('.' + ALIGNER_ROW_CLASS)) return tech;
+                // Fallback: first non-version menu button (text not matching v\d+)
+                const isVersionText = (el) => /^v\d+([\.-]\w+)*$/i.test((el.textContent || '').replace(/[\u200E\u200F\u2060\u00A0\s]/g, ''));
+                const candidates = [...tabs.querySelectorAll('button[aria-haspopup="menu"]')]
+                    .filter(b => b.id !== 'cc-product-dropdown-button')
+                    .filter(b => !b.hasAttribute('data-cc-home-product-button'))
+                    .filter(b => !isVersionText(b))
+                    .filter(b => !b.closest('.' + ALIGNER_ROW_CLASS));
+                if (candidates.length) return candidates[0];
+                debugLog('[version-aligner] No technology dropdown found in navbar');
+                return null;
+    }
+
+    function getBasePrefix() {
+        try {
+            const p = window.location.pathname || '/';
+            return p.indexOf('/docs') === 0 ? '/docs' : '';
+        } catch (_) { return ''; }
+    }
+    function stripBase(path) {
+        if (!path) return '/';
+        try {
+            const base = getBasePrefix();
+            let p = new URL(path, window.location.origin).pathname;
+            if (base && p.indexOf(base) === 0) p = p.slice(base.length) || '/';
+            return p;
+        } catch (_) {
+            const base = getBasePrefix();
+            if (base && path.indexOf(base) === 0) return path.slice(base.length) || '/';
+            return path;
+        }
+    }
+
     function isVersionedPage() {
         debugLog('[version-aligner] Checking if page is versioned...');
         
         const currentPath = window.location.pathname;
-        debugLog('[version-aligner] Current path:', currentPath);
+        const path = stripBase(currentPath || '/');
+        debugLog('[version-aligner] Current path:', currentPath, 'Stripped path:', path);
         
         // Check if the URL indicates this is a versioned section
         const versionedPaths = [
@@ -141,7 +186,7 @@
             '/sdk/'
         ];
         
-        const isVersionedPath = versionedPaths.some(path => currentPath.startsWith(path));
+        const isVersionedPath = versionedPaths.some(p => path.startsWith(p));
         debugLog('[version-aligner] Path-based versioned check:', isVersionedPath);
         
         if (isVersionedPath) {
@@ -169,52 +214,34 @@
         const placeholder = document.getElementById(PLACEHOLDER_ID);
         if (!placeholder) {
             debugLog('[version-aligner] No placeholder found, nothing to restore');
+            try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
             return;
         }
         debugLog('[version-aligner] Placeholder found:', placeholder);
 
-        const previousRow = document.querySelector(`.${ALIGNER_ROW_CLASS}`);
-        if (!previousRow) {
-            debugLog('[version-aligner] No aligner row found, removing placeholder');
-            placeholder.remove();
-            return;
-        }
-        debugLog('[version-aligner] Aligner row found:', previousRow);
-
-        const verBtn = previousRow.querySelector('[data-version-aligner-button]');
-        const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
-        
-        debugLog('[version-aligner] Version button in row:', verBtn);
-        debugLog('[version-aligner] Forward button in row:', fwBtn);
-
-                 if (verBtn) {
+                // Find the current aligned version button anywhere in DOM
+                let verBtn = document.querySelector('.cc-v-trigger') || document.querySelector('[data-version-aligner-button]') || (function(){
+                    const nav = document.getElementById('sidebar-content') || document;
+                    const candidates = [...nav.querySelectorAll('button[aria-haspopup="menu"]')];
+                    return candidates.find(el => /^v\d+([\.-]\w+)*$/i.test((el.textContent||'').replace(/[\u200E\u200F\u2060\u00A0\s]/g, '')));
+                })();
+        if (verBtn && placeholder.parentNode) {
             debugLog('[version-aligner] Moving version button back to placeholder location');
             placeholder.parentNode.insertBefore(verBtn, placeholder);
             verBtn.style.display = '';
-            delete verBtn.dataset.versionAlignerButton;
+            verBtn.style.flex = '';
+            verBtn.classList.remove('cc-v-trigger');
+            // Remove the React dropdown classes that were added
+            const reactClasses = [
+                'group','bg-background-light','dark:bg-background-dark','disabled:pointer-events-none','overflow-hidden','outline-none','text-sm','text-gray-950/50','dark:text-white/50','group-hover:text-gray-950/70','dark:group-hover:text-white/70','z-10','flex','items-center','pl-2','pr-3.5','py-1.5','rounded-[0.85rem]','border','border-gray-200/70','dark:border-white/[0.07]','hover:bg-gray-600/5','dark:hover:bg-gray-200/5','gap-1'
+            ];
+            try { verBtn.classList.remove(...reactClasses); } catch(_) {}
+            try { delete verBtn.dataset.versionAlignerButton; } catch(_) {}
         }
 
-        if (fwBtn) {
-            debugLog('[version-aligner] Moving forward button back to sidebar');
-            const sidebar = document.getElementById('sidebar-content');
-            if (sidebar) {
-                const navigationItems = sidebar.querySelector('#navigation-items');
-                if (navigationItems) {
-                    navigationItems.insertBefore(fwBtn, navigationItems.firstChild);
-                    fwBtn.style.flex = '';
-                    fwBtn.style.margin = '';
-                    fwBtn.classList.add('w-full');
-                } else {
-                    debugLog('[version-aligner] ERROR: navigation-items not found in sidebar-content');
-                }
-            } else {
-                debugLog('[version-aligner] ERROR: sidebar-content not found for forward button restoration');
-            }
-        }
-
-        debugLog('[version-aligner] Removing placeholder and aligner row');
+        debugLog('[version-aligner] Removing placeholder');
         placeholder.remove();
-        previousRow.remove();
+        try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
         debugLog('[version-aligner] Original layout restored');
     }
 
@@ -235,75 +262,42 @@
         }
         debugLog('[version-aligner] Screen width >= 1024px, proceeding with alignment');
 
-        // Clean up previous alignment
-        const previousRow = document.querySelector(`.${ALIGNER_ROW_CLASS}`);
-        if (previousRow) {
-            debugLog('[version-aligner] Cleaning up previous alignment row');
-            const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
-            const verBtn = previousRow.querySelector('[data-version-aligner-button]');
-            
-            // Check if current page is versioned to determine cleanup strategy
-            const currentPageIsVersioned = isVersionedPage();
-            debugLog('[version-aligner] Current page versioned status for cleanup:', currentPageIsVersioned);
-            
-            if (currentPageIsVersioned && fwBtn && previousRow.parentElement) {
-                // If we're moving to another versioned page, restore forward button normally
-                debugLog('[version-aligner] Restoring forward button to original position for re-alignment');
-                previousRow.parentElement.insertBefore(fwBtn, previousRow);
-                fwBtn.style.flex = '';
-                fwBtn.style.margin = '';
-                fwBtn.classList.add('w-full');
-            } else if (!currentPageIsVersioned && fwBtn) {
-                // If we're moving to a non-versioned page, forward button should stay where it naturally belongs
-                debugLog('[version-aligner] Moving to non-versioned page, keeping forward button in natural location');
-                // Don't restore fwBtn to sidebar - let it disappear naturally since page doesn't need it
+    // Clean up previous alignment
+        // Clean up previous alignment using placeholder if present
+        const placeholderPrev = document.getElementById(PLACEHOLDER_ID);
+        const currentPageIsVersioned = isVersionedPage();
+        if (placeholderPrev) {
+            debugLog('[version-aligner] Cleaning up previous alignment using placeholder');
+            const verBtnPrev = document.querySelector('.cc-v-trigger') || document.querySelector('[data-version-aligner-button]');
+            if (verBtnPrev && placeholderPrev.parentElement) {
+                placeholderPrev.parentElement.insertBefore(verBtnPrev, placeholderPrev);
+                verBtnPrev.style.display = '';
+                verBtnPrev.style.flex = '';
+                verBtnPrev.classList.remove('cc-v-trigger');
+                const reactClasses = [
+                    'group','bg-background-light','dark:bg-background-dark','disabled:pointer-events-none','overflow-hidden','outline-none','text-sm','text-gray-950/50','dark:text-white/50','group-hover:text-gray-950/70','dark:group-hover:text-white/70','z-10','flex','items-center','pl-2','pr-3.5','py-1.5','rounded-[0.85rem]','border','border-gray-200/70','dark:border-white/[0.07]','hover:bg-gray-600/5','dark:hover:bg-gray-200/5','gap-1'
+                ];
+                try { verBtnPrev.classList.remove(...reactClasses); } catch(_) {}
+                try { delete verBtnPrev.dataset.versionAlignerButton; } catch(_) {}
             }
-            
-                         if (verBtn) {
-                debugLog('[version-aligner] Restoring version button to original position');
-                const placeholder = document.getElementById(PLACEHOLDER_ID);
-                if (placeholder && placeholder.parentElement) {
-                    // Move version button back to its original location
-                    placeholder.parentElement.insertBefore(verBtn, placeholder);
-                    verBtn.style.display = '';
-                    verBtn.style.flex = '';
-                    
-                    // Remove the React dropdown classes that were added
-                    const reactClasses = [
-                        'group', 'bg-background-light', 'dark:bg-background-dark', 
-                        'disabled:pointer-events-none', 'overflow-hidden', 'outline-none', 
-                        'text-sm', 'text-gray-950/50', 'dark:text-white/50', 
-                        'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
-                        'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5', 
-                        'rounded-[0.85rem]', 'border', 'border-gray-200/70', 
-                        'dark:border-white/[0.07]', 'hover:bg-gray-600/5', 
-                        'dark:hover:bg-gray-200/5', 'gap-1'
-                    ];
-                    verBtn.classList.remove(...reactClasses);
-                    
-                    delete verBtn.dataset.versionAlignerButton;
-                    placeholder.remove();
-                    debugLog('[version-aligner] Version button restored and placeholder removed');
-                } else {
-                    debugLog('[version-aligner] Could not find placeholder - version button will be removed');
-                    verBtn.remove();
-                }
-            }
-            debugLog('[version-aligner] Removing previous row');
-            previousRow.remove();
-            
-            // Exit early if current page is not versioned - no need to proceed with alignment
+            try { placeholderPrev.remove(); } catch(_) {}
+            try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
             if (!currentPageIsVersioned) {
                 debugLog('[version-aligner] Current page is not versioned, cleanup complete');
                 return;
             }
+        } else if (!currentPageIsVersioned) {
+            // No placeholder and not a versioned page — nothing to do
+            debugLog('[version-aligner] Not a versioned page and no placeholder; skipping alignment');
+            try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
+            return;
         }
 
         // Page versioning was already checked during cleanup - we only reach here if page is versioned
 
-        debugLog('[version-aligner] Finding version selector and forward button...');
-        const verBtn = findVersionSelector();
-        const fwBtn = findForwardButton();
+    debugLog('[version-aligner] Finding version selector and technology dropdown (sidebar)...');
+    const verBtn = findVersionSelector();
+    const techBtn = findForwardButton();
 
         if (!verBtn) {
             debugLog('[version-aligner] ERROR: Version button not found, cannot align');
@@ -311,11 +305,11 @@
         }
         debugLog('[version-aligner] Version button found successfully');
 
-        if (!fwBtn) {
-            debugLog('[version-aligner] ERROR: Forward button not found, cannot align');
+        if (!techBtn) {
+            debugLog('[version-aligner] ERROR: Technology dropdown (sidebar .nav-dropdown-trigger) not found, cannot align');
             return;
         }
-        debugLog('[version-aligner] Forward button found successfully');
+        debugLog('[version-aligner] Technology dropdown found successfully');
 
         debugLog('[version-aligner] Creating placeholder for version button...');
         const placeholder = document.createElement('div');
@@ -323,13 +317,9 @@
         placeholder.style.display = 'none';
         verBtn.parentNode.insertBefore(placeholder, verBtn);
 
-        debugLog('[version-aligner] Creating alignment row...');
-        const row = document.createElement('div');
-        row.className = `${ALIGNER_ROW_CLASS} flex items-center gap-2`;
-        row.style.flex = '1 1 auto';
-
         debugLog('[version-aligner] Setting up version button...');
         verBtn.dataset.versionAlignerButton = 'true';
+    verBtn.classList.add('cc-v-trigger');
         verBtn.style.flex = '0 0 auto';
         
         // Remove any existing inline styles that might conflict
@@ -372,20 +362,20 @@
         
         debugLog('[version-aligner] Version button styled to match React dropdown with custom modifications');
 
-        debugLog('[version-aligner] Setting up forward button...');
-        fwBtn.style.flex = '1 1 auto';
-        fwBtn.style.margin = '0px';
-        fwBtn.classList.remove('w-full');
-
-        debugLog('[version-aligner] Assembling alignment row...');
-        // Change order: React dropdown first, then version dropdown
-        row.appendChild(fwBtn);
-        row.appendChild(verBtn);
-
-        debugLog('[version-aligner] Inserting alignment row into sidebar...');
-        const sidebar = document.getElementById('sidebar-content');
-        const navigationItems = sidebar.querySelector('#navigation-items');
-        navigationItems.insertBefore(row, navigationItems.firstChild);
+                        debugLog('[version-aligner] Inserting version button after technology dropdown wrapper in sidebar...');
+                        const sidebar = document.getElementById('sidebar-content');
+                        const navigationItems = sidebar && sidebar.querySelector('#navigation-items');
+                        if (!navigationItems) {
+                            debugLog('[version-aligner] ERROR: #navigation-items not found in sidebar');
+                            return;
+                        }
+                        const techWrapper = techBtn.closest('.pl-2') || techBtn;
+                        try {
+                            techWrapper.parentNode.insertBefore(verBtn, techWrapper.nextSibling);
+                            try { document.documentElement.classList.add('cc-version-aligned'); } catch(_) {}
+                        } catch (e) {
+                            debugLog('[version-aligner] ERROR: Failed to insert version button after tech wrapper', e);
+                        }
 
         debugLog('[version-aligner] Alignment completed successfully!');
     }
