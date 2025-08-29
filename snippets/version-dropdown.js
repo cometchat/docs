@@ -161,7 +161,7 @@
       menu.setAttribute('role', 'menu');
       menu.style.display = 'none';
       menu.style.zIndex = '2147483647'; // ensure on top
-  menu.style.width = '150px'; // fixed width
+      menu.style.width = '150px'; // fixed width
       menu.className = [
         'absolute mt-2 right-0',
         'bg-background-light dark:bg-background-dark',

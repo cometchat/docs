@@ -187,7 +187,7 @@
 
     const btn = createButton('Products');
     btn.setAttribute(BTN_DATA, 'true');
-  btn.style.width = '150px';
+    btn.style.width = '150px';
     target.appendChild(btn);
 
     function closeMenu() {
