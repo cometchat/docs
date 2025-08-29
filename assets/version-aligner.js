@@ -28,8 +28,6 @@
         }
     }
     
-
-    
     let observer;
     const ALIGNER_ROW_CLASS = 'cc-version-aligned-row';
     const PLACEHOLDER_ID = 'version-aligner-placeholder';
@@ -240,10 +238,6 @@
             try {
                 verBtn.style.removeProperty('background-color');
                 verBtn.style.removeProperty('color');
-                verBtn.style.removeProperty('width');
-                verBtn.style.removeProperty('min-width');
-                verBtn.style.removeProperty('max-width');
-                verBtn.style.removeProperty('box-sizing');
                 verBtn.style.removeProperty('justify-content');
             } catch(_) {}
             // Remove the React dropdown classes that were added
@@ -264,12 +258,7 @@
                 el.classList.remove('cc-dup-version');
                 el.style.removeProperty('background-color');
                 el.style.removeProperty('color');
-                el.style.removeProperty('width');
-                el.style.removeProperty('min-width');
-                el.style.removeProperty('max-width');
-                el.style.removeProperty('box-sizing');
                 el.style.removeProperty('justify-content');
-                el.style.removeProperty('flex');
             });
         } catch(_) {}
         debugLog('[version-aligner] Original layout restored');
@@ -287,25 +276,15 @@
                 if (b.classList.contains('cc-v-trigger')) return;
                 if (isVersionText(b)) {
                     b.classList.add('cc-dup-version');
-                    // Enforce visual style inline to survive hydration reorders
+                    // Enforce only color inline; width will be default
                     b.style.setProperty('background-color', '#dc2626', 'important');
                     b.style.setProperty('color', '#fff', 'important');
-                    b.style.setProperty('width', '65px', 'important');
-                    b.style.setProperty('min-width', '65px', 'important');
-                    b.style.setProperty('max-width', '65px', 'important');
-                    b.style.setProperty('box-sizing', 'border-box', 'important');
                     b.style.setProperty('justify-content', 'center', 'important');
-                    b.style.setProperty('flex', '0 0 65px', 'important');
                 } else {
                     b.classList.remove('cc-dup-version');
                     b.style.removeProperty('background-color');
                     b.style.removeProperty('color');
-                    b.style.removeProperty('width');
-                    b.style.removeProperty('min-width');
-                    b.style.removeProperty('max-width');
-                    b.style.removeProperty('box-sizing');
                     b.style.removeProperty('justify-content');
-                    b.style.removeProperty('flex');
                 }
             });
         } catch (_) { /* noop */ }
@@ -427,12 +406,8 @@
     verBtn.style.padding = '13px 7px';
     verBtn.style.setProperty('background-color', '#dc2626', 'important');
     verBtn.style.setProperty('color', '#fff', 'important');
-    verBtn.style.setProperty('width', '65px', 'important');
-    verBtn.style.setProperty('min-width', '65px', 'important');
-    verBtn.style.setProperty('max-width', '65px', 'important');
-    verBtn.style.setProperty('box-sizing', 'border-box', 'important');
     verBtn.style.setProperty('justify-content', 'center', 'important');
-    verBtn.style.setProperty('flex', '0 0 65px', 'important');
+    // leave width to default
         
         debugLog('[version-aligner] Version button styled to match React dropdown with custom modifications');
 
@@ -567,6 +542,21 @@
 
     // Start observing DOM changes
     startObserver();
+    
+    // Intentionally avoid syncing Radix popper width; let defaults apply
+
+    // Track last interacted version trigger
+    let lastVersionTriggerEl = null;
+    function handleVersionTriggerInteraction(e) {
+        const el = e.target && e.target.closest && e.target.closest('.cc-v-trigger, #navbar .cc-dup-version');
+        if (!el) return;
+        lastVersionTriggerEl = el;
+        // No width adjustments; styling only
+    }
+    document.addEventListener('click', handleVersionTriggerInteraction, true);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') handleVersionTriggerInteraction(e);
+    }, true);
     
     debugLog('[version-aligner] ===== SCRIPT INITIALIZATION COMPLETE =====');
 })();

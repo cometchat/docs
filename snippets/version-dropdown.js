@@ -127,7 +127,7 @@
       btn.type = 'button';
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
-  btn.style.width = '150px';
+      btn.style.width = '150px';
       btn.className = [
         'group bg-background-light dark:bg-background-dark disabled:pointer-events-none',
         '[&>span]:line-clamp-1 overflow-hidden outline-none',
