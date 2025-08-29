@@ -86,11 +86,15 @@
             debugLog(`[version-aligner] Menu button ${index + 1} matches version regex:`, /^v\d+([\.-]\w+)*$/i.test(cleanText));
         });
         
-        const versionButtons = menuButtons
-            .filter(el => {
-                const cleanText = el.textContent.trim().replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
-                return /^v\d+([\.-]\w+)*$/i.test(cleanText);
-            });
+        const versionButtons = menuButtons.filter(el => {
+            // Consider only visible buttons
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            // Extract text robustly
+            const rawText = (el.innerText || el.textContent || '').trim();
+            const cleanText = rawText.replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+            return /^v\d+([\.-]\w+)*$/i.test(cleanText);
+        });
         debugLog('[version-aligner] Version buttons found:', versionButtons.length, versionButtons);
         
         if (versionButtons.length > 0) {
@@ -114,13 +118,30 @@
         }
         
         const sidebar = document.getElementById('sidebar-content');
-        if (!sidebar) {
-            debugLog('[version-aligner] ERROR: sidebar-content not found');
-            return null;
+        let forwardButton = null;
+        if (sidebar) {
+            debugLog('[version-aligner] sidebar-content found:', sidebar);
+            forwardButton = sidebar.querySelector('.nav-dropdown-trigger');
+        } else {
+            debugLog('[version-aligner] sidebar-content not found');
         }
-        debugLog('[version-aligner] sidebar-content found:', sidebar);
-        
-    const forwardButton = sidebar.querySelector('.nav-dropdown-trigger');
+        // Fallback: look in the navbar for a non-version, non-product menu button to pair with
+        if (!forwardButton) {
+            const navbar = document.getElementById('navbar');
+            if (navbar) {
+                const candidates = Array.from(navbar.querySelectorAll('button[aria-haspopup="menu"]'))
+                    .filter(b => b.id !== 'cc-product-dropdown-button')
+                    .filter(b => !b.hasAttribute('data-cc-home-product-button'))
+                    .filter(b => {
+                        const t = (b.textContent || '').replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+                        return !/^v\d+([\.-]\w+)*$/i.test(t);
+                    });
+                if (candidates.length) {
+                    forwardButton = candidates[0];
+                    debugLog('[version-aligner] Fallback forward button from navbar:', forwardButton);
+                }
+            }
+        }
         if (forwardButton) {
             cachedForwardButton = forwardButton; // Cache the result
             debugLog('[version-aligner] Forward button found:', forwardButton);
@@ -219,21 +240,63 @@
         placeholder.remove();
         previousRow.remove();
         debugLog('[version-aligner] Original layout restored');
+
+        // Clear duplicate markers and page flag
+        try {
+            document.documentElement.classList.remove('cc-version-aligned');
+            document.querySelectorAll('#navbar .cc-dup-version').forEach(el => el.classList.remove('cc-dup-version'));
+        } catch(_) {}
+    }
+
+    function markDuplicateVersionButtons() {
+        try {
+            const navbar = document.getElementById('navbar');
+            if (!navbar) return;
+            const buttons = [...navbar.querySelectorAll('button[aria-haspopup="menu"]')]
+                .filter(el => el.id !== 'cc-product-dropdown-button')
+                .filter(el => !el.hasAttribute('data-cc-home-product-button'));
+            buttons.forEach(btn => {
+                const clean = (btn.textContent || '').trim().replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+                if (/^v\d+([\.-]\w+)*$/i.test(clean)) {
+                    btn.classList.add('cc-dup-version');
+                }
+            });
+        } catch(_) {}
+    }
+
+    function setAlignedFlag(on) {
+        try {
+            const html = document.documentElement;
+            if (!html) return;
+            if (on) html.classList.add('cc-version-aligned');
+            else html.classList.remove('cc-version-aligned');
+        } catch(_) {}
     }
 
     function _realign() {
         debugLog('[version-aligner] Starting _realign function...');
         
-        // Check if dropdown is open
-        if (document.querySelector('[role="menu"], [data-radix-popper-content-wrapper]')) {
-            debugLog('[version-aligner] Dropdown is open, skipping alignment');
-            return;
-        }
+        // Check if any dropdown is actually open (visible)
+        try {
+            const maybeMenus = Array.from(document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]'));
+            const visibleMenus = maybeMenus.filter(el => {
+                // Fast path: hidden via display:none or zero box
+                const style = window.getComputedStyle ? getComputedStyle(el) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+                const box = el.getBoundingClientRect();
+                return box.width > 0 && box.height > 0;
+            });
+            if (visibleMenus.length) {
+                debugLog('[version-aligner] A dropdown is visible, skipping alignment');
+                return;
+            }
+        } catch(_) {}
 
         debugLog('[version-aligner] Checking screen width...');
         if (window.innerWidth < 1024) {
             debugLog('[version-aligner] Screen width < 1024px, restoring original layout');
             restoreOriginalLayout();
+            setAlignedFlag(false);
             return;
         }
         debugLog('[version-aligner] Screen width >= 1024px, proceeding with alignment');
@@ -298,6 +361,7 @@
             // Exit early if current page is not versioned - no need to proceed with alignment
             if (!currentPageIsVersioned) {
                 debugLog('[version-aligner] Current page is not versioned, cleanup complete');
+                setAlignedFlag(false);
                 return;
             }
         }
@@ -327,12 +391,13 @@
         verBtn.parentNode.insertBefore(placeholder, verBtn);
 
         debugLog('[version-aligner] Creating alignment row...');
-        const row = document.createElement('div');
-        row.className = `${ALIGNER_ROW_CLASS} flex items-center gap-2`;
+    const row = document.createElement('div');
+    row.className = `${ALIGNER_ROW_CLASS} cc-version-aligned-row flex items-center gap-2`;
         row.style.flex = '1 1 auto';
 
         debugLog('[version-aligner] Setting up version button...');
-        verBtn.dataset.versionAlignerButton = 'true';
+    verBtn.dataset.versionAlignerButton = 'true';
+    verBtn.classList.add('cc-v-trigger');
         verBtn.style.flex = '0 0 auto';
         
         // Remove any existing inline styles that might conflict
@@ -388,7 +453,13 @@
         debugLog('[version-aligner] Inserting alignment row into sidebar...');
         const sidebar = document.getElementById('sidebar-content');
         const navigationItems = sidebar.querySelector('#navigation-items');
-        navigationItems.insertBefore(row, navigationItems.firstChild);
+    navigationItems.insertBefore(row, navigationItems.firstChild);
+
+    // Mark any remaining navbar version buttons as duplicates
+    markDuplicateVersionButtons();
+
+    // Set a page-level flag so CSS can scope rules precisely
+    setAlignedFlag(true);
 
         debugLog('[version-aligner] Alignment completed successfully!');
     }
@@ -403,7 +474,7 @@
             _realign();
         } finally {
             observer.observe(document.body, { childList: true, subtree: true });
-            debugLog('[version-aligner] Observer reconnected');
+        debugLog('[version-aligner] Observer reconnected');
         }
         debugLog('[version-aligner] ===== REALIGN COMPLETE =====');
     }
