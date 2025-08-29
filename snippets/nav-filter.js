@@ -51,6 +51,9 @@
     function getRouteKey(path) {
       if (!path) return null;
       path = stripBase(path);
+      // Explicitly map shared sections to their owning product
+      if (path.startsWith('/chat-builder')) return 'chat-call';
+      if (path.startsWith('/widget/ai-agents')) return 'ai-agents';
       if (path.startsWith('/chat-call')) return 'chat-call';
       if (path.startsWith('/ai-agents')) return 'ai-agents';
       if (path.startsWith('/ai-agents/mastra')) return 'ai-agents';
@@ -74,7 +77,8 @@
         '/ai-agents',
         '/ai-agents/',
         '/ai-agents/mastra',
-        '/chat-builder'
+        // Show the AI Agents Chat Builder (widget) tab when in AI Agents context
+        '/widget/ai-agents'
       ],
       'moderation': [
         '/moderation'
@@ -93,7 +97,7 @@
         'Chat & Calling', 'Platform', 'UI Kits', 'SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
       ],
       'ai-agents': [
-        'AI Agents', 'AI Agents Builder', 'Chat Builder'
+        'AI Agents', 'AI Agents Builder'
       ],
       'moderation': [
         'AI Moderation'
@@ -112,6 +116,24 @@
       return t;
     }
 
+    function getTabId(el) {
+      if (!el) return null;
+      try { return el.getAttribute('tab-id') || (el.dataset && el.dataset.tabId) || null; } catch(_) { return null; }
+    }
+
+    function isBlockedHref(routeKey, pathOnly) {
+      try { pathOnly = stripBase(pathOnly || '/'); } catch (_) {}
+      if (routeKey === 'chat-call') {
+        // Hide AI Agents Chat Builder tab in Chat & Calling context
+        if (pathOnly.indexOf('/widget/ai-agents') === 0) return true;
+      }
+      if (routeKey === 'ai-agents') {
+        // Hide Framework Chat Builder tab in AI Agents context
+        if (pathOnly.indexOf('/chat-builder') === 0) return true;
+      }
+      return false;
+    }
+
     function isAllowedHref(routeKey, href) {
       if (!routeKey || !href) return false;
       try {
@@ -121,9 +143,11 @@
           p = new URL(href, location.origin).pathname;
         }
         p = stripBase(p);
+        if (isBlockedHref(routeKey, p)) return false;
         return allowedByRoute[routeKey].some(function (slug) { return p.indexOf(slug) === 0; });
       } catch (_) {
         var q = stripBase(href);
+        if (isBlockedHref(routeKey, q)) return false;
         return allowedByRoute[routeKey].some(function (slug) { return q.indexOf(slug) === 0; });
       }
     }
@@ -131,6 +155,21 @@
     function isAllowedLabel(routeKey, labelEl) {
       if (!routeKey || !labelEl) return false;
       var lbl = normalizeLabel(labelEl);
+      // Special-case: both top-level tabs share the label "Chat Builder".
+      if (lbl === 'chat builder') {
+        var id = getTabId(labelEl);
+        // If a tab-id is present, honor it strictly
+        if (id === 'chat-builder') return routeKey === 'chat-call';
+        if (id === 'ai-agent-chat-builder') return routeKey === 'ai-agents';
+        // Fallback to href heuristics when tab-id isn't present
+        var href = (labelEl.getAttribute && labelEl.getAttribute('href')) || '';
+        var p = href;
+        try { if (/^https?:\/\//i.test(href)) p = new URL(href, location.origin).pathname; } catch (_) {}
+        p = stripBase(p || '/');
+        if (routeKey === 'chat-call') return p.indexOf('/chat-builder') === 0;
+        if (routeKey === 'ai-agents') return p.indexOf('/widget/ai-agents') === 0;
+        return false;
+      }
       var allowed = allowedLabelsByRoute[routeKey] || [];
       return allowed.some(function (x) { return lbl === x.toLowerCase(); });
     }
@@ -202,6 +241,12 @@
   if (isHomeItem(el)) { show(el); return; }
         var href = (el.getAttribute('href') || '').trim();
         var keep = isAllowedHref(routeKey, href) || isAllowedLabel(routeKey, el);
+        // Additional guard for duplicate-labeled Chat Builder tabs when both exist
+        if (keep && normalizeLabel(el) === 'chat builder') {
+          var id = getTabId(el);
+          if (routeKey === 'chat-call' && id === 'ai-agent-chat-builder') keep = false;
+          if (routeKey === 'ai-agents' && id === 'chat-builder') keep = false;
+        }
         if (keep) show(el); else hide(el);
       });
       lastAppliedFor = routeKey;
