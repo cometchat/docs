@@ -236,6 +236,16 @@
             verBtn.style.display = '';
             verBtn.style.flex = '';
             verBtn.classList.remove('cc-v-trigger');
+            // Remove inline overrides we added during alignment
+            try {
+                verBtn.style.removeProperty('background-color');
+                verBtn.style.removeProperty('color');
+                verBtn.style.removeProperty('width');
+                verBtn.style.removeProperty('min-width');
+                verBtn.style.removeProperty('max-width');
+                verBtn.style.removeProperty('box-sizing');
+                verBtn.style.removeProperty('justify-content');
+            } catch(_) {}
             // Remove the React dropdown classes that were added
             const reactClasses = [
                 'group','bg-background-light','dark:bg-background-dark','disabled:pointer-events-none','overflow-hidden','outline-none','text-sm','text-gray-950/50','dark:text-white/50','group-hover:text-gray-950/70','dark:group-hover:text-white/70','z-10','flex','items-center','pl-2','pr-3.5','py-1.5','rounded-[0.85rem]','border','border-gray-200/70','dark:border-white/[0.07]','hover:bg-gray-600/5','dark:hover:bg-gray-200/5','gap-1'
@@ -250,7 +260,17 @@
         // Clean any duplicate marks after full restore
         try {
             const navBar = document.getElementById('navbar');
-            if (navBar) navBar.querySelectorAll('.cc-dup-version').forEach(el => el.classList.remove('cc-dup-version'));
+            if (navBar) navBar.querySelectorAll('.cc-dup-version').forEach(el => {
+                el.classList.remove('cc-dup-version');
+                el.style.removeProperty('background-color');
+                el.style.removeProperty('color');
+                el.style.removeProperty('width');
+                el.style.removeProperty('min-width');
+                el.style.removeProperty('max-width');
+                el.style.removeProperty('box-sizing');
+                el.style.removeProperty('justify-content');
+                el.style.removeProperty('flex');
+            });
         } catch(_) {}
         debugLog('[version-aligner] Original layout restored');
     }
@@ -265,8 +285,28 @@
             buttons.forEach(b => {
                 // Do not consider any button we've moved or wrapped elsewhere
                 if (b.classList.contains('cc-v-trigger')) return;
-                if (isVersionText(b)) b.classList.add('cc-dup-version');
-                else b.classList.remove('cc-dup-version');
+                if (isVersionText(b)) {
+                    b.classList.add('cc-dup-version');
+                    // Enforce visual style inline to survive hydration reorders
+                    b.style.setProperty('background-color', '#dc2626', 'important');
+                    b.style.setProperty('color', '#fff', 'important');
+                    b.style.setProperty('width', '65px', 'important');
+                    b.style.setProperty('min-width', '65px', 'important');
+                    b.style.setProperty('max-width', '65px', 'important');
+                    b.style.setProperty('box-sizing', 'border-box', 'important');
+                    b.style.setProperty('justify-content', 'center', 'important');
+                    b.style.setProperty('flex', '0 0 65px', 'important');
+                } else {
+                    b.classList.remove('cc-dup-version');
+                    b.style.removeProperty('background-color');
+                    b.style.removeProperty('color');
+                    b.style.removeProperty('width');
+                    b.style.removeProperty('min-width');
+                    b.style.removeProperty('max-width');
+                    b.style.removeProperty('box-sizing');
+                    b.style.removeProperty('justify-content');
+                    b.style.removeProperty('flex');
+                }
             });
         } catch (_) { /* noop */ }
     }
@@ -382,9 +422,17 @@
         // Add the React dropdown classes
         verBtn.classList.add(...reactClasses);
         
-        // Apply custom styling - remove border and set custom padding
-        verBtn.style.border = '0';
-        verBtn.style.padding = '13px 7px';
+    // Apply custom styling - remove border and set custom padding plus enforced visual styles
+    verBtn.style.border = '0';
+    verBtn.style.padding = '13px 7px';
+    verBtn.style.setProperty('background-color', '#dc2626', 'important');
+    verBtn.style.setProperty('color', '#fff', 'important');
+    verBtn.style.setProperty('width', '65px', 'important');
+    verBtn.style.setProperty('min-width', '65px', 'important');
+    verBtn.style.setProperty('max-width', '65px', 'important');
+    verBtn.style.setProperty('box-sizing', 'border-box', 'important');
+    verBtn.style.setProperty('justify-content', 'center', 'important');
+    verBtn.style.setProperty('flex', '0 0 65px', 'important');
         
         debugLog('[version-aligner] Version button styled to match React dropdown with custom modifications');
 
