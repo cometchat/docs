@@ -299,38 +299,36 @@
             return;
         }
 
-        debugLog('[version-aligner] Checking screen width...');
-        if (window.innerWidth < 1024) {
-            debugLog('[version-aligner] Screen width < 1024px, restoring original layout');
-            restoreOriginalLayout();
-            return;
-        }
-        debugLog('[version-aligner] Screen width >= 1024px, proceeding with alignment');
+    // Proceed with alignment regardless of screen width so version always sits by technology
+    debugLog('[version-aligner] Proceeding with alignment (no screen-width gating)');
 
     // Clean up previous alignment
         // Clean up previous alignment using placeholder if present
         const placeholderPrev = document.getElementById(PLACEHOLDER_ID);
         const currentPageIsVersioned = isVersionedPage();
         if (placeholderPrev) {
-            debugLog('[version-aligner] Cleaning up previous alignment using placeholder');
-            const verBtnPrev = document.querySelector('.cc-v-trigger') || document.querySelector('[data-version-aligner-button]');
-            if (verBtnPrev && placeholderPrev.parentElement) {
-                placeholderPrev.parentElement.insertBefore(verBtnPrev, placeholderPrev);
-                verBtnPrev.style.display = '';
-                verBtnPrev.style.flex = '';
-                verBtnPrev.classList.remove('cc-v-trigger');
-                const reactClasses = [
-                    'group','bg-background-light','dark:bg-background-dark','disabled:pointer-events-none','overflow-hidden','outline-none','text-sm','text-gray-950/50','dark:text-white/50','group-hover:text-gray-950/70','dark:group-hover:text-white/70','z-10','flex','items-center','pl-2','pr-3.5','py-1.5','rounded-[0.85rem]','border','border-gray-200/70','dark:border-white/[0.07]','hover:bg-gray-600/5','dark:hover:bg-gray-200/5','gap-1'
-                ];
-                try { verBtnPrev.classList.remove(...reactClasses); } catch(_) {}
-                try { delete verBtnPrev.dataset.versionAlignerButton; } catch(_) {}
-            }
-            try { placeholderPrev.remove(); } catch(_) {}
-            try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
             if (!currentPageIsVersioned) {
-                debugLog('[version-aligner] Current page is not versioned, cleanup complete');
+                // Only restore to original location when leaving versioned sections
+                debugLog('[version-aligner] Leaving versioned section — restoring button to original location');
+                const verBtnPrev = document.querySelector('.cc-v-trigger') || document.querySelector('[data-version-aligner-button]');
+                if (verBtnPrev && placeholderPrev.parentElement) {
+                    placeholderPrev.parentElement.insertBefore(verBtnPrev, placeholderPrev);
+                    verBtnPrev.style.display = '';
+                    verBtnPrev.style.flex = '';
+                    verBtnPrev.classList.remove('cc-v-trigger');
+                    const reactClasses = [
+                        'group','bg-background-light','dark:bg-background-dark','disabled:pointer-events-none','overflow-hidden','outline-none','text-sm','text-gray-950/50','dark:text-white/50','group-hover:text-gray-950/70','dark:group-hover:text-white/70','z-10','flex','items-center','pl-2','pr-3.5','py-1.5','rounded-[0.85rem]','border','border-gray-200/70','dark:border-white/[0.07]','hover:bg-gray-600/5','dark:hover:bg-gray-200/5','gap-1'
+                    ];
+                    try { verBtnPrev.classList.remove(...reactClasses); } catch(_) {}
+                    try { delete verBtnPrev.dataset.versionAlignerButton; } catch(_) {}
+                }
+                try { placeholderPrev.remove(); } catch(_) {}
+                try { document.documentElement.classList.remove('cc-version-aligned'); } catch(_) {}
+                debugLog('[version-aligner] Cleanup complete (non-versioned page)');
                 return;
             }
+            // On versioned pages, keep existing alignment and placeholder for future restores
+            debugLog('[version-aligner] Versioned page — keeping existing alignment/state');
         } else if (!currentPageIsVersioned) {
             // No placeholder and not a versioned page — nothing to do
             debugLog('[version-aligner] Not a versioned page and no placeholder; skipping alignment');
@@ -356,11 +354,17 @@
         }
         debugLog('[version-aligner] Technology dropdown found successfully');
 
-        debugLog('[version-aligner] Creating placeholder for version button...');
-        const placeholder = document.createElement('div');
-        placeholder.id = PLACEHOLDER_ID;
-        placeholder.style.display = 'none';
-        verBtn.parentNode.insertBefore(placeholder, verBtn);
+        // Ensure there is a placeholder to allow restore when leaving versioned sections
+        let placeholder = document.getElementById(PLACEHOLDER_ID);
+        if (!placeholder) {
+            debugLog('[version-aligner] Creating placeholder for version button...');
+            placeholder = document.createElement('div');
+            placeholder.id = PLACEHOLDER_ID;
+            placeholder.style.display = 'none';
+            verBtn.parentNode.insertBefore(placeholder, verBtn);
+        } else {
+            debugLog('[version-aligner] Reusing existing placeholder');
+        }
 
         debugLog('[version-aligner] Setting up version button...');
         verBtn.dataset.versionAlignerButton = 'true';
@@ -420,7 +424,10 @@
                         }
                         const techWrapper = techBtn.closest('.pl-2') || techBtn;
                         try {
-                            techWrapper.parentNode.insertBefore(verBtn, techWrapper.nextSibling);
+                            // Only move if not already immediately after the tech wrapper
+                            if (verBtn.previousElementSibling !== techWrapper) {
+                                techWrapper.parentNode.insertBefore(verBtn, techWrapper.nextSibling);
+                            }
                             try { document.documentElement.classList.add('cc-version-aligned'); } catch(_) {}
                         } catch (e) {
                             debugLog('[version-aligner] ERROR: Failed to insert version button after tech wrapper', e);
