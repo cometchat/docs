@@ -1,0 +1,577 @@
+/* ------------------------------------------------------------------ */
+/* 0 —  soft-patch removeChild so React never crashes if a node has   */
+/*      been moved elsewhere.  Safe, silent and 100-% reversible.     */
+/* ------------------------------------------------------------------ */
+(function () {
+    const origRemove = Node.prototype.removeChild;
+    Node.prototype.removeChild = function (child) {
+        if (!this.contains(child)) return child;   // swallow NotFoundError
+        return origRemove.call(this, child);
+    };
+})();
+
+/* ------------------------------------------------------------------ */
+/* 1 —  **your "last-working" aligner** with no functional changes.   */
+/*      (I only added a class on the wrapper so we can spot it later.)*/
+/* ------------------------------------------------------------------ */
+(function initVersionAligner() {
+    // Debug mode - can be controlled from console via: window.VERSION_ALIGNER_DEBUG = true
+    let DEBUG_MODE = false;
+    
+    // Expose debug control globally
+    window.VERSION_ALIGNER_DEBUG = DEBUG_MODE;
+    
+    // Debug logging function
+    function debugLog(...args) {
+        if (window.VERSION_ALIGNER_DEBUG) {
+            console.log(...args);
+        }
+    }
+    
+
+    
+    let observer;
+    const ALIGNER_ROW_CLASS = 'version-aligner-row';
+    const PLACEHOLDER_ID = 'version-aligner-placeholder';
+    
+    // Cache for expensive operations
+    let cachedVersionButton = null;
+    let cachedForwardButton = null;
+    let lastUrl = '';
+
+    function findVersionSelector() {
+        debugLog('[version-aligner] Finding version selector...');
+        
+        // Clear cache if URL changed (indicates page navigation)
+        if (window.location.href !== lastUrl) {
+            cachedVersionButton = null;
+            cachedForwardButton = null;
+            lastUrl = window.location.href;
+            debugLog('[version-aligner] URL changed, clearing cache');
+        }
+        
+        // Return cached result if available and element still exists in DOM
+        if (cachedVersionButton && document.contains(cachedVersionButton)) {
+            debugLog('[version-aligner] Using cached version button');
+            return cachedVersionButton;
+        }
+        
+        const navBar = document.getElementById('navbar');
+        if (!navBar) {
+            debugLog('[version-aligner] ERROR: navbar not found');
+            return null;
+        }
+        debugLog('[version-aligner] navbar found:', navBar);
+        
+        const allButtons = [...navBar.querySelectorAll('button')];
+        debugLog('[version-aligner] All buttons in navbar:', allButtons.length, allButtons);
+        
+        const filteredButtons = allButtons
+                .filter(el => !el.closest(`.${ALIGNER_ROW_CLASS}`))
+                // Exclude any known product dropdown triggers by id or data markers
+                .filter(el => el.id !== 'cc-product-dropdown-button')
+                .filter(el => !el.hasAttribute('data-cc-home-product-button'));
+        debugLog('[version-aligner] Buttons not in aligner row:', filteredButtons.length, filteredButtons);
+        
+        const menuButtons = filteredButtons
+            .filter(el => el.getAttribute('aria-haspopup') === 'menu');
+        debugLog('[version-aligner] Buttons with aria-haspopup=menu:', menuButtons.length, menuButtons);
+        
+        // Log the text content of each menu button for debugging
+        menuButtons.forEach((btn, index) => {
+            const rawText = btn.textContent.trim();
+            const cleanText = rawText.replace(/[\u200E\u200F\u2060\u00A0\s]/g, ''); // Remove LTR/RTL marks, word joiners, non-breaking spaces
+            debugLog(`[version-aligner] Menu button ${index + 1} raw text:`, `"${rawText}"`);
+            debugLog(`[version-aligner] Menu button ${index + 1} clean text:`, `"${cleanText}"`);
+            debugLog(`[version-aligner] Menu button ${index + 1} matches version regex:`, /^v\d+([\.-]\w+)*$/i.test(cleanText));
+        });
+        
+        const versionButtons = menuButtons.filter(el => {
+            // Consider only visible buttons
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;
+            // Extract text robustly
+            const rawText = (el.innerText || el.textContent || '').trim();
+            const cleanText = rawText.replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+            return /^v\d+([\.-]\w+)*$/i.test(cleanText);
+        });
+        debugLog('[version-aligner] Version buttons found:', versionButtons.length, versionButtons);
+        
+        if (versionButtons.length > 0) {
+            cachedVersionButton = versionButtons[0]; // Cache the result
+            debugLog('[version-aligner] Selected version button:', versionButtons[0]);
+            debugLog('[version-aligner] Version button text:', versionButtons[0].textContent.trim());
+            return cachedVersionButton;
+        }
+        
+        debugLog('[version-aligner] No version button found');
+        return null;
+    }
+
+    function findForwardButton() {
+        debugLog('[version-aligner] Finding forward button...');
+        
+        // Return cached result if available and element still exists in DOM
+        if (cachedForwardButton && document.contains(cachedForwardButton)) {
+            debugLog('[version-aligner] Using cached forward button');
+            return cachedForwardButton;
+        }
+        
+        const sidebar = document.getElementById('sidebar-content');
+        let forwardButton = null;
+        if (sidebar) {
+            debugLog('[version-aligner] sidebar-content found:', sidebar);
+            forwardButton = sidebar.querySelector('.nav-dropdown-trigger');
+        } else {
+            debugLog('[version-aligner] sidebar-content not found');
+        }
+        // Fallback: look in the navbar for a non-version, non-product menu button to pair with
+        if (!forwardButton) {
+            const navbar = document.getElementById('navbar');
+            if (navbar) {
+                const candidates = Array.from(navbar.querySelectorAll('button[aria-haspopup="menu"]'))
+                    .filter(b => b.id !== 'cc-product-dropdown-button')
+                    .filter(b => !b.hasAttribute('data-cc-home-product-button'))
+                    .filter(b => {
+                        const t = (b.textContent || '').replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+                        return !/^v\d+([\.-]\w+)*$/i.test(t);
+                    });
+                if (candidates.length) {
+                    forwardButton = candidates[0];
+                    debugLog('[version-aligner] Fallback forward button from navbar:', forwardButton);
+                }
+            }
+        }
+        if (forwardButton) {
+            cachedForwardButton = forwardButton; // Cache the result
+            debugLog('[version-aligner] Forward button found:', forwardButton);
+            debugLog('[version-aligner] Forward button text content:', forwardButton.textContent.trim());
+        } else {
+            debugLog('[version-aligner] ERROR: nav-dropdown-trigger not found in sidebar-content');
+            debugLog('[version-aligner] Available elements in sidebar:', sidebar.querySelectorAll('button'));
+        }
+        return forwardButton;
+    }
+
+    function isVersionedPage() {
+        debugLog('[version-aligner] Checking if page is versioned...');
+        
+        const currentPath = window.location.pathname;
+        debugLog('[version-aligner] Current path:', currentPath);
+        
+        // Check if the URL indicates this is a versioned section
+        const versionedPaths = [
+            '/ui-kit/',
+            '/sdk/'
+        ];
+        
+        const isVersionedPath = versionedPaths.some(path => currentPath.startsWith(path));
+        debugLog('[version-aligner] Path-based versioned check:', isVersionedPath);
+        
+        if (isVersionedPath) {
+            debugLog('[version-aligner] URL indicates versioned page - page IS versioned');
+            return true;
+        }
+        
+        // Fallback: Check DOM for version dropdown (but don't rely on it solely)
+        debugLog('[version-aligner] URL check inconclusive, checking DOM as fallback...');
+        const versionButton = findVersionSelector();
+        
+        if (versionButton) {
+            debugLog('[version-aligner] Found version dropdown button in DOM - page IS versioned');
+            debugLog('[version-aligner] Version button text:', versionButton.textContent.trim());
+            return true;
+        }
+        
+        debugLog('[version-aligner] No version indicators found - page is NOT versioned');
+        return false;
+    }
+    
+    function restoreOriginalLayout() {
+        debugLog('[version-aligner] Restoring original layout for small screen...');
+        
+        const placeholder = document.getElementById(PLACEHOLDER_ID);
+        if (!placeholder) {
+            debugLog('[version-aligner] No placeholder found, nothing to restore');
+            return;
+        }
+        debugLog('[version-aligner] Placeholder found:', placeholder);
+
+        const previousRow = document.querySelector(`.${ALIGNER_ROW_CLASS}`);
+        if (!previousRow) {
+            debugLog('[version-aligner] No aligner row found, removing placeholder');
+            placeholder.remove();
+            return;
+        }
+        debugLog('[version-aligner] Aligner row found:', previousRow);
+
+        const verBtn = previousRow.querySelector('[data-version-aligner-button]');
+        const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
+        
+        debugLog('[version-aligner] Version button in row:', verBtn);
+        debugLog('[version-aligner] Forward button in row:', fwBtn);
+
+                 if (verBtn) {
+            debugLog('[version-aligner] Moving version button back to placeholder location');
+            placeholder.parentNode.insertBefore(verBtn, placeholder);
+            verBtn.style.display = '';
+            delete verBtn.dataset.versionAlignerButton;
+        }
+
+        if (fwBtn) {
+            debugLog('[version-aligner] Moving forward button back to sidebar');
+            const sidebar = document.getElementById('sidebar-content');
+            if (sidebar) {
+                const navigationItems = sidebar.querySelector('#navigation-items');
+                if (navigationItems) {
+                    navigationItems.insertBefore(fwBtn, navigationItems.firstChild);
+                    fwBtn.style.flex = '';
+                    fwBtn.style.margin = '';
+                    fwBtn.classList.add('w-full');
+                } else {
+                    debugLog('[version-aligner] ERROR: navigation-items not found in sidebar-content');
+                }
+            } else {
+                debugLog('[version-aligner] ERROR: sidebar-content not found for forward button restoration');
+            }
+        }
+
+        debugLog('[version-aligner] Removing placeholder and aligner row');
+        placeholder.remove();
+        previousRow.remove();
+        debugLog('[version-aligner] Original layout restored');
+
+        // Clear duplicate markers and page flag
+        try {
+            document.documentElement.classList.remove('cc-version-aligned');
+            document.querySelectorAll('#navbar .cc-dup-version').forEach(el => el.classList.remove('cc-dup-version'));
+        } catch(_) {}
+    }
+
+    function markDuplicateVersionButtons() {
+        try {
+            const navbar = document.getElementById('navbar');
+            if (!navbar) return;
+            const buttons = [...navbar.querySelectorAll('button[aria-haspopup="menu"]')]
+                .filter(el => el.id !== 'cc-product-dropdown-button')
+                .filter(el => !el.hasAttribute('data-cc-home-product-button'));
+            buttons.forEach(btn => {
+                const clean = (btn.textContent || '').trim().replace(/[\u200E\u200F\u2060\u00A0\s]/g, '');
+                if (/^v\d+([\.-]\w+)*$/i.test(clean)) {
+                    btn.classList.add('cc-dup-version');
+                }
+            });
+        } catch(_) {}
+    }
+
+    function setAlignedFlag(on) {
+        try {
+            const html = document.documentElement;
+            if (!html) return;
+            if (on) html.classList.add('cc-version-aligned');
+            else html.classList.remove('cc-version-aligned');
+        } catch(_) {}
+    }
+
+    function _realign() {
+        debugLog('[version-aligner] Starting _realign function...');
+        
+        // Check if any dropdown is actually open (visible)
+        try {
+            const maybeMenus = Array.from(document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]'));
+            const visibleMenus = maybeMenus.filter(el => {
+                // Fast path: hidden via display:none or zero box
+                const style = window.getComputedStyle ? getComputedStyle(el) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+                const box = el.getBoundingClientRect();
+                return box.width > 0 && box.height > 0;
+            });
+            if (visibleMenus.length) {
+                debugLog('[version-aligner] A dropdown is visible, skipping alignment');
+                return;
+            }
+        } catch(_) {}
+
+        debugLog('[version-aligner] Checking screen width...');
+        if (window.innerWidth < 1024) {
+            debugLog('[version-aligner] Screen width < 1024px, restoring original layout');
+            restoreOriginalLayout();
+            setAlignedFlag(false);
+            return;
+        }
+        debugLog('[version-aligner] Screen width >= 1024px, proceeding with alignment');
+
+        // Clean up previous alignment
+        const previousRow = document.querySelector(`.${ALIGNER_ROW_CLASS}`);
+        if (previousRow) {
+            debugLog('[version-aligner] Cleaning up previous alignment row');
+            const fwBtn = previousRow.querySelector('.nav-dropdown-trigger');
+            const verBtn = previousRow.querySelector('[data-version-aligner-button]');
+            
+            // Check if current page is versioned to determine cleanup strategy
+            const currentPageIsVersioned = isVersionedPage();
+            debugLog('[version-aligner] Current page versioned status for cleanup:', currentPageIsVersioned);
+            
+            if (currentPageIsVersioned && fwBtn && previousRow.parentElement) {
+                // If we're moving to another versioned page, restore forward button normally
+                debugLog('[version-aligner] Restoring forward button to original position for re-alignment');
+                previousRow.parentElement.insertBefore(fwBtn, previousRow);
+                fwBtn.style.flex = '';
+                fwBtn.style.margin = '';
+                fwBtn.classList.add('w-full');
+            } else if (!currentPageIsVersioned && fwBtn) {
+                // If we're moving to a non-versioned page, forward button should stay where it naturally belongs
+                debugLog('[version-aligner] Moving to non-versioned page, keeping forward button in natural location');
+                // Don't restore fwBtn to sidebar - let it disappear naturally since page doesn't need it
+            }
+            
+                         if (verBtn) {
+                debugLog('[version-aligner] Restoring version button to original position');
+                const placeholder = document.getElementById(PLACEHOLDER_ID);
+                if (placeholder && placeholder.parentElement) {
+                    // Move version button back to its original location
+                    placeholder.parentElement.insertBefore(verBtn, placeholder);
+                    verBtn.style.display = '';
+                    verBtn.style.flex = '';
+                    
+                    // Remove the React dropdown classes that were added
+                    const reactClasses = [
+                        'group', 'bg-background-light', 'dark:bg-background-dark', 
+                        'disabled:pointer-events-none', 'overflow-hidden', 'outline-none', 
+                        'text-sm', 'text-gray-950/50', 'dark:text-white/50', 
+                        'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
+                        'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5', 
+                        'rounded-[0.85rem]', 'border', 'border-gray-200/70', 
+                        'dark:border-white/[0.07]', 'hover:bg-gray-600/5', 
+                        'dark:hover:bg-gray-200/5', 'gap-1'
+                    ];
+                    verBtn.classList.remove(...reactClasses);
+                    
+                    delete verBtn.dataset.versionAlignerButton;
+                    placeholder.remove();
+                    debugLog('[version-aligner] Version button restored and placeholder removed');
+                } else {
+                    debugLog('[version-aligner] Could not find placeholder - version button will be removed');
+                    verBtn.remove();
+                }
+            }
+            debugLog('[version-aligner] Removing previous row');
+            previousRow.remove();
+            
+            // Exit early if current page is not versioned - no need to proceed with alignment
+            if (!currentPageIsVersioned) {
+                debugLog('[version-aligner] Current page is not versioned, cleanup complete');
+                setAlignedFlag(false);
+                return;
+            }
+        }
+
+        // Page versioning was already checked during cleanup - we only reach here if page is versioned
+
+        debugLog('[version-aligner] Finding version selector and forward button...');
+        const verBtn = findVersionSelector();
+        const fwBtn = findForwardButton();
+
+        if (!verBtn) {
+            debugLog('[version-aligner] ERROR: Version button not found, cannot align');
+            return;
+        }
+        debugLog('[version-aligner] Version button found successfully');
+
+        if (!fwBtn) {
+            debugLog('[version-aligner] ERROR: Forward button not found, cannot align');
+            return;
+        }
+        debugLog('[version-aligner] Forward button found successfully');
+
+        debugLog('[version-aligner] Creating placeholder for version button...');
+        const placeholder = document.createElement('div');
+        placeholder.id = PLACEHOLDER_ID;
+        placeholder.style.display = 'none';
+        verBtn.parentNode.insertBefore(placeholder, verBtn);
+
+        debugLog('[version-aligner] Creating alignment row...');
+    const row = document.createElement('div');
+    row.className = `${ALIGNER_ROW_CLASS} cc-version-aligned-row flex items-center gap-2`;
+        row.style.flex = '1 1 auto';
+
+        debugLog('[version-aligner] Setting up version button...');
+    verBtn.dataset.versionAlignerButton = 'true';
+    verBtn.classList.add('cc-v-trigger');
+        verBtn.style.flex = '0 0 auto';
+        
+        // Remove any existing inline styles that might conflict
+        verBtn.style.removeProperty('height');
+        verBtn.style.removeProperty('paddingTop');
+        verBtn.style.removeProperty('paddingBottom');
+        verBtn.style.removeProperty('borderRadius');
+        verBtn.style.removeProperty('lineHeight');
+        verBtn.style.removeProperty('fontSize');
+        verBtn.style.removeProperty('border');
+        verBtn.style.removeProperty('padding');
+        verBtn.style.removeProperty('backgroundColor');
+        verBtn.style.removeProperty('color');
+        
+        // Add the exact same classes as the React dropdown
+        const reactClasses = [
+            'group', 'bg-background-light', 'dark:bg-background-dark', 
+            'disabled:pointer-events-none', 'overflow-hidden', 'outline-none', 
+            'text-sm', 'text-gray-950/50', 'dark:text-white/50', 
+            'group-hover:text-gray-950/70', 'dark:group-hover:text-white/70',
+            'z-10', 'flex', 'items-center', 'pl-2', 'pr-3.5', 'py-1.5', 
+            'rounded-[0.85rem]', 'border', 'border-gray-200/70', 
+            'dark:border-white/[0.07]', 'hover:bg-gray-600/5', 
+            'dark:hover:bg-gray-200/5', 'gap-1'
+        ];
+        
+        // Remove any conflicting classes first
+        verBtn.className = verBtn.className.split(' ').filter(cls => 
+            !cls.includes('rounded') && !cls.includes('border') && 
+            !cls.includes('bg-') && !cls.includes('text-') &&
+            !cls.includes('hover:') && !cls.includes('dark:')
+        ).join(' ');
+        
+    // Add the React dropdown classes
+        verBtn.classList.add(...reactClasses);
+        
+        // Apply custom styling - remove border and set custom padding
+        verBtn.style.border = '0';
+        verBtn.style.padding = '13px 7px';
+        
+        debugLog('[version-aligner] Version button styled to match React dropdown with custom modifications');
+
+        debugLog('[version-aligner] Setting up forward button...');
+        fwBtn.style.flex = '1 1 auto';
+        fwBtn.style.margin = '0px';
+        fwBtn.classList.remove('w-full');
+
+        debugLog('[version-aligner] Assembling alignment row...');
+        // Change order: React dropdown first, then version dropdown
+        row.appendChild(fwBtn);
+        row.appendChild(verBtn);
+
+        debugLog('[version-aligner] Inserting alignment row into sidebar...');
+        const sidebar = document.getElementById('sidebar-content');
+        const navigationItems = sidebar.querySelector('#navigation-items');
+    navigationItems.insertBefore(row, navigationItems.firstChild);
+
+    // Mark any remaining navbar version buttons as duplicates
+    markDuplicateVersionButtons();
+
+    // Set a page-level flag so CSS can scope rules precisely
+    setAlignedFlag(true);
+
+        debugLog('[version-aligner] Alignment completed successfully!');
+    }
+
+    function realign() {
+        debugLog('[version-aligner] ===== REALIGN TRIGGERED =====');
+        debugLog('[version-aligner] Current URL:', window.location.href);
+        debugLog('[version-aligner] Screen width:', window.innerWidth);
+        
+        if (observer) observer.disconnect();
+        try {
+            _realign();
+        } finally {
+            observer.observe(document.body, { childList: true, subtree: true });
+        debugLog('[version-aligner] Observer reconnected');
+        }
+        debugLog('[version-aligner] ===== REALIGN COMPLETE =====');
+    }
+
+    let realignTimeoutId;
+    function triggerRealign() {
+        debugLog('[version-aligner] triggerRealign called, setting timeout...');
+        clearTimeout(realignTimeoutId);
+        realignTimeoutId = setTimeout(() => {
+            debugLog('[version-aligner] Timeout expired, executing realign...');
+            realign();
+        }, 150);
+    }
+
+    function startObserver() {
+        debugLog('[version-aligner] Starting MutationObserver...');
+        if (observer) {
+            observer.disconnect();
+            debugLog('[version-aligner] Disconnected existing observer');
+        }
+
+        observer = new MutationObserver((mutations) => {
+            // Filter out irrelevant mutations for better performance
+            const relevantMutation = mutations.some(mutation => {
+                // Only care about mutations in navbar or sidebar areas
+                const target = mutation.target;
+                return target.id === 'navbar' || 
+                       target.id === 'sidebar-content' || 
+                       target.closest('#navbar') || 
+                       target.closest('#sidebar-content') ||
+                       // Also watch for navigation-level changes that affect page structure
+                       target.tagName === 'BODY' || target.tagName === 'HTML';
+            });
+            
+            if (relevantMutation) {
+                debugLog('[version-aligner] Relevant DOM mutation detected, triggering realign...');
+                triggerRealign();
+            }
+        });
+
+        // Observe more selectively - target specific areas instead of entire body
+        const navbar = document.getElementById('navbar');
+        const sidebar = document.getElementById('sidebar-content');
+        
+        if (navbar) {
+            observer.observe(navbar, { childList: true, subtree: true });
+            debugLog('[version-aligner] Observing navbar for changes');
+        }
+        
+        if (sidebar) {
+            observer.observe(sidebar, { childList: true, subtree: true });
+            debugLog('[version-aligner] Observing sidebar for changes');
+        }
+        
+        // Also observe body for high-level navigation changes, but with less sensitivity
+        observer.observe(document.body, { 
+            childList: true, 
+            subtree: false  // Only direct children, not deep subtree
+        });
+        
+        debugLog('[version-aligner] MutationObserver started with selective targeting');
+    }
+
+    // Initial run
+    debugLog('[version-aligner] ===== SCRIPT INITIALIZATION =====');
+    debugLog('[version-aligner] Starting initial alignment...');
+    triggerRealign();
+
+    // Listen for SPA navigation changes
+    debugLog('[version-aligner] Setting up SPA navigation listeners...');
+    const originalPushState = history.pushState;
+    history.pushState = function(...args) {
+        debugLog('[version-aligner] history.pushState intercepted:', args[2]);
+        originalPushState.apply(this, args);
+        triggerRealign();
+    };
+
+    const originalReplaceState = history.replaceState;
+    history.replaceState = function(...args) {
+        debugLog('[version-aligner] history.replaceState intercepted:', args[2]);
+        originalReplaceState.apply(this, args);
+        triggerRealign();
+    };
+
+    window.addEventListener('popstate', () => {
+        debugLog('[version-aligner] popstate event detected');
+        triggerRealign();
+    });
+
+    // Listen for screen size changes
+    window.addEventListener('resize', () => {
+        debugLog('[version-aligner] resize event detected, new width:', window.innerWidth);
+        triggerRealign();
+    });
+
+    // Start observing DOM changes
+    startObserver();
+    
+    debugLog('[version-aligner] ===== SCRIPT INITIALIZATION COMPLETE =====');
+})();
