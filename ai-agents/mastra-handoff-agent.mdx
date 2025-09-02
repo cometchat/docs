@@ -1,0 +1,178 @@
+---
+title: "Build Your Human Handoff Agent with Mastra"
+sidebarTitle: "Human Handoff Agent"
+description: "Create a Mastra agent that hands the conversation off to the right human or system when needed, then returns control smoothly."
+---
+
+Imagine an agent that knows its limits. When it detects a user needs **human support**, or another specialist agent, it can gracefully **hand off** the chat instead of fumbling for an answer.
+
+***
+
+## What You’ll Build
+
+* A **Mastra agent** that detects when to escalate.  
+* A simple **handoff action** returning JSON with target user/system.  
+* A deployable agent via Mastra’s API.  
+* Integration into **CometChat**, so the chat seamlessly moves to a human.  
+
+***
+
+## Prerequisites
+
+* A Mastra project (`npx create-mastra@latest my-mastra-app`).  
+* Node.js installed.  
+* OpenAI API key in `.env` as `OPENAI_API_KEY`.  
+* A CometChat app with users/roles defined (for live handoff).  
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 1</span>
+</h3>
+
+## Define Handoff Action
+
+**`src/tools/handoff-tool.ts`**:
+
+```ts
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+
+export const handoffTool = createTool({
+  id: 'handoff',
+  description: 'Escalate chat to a specific human or system.',
+  inputSchema: z.object({
+    target: z.string().describe('User or system to handoff to, e.g., "swapnil" or "support-team"'),
+    reason: z.string().describe('Reason for the handoff'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    message: z.string(),
+  }),
+  execute: async ({ context }) => {
+    // Stub: in production, call CometChat API to reassign chat
+    console.log(`Handing off to ${context.target} because ${context.reason}`);
+    return { success: true, message: `Conversation handed off to ${context.target}` };
+  },
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 2</span>
+</h3>
+
+## Create the Agent
+
+**`src/agents/handoff-agent.ts`**:
+
+```ts
+import { openai } from '@ai-sdk/openai';
+import { Agent } from '@mastra/core/agent';
+import { handoffTool } from '../tools/handoff-tool';
+
+export const handoffAgent = new Agent({
+  name: 'Handoff Agent',
+  instructions: `
+You are a support triage bot. 
+- If you cannot answer a question or detect the user needs a human, call the 'handoff' tool. 
+- Provide the right target and reason.
+- Otherwise, try to answer simply.
+  `,
+  model: openai('gpt-4o-mini'),
+  tools: {
+    'handoff': handoffTool,
+  },
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 3</span>
+</h3>
+
+## Register the Agent in Mastra
+
+**`src/mastra/index.ts`**:
+
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { PinoLogger } from '@mastra/loggers';
+import { LibSQLStore } from '@mastra/libsql';
+
+import { handoffAgent } from '../agents/handoff-agent';
+
+export const mastra = new Mastra({
+  agents: { 'handoff': handoffAgent }, // API path: /api/agents/handoff/*
+  storage: new LibSQLStore({ url: 'file:../mastra.db' }),
+  logger: new PinoLogger({ name: 'Mastra', level: 'info' }),
+});
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 4</span>
+</h3>
+
+## Run the Agent
+
+```bash
+rm -rf .mastra/output
+npx mastra dev
+```
+
+You should see:
+
+```
+Mastra API running on port http://localhost:4111/api
+```
+
+Test it locally:
+
+```bash
+curl -X POST http://localhost:4111/api/agents/handoff/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"I need to speak with Swapnil about my billing issue"}]}'
+```
+
+Expected output:
+
+```json
+{
+  "success": true,
+  "message": "Conversation handed off to Swapnil"
+}
+```
+
+***
+
+<h3 className="text-2xl font-semibold mb-6 mt-8">
+  <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 uppercase tracking-wide text-sm">Step 5</span>
+</h3>
+
+## Deploy & Connect
+
+* Deploy the API (`/api/agents/handoff/generate`) using Render, Railway, Vercel, or any host.  
+* In **CometChat Dashboard → AI Agents**, create an agent with:  
+  * **Provider**: Mastra  
+  * **Agent ID**: `handoff`  
+  * **Deployment URL**: public endpoint from your host  
+
+Now users can say “I need human help” and the agent will call the handoff tool to route them.
+
+***
+
+## Troubleshooting
+
+* **Agent doesn’t escalate**: Improve instructions with clear escalation rules.  
+* **Handoff not working**: Ensure your tool executes CometChat’s API to transfer conversations.  
+* **Looping answers**: Add a fallback to always call `handoff` after repeated failed answers.  
+
+***
+
+## Next Steps
+
+* Add logic to choose **specific team members** (billing, tech support).  
+* Connect to external ticketing systems (Zendesk, Freshdesk).  
+* Add a **coordinator (relay) agent** that can ask multiple humans/agents and return the answer.  
