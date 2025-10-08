@@ -60,6 +60,10 @@
       if (path.startsWith('/chat-builder')) return 'chat-call';
       if (path.startsWith('/widget/ai-agents')) return 'ai-agents';
       if (path.startsWith('/chat-call')) return 'chat-call';
+      // Calls SDK routes should use Calls product context for filtering
+      if (path.startsWith('/calls-sdk')) return 'calls';
+      if (path.startsWith('/chat')) return 'chat';
+      if (path.startsWith('/calls')) return 'calls';
       if (path.startsWith('/ai-agents')) return 'ai-agents';
       if (path.startsWith('/ai-agents/mastra')) return 'ai-agents';
       if (path.startsWith('/moderation')) return 'moderation';
@@ -76,6 +80,25 @@
         '/sdk',
         '/widget',
         '/rest-api/chat-apis',
+        '/chat-builder'
+      ],
+      'chat': [
+        '/chat',
+        '/fundamentals',
+        '/ui-kit',
+        '/sdk',
+        '/widget',
+        '/rest-api/chat-apis',
+        '/chat-builder'
+      ],
+      'calls': [
+        '/calls',
+        '/calls-sdk',
+        '/fundamentals',
+        '/ui-kit',
+        '/sdk',
+        '/widget',
+        '/rest-api',
         '/chat-builder'
       ],
       'ai-agents': [
@@ -99,7 +122,13 @@
     // Fallback to tab labels for dropdown-only tabs (from docs.json top-level tabs)
     var allowedLabelsByRoute = {
       'chat-call': [
-        'Chat & Calling', 'Platform', 'UI Kits', 'SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
+        'Chat & Calling', 'Platform', 'UI Kits', 'SDKs', 'Calls SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
+      ],
+      'chat': [
+        'Chat', 'Platform', 'UI Kits', 'SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
+      ],
+      'calls': [
+        'Calls', 'Calls SDKs', 'Platform', 'UI Kits', 'SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
       ],
       'ai-agents': [
         'AI Agents', 'Agent Builder'
@@ -128,7 +157,7 @@
 
     function isBlockedHref(routeKey, pathOnly) {
       try { pathOnly = stripBase(pathOnly || '/'); } catch (_) {}
-      if (routeKey === 'chat-call') {
+      if (routeKey === 'chat-call' || routeKey === 'chat' || routeKey === 'calls') {
         // Hide AI Agents Chat Builder tab in Chat & Calling context
         if (pathOnly.indexOf('/widget/ai-agents') === 0) return true;
       }
@@ -271,9 +300,9 @@
       var raw = location.pathname || '';
       var path = stripBase(raw);
       var rk = getRouteKey(path);
-      // If on homepage, show only: Home, Chat & Calling, AI Agents, AI Moderation, Notifications, Insights
+      // If on homepage, show only: Home, Chat & Calling, Chat, Calls, AI Agents, AI Moderation, Notifications, Insights
       if (normalizePathForHome(path)) {
-        var allowedHome = ['home','chat & calling','ai agents','ai moderation','notifications','insights'];
+        var allowedHome = ['home','chat & calling','chat','calls','ai agents','ai moderation','notifications','insights'];
         getTabControls().forEach(function(el){
           var lbl = normalizeLabel(el);
           var href = (el.getAttribute && el.getAttribute('href')) || '';

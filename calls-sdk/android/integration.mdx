@@ -1,0 +1,371 @@
+---
+title: "Getting Started With CometChat Android Calls SDK"
+sidebarTitle: "Integration"
+---
+
+The **Android Calls SDK** enables real‑time voice & video (1:1 & group) with a minimal API. This version of the guide assumes you're using **only the Calls SDK (no Chat SDK)** and implementing your own user management, signaling, and invitation logic.
+
+<Info>
+You need: (1) App ID (2) Region (3) A server‑issued User Auth Token (never expose Auth Key in client). Manage credentials in the <a href="https://app.cometchat.com" target="_blank">CometChat Dashboard</a>.
+</Info>
+
+---
+
+## **Prerequisites**
+
+| Requirement | Notes |
+|-------------|-------|
+| Min API Level | 24 (Calls) / 21 (app baseline) |
+| Java / Kotlin | Java 8 (source & target) |
+| Internet | Stable network for low‑latency media |
+| Hardware | Camera + Mic (emulator limited) |
+
+<Callout type="warning" title="Chat SDK Features Not Available">
+Using Calls SDK standalone means you do NOT have: call invitations (ringing / accept / reject), presence, user directory, call history, or message‑based signaling. This guide focuses on **Direct Calling Sessions** only.
+</Callout>
+
+---
+
+## **Step 1: Add Repository**
+
+Add the CometChat Maven repository in `settings.gradle` (preferred modern approach) or project `build.gradle`.
+
+```gradle settings.gradle
+dependencyResolutionManagement {
+	repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+	repositories {
+		google()
+		mavenCentral()
+		maven { url "https://dl.cloudsmith.io/public/cometchat/cometchat/maven/" }
+	}
+}
+```
+
+---
+
+## **Step 2: Add Dependency**
+
+<Tabs>
+<Tab title="Version Catalog (libs.versions.toml)">
+
+```toml libs.versions.toml
+[versions]
+cometchat-calls-sdk = "4.1.0"
+
+[libraries]
+cometchat-calls-sdk = { module = "com.cometchat:calls-sdk-android", version.ref = "cometchat-calls-sdk" }
+```
+
+```kotlin build.gradle.kts (app)
+dependencies {
+	implementation(libs.cometchat.calls.sdk)
+}
+```
+
+</Tab>
+<Tab title="Gradle (Simple)">
+
+```gradle build.gradle (app)
+dependencies {
+	implementation 'com.cometchat:calls-sdk-android:4.1.0'
+}
+
+android {
+	compileOptions {
+		sourceCompatibility JavaVersion.VERSION_1_8
+		targetCompatibility JavaVersion.VERSION_1_8
+	}
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## **Step 3: Permissions**
+
+```xml AndroidManifest.xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+```
+
+Request CAMERA & RECORD_AUDIO at runtime just‑in‑time (first call attempt) to improve accept rates.
+
+---
+
+## **Step 4: Initialize Calls SDK**
+
+<Tabs>
+<Tab title="Java">
+
+```java MainApplication.java (or early entry point)
+String appID = "APP_ID"; // Replace
+String region = "REGION"; // e.g. us / eu
+
+CallAppSettings callAppSettings = new CallAppSettingBuilder()
+	.setAppId(appID)
+	.setRegion(region)
+	.build();
+
+CometChatCalls.init(this, callAppSettings, new CometChatCalls.CallbackListener<String>() {
+	@Override public void onSuccess(String s) { /* Calls layer ready */ }
+	@Override public void onError(CometChatException e) { }
+});
+```
+
+</Tab>
+<Tab title="Kotlin">
+
+```kotlin MainApplication.kt
+val appID = "APP_ID"
+val region = "REGION"
+
+val callAppSettings = CallAppSettingBuilder()
+	.setAppId(appID)
+	.setRegion(region)
+	.build()
+
+CometChatCalls.init(this, callAppSettings, object: CometChatCalls.CallbackListener<String>() {
+	override fun onSuccess(p0: String?) { /* Calls layer ready */ }
+	override fun onError(e: CometChatException) {}
+})
+```
+
+</Tab>
+</Tabs>
+
+
+---
+
+## **Step 5: Obtain a User Auth Token (Server)**
+
+You must create (on your server) a **CometChat User** (via REST or Dashboard) and issue a **User Auth Token** securely to the client. With Calls‑only usage you still need a CometChat user identity, but you are not loading the Chat SDK client‑side.
+
+<Callout type="info" title="Minimal Flow">
+1. Your backend stores App ID, Region & Auth Key securely.
+2. Client sends its own app user credentials (e.g. session JWT) to backend.
+3. Backend uses CometChat REST API to create (or fetch) a corresponding CometChat user if not existing.
+4. Backend generates a user auth token (REST) and returns it to the client.
+5. Client uses that token in `generateToken()` (next step).
+</Callout>
+
+Store the returned token in memory (not persistent long‑term). Do not hardcode dashboard Auth Key in client code.
+
+
+---
+
+## **Step 6: Generate Call Token (Direct Session)**
+
+<Tabs>
+<Tab title="Java">
+
+```java MainActivity.java (snippet)
+String sessionId = UUID.randomUUID().toString(); // Or negotiated via your signaling layer
+String userAuthToken = YOUR_SECURELY_FETCHED_USER_TOKEN; // Provided by your backend
+
+CometChatCalls.generateToken(sessionId, userAuthToken,
+	new CometChatCalls.CallbackListener<GenerateToken>() {
+		@Override public void onSuccess(GenerateToken t) {
+			startCall(t.getToken());
+		}
+		@Override public void onError(CometChatException e) { }
+});
+```
+
+</Tab>
+<Tab title="Kotlin">
+
+```kotlin MainActivity.kt (snippet)
+val sessionId = UUID.randomUUID().toString() // Or negotiated via custom signaling
+val userAuthToken = YOUR_SECURELY_FETCHED_USER_TOKEN
+
+CometChatCalls.generateToken(sessionId, userAuthToken,
+	object: CometChatCalls.CallbackListener<GenerateToken>() {
+		override fun onSuccess(t: GenerateToken) { startCall(t.token) }
+		override fun onError(e: CometChatException) { }
+	}
+)
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Invitation (ring/accept/reject) flows rely on Chat SDK events. Without Chat SDK you must build signaling yourself (e.g. via your own WebSocket) and share `sessionId` out‑of‑band.
+</Note>
+
+
+---
+
+## **Step 7: Start Session & Render Video**
+
+Layout container:
+
+```xml activity_main.xml
+<RelativeLayout
+	android:id="@+id/videoContainer"
+	android:layout_width="match_parent"
+	android:layout_height="match_parent" />
+```
+
+<Tabs>
+<Tab title="Java">
+
+```java MainActivity.java (session)
+RelativeLayout videoContainer = findViewById(R.id.videoContainer);
+CallSettings callSettings = new CometChatCalls.CallSettingsBuilder(this, videoContainer)
+	.setIsAudioOnly(false)
+	.setDefaultLayoutEnable(true)
+	.setEventListener(new CometChatCallsEventsListener() {
+		@Override public void onUserJoined(RTCUser user) {}
+		@Override public void onUserLeft(RTCUser user) {}
+		@Override public void onCallEnded() { CometChatCalls.endSession(); }
+		@Override public void onCallEndButtonPressed() {}
+		@Override public void onRecordingToggled(RTCRecordingInfo info) {}
+		@Override public void onAudioModeChanged(ArrayList<AudioMode> devices) {}
+		@Override public void onError(CometChatException e) {}
+	})
+	.build();
+
+CometChatCalls.startSession(callToken, callSettings, new CometChatCalls.CallbackListener<String>() {
+	@Override public void onSuccess(String s) { }
+	@Override public void onError(CometChatException e) { }
+});
+```
+
+</Tab>
+<Tab title="Kotlin">
+
+```kotlin MainActivity.kt (session)
+val videoContainer: RelativeLayout = findViewById(R.id.videoContainer)
+val callSettings = CometChatCalls.CallSettingsBuilder(this, videoContainer)
+	.setIsAudioOnly(false)
+	.setDefaultLayoutEnable(true)
+	.setEventListener(object: CometChatCallsEventsListener {
+		override fun onUserJoined(user: RTCUser) {}
+		override fun onUserLeft(user: RTCUser) {}
+		override fun onCallEnded() { CometChatCalls.endSession() }
+		override fun onCallEndButtonPressed() {}
+		override fun onRecordingToggled(recordingInfo: RTCRecordingInfo) {}
+		override fun onAudioModeChanged(devices: ArrayList<AudioMode?>) {}
+		override fun onError(e: CometChatException) {}
+	})
+	.build()
+
+CometChatCalls.startSession(callToken, callSettings, object: CometChatCalls.CallbackListener<String>() {
+	override fun onSuccess(s: String) {}
+	override fun onError(e: CometChatException) {}
+})
+```
+
+</Tab>
+</Tabs>
+
+
+---
+
+## **Step 8: Call Controls**
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChatCalls.switchCamera();
+CometChatCalls.muteAudio(true);
+CometChatCalls.pauseVideo(true);
+CometChatCalls.setAudioMode(CometChatCallsConstants.AUDIO_MODE_SPEAKER);
+```
+
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChatCalls.switchCamera()
+CometChatCalls.muteAudio(true)
+CometChatCalls.pauseVideo(true)
+CometChatCalls.setAudioMode(CometChatCallsConstants.AUDIO_MODE_SPEAKER)
+```
+</Tab>
+</Tabs>
+
+
+---
+
+## **Step 9: End & Cleanup**
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChatCalls.endSession();
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChatCalls.endSession()
+```
+</Tab>
+</Tabs>
+
+Call `endSession()` on user hang‑up or `onDestroy()` if still active.
+
+---
+
+## **Step 10: Error Codes (Common)**
+
+| Code | Meaning |
+|------|---------|
+| INVALID_ARGUMENT_EXCEPTION | Missing / invalid parameters |
+| AUTH_ERR_TOKEN_INVALID_SIGNATURE | Token invalid / expired |
+| API_ERROR | Server returned an error |
+| UNKNOWN_API_ERROR | Network / connectivity issue |
+
+---
+
+## **Step 11: Suggested Architecture (Calls‑Only)**
+
+| Layer | Purpose |
+|-------|---------|
+| Auth / Bootstrap (Activity or ViewModel) | Fetch user auth token from backend |
+| Signaling (custom) | Exchange `sessionId` (if multi‑party) with peers |
+| CallActivity | Builds UI container & manages session lifecycle |
+| CallManager helper | Wraps token generation & event listener wiring |
+| Backend service | User creation (REST) + token issuance |
+
+---
+
+## **Step 12: Next Steps**
+
+* Explore detailed [Direct Calling](/sdk/android/3.0/direct-calling-v3)
+* Presenter / Screen Share: [Presenter Mode](/sdk/android/3.0/presenter-mode)
+* Add custom signaling (invite UI) or integrate Chat SDK later for richer features
+* Add recording / PIP / audio route UX polish
+* Optional: adopt [UI Kit](/ui-kit/android/overview) once Chat SDK added
+
+---
+
+## **Troubleshooting**
+
+| Issue | Fix |
+|-------|-----|
+| Black tiles | Camera permission / real device test |
+| No remote video | Peer not started or network poor; verify token & signaling |
+| No events firing | Ensure listener set before `startSession()` |
+| Token errors | Regenerate user auth token server‑side; verify Region |
+| Audio route wrong | Invoke `setAudioMode()` after session active |
+| Need invite flow | Implement custom signaling or add Chat SDK |
+
+---
+
+## **Help & Support**
+
+* 💬 [Developer Community](http://community.cometchat.com/)
+* ❓ [Support Portal](https://help.cometchat.com/hc/en-us/requests/new)
+* 📘 [Overview](/calls-sdk/android/overview)
+* 🧩 [Methods Reference](/calls-sdk/android/methods)
+
+---
+
+You now have a Calls‑only baseline—add signaling, UI polish, analytics, or later layer in Chat SDK for invitations & presence.

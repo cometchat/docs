@@ -46,6 +46,8 @@
 
   const ITEMS = [
     { label: 'Chat & Calling', href: '/chat-call' },
+    { label: 'Chat and Messaging', href: '/chat' },
+    { label: 'Voice and Video Calling', href: '/calls' },
     { label: 'AI Agents', href: '/ai-agents' },
     { label: 'AI Moderation', href: '/moderation/overview' },
     { label: 'Notification', href: '/notifications/overview' },

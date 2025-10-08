@@ -22,11 +22,13 @@
     try { NAV_READY = document.documentElement.classList.contains('cc-nav-ready'); } catch(_) {}
 
     // Routes shared across multiple products — keep dropdown visible and preserve last product context
-    var SHARED_PREFIXES = ['/chat-builder','/ui-kit','/sdk','/widget','/rest-api','/fundamentals'];
+    var SHARED_PREFIXES = ['/chat-builder','/ui-kit','/sdk','/widget','/rest-api','/fundamentals','/calls-sdk'];
 
     // Target products and destinations
     var PRODUCTS = [
       { key: 'chat-call', label: 'Chat & Calling', href: '/chat-call' },
+      { key: 'chat', label: 'Chat and Messaging', href: '/chat' },
+      { key: 'calls', label: 'Voice and Video Calling', href: '/calls' },
       { key: 'ai-agents', label: 'AI Agents', href: '/ai-agents' },
       { key: 'moderation', label: 'AI Moderation', href: '/moderation/overview' },
       { key: 'notifications', label: 'Notification', href: '/notifications/overview' },
@@ -72,7 +74,7 @@
         var k = sessionStorage.getItem(STORAGE_KEY) || null;
         if (!k) return null;
         // Validate against known products
-        return ['chat-call','ai-agents','moderation','notifications','insights'].indexOf(k) !== -1 ? k : null;
+        return ['chat-call','chat','calls','ai-agents','moderation','notifications','insights'].indexOf(k) !== -1 ? k : null;
       } catch (_) { return null; }
     }
 
@@ -80,7 +82,10 @@
       if (!path) return null;
       path = stripBase(path);
       if (path.indexOf('/chat-call') === 0) return 'chat-call';
+      if (path.indexOf('/chat') === 0) return 'chat';
+      if (path.indexOf('/calls') === 0) return 'calls';
       if (path.indexOf('/ai-agents') === 0) return 'ai-agents';
+      if (path.indexOf('/calls-sdk') === 0) return 'calls';
       if (path.indexOf('/moderation') === 0) return 'moderation';
       if (path.indexOf('/notifications') === 0) return 'notifications';
       if (path.indexOf('/insights') === 0) return 'insights';
