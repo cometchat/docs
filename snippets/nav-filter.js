@@ -82,7 +82,7 @@
         '/ai-agents',
         '/ai-agents/',
         '/ai-agents/mastra',
-        // Show the AI Agents Chat Builder (widget) tab when in AI Agents context
+        // Show the AI Agents Widget Builder tab when in AI Agents context
         '/widget/ai-agents'
       ],
       'moderation': [
@@ -99,7 +99,7 @@
     // Fallback to tab labels for dropdown-only tabs (from docs.json top-level tabs)
     var allowedLabelsByRoute = {
       'chat-call': [
-        'Chat & Calling', 'Platform', 'UI Kits', 'SDKs', 'No Code - Widgets', 'APIs', 'Chat Builder'
+        'Chat & Calling', 'Platform', 'UI Kits', 'SDKs', 'Widget Builder', 'APIs', 'UI Kit Builder'
       ],
       'ai-agents': [
         'AI Agents', 'Agent Builder'
@@ -129,11 +129,11 @@
     function isBlockedHref(routeKey, pathOnly) {
       try { pathOnly = stripBase(pathOnly || '/'); } catch (_) {}
       if (routeKey === 'chat-call') {
-        // Hide AI Agents Chat Builder tab in Chat & Calling context
+        // Hide AI Agents UI Kit Builder tab in Chat & Calling context
         if (pathOnly.indexOf('/widget/ai-agents') === 0) return true;
       }
       if (routeKey === 'ai-agents') {
-        // Hide Framework Chat Builder tab in AI Agents context
+        // Hide Framework UI Kit Builder tab in AI Agents context
         if (pathOnly.indexOf('/chat-builder') === 0) return true;
       }
       return false;
@@ -160,8 +160,8 @@
     function isAllowedLabel(routeKey, labelEl) {
       if (!routeKey || !labelEl) return false;
       var lbl = normalizeLabel(labelEl);
-      // Special-case: both top-level tabs share the label "Chat Builder".
-      if (lbl === 'chat builder') {
+      // Special-case: both top-level tabs share the label "UI Kit Builder".
+      if (lbl === 'ui kit builder') {
         var id = getTabId(labelEl);
         // If a tab-id is present, honor it strictly
         if (id === 'chat-builder') return routeKey === 'chat-call';
@@ -246,11 +246,11 @@
   if (isHomeItem(el)) { show(el); return; }
         var href = (el.getAttribute('href') || '').trim();
         var keep = isAllowedHref(routeKey, href) || isAllowedLabel(routeKey, el);
-        // Additional guard for duplicate-labeled Chat Builder tabs when both exist
-        if (keep && normalizeLabel(el) === 'chat builder') {
+        // Additional guard for duplicate-labeled UI Kit Builder tabs when both exist
+        if (keep && normalizeLabel(el) === 'ui kit builder') {
           var id = getTabId(el);
-          if (routeKey === 'chat-call' && id === 'ai-agent-chat-builder') keep = false;
-          if (routeKey === 'ai-agents' && id === 'chat-builder') keep = false;
+          if (routeKey === 'chat-call' && id === 'ai-agent-ui-kit-builder') keep = false;
+          if (routeKey === 'ai-agents' && id === 'ui-kit-builder') keep = false;
         }
         if (keep) show(el); else hide(el);
       });

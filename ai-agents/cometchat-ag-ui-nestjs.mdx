@@ -1,0 +1,336 @@
+---
+title: "AG-UI NestJS Implementation"
+sidebarTitle: "NestJS"
+description: "Implementation guide for building an AG-UI agent with NestJS."
+---
+
+### Prerequisites
+
+- Node.js (v16 or higher)
+- npm or pnpm
+- NestJS CLI
+- OpenAI API key (or other AI service)
+
+### Step 1: Create NestJS Project
+
+```bash
+# Install NestJS CLI
+npm i -g @nestjs/cli
+
+# Create new project
+nest new my-ag-ui-agent
+
+# Navigate to project
+cd my-ag-ui-agent
+
+# Install additional dependencies
+npm install @ag-ui/core openai uuid @nestjs/config
+```
+
+### Step 2: Configure Environment
+
+Create `.env`:
+
+```bash
+OPENAI_API_KEY=your-openai-api-key-here
+PORT=8000
+```
+
+Update `src/app.module.ts`:
+
+```typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { AgentModule } from './agent/agent.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    AgentModule,
+  ],
+})
+export class AppModule {}
+```
+
+### Step 3: Create Agent Module
+
+```bash
+nest g module agent
+nest g service agent
+nest g controller agent
+```
+
+### Step 4: Implement Agent Service
+
+Update `src/agent/agent.service.ts`:
+
+```typescript
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { OpenAI } from 'openai';
+import { EventType, RunAgentInput } from '@ag-ui/core';
+import { v4 as uuidv4 } from 'uuid';
+
+export class EventEncoder {
+  encode(event: any): string {
+    return `data: ${JSON.stringify(event)}\n\n`;
+  }
+  
+  getContentType(): string {
+    return 'text/event-stream';
+  }
+}
+
+@Injectable()
+export class AgentService {
+  private openai: OpenAI;
+  
+  constructor(private configService: ConfigService) {
+    const apiKey = this.configService.get<string>('OPENAI_API_KEY');
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY is required');
+    }
+    this.openai = new OpenAI({ apiKey });
+  }
+  
+  async *runAgent(input: RunAgentInput): AsyncGenerator<string> {
+    const encoder = new EventEncoder();
+    
+    try {
+      // Emit RUN_STARTED
+      yield encoder.encode({
+        type: EventType.RUN_STARTED,
+        threadId: input.threadId,
+        runId: input.runId,
+      });
+      
+      // Convert AG-UI messages to OpenAI format
+      const openaiMessages = input.messages.map((msg) => ({
+        role: msg.role as 'user' | 'assistant' | 'system',
+        content: msg.content || '',
+        ...(msg.role === 'assistant' && msg.toolCalls ? {
+          tool_calls: msg.toolCalls
+        } : {}),
+        ...(msg.role === 'tool' ? {
+          tool_call_id: msg.toolCallId
+        } : {})
+      }));
+      
+      // Convert AG-UI tools to OpenAI format
+      const openaiTools = input.tools?.map((tool) => ({
+        type: 'function' as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        },
+      })) || [];
+      
+      // Call OpenAI with streaming
+      const stream = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: openaiMessages,
+        tools: openaiTools.length > 0 ? openaiTools : undefined,
+        stream: true,
+      });
+      
+      const messageId = uuidv4();
+      let hasStartedMessage = false;
+      
+      // Stream the response
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        
+        // Handle text content
+        if (delta?.content) {
+          if (!hasStartedMessage) {
+            yield encoder.encode({
+              type: EventType.TEXT_MESSAGE_START,
+              messageId,
+              role: 'assistant',
+            });
+            hasStartedMessage = true;
+          }
+          
+          yield encoder.encode({
+            type: EventType.TEXT_MESSAGE_CONTENT,
+            messageId,
+            delta: delta.content,
+          });
+        }
+        
+        // Handle tool calls
+        if (delta?.tool_calls) {
+          for (const toolCall of delta.tool_calls) {
+            if (toolCall.function?.name) {
+              yield encoder.encode({
+                type: EventType.TOOL_CALL_START,
+                toolCallId: toolCall.id,
+                toolCallName: toolCall.function.name,
+                parentMessageId: messageId,
+              });
+            }
+            
+            if (toolCall.function?.arguments) {
+              yield encoder.encode({
+                type: EventType.TOOL_CALL_ARGS,
+                toolCallId: toolCall.id,
+                delta: toolCall.function.arguments,
+              });
+            }
+          }
+        }
+      }
+      
+      // End message if it was started
+      if (hasStartedMessage) {
+        yield encoder.encode({
+          type: EventType.TEXT_MESSAGE_END,
+          messageId,
+        });
+      }
+      
+      // Emit RUN_FINISHED
+      yield encoder.encode({
+        type: EventType.RUN_FINISHED,
+        threadId: input.threadId,
+        runId: input.runId,
+      });
+      
+    } catch (error: any) {
+      // Emit RUN_ERROR
+      yield encoder.encode({
+        type: EventType.RUN_ERROR,
+        message: error.message || 'An error occurred',
+      });
+    }
+  }
+}
+```
+
+### Step 5: Implement Agent Controller
+
+Update `src/agent/agent.controller.ts`:
+
+```typescript
+import { Controller, Post, Body, Res, HttpStatus } from '@nestjs/common';
+import { Response } from 'express';
+import { AgentService, EventEncoder } from './agent.service';
+import { RunAgentInput } from '@ag-ui/core';
+
+@Controller('agent')
+export class AgentController {
+  constructor(private readonly agentService: AgentService) {}
+  
+  @Post()
+  async runAgent(
+    @Body() input: RunAgentInput,
+    @Res() res: Response,
+  ) {
+    const encoder = new EventEncoder();
+    
+    // Set SSE headers
+    res.setHeader('Content-Type', encoder.getContentType());
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    
+    res.status(HttpStatus.OK);
+    
+    // Stream events
+    try {
+      for await (const event of this.agentService.runAgent(input)) {
+        res.write(event);
+      }
+    } catch (error) {
+      console.error('Error streaming agent response:', error);
+    } finally {
+      res.end();
+    }
+  }
+}
+```
+
+### Step 6: Update Agent Module
+
+Update `src/agent/agent.module.ts`:
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AgentService } from './agent.service';
+import { AgentController } from './agent.controller';
+
+@Module({
+  controllers: [AgentController],
+  providers: [AgentService],
+})
+export class AgentModule {}
+```
+
+### Step 7: Update Main Configuration
+
+Update `src/main.ts`:
+
+```typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { ConfigService } from '@nestjs/config';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  // Enable CORS
+  app.enableCors({
+    origin: '*',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true,
+  });
+  
+  const configService = app.get(ConfigService);
+  const port = configService.get('PORT') || 8000;
+  
+  await app.listen(port);
+  
+  console.log(`🚀 AG-UI Agent server running on port ${port}`);
+  console.log(`📍 Agent endpoint: http://localhost:${port}/agent`);
+}
+
+bootstrap();
+```
+
+### Step 8: Run the Server
+
+```bash
+# Development mode
+npm run start:dev
+
+# Production mode
+npm run build && npm run start:prod
+```
+
+### Step 9: Test Your Agent
+
+```bash
+curl -X POST http://localhost:8000/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "threadId": "test_thread_123",
+    "runId": "test_run_456",
+    "messages": [
+      {
+        "id": "msg_1",
+        "role": "user",
+        "content": "Hello! Can you help me?"
+      }
+    ],
+    "tools": [],
+    "context": [],
+    "state": {},
+    "forwardedProps": {}
+  }'
+```
+
+---
+

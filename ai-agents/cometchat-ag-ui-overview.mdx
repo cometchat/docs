@@ -1,0 +1,431 @@
+---
+title: "CometChat AG-UI Integration"
+sidebarTitle: "CometChat AG-UI"
+description: "Overview of the CometChat AG-UI integration protocol, event categories, and message formats."
+---
+
+CometChat has integrated support for **AG-UI (Agent-User Interaction Protocol)**, making it easier than ever to bring your own AI agents into your applications. With the "Bring Your Own Agent" (BYOA) approach, you can now host your own AG-UI compatible agent and seamlessly integrate it with CometChat's full-stack platform.
+
+This documentation provides a comprehensive guide on:
+- Understanding the AG-UI protocol
+- Creating AG-UI compatible agents using TypeScript
+- Hosting agents on Express.js or NestJS
+- Connecting your agent to CometChat
+
+---
+
+## What is AG-UI?
+
+### Overview
+
+**AG-UI (Agent-User Interaction Protocol)** is an open-source, lightweight, event-based protocol developed to standardize real-time communication between AI agents and user interfaces. It provides a vendor-neutral format that works across different AI providers (OpenAI, Anthropic, custom models, etc.) without requiring changes to client-side implementations.
+
+### Key Features
+
+- **Event-Driven Architecture**: Streams JSON-encoded events over HTTP or WebSocket
+- **Real-Time Streaming**: Supports token-by-token streaming of agent responses
+- **Tool Integration**: Enables agents to call frontend tools and functions
+- **State Management**: Synchronizes state between agents and UI
+- **Framework Agnostic**: Works with Node.js, browsers, and any agent framework
+- **Vendor Neutral**: Compatible with any AI service provider
+
+### Core Concepts
+
+AG-UI operates on three fundamental concepts:
+
+1. **Events**: Standardized messages that flow from agent to frontend
+2. **Messages**: Conversation history between users and agents
+3. **Tools**: Functions that agents can invoke to perform actions
+
+---
+
+## AG-UI Event Types
+
+AG-UI defines **16+ standardized event types** organized into six categories. Understanding these events is crucial for implementing AG-UI compatible agents.
+
+### 1. Lifecycle Events
+
+These events monitor the progression of agent runs.
+
+#### **RUN_STARTED**
+Signals the start of an agent run.
+
+```typescript
+interface RunStartedEvent {
+  type: EventType.RUN_STARTED
+  threadId: string  // ID of the conversation thread
+  runId: string     // ID of the agent run
+  timestamp?: string
+}
+```
+
+#### **RUN_FINISHED**
+Signals successful completion of an agent run.
+
+```typescript
+interface RunFinishedEvent {
+  type: EventType.RUN_FINISHED
+  threadId: string
+  runId: string
+  result?: any      // Optional result data from run
+  timestamp?: string
+}
+```
+
+#### **RUN_ERROR**
+Signals an error during an agent run.
+
+```typescript
+interface RunErrorEvent {
+  type: EventType.RUN_ERROR
+  message: string   // Error message
+  code?: string     // Optional error code
+  timestamp?: string
+}
+```
+
+#### **STEP_STARTED** & **STEP_FINISHED**
+Optional events for tracking discrete steps within a run.
+
+```typescript
+interface StepStartedEvent {
+  type: EventType.STEP_STARTED
+  stepName: string  // Name of the step
+}
+
+interface StepFinishedEvent {
+  type: EventType.STEP_FINISHED
+  stepName: string
+}
+```
+
+### 2. Text Message Events
+
+These events handle streaming textual content between agents and users.
+
+#### **TEXT_MESSAGE_START**
+Signals the start of a text message.
+
+```typescript
+interface TextMessageStartEvent {
+  type: EventType.TEXT_MESSAGE_START
+  messageId: string
+  role: "assistant" | "user" | "system" | "tool" | "developer"
+}
+```
+
+#### **TEXT_MESSAGE_CONTENT**
+Represents a chunk of content in a streaming message.
+
+```typescript
+interface TextMessageContentEvent {
+  type: EventType.TEXT_MESSAGE_CONTENT
+  messageId: string
+  delta: string     // Text content chunk (non-empty)
+}
+```
+
+#### **TEXT_MESSAGE_END**
+Signals the end of a text message.
+
+```typescript
+interface TextMessageEndEvent {
+  type: EventType.TEXT_MESSAGE_END
+  messageId: string
+}
+```
+
+#### **TEXT_MESSAGE_CHUNK**
+A convenience event that combines start, content, and end in one.
+
+```typescript
+interface TextMessageChunkEvent {
+  type: EventType.TEXT_MESSAGE_CHUNK
+  messageId?: string
+  role?: string
+  delta?: string
+}
+```
+
+### 3. Tool Call Events
+
+These events manage tool executions by agents.
+
+#### **TOOL_CALL_START**
+Signals the start of a tool call.
+
+```typescript
+interface ToolCallStartEvent {
+  type: EventType.TOOL_CALL_START
+  toolCallId: string
+  toolCallName: string
+  parentMessageId?: string
+}
+```
+
+#### **TOOL_CALL_ARGS**
+Streams the arguments for a tool call.
+
+```typescript
+interface ToolCallArgsEvent {
+  type: EventType.TOOL_CALL_ARGS
+  toolCallId: string
+  delta: string     // JSON fragment to append to arguments
+}
+```
+
+#### **TOOL_CALL_END**
+Marks the completion of a tool call.
+
+```typescript
+interface ToolCallEndEvent {
+  type: EventType.TOOL_CALL_END
+  toolCallId: string
+}
+```
+
+#### **TOOL_CALL_CHUNK**
+A convenience event for tool calls (similar to TEXT_MESSAGE_CHUNK).
+
+```typescript
+interface ToolCallChunkEvent {
+  type: EventType.TOOL_CALL_CHUNK
+  toolCallId: string
+  toolCallName?: string
+  parentMessageId?: string
+  delta?: string
+}
+```
+
+#### **TOOL_CALL_RESULT**
+Provides the result of a tool call execution.
+
+```typescript
+interface ToolCallResultEvent {
+  type: EventType.TOOL_CALL_RESULT
+  messageId: string
+  toolCallId: string
+  content: string   // The actual result/output
+  role?: "tool"
+}
+```
+
+### 4. State Management Events
+
+These events synchronize agent state with the frontend.
+
+#### **STATE_SNAPSHOT**
+Provides a complete snapshot of agent state.
+
+```typescript
+interface StateSnapshotEvent {
+  type: EventType.STATE_SNAPSHOT
+  snapshot: any     // Complete state snapshot
+}
+```
+
+#### **STATE_DELTA**
+Provides incremental state updates using JSON Patch (RFC 6902).
+
+```typescript
+interface StateDeltaEvent {
+  type: EventType.STATE_DELTA
+  delta: Array<{
+    op: "add" | "remove" | "replace" | "move" | "copy" | "test"
+    path: string
+    value?: any
+  }>
+}
+```
+
+#### **MESSAGES_SNAPSHOT**
+Provides a snapshot of all messages in a conversation.
+
+```typescript
+interface MessagesSnapshotEvent {
+  type: EventType.MESSAGES_SNAPSHOT
+  messages: Message[]
+}
+```
+
+### 5. Special Events
+
+#### **CUSTOM**
+Used for application-specific custom events.
+
+```typescript
+interface CustomEvent {
+  type: EventType.CUSTOM
+  name: string
+  value: any
+}
+```
+
+#### **RAW**
+Used to pass through events from external systems.
+
+```typescript
+interface RawEvent {
+  type: EventType.RAW
+  event: any
+  source?: string
+}
+```
+
+### Event Flow Patterns
+
+AG-UI events follow specific patterns:
+
+1. **Start-Content-End Pattern**: Used for streaming (text messages, tool calls)
+   - Start event initiates the stream
+   - Content events deliver data chunks
+   - End event signals completion
+
+2. **Snapshot-Delta Pattern**: Used for state synchronization
+   - Snapshot provides complete state
+   - Delta events provide incremental updates
+
+3. **Lifecycle Pattern**: Used for monitoring agent runs
+   - Started events signal beginnings
+   - Finished/Error events signal endings
+
+---
+
+## AG-UI Message Types
+
+Messages form the backbone of communication in the AG-UI protocol. They represent the conversation history between users and AI agents.
+
+### Base Message Structure
+
+```typescript
+interface BaseMessage {
+  id: string        // Unique identifier for the message
+  role: string      // The role of the sender
+  content?: string  // Optional text content
+  name?: string     // Optional name of the sender
+}
+```
+
+### Message Types
+
+#### **User Messages**
+Messages from the end user to the agent.
+
+```typescript
+interface UserMessage {
+  id: string
+  role: "user"
+  content: string   // Text input from the user
+  name?: string     // Optional user identifier
+}
+```
+
+#### **Assistant Messages**
+Messages from the AI assistant to the user.
+
+```typescript
+interface AssistantMessage {
+  id: string
+  role: "assistant"
+  content?: string      // Optional if using tool calls
+  name?: string
+  toolCalls?: ToolCall[]  // Optional tool calls
+}
+```
+
+#### **System Messages**
+Instructions or context provided to the agent.
+
+```typescript
+interface SystemMessage {
+  id: string
+  role: "system"
+  content: string   // Instructions or context for the agent
+  name?: string
+}
+```
+
+#### **Tool Messages**
+Results from tool executions.
+
+```typescript
+interface ToolMessage {
+  id: string
+  role: "tool"
+  content: string       // Result from tool execution
+  toolCallId: string    // ID of the tool call this responds to
+}
+```
+
+#### **Developer Messages**
+Internal messages used for development or debugging.
+
+```typescript
+interface DeveloperMessage {
+  id: string
+  role: "developer"
+  content: string
+  name?: string
+}
+```
+
+### Tool Call Structure
+
+```typescript
+interface ToolCall {
+  id: string          // Unique ID for this tool call
+  type: "function"    // Type of tool call
+  function: {
+    name: string      // Name of the function to call
+    arguments: string // JSON-encoded string of arguments
+  }
+}
+```
+
+### Example Conversation with Tool Usage
+
+```typescript
+const conversation = [
+  // User query
+  {
+    id: "msg_1",
+    role: "user",
+    content: "What's the weather in New York?"
+  },
+  
+  // Assistant response with tool call
+  {
+    id: "msg_2",
+    role: "assistant",
+    content: "Let me check the weather for you.",
+    toolCalls: [
+      {
+        id: "call_1",
+        type: "function",
+        function: {
+          name: "get_weather",
+          arguments: '{"location": "New York", "unit": "celsius"}'
+        }
+      }
+    ]
+  },
+  
+  // Tool result
+  {
+    id: "result_1",
+    role: "tool",
+    content: '{"temperature": 22, "condition": "Partly Cloudy", "humidity": 65}',
+    toolCallId: "call_1"
+  },
+  
+  // Assistant's final response
+  {
+    id: "msg_3",
+    role: "assistant",
+    content: "The weather in New York is partly cloudy with a temperature of 22°C and 65% humidity."
+  }
+]
+```
+
+---
+

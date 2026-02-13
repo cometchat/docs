@@ -1,0 +1,158 @@
+---
+title: "Build a Product Hunt Agent with AG2"
+sidebarTitle: "Product Hunt Agent"
+description: "Create an AG2 agent that can fetch Product Hunt posts, answer launch questions, and trigger frontend actions (confetti), then plug it into CometChat."
+---
+
+Give your Product Hunt launch conversations a Python-first co-pilot: fetch live leaderboards, search the catalog, trigger confetti, and stream guidance straight into CometChat using the AG2 agent pattern.
+
+---
+
+## Quick links
+
+- Repo: [ai-agent-ag2-examples/product-hunt](https://github.com/cometchat/ai-agent-ag2-examples/tree/main/product-hunt)
+- README: [README.md](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/README.md)
+- Agent core: [agent.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/agent.py)
+- FastAPI server: [server.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/server.py)
+- Sample UI: [web/index.html](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/web/index.html)
+
+---
+
+## What you’ll build
+
+- A Python **ProductHuntAgent** that decides when to fetch top posts, run timeframe queries, search Algolia, or fire the confetti action.
+- A `ProductHuntService` that talks to Product Hunt’s GraphQL API (with optional token) and its public Algolia index.
+- A FastAPI backend exposing `/tools/*` JSON endpoints plus a streaming `/agent` SSE route tuned for CometChat.
+- A Product Hunt–inspired static UI that mounts the CometChat widget and interprets the `CONFETTI` action payload.
+
+---
+
+## Prerequisites
+
+- Python 3.10 or newer and `pip`.
+- Environment variables:
+  - `OPENAI_API_KEY` (required).
+  - Optional: `PRODUCTHUNT_API_TOKEN` (enables live top-post queries), `PRODUCT_HUNT_AGENT_MODEL` (default `gpt-4o-mini`), `PRODUCT_HUNT_AGENT_TEMPERATURE` (default `0.3`), `PRODUCT_HUNT_AGENT_MAX_ITEMS` (default `5`).
+- Install dependencies with `pip install -r requirements.txt`.
+- A CometChat app where you’ll register the agent and embed the widget.
+
+---
+
+## How it works
+
+- `ProductHuntService` clamps user input, builds GraphQL queries for top posts, translates natural-language timeframes to UTC windows, and falls back gracefully when credentials are missing.
+- The `ProductHuntAgent` inspects each message, emits structured `tool_call_*` SSE events around tool invocations, and streams OpenAI-generated answers grounded in tool output.
+- Confetti requests stay server-driven: the agent returns an `action: "CONFETTI"` payload that frontends can render safely.
+- `server.py` hosts FastAPI routes for REST access and a `/agent` endpoint that batches SSE events so CometChat can replay them in real time.
+- The static `web/index.html` mocks a Product Hunt landing page, mounts CometChat, and demonstrates how to consume leaderboard data plus the confetti action.
+
+---
+
+## Step 1 — Talk to Product Hunt
+
+File: [`agent.py`](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/agent.py)
+
+- `ProductHuntService` signs GraphQL calls when `PRODUCTHUNT_API_TOKEN` is present; otherwise it returns empty lists and logs helpful warnings.
+- `get_top_products_by_timeframe` normalizes phrases like `today`, `last week`, `2024-09-01`, or `from:2024-08-01 to:2024-08-15`, generating the ISO timestamps Product Hunt expects.
+- `search_products` wraps the public Algolia index using the bundled app ID/key, trimming the response to the requested limit.
+- `to_markdown_table` converts product lists into Markdown tables so chat replies stay scannable (and safe for CometChat rendering).
+
+---
+
+## Step 2 — Build the AG2 agent
+
+Also in [`agent.py`](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/agent.py):
+
+- `ProductHuntAgent` loads configuration from environment variables, enforces sane limits, and initializes the OpenAI client.
+- `_decide_action` uses lightweight heuristics to route messages to `top`, `top_timeframe`, `search`, `confetti`, or fallback `advice`.
+- Each tool call yields `tool_call_start` and `tool_call_result` SSE frames with deterministic IDs, mirroring CometChat’s expectations.
+- `_generate_answer` calls OpenAI with a Product Hunt–specific system prompt, grounding responses with the structured payload when available.
+- `_stream_text` breaks completions into word chunks so the frontend sees incremental updates instead of one large blob.
+
+---
+
+## Step 3 — Serve tools and SSE with FastAPI
+
+File: [`server.py`](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/product-hunt/server.py)
+
+- FastAPI spins up with permissive CORS and a lifespan hook that instantiates `ProductHuntAgent` once.
+- `/tools/top`, `/tools/top_timeframe`, `/tools/search`, and `/tools/confetti` validate input via Pydantic models and return the raw tool payloads (including Markdown tables or action structures).
+- `/agent` extracts the latest user message, streams the agent’s SSE output via `StreamingResponse`, and keeps buffers disabled for true real-time delivery.
+- `/health` and `/` provide lightweight diagnostics you can hit from monitoring or your deployment platform.
+
+---
+
+## Step 4 — Run the agent locally
+
+```bash
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-your-key
+# Optional for live Product Hunt data
+export PRODUCTHUNT_API_TOKEN=phc_your_token
+uvicorn server:app --reload --port 8000
+```
+
+Visit `http://localhost:8000/` to confirm the service and keep an eye on logs for Product Hunt token warnings.
+
+---
+
+## Step 5 — Stream a conversation
+
+```bash
+curl -N http://localhost:8000/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+        "thread_id": "chat_123",
+        "messages": [
+          { "role": "user", "content": "Show today'\''s top Product Hunt launches and celebrate them." }
+        ],
+        "tool_params": {
+          "timeframe": "today",
+          "tz": "America/New_York",
+          "limit": 3
+        }
+      }'
+```
+
+You’ll see `tool_call_*` events with Product Hunt data followed by streaming `text_message` chunks and a `[DONE]` sentinel—exactly what CometChat’s AI agents API consumes.
+
+---
+
+## Step 6 — Plug into CometChat
+
+- In your CometChat dashboard: **AI Agents → Add Agent → AG2**.
+- Set the Agent ID (e.g., `producthunt-ag2`) and point the deployment URL to your `/agent` endpoint (must be HTTPS in production).
+- Map the `CONFETTI` action to your widget handler; the sample UI demonstrates how to read the payload and execute `canvas-confetti`.
+- Optionally preload greetings, suggested prompts (“What are today’s top 3 launches?”), and any additional frontend actions you want to support.
+
+---
+
+## Step 7 — Test the REST tools
+
+- `GET /health` → `{"status":"healthy","agent_initialized":true}`
+- `POST /tools/top` with `{"limit":3}` → current leaders by total votes (empty if no Product Hunt token).
+- `POST /tools/top_timeframe` with `{"timeframe":"yesterday","tz":"America/Los_Angeles"}` → timeframe metadata plus ranked posts.
+- `POST /tools/search` with `{"query":"notion","limit":5}` → Algolia search results.
+- `POST /tools/confetti` with overrides like `{"colors":["#ff577f","#7b5cff"],"particleCount":400}` → structured frontend action payload.
+
+Use these routes to populate dashboards or to warm caches before handing conversations to the agent.
+
+---
+
+## Security & production checklist
+
+- Keep `OPENAI_API_KEY` and `PRODUCTHUNT_API_TOKEN` server-side only; never expose them in the web embed.
+- Add CORS restrictions and authentication (API keys, JWT, or CometChat-signed requests) before deploying.
+- Rate-limit `/agent` and `/tools/*`, and cache Product Hunt responses to avoid repeatedly hitting the GraphQL API.
+- Log tool usage and errors without storing sensitive conversation content; monitor for expired Product Hunt tokens.
+- Run behind HTTPS with streaming-friendly proxies (e.g., Nginx with buffering disabled on `/agent`).
+
+---
+
+## Troubleshooting
+
+- **Empty top-product responses**: set `PRODUCTHUNT_API_TOKEN`; without it, GraphQL queries return no edges.
+- **Algolia search is blank**: confirm outbound network access and that you stay within Algolia’s public rate limits.
+- **SSE stops instantly**: make sure your hosting provider allows streaming and preserves `Cache-Control: no-cache` headers.
+- **Confetti never fires in the UI**: ensure your frontend listens for `action === "CONFETTI"` and passes the payload to `canvas-confetti`.
+- **Replies feel generic**: check server logs to verify tool calls succeeded; the agent falls back to advice mode when payloads are empty.

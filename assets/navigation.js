@@ -9,7 +9,13 @@
 
   function isHome(pathname) {
     if (!pathname) pathname = location.pathname;
-    return pathname === '/' || pathname === '/docs' || pathname === '/docs/' || pathname === '/index' || pathname === '/index.html';
+    return pathname === '/' ||
+      pathname === '/docs' ||
+      pathname === '/docs/' ||
+      pathname === '/index' ||
+      pathname === '/index.html' ||
+      pathname === '/home' ||
+      pathname === '/docs/home';
   }
 
   function setHtmlFlags() {

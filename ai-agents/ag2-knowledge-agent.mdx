@@ -1,0 +1,281 @@
+---
+title: "Build Your Knowledge Agent with AG2"
+sidebarTitle: "Knowledge Agent"
+description: "Create an AG2 Knowledge Agent that answers documentation questions, then connect it to CometChat."
+---
+
+Imagine an assistant that reads your product docs, returns cited answers when mentioned in chat, and streams context back to the UI in real time. That’s what the AG2 Knowledge Agent delivers.
+
+***
+
+## What You’ll Build
+
+* An **AG2 (AutoGen 2)** agent that behaves like a documentation expert.  
+* Triggered only when invoked (e.g., `@knowledge`).  
+* Retrieves & cites snippets from an on-disk knowledge store.  
+* Integrated into **CometChat** conversations with streaming responses.  
+
+***
+
+## Prerequisites
+
+* Python 3.10+ and `pip`.  
+* `OPENAI_API_KEY` in a `.env` file (used for embeddings + chat completions).  
+* Optional overrides:  
+  * `KNOWLEDGE_AGENT_MODEL` (default `gpt-4o-mini`)  
+  * `KNOWLEDGE_AGENT_EMBEDDING_MODEL` (default `text-embedding-3-small`)  
+  * `KNOWLEDGE_AGENT_TOP_K`, `KNOWLEDGE_AGENT_TEMPERATURE`, etc.  
+* CometChat app credentials (App ID, Region, Auth Key).  
+
+***
+
+## Quick links
+
+- Repo (examples): [ai-agent-ag2-examples/ag2-knowledge-agent](https://github.com/cometchat/ai-agent-ag2-examples/tree/main/ag2-knowledge-agent)
+- Agent source: [agent.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/agent.py)
+- FastAPI server: [server.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/server.py)
+- Sample web embed: [web/index.html](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/web/index.html)
+
+***
+
+## How it works
+
+This project packages a retrieval-augmented AG2 agent that:
+
+- **Ingests sources** into namespaces using the `KnowledgeStore`. POST payloads to `/tools/ingest` with URLs, local files, or raw text. Files (`.pdf`, `.md`, `.txt`) are parsed and chunked before embeddings are stored under `knowledge/<namespace>/index.json`.
+- **Searches namespaces** via `/tools/search`, ranking chunks with cosine similarity on OpenAI embeddings (defaults to top 4 results).
+- **Streams answers** from `/agent`. The server wraps AG2’s `ConversableAgent`, emits SSE events for tool calls (`tool_call_start`, `tool_call_result`) and text chunks, and always terminates with `[DONE]`.
+- **Cites sources**. The agent compiles the retrieved snippets, instructs the LLM to cite them with bracketed numbers, and appends a `Sources:` line.
+- **Hardens operations**: namespaces are sanitized, ingestion is thread-safe, and errors are surfaced as SSE `error` events so the client can render fallbacks.
+
+Key modules:
+
+- `agent.py` — KnowledgeAgent, store helpers, embedding + retrieval logic.
+- `server.py` — FastAPI app hosting `/agent`, `/tools/ingest`, `/tools/search`, `/health`.
+- `knowledge/` — default storage root (persisted chunks + index).
+- `web/index.html` — CometChat Chat Embed sample that points to your deployed agent.
+
+***
+
+## Setup
+
+<Steps>
+  <Step title="Clone & install">
+    <code>git clone https://github.com/cometchat/ai-agent-ag2-examples.git</code> then <code>cd ai-agent-ag2-examples/ag2-knowledge-agent</code>. Create a virtualenv and run <code>pip install -r requirements.txt</code>.
+  </Step>
+  <Step title="Configure environment">
+    Create a <code>.env</code> file, set <code>OPENAI_API_KEY</code>, and override other knobs as needed (model, temperature, namespace).
+  </Step>
+  <Step title="Prime knowledge">
+    Run <code>python server.py</code> once (or <code>uvicorn server:app</code>) to initialize folders. Use the ingest endpoint or the provided knowledge samples as a starting point.
+  </Step>
+  <Step title="Run locally">
+    Start FastAPI: <code>uvicorn server:app --reload --host 0.0.0.0 --port 8000</code>. Verify <code>GET /health</code> returns <code>`{"status": "healthy"}`</code>.
+  </Step>
+  <Step title="Create a tunnel">
+    Expose <code>/agent</code> publicly with ngrok, Cloudflare Tunnel, or Render so CometChat can reach it.
+  </Step>
+</Steps>
+
+***
+
+## Project structure
+
+- Dependencies: [requirements.txt](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/requirements.txt)
+- Agent logic: [agent.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/agent.py)
+- Knowledge store: [knowledge/](https://github.com/cometchat/ai-agent-ag2-examples/tree/main/ag2-knowledge-agent/knowledge)
+- API server: [server.py](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/server.py)
+- Web sample: [web/index.html](https://github.com/cometchat/ai-agent-ag2-examples/blob/main/ag2-knowledge-agent/web/index.html)
+
+***
+
+## Core configuration
+
+<AccordionGroup>
+  <Accordion title="Environment variables">
+
+```bash
+OPENAI_API_KEY=sk-your-key
+KNOWLEDGE_AGENT_MODEL=gpt-4o
+KNOWLEDGE_AGENT_TEMPERATURE=0.2
+KNOWLEDGE_AGENT_TOP_K=4
+KNOWLEDGE_AGENT_EMBEDDING_MODEL=text-embedding-3-small
+KNOWLEDGE_AGENT_DEFAULT_NAMESPACE=docs
+KNOWLEDGE_AGENT_STORAGE_PATH=knowledge
+```
+
+  </Accordion>
+  <Accordion title="Knowledge ingestion schema">
+
+```json
+POST /tools/ingest
+{
+  "namespace": "docs",
+  "sources": [
+    {
+      "type": "url",
+      "value": "https://example.com/handbook",
+      "title": "Handbook"
+    },
+    {
+      "type": "file",
+      "path": "/absolute/path/to/policies.pdf"
+    },
+    {
+      "type": "text",
+      "title": "Inline FAQ",
+      "value": "Q: How do refunds work?\nA: ..."
+    }
+  ]
+}
+```
+
+  </Accordion>
+  <Accordion title="Streaming response shape">
+
+```text
+data: {"type":"tool_call_start","tool_call_id":"call_123","tool_name":"search_docs","args":{"namespace":"docs","query":"@agent refund policy"}}
+
+data: {"type":"tool_call_result","tool_call_id":"call_123","result":{"matches":[{"chunk_id":"...","score":0.82,"source":"knowledge/docs/...","title":"Refund Policy","preview":"..."}]},"is_frontend_tool":false}
+
+data: {"type":"text_message","delta":"Refunds are processed within 5 business days "}
+data: {"type":"text_message","delta":"once the request is approved.[1] Sources: [1] Refund Policy"}
+data: [DONE]
+```
+
+  </Accordion>
+</AccordionGroup>
+
+***
+
+## Step 1 - Ingest documentation
+
+<Steps>
+  <Step title="Pick a namespace">
+    Stick with <code>docs</code> or choose a sanitized string (alphanumeric, <code>-</code>, <code>_</code>).
+  </Step>
+  <Step title="POST to /tools/ingest">
+    Supply a mix of URLs, file paths, and inline text. The server fetches, parses (PDF/Markdown/Text), chunks, embeds, and persists everything.
+  </Step>
+  <Step title="Inspect storage">
+    Confirm <code>knowledge/&lt;namespace&gt;</code> contains generated <code>.md</code> copies and an updated <code>index.json</code>.
+  </Step>
+</Steps>
+
+***
+
+## Step 2 - Ask the knowledge agent
+
+<Steps>
+  <Step title="Make a request">
+
+```bash
+curl -N -X POST http://localhost:8000/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "thread_id": "demo-thread",
+    "run_id": "demo-run",
+    "messages": [
+      { "role": "user", "content": "@knowledge What does our refund policy cover?" }
+    ],
+    "tool_params": { "namespace": "docs" }
+  }'
+```
+
+  </Step>
+  <Step title="Handle SSE">
+    Streamed events include tool telemetry and text deltas. Buffer them until you receive <code>[DONE]</code>.
+  </Step>
+  <Step title="Observe citations">
+    Replies contain bracketed numbers matching the <code>matches</code> payload returned by the retrieval tool.
+  </Step>
+</Steps>
+
+***
+
+## Step 3 - Deploy the API
+
+- Host the FastAPI app (Render, Fly.io, ECS, etc.) or wrap it in a serverless function.  
+- Expose <code>/agent</code>, <code>/tools/ingest</code>, and <code>/tools/search</code> over HTTPS.  
+- Keep <code>KNOWLEDGE_AGENT_STORAGE_PATH</code> on a persistent volume so ingested docs survive restarts.  
+- Harden CORS, rate limiting, and authentication before opening the endpoints to the public internet.  
+
+***
+
+## Step 4 - Configure CometChat
+
+<Steps>
+  <Step title="Open Dashboard">Go to <a href="https://app.cometchat.com/" target="_blank" rel="noreferrer">app.cometchat.com</a>.</Step>
+  <Step title="Add agent">Navigation: <b>AI Agents → Add Agent</b>.</Step>
+  <Step title="Provider & IDs">Set <b>Provider</b>=AG2 (AutoGen), <b>Agent ID</b>=<code>knowledge</code>, <b>Deployment URL</b>=public <code>/agent</code> endpoint.</Step>
+  <Step title="Optional metadata">Add greeting, intro, or suggested prompts such as “@knowledge Summarize the onboarding guide.”</Step>
+  <Step title="Enable">Save then confirm the toggle shows <b>Enabled</b>.</Step>
+</Steps>
+
+> For more on CometChat AI Agents, see: [Overview](/ai-agents/overview) · [Instructions](/ai-agents/instructions) · [Custom agents](/ai-agents/custom-agents)
+
+***
+
+## Step 5 - Customize in UI Kit Builder
+
+<Steps>
+  <Step title="Open variant">From the Dashboard variant card, click <b>Customize and Deploy</b>.</Step>
+  <Step title="Update UX">Themes, layouts, attachment rules, and action bindings—all reflect in exports.</Step>
+  <Step title="Preview">Run conversations and confirm the knowledge agent responds only when invoked.</Step>
+</Steps>
+
+<Frame>
+  <img src="/images/ai-agent-chat-builder-preview.png" />
+</Frame>
+
+***
+
+## Step 6 - Integrate
+
+Once configured, embed the agent in your product using the exported configuration.
+
+<CardGroup>
+  <Card title="Widget Builder" icon={<img src="/docs/images/products/ai-agents.svg" alt="Widget" />} description="Embed / script" href="/widget/ai-agents" horizontal />
+  <Card title="React UI Kit" icon={<img src="/docs/images/icons/react.svg" alt="React" />} href="https://www.cometchat.com/docs/ui-kit/react/ai-assistant-chat" horizontal>Pre Built UI Components</Card>
+</CardGroup>
+
+> The AG2 Knowledge agent you connected is bundled automatically. End-users will see it immediately after deployment.
+
+***
+
+## Step 7 - Test end-to-end
+
+<Steps>
+  <Step title="API generates response">POST to <code>/agent</code> returns cited answers.</Step>
+  <Step title="Search utility works">POST to <code>/tools/search</code> returns ranked snippets.</Step>
+  <Step title="Dashboard check">In CometChat, ensure the agent appears as a selectable bot.</Step>
+  <Step title="Widget/UI verification">Preview in <b>UI Kit Builder</b> or your app and confirm streaming + citations behave as expected.</Step>
+</Steps>
+
+***
+
+## Security & production checklist
+
+- Protect ingestion routes with auth (API key/JWT) and restrict who can write to each namespace.  
+- Validate URLs and file paths before fetching to avoid SSRF or untrusted uploads.  
+- Rate limit the `/agent` and `/tools/*` endpoints to prevent abuse.  
+- Keep OpenAI keys server-side; never ship them in browser code or UI Kit Builder exports.  
+- Log tool calls (namespace, duration) for debugging and monitoring.  
+
+***
+
+## Troubleshooting
+
+* **Agent replies without citations**: confirm the retrieval step returns matches; check embeddings or namespace.  
+* **Empty or slow results**: ensure documents were ingested successfully and the top-k limit isn’t set to 0.  
+* **`503 Agent not initialized`**: verify server logs—`KnowledgeAgent` requires `OPENAI_API_KEY` during startup.  
+* **SSE errors in widget**: make sure your reverse proxy supports streaming and disables response buffering.  
+
+***
+
+## Next steps
+
+* Add new tools (e.g., `summarize`, `link_to_source`) by extending the AG2 agent before responding.  
+* Swap in enterprise vector stores by replacing `KnowledgeStore` with Pinecone, Qdrant, or Postgres.  
+* Schedule re-ingestion jobs when docs change, or watch folders for automatic refreshes.  
+* Layer analytics: log `tool_call_result.matches` for insight into content coverage.  

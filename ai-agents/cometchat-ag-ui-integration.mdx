@@ -1,0 +1,402 @@
+---
+title: "CometChat AG-UI Integration Steps"
+sidebarTitle: "Integration"
+description: "Integrating AG-UI agents with CometChat, security practices, and deployment checklist."
+---
+
+### Step 1: Deploy Your Agent
+
+Before integrating with CometChat, ensure your agent is:
+- **Publicly accessible** over HTTPS
+- **Running on a stable server** (AWS, Google Cloud, Azure, etc.)
+- **Protected with authentication** headers
+
+### Step 2: Configure Agent in CometChat Dashboard
+
+1. **Login to CometChat Dashboard**
+   - Navigate to https://app.cometchat.com
+   - Select your application
+
+2. **Navigate to AI Agents**
+   - Go to **AI Agents** in the left-hand menu
+   - Click **"Add Agent"** or **"Custom Agents"**
+
+3. **Configure Agent Settings**
+
+   **Basic Information:**
+   - **Agent Name**: Give your agent a memorable name (e.g., "Support Assistant")
+   - **Provider**: Select "Custom" or "AG-UI Compatible"
+   - **Deployment URL**: Enter your agent's public URL
+     ```
+     https://your-domain.com/agent
+     ```
+
+   **Agent Identity:**
+   - **Display Name**: Name shown to users (e.g., "AI Assistant")
+   - **Avatar**: Upload an avatar image for your agent
+   - **Greeting Message**: Set a welcome message
+     ```
+     "Hello! I'm your AI assistant. How can I help you today?"
+     ```
+
+4. **Configure Security Headers**
+
+   CometChat allows you to securely access your agent using custom headers. This is **highly recommended** for production.
+
+   **Headers Configuration (JSON format):**
+   ```json
+   {
+     "Authorization": "Bearer your-secret-api-key",
+     "X-API-Key": "your-custom-api-key",
+     "X-Client-ID": "cometchat-client"
+   }
+   ```
+
+   **Example with Basic Auth:**
+   ```json
+   {
+     "Authorization": "Basic base64-encoded-credentials"
+   }
+   ```
+
+5. **Enable the Agent**
+   - Toggle the agent status to **"Enabled"**
+   - Click **"Save"**
+
+### Step 3: Implement Header Validation in Your Agent
+
+**Express.js Example:**
+
+```typescript
+import express from 'express';
+
+const app = express();
+
+// Middleware to validate headers
+app.use('/agent', (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+  const expectedKey = process.env.API_KEY;
+  
+  if (apiKey !== expectedKey) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Invalid API key'
+    });
+  }
+  
+  next();
+});
+
+// Your agent endpoint
+app.post('/agent', async (req, res) => {
+  // Agent logic here
+});
+```
+
+**NestJS Example:**
+
+```typescript
+import { Injectable, NestMiddleware, UnauthorizedException } from '@nestjs/common';
+import { Request, Response, NextFunction } from 'express';
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class AuthMiddleware implements NestMiddleware {
+  constructor(private configService: ConfigService) {}
+  
+  use(req: Request, res: Response, next: NextFunction) {
+    const apiKey = req.headers['x-api-key'];
+    const expectedKey = this.configService.get('API_KEY');
+    
+    if (apiKey !== expectedKey) {
+      throw new UnauthorizedException('Invalid API key');
+    }
+    
+    next();
+  }
+}
+
+// In your module:
+export class AgentModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(AuthMiddleware)
+      .forRoutes('agent');
+  }
+}
+```
+
+### Step 4: Test Integration
+
+1. **Access CometChat in your app**
+2. **Start a conversation** with your AI agent
+3. **Send a message** and verify the agent responds correctly
+4. **Check streaming** - messages should appear token-by-token
+5. **Test tools** - if your agent uses tools, verify they execute properly
+
+### Step 5: Monitor and Debug
+
+**Check Agent Logs:**
+```typescript
+// Add logging to your agent
+console.log('Received request:', {
+  threadId: input.threadId,
+  runId: input.runId,
+  messageCount: input.messages.length,
+  toolCount: input.tools.length
+});
+```
+
+**CometChat Analytics:**
+- Navigate to **Analytics** in CometChat dashboard
+- Monitor agent performance, response times, and error rates
+
+---
+
+## Best Practices and Security
+
+### Security Best Practices
+
+#### 1. Use HTTPS
+Always deploy your agent with HTTPS. Never expose HTTP endpoints in production.
+
+#### 2. Implement Authentication
+Use strong authentication headers:
+
+```typescript
+// Environment variables
+API_KEY=your-strong-random-key-here
+CLIENT_SECRET=another-strong-secret
+
+// Validate in your agent
+const validateAuth = (req: Request): boolean => {
+  const apiKey = req.headers['x-api-key'];
+  const clientId = req.headers['x-client-id'];
+  
+  return apiKey === process.env.API_KEY && 
+         clientId === process.env.CLIENT_ID;
+};
+```
+
+#### 3. Rate Limiting
+Implement rate limiting to prevent abuse:
+
+```typescript
+import rateLimit from 'express-rate-limit';
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests, please try again later.'
+});
+
+app.use('/agent', limiter);
+```
+
+#### 4. Input Validation
+Validate all inputs:
+
+```typescript
+import { IsString, IsArray, ValidateNested } from 'class-validator';
+
+export class RunAgentInputDto {
+  @IsString()
+  threadId: string;
+  
+  @IsString()
+  runId: string;
+  
+  @IsArray()
+  @ValidateNested({ each: true })
+  messages: Message[];
+  
+  // ... other validations
+}
+```
+
+#### 5. Error Handling
+Never expose sensitive information in errors:
+
+```typescript
+try {
+  // Agent logic
+} catch (error) {
+  console.error('Internal error:', error); // Log internally
+  
+  // Return generic error to client
+  res.write(encoder.encode({
+    type: EventType.RUN_ERROR,
+    message: 'An unexpected error occurred. Please try again.'
+  }));
+}
+```
+
+### Performance Best Practices
+
+#### 1. Streaming Optimization
+Stream responses as soon as possible:
+
+```typescript
+// Good: Start streaming immediately
+res.write(encoder.encode({ type: EventType.RUN_STARTED }));
+
+// Bad: Wait for all processing before streaming
+// processEverything().then(() => startStreaming());
+```
+
+#### 2. Connection Management
+Handle client disconnections gracefully:
+
+```typescript
+app.post('/agent', async (req, res) => {
+  let isCancelled = false;
+  
+  req.on('close', () => {
+    isCancelled = true;
+    console.log('Client disconnected');
+  });
+  
+  // Check cancellation in your loops
+  for await (const chunk of stream) {
+    if (isCancelled) break;
+    res.write(encoder.encode(chunk));
+  }
+});
+```
+
+#### 3. Timeout Configuration
+Set appropriate timeouts:
+
+```typescript
+const server = app.listen(port);
+server.timeout = 300000; // 5 minutes
+server.keepAliveTimeout = 65000; // 65 seconds
+```
+
+#### 4. Memory Management
+Clean up resources properly:
+
+```typescript
+try {
+  // Process stream
+  for await (const chunk of stream) {
+    // ...
+  }
+} finally {
+  // Clean up resources
+  stream.destroy();
+  res.end();
+}
+```
+
+### Development Best Practices
+
+#### 1. Environment Variables
+Use environment variables for all sensitive data:
+
+```bash
+# .env
+OPENAI_API_KEY=sk-...
+API_KEY=your-secret-key
+PORT=8000
+NODE_ENV=production
+```
+
+#### 2. TypeScript Strict Mode
+Enable strict TypeScript checking:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true
+  }
+}
+```
+
+#### 3. Logging
+Implement structured logging:
+
+```typescript
+import winston from 'winston';
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' })
+  ]
+});
+
+logger.info('Agent request received', {
+  threadId: input.threadId,
+  messageCount: input.messages.length
+});
+```
+
+#### 4. Testing
+Write tests for your agent:
+
+```typescript
+import request from 'supertest';
+import app from './server';
+
+describe('AG-UI Agent', () => {
+  it('should respond with RUN_STARTED event', async () => {
+    const response = await request(app)
+      .post('/agent')
+      .send({
+        threadId: 'test_123',
+        runId: 'run_456',
+        messages: [{ id: '1', role: 'user', content: 'Hello' }],
+        tools: [],
+        context: [],
+        state: {},
+        forwardedProps: {}
+      });
+    
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('RUN_STARTED');
+  });
+});
+```
+
+### Deployment Checklist
+
+- [ ] Agent is accessible over HTTPS
+- [ ] Authentication headers are configured
+- [ ] Rate limiting is enabled
+- [ ] Input validation is implemented
+- [ ] Error handling doesn't expose sensitive data
+- [ ] Logging is configured
+- [ ] Environment variables are set
+- [ ] Timeouts are configured appropriately
+- [ ] Health check endpoint is available
+- [ ] Agent is tested with real CometChat integration
+
+---
+
+## Conclusion
+
+You now have a comprehensive understanding of:
+
+1. **AG-UI Protocol** - Event types, message formats, and patterns
+2. **CometChat Integration** - "Bring Your Own Agent" approach
+3. **Agent Implementation** - Complete Express.js and NestJS examples
+4. **Security & Best Practices** - Production-ready configurations
+
+Your AG-UI compatible agent can now be seamlessly integrated with CometChat, providing a powerful, self-served AI agent experience with full control over your agent logic while benefiting from CometChat's production-ready chat infrastructure.
+
+### Additional Resources
+
+- **AG-UI Documentation**: https://docs.ag-ui.com
+- **CometChat Documentation**: https://www.cometchat.com/docs
+- **AG-UI GitHub**: https://github.com/ag-ui-protocol/ag-ui
+- **CometChat Dashboard**: https://app.cometchat.com
+
+---
+
+**Happy Building! 🚀**

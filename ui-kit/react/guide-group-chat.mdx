@@ -1,0 +1,347 @@
+---
+title: "Group Chat"
+sidebarTitle: "Group Chat"
+---
+
+Implement comprehensive group management functionality including creation, joining, member management, and administrative controls in your React chat app.
+
+---
+
+## Overview
+
+Groups Management provides a complete set of features for creating, managing, and participating in group conversations, including member administration, permissions, and group lifecycle management.
+
+- Provides a full set of features for creating and managing group conversations, including member administration, permissions, and lifecycle management.  
+- Enables users to create collaborative spaces, manage team communications, control access through different group types, and maintain group organization through administrative tools.  
+- Your app will support full group lifecycle management from creation to administration, allowing users to create public/private/password-protected groups, manage members, and control group operations.  
+
+---
+
+## Prerequisites
+
+- React v18.2.0+  
+- CometChat React UI Kit v6.1.0+  
+- CometChat Chat SDK JavaScript v4.0.13+  
+- Project setup with initialized CometChat credentials (App ID, Auth Key, Region)  
+- TypeScript support (recommended)  
+- Basic chat functionality already implemented  
+- User authentication already configured  
+
+---
+
+## Components
+
+| Component / Class              | Role |
+|--------------------------------|------|
+| **CometChatCreateGroup**       | Creates new groups with different types and settings |
+| **CometChatJoinGroup**         | Handles joining public and password-protected groups |
+| **CometChatGroupMembers**      | Displays and manages group member lists |
+| **CometChatAddMembers**        | Adds new members to existing groups |
+| **CometChatBannedMembers**     | Manages banned members and unban operations |
+| **CometChatTransferOwnership** | Transfers group ownership to other members |
+
+---
+
+## Integration Steps
+
+### 1. Create Group Implementation
+
+_File: [CometChatCreateGroup.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatCreateGroup/CometChatCreateGroup.tsx)_
+
+```tsx
+export const CometChatCreateGroup = ({ setShowCreateGroup, onGroupCreated }: CreateGroupProps) => {
+   const [groupType, setGroupType] = useState("public");
+   const [groupName, setGroupName] = useState("");
+   const [groupPassword, setGroupPassword] = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+     e.preventDefault();
+     const GUID = `group_${new Date().getTime()}`;
+     const group = new CometChat.Group(GUID, groupName, groupType, groupPassword);
+
+    try {
+       const createdGroup = await CometChat.createGroup(group);
+       CometChatGroupEvents.ccGroupCreated.next(createdGroup);
+       onGroupCreated(createdGroup);
+       setShowCreateGroup(false);
+     } catch (error) {
+       console.error("Group creation failed:", error);
+     }
+   }
+};
+```
+
+---
+
+### 2. Join Group Implementation
+
+_File: [CometChatJoinGroup.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatJoinGroup/CometChatJoinGroup.tsx)_
+
+```tsx
+export const CometChatJoinGroup = ({ group, onHide, onProtectedGroupJoin }) => {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(false);
+  const loggedInUser = CometChatUIKitLoginListener.getLoggedInUser();
+
+  const joinGroup = () => {
+    CometChat.joinGroup(group.getGuid(), group.getType(), password)
+      .then((res) => {
+        onHide();
+        onProtectedGroupJoin(group);
+        CometChatGroupEvents.ccGroupMemberJoined.next({
+          joinedGroup: res,
+          joinedUser: loggedInUser
+        });
+      })
+      .catch(() => setError(true));
+  };
+};
+```
+
+---
+
+### 3. View Group Members Implementation
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+```tsx
+const GroupMembersView = ({ group }: { group: CometChat.Group }) => {
+  return (
+    <div className="cometchat-group-members">
+      <CometChatGroupMembers
+        group={group}
+        onItemClick={(member) => {
+          console.log("Selected member:", member);
+        }}
+        options={[
+          {
+            id: "view_profile",
+            title: getLocalizedString("view_profile"),
+            iconURL: profileIcon,
+            onClick: (member) => viewMemberProfile(member)
+          }
+        ]}
+      />
+    </div>
+  );
+};
+```
+
+---
+
+### 4. Add Members to Group Implementation
+
+_File: [CometChatAddMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatAddMembers/CometChatAddMembers.tsx)_
+
+```tsx
+export const CometChatAddMembers = ({ group, onBack }: IAddMembersProps) => {
+  const [selectedUsers, setSelectedUsers] = useState<CometChat.User[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const addMembersToGroup = async () => {
+    if (selectedUsers.length === 0) return;
+    setIsLoading(true);
+    try {
+      const uids = selectedUsers.map(user => user.getUid());
+      await CometChat.addMembersToGroup(uids, group.getGuid(), group.getType() as CometChat.GroupType);
+      CometChatGroupEvents.ccGroupMemberAdded.next({
+        addedBy: CometChatUIKitLoginListener.getLoggedInUser()!,
+        addedMembers: selectedUsers,
+        addedIn: group
+      });
+      onBack();
+    } catch (error) {
+      console.error("Failed to add members:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+};
+```
+
+---
+
+### 5. Ban Member from Group Implementation
+
+_File: [CometChatBannedMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatBannedMembers/CometChatBannedMembers.tsx)_
+
+```tsx
+export const CometChatBannedMembers = ({ group }: bannedMembersProp) => {
+  const [bannedMembers, setBannedMembers] = useState<CometChat.User[]>([]);
+  const [state, setState] = useState<States>(States.loading);
+
+  useEffect(() => {
+    const bannedMembersRequest = new CometChat.BannedMembersRequestBuilder(group.getGuid())
+      .setLimit(30)
+      .build();
+
+    bannedMembersRequest.fetchNext().then(
+      bannedMembers => {
+        setBannedMembers(bannedMembers);
+        setState(States.loaded);
+      }, 
+      error => {
+        console.log("Banned members fetch failed:", error);
+        setState(States.error);
+      }
+    );
+  }, [group]);
+};
+```
+
+---
+
+### 6. Change Member Scope Implementation
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+```tsx
+const changeMemberScope = async (member: CometChat.GroupMember, newScope: string) => {
+  try {
+    await CometChat.updateGroupMemberScope(member.getUid(), newScope, group.getGuid());
+    const updatedMember = { ...member, scope: newScope };
+    CometChatGroupEvents.ccGroupMemberScopeChanged.next({
+      changedBy: CometChatUIKitLoginListener.getLoggedInUser()!,
+      changedUser: updatedMember,
+      changedIn: group,
+      newScope: newScope,
+      oldScope: member.getScope()
+    });
+    showSuccessMessage("Member scope updated successfully");
+  } catch (error) {
+    console.error("Failed to update member scope:", error);
+    showErrorMessage("Failed to update member scope");
+  }
+};
+```
+
+---
+
+### 7. Transfer Group Ownership Implementation
+
+_File: [CometChatTransferOwnership.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatTransferOwnership/CometChatTransferOwnership.tsx)_
+
+```tsx
+export const CometChatTransferOwnership = ({ group, onClose }: ITransferOwnershipProps) => {
+  const [selectedMember, setSelectedMember] = useState<CometChat.GroupMember | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isError, setIsError] = useState(false);
+
+  const transferOwnership = async () => {
+    if (!selectedMember) return;
+    setIsLoading(true);
+    setIsError(false);
+    try {
+      await CometChat.transferGroupOwnership(group.getGuid(), selectedMember.getUid());
+      const groupClone = CometChatUIKitUtility.clone(group);
+      groupClone.setOwner(selectedMember.getUid());
+      CometChatGroupEvents.ccOwnershipChanged.next({
+        group: groupClone,
+        newOwner: CometChatUIKitUtility.clone(selectedMember)
+      });
+      onClose();
+    } catch (error) {
+      setIsError(true);
+      console.error("Ownership transfer failed:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+};
+```
+
+---
+
+## Implementation Flow
+
+- **Fetch Data / Group Information**: Retrieve group details and member lists.  
+- **Load Group Data / Member Information**: Fetch members with pagination.  
+- **Execute Group Operations / Action Handlers**: Handle creation, adding, banning, etc., with proper error handling.  
+- **Live Updates / Event Handling**: Subscribe to CometChatGroupEvents for member changes and update UI in real time.  
+
+---
+
+## Customization Options
+
+- Styling: Override CSS classes  
+- Group Types: Customize available types  
+- Member Permissions: Add custom roles  
+- UI Components: Modify list/form elements  
+- Validation Rules: Add extra checks  
+- Event Handling: Custom responses  
+- Search & Filtering: Add search for members  
+
+---
+
+## Filtering / Edge Cases
+
+- Handle group type restrictions, member limits, and permission checks  
+- Manage large groups efficiently  
+- Handle empty groups and network errors gracefully  
+- Maintain UI consistency with concurrent actions  
+
+---
+
+## Error Handling & Permission Management
+
+```tsx
+const handleGroupOperation = async (operation: () => Promise<any>) => {
+  try {
+    if (!hasPermission(currentUser, currentGroup, 'manage_members')) {
+      showErrorMessage("You don't have permission to perform this action");
+      return;
+    }
+    const result = await operation();
+    showSuccessMessage("Operation completed successfully");
+    return result;
+  } catch (error) {
+    if (error.code === "ERR_PERMISSION_DENIED") {
+      showErrorMessage("Permission denied for this operation");
+    } else if (error.code === "ERR_GROUP_NOT_FOUND") {
+      showErrorMessage("Group not found or no longer exists");
+    } else if (error.code === "ERR_MEMBER_NOT_FOUND") {
+      showErrorMessage("Member not found in this group");
+    } else {
+      showErrorMessage("An error occurred while performing the operation");
+    }
+    console.error("Group operation failed:", error);
+  }
+};
+```
+
+---
+
+## Context-Specific Notes
+
+- Different handling for public, private, password-protected groups  
+- Different permissions for admins, moderators, participants  
+- Optimize for large groups  
+- Real-time updates across devices  
+- Works cross-platform  
+
+---
+
+## Summary / Feature Matrix
+
+| Feature            | Component / Method             | File Reference |
+|--------------------|--------------------------------|----------------|
+| Create group       | `CometChatCreateGroup`         | [CometChatCreateGroup.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatCreateGroup/CometChatCreateGroup.tsx) |
+| Join group         | `CometChatJoinGroup`           | [CometChatJoinGroup.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatJoinGroup/CometChatJoinGroup.tsx) |
+| View members       | `CometChatGroupMembers`        | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Add members        | `CometChatAddMembers`          | [CometChatAddMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatAddMembers/CometChatAddMembers.tsx) |
+| Ban members        | `CometChatBannedMembers`       | [CometChatBannedMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatBannedMembers/CometChatBannedMembers.tsx) |
+| Change scope       | `updateGroupMemberScope()`     | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Transfer ownership | `CometChatTransferOwnership`   | [CometChatTransferOwnership.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatTransferOwnership/CometChatTransferOwnership.tsx) |
+| Group events       | `CometChatGroupEvents`         | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx), [CometChatAddMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatAddMembers/CometChatAddMembers.tsx), [CometChatBannedMembers.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatBannedMembers/CometChatBannedMembers.tsx), [CometChatTransferOwnership.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatTransferOwnership/CometChatTransferOwnership.tsx) |
+| Member management  | `CometChat.GroupMembersRequestBuilder` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx), [CometChatTransferOwnership.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatTransferOwnership/CometChatTransferOwnership.tsx) |
+
+---
+
+## Next Steps & Further Reading
+
+- [CometChat React UI Kit Documentation](https://www.cometchat.com/docs/ui-kit/react/overview)  
+- [Sample App Repository](https://github.com/cometchat/cometchat-uikit-react/tree/v6/sample-app)  
+- Group Management Features  
+- Advanced Customization Guide  
+- Member Management Documentation  
+

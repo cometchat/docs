@@ -1,0 +1,204 @@
+---
+title: "Build a Product Hunt Agent with Vercel AI SDK"
+sidebarTitle: "Product Hunt Agent"
+description: "Create a Vercel AI SDK agent that fetches Product Hunt data, celebrates launches with confetti, and connects to CometChat."
+---
+
+Give your Product Hunt launch conversations real-time superpowers: fetch live rankings, search the catalog, answer launch questions, and trigger a confetti action your frontend can render instantly—all from a Vercel AI SDK agent that streams into CometChat.
+
+---
+
+## Quick links
+
+- Repo: [ai-agent-vercel-examples/product-hunt-agent](https://github.com/cometchat/ai-agent-vercel-examples/tree/main/product-hunt-agent)
+- Express app guide: [agent/README.md](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/README.md)
+- Agent definition: [agent/lib/producthunt/agent.js](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/lib/producthunt/agent.js)
+- Product Hunt services: [agent/lib/producthunt/services.js](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/lib/producthunt/services.js)
+- Sample UI: [web/index.html](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/web/index.html)
+
+---
+
+## What you’ll build
+
+- A **Vercel AI SDK** `Experimental_Agent` that can:
+  - Pull top Product Hunt posts (all-time or timeframe aware)
+  - Search posts via Product Hunt’s public Algolia index
+  - Offer practical launch guidance grounded in tool output
+  - Emit a `CONFETTI` action payload for your frontend
+- An Express API exposing `/api/top*`, `/api/search`, `/api/chat`, and a streaming `/agent` endpoint adapted for CometChat
+- A Product Hunt–inspired static page that mounts the CometChat widget and handles the confetti tool
+
+---
+
+## Prerequisites
+
+- Node.js 18 or newer
+- Environment variables:
+  - `OPENAI_API_KEY` (required for all chat routes)
+  - `PRODUCTHUNT_API_TOKEN` (GraphQL token; endpoints return empty arrays if omitted)
+  - Optional: `OPENAI_MODEL` (defaults `gpt-4o-mini`), `TEMPERATURE` (defaults `0.7`), `PORT` (defaults `3000`)
+- A CometChat app to host the agent/chat widget
+
+---
+
+## How it works
+
+- `agent/lib/producthunt/agent.js` wires a Vercel AI SDK `Experimental_Agent` with four tools: `getTopProducts`, `getTopProductsByTimeframe`, `searchProducts`, and `triggerConfetti`.
+- `agent/lib/producthunt/services.js` calls Product Hunt’s GraphQL API (with optional token), parses natural-language timeframes, and queries Algolia for search.
+- `agent/routes/producthunt.js` exposes REST endpoints with JSON responses and permissive CORS for local development.
+- `agent/routes/agent.js` converts CometChat payloads to Vercel AI SDK messages via `@cometchat/vercel-adapter`, streams Server-Sent Events (SSE), and merges any extra tools you forward.
+- `web/index.html` mounts the CometChat Chat Embed, calls your API for leaderboard data, and executes the confetti action using `canvas-confetti` (with a fallback renderer when the CDN is unavailable).
+
+---
+
+## Step 1 — Define Product Hunt tools
+
+File: [`agent/lib/producthunt/agent.js`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/lib/producthunt/agent.js)
+
+- `getTopProducts` returns top posts by votes (1–10 items, default 3).
+- `getTopProductsByTimeframe` accepts timeframes like `today`, `yesterday`, `this-week`, `YYYY-MM-DD`, or ranges (`from:2024-08-01 to:2024-08-15`), plus optional timezone and limit.
+- `searchProducts` wraps Product Hunt’s public Algolia index and clamps results (1–50).
+- `triggerConfetti` emits a structured payload (colors, particleCount, spread, origin, etc.) that your UI can interpret as an action.
+- Helper utilities sanitize limits, build Markdown tables, and ensure empty results are handled gracefully.
+
+---
+
+## Step 2 — Instantiate the agent
+
+Also in [`agent/lib/producthunt/agent.js`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/lib/producthunt/agent.js):
+
+- `createProductHuntAgent()` asserts `OPENAI_API_KEY` before constructing an `Experimental_Agent`.
+- System prompt (`buildSystemPrompt`) reminds the model when to call each tool, to summarise results as Markdown tables, and to fire confetti when users celebrate.
+- Default model is `gpt-4o`, but you can override by passing `{ model: 'gpt-4o-mini' }` or setting `OPENAI_MODEL`.
+- The agent returns both text and `toolResults`, letting the REST API surface raw data alongside the response.
+
+---
+
+## Step 3 — Expose REST & streaming endpoints
+
+Files:
+
+- [`agent/app.js`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/app.js)
+- [`agent/routes/producthunt.js`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/routes/producthunt.js)
+- [`agent/routes/agent.js`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/agent/routes/agent.js)
+
+Highlights:
+
+- `GET /api/health` confirms the service.
+- `GET /api/top`, `/api/top-week`, and `/api/top-range` return leaderboard JSON based on votes, rolling windows, or natural-language timeframes.
+- `GET /api/search?q=...` performs Algolia-backed lookup with clamped limits and helpful validation errors.
+- `POST /api/chat` accepts `{ message }` or `{ messages: [...] }` and responds with `{ reply, toolResults, usage }`.
+- `POST /agent` streams SSE events that already match CometChat’s expectations (`text_message`, `tool_call_start`, `tool_call_result`, etc.), courtesy of `mapVercelStreamChunkToCometChatEvent`.
+- Tool preferences such as timeframe, timezone, or limit can be supplied via `toolParams` in the SSE payload and are woven into the system prompt for that run.
+
+---
+
+## Step 4 — Run locally
+
+1. Install deps:
+   ```bash
+   cd product-hunt-agent/agent
+   npm install
+   ```
+2. Create `.env` (or export vars):
+   ```bash
+   OPENAI_API_KEY=sk-...
+   PRODUCTHUNT_API_TOKEN=phc_...
+   PORT=3000
+   ```
+3. Start the server:
+   ```bash
+   npm start
+   ```
+4. Open `http://localhost:3000` to view the default Jade page, or load `web/index.html` via a static server pointing `window.PH_AGENT_API` to `http://localhost:3000`.
+
+---
+
+## Step 5 — Handle frontend actions
+
+File: [`web/index.html`](https://github.com/cometchat/ai-agent-vercel-examples/blob/main/product-hunt-agent/web/index.html)
+
+- Mounts CometChat Chat Embed and logs a demo user.
+- Provides helper functions to fetch `/api/top-range` and render Product Hunt-style cards.
+- Implements `actions.triggerConfetti` that lazily loads `canvas-confetti` (with a fallback canvas animation) and respects the agent’s payload (colors, particle count, etc.).
+- Use this file as a reference when wiring confetti handlers into your own widget or UI Kit export.
+
+---
+
+## Step 6 — API overview
+
+- `GET /api/health` → `{ ok: true }`
+- `GET /api/top?limit=3` → top posts by votes
+- `GET /api/top-week?limit=3&days=7` → rolling window ranking
+- `GET /api/top-range?timeframe=today&tz=America/New_York&limit=3` → timeframe ranking + metadata
+- `GET /api/search?q=notion&limit=10` → Algolia results
+- `POST /api/chat` with `{ "message": "What should I prep before launch?" }` → `{ reply, toolResults }`
+- `POST /agent` (SSE) → CometChat-compatible events for streaming responses and tool traces
+
+Example stream call:
+
+```bash
+curl -N http://localhost:3000/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+        "threadId": "chat_123",
+        "messages": [
+          { "role": "user", "content": "Show today\u0027s top Product Hunt launches and celebrate them." }
+        ],
+        "toolParams": {
+          "timeframe": "today",
+          "timezone": "America/New_York",
+          "limit": 3
+        }
+      }'
+```
+
+---
+
+## Step 7 — Deploy
+
+- Deploy the Express app (Node.js 18+) to your platform of choice (Vercel, Render, Fly.io, Railway, etc.).
+- Set `OPENAI_API_KEY`, `PRODUCTHUNT_API_TOKEN`, `OPENAI_MODEL`, and `TEMPERATURE` as environment variables.
+- Expose the streaming `/agent` endpoint over HTTPS (required by CometChat) and keep CORS permissive or scoped to your domains.
+- Host the static Product Hunt UI (optional) on any CDN or static site host; point `window.PH_AGENT_API` to the deployed backend.
+
+---
+
+## Step 8 — Connect in CometChat
+
+- Dashboard → your App → **AI Agents → Add Agent**
+- Provider: **Vercel AI SDK**
+- Agent ID: match the ID you’ll reference in your UI (e.g., `producthunt`)
+- Deployment URL: `https://your-domain.tld/agent`
+- Optional: add greetings, suggested prompts such as “Celebrate today’s top 3 Product Hunt launches,” and map frontend actions to the `triggerConfetti` handler.
+- Save and toggle the agent to **Enabled**.
+
+---
+
+## Step 9 — Test
+
+- Hit `/api/health` to confirm the service.
+- Verify `/api/search?q=linear&limit=5` returns data (Algolia key is bundled).
+- Call `/api/top-range?timeframe=today` to ensure the Product Hunt token works (expect empty arrays if the token is missing).
+- Use the curl stream above and confirm CometChat renders partial replies plus the confetti action.
+- In UI Kit Builder or your widget, send “Throw confetti for our launch” and verify the handler fires.
+
+---
+
+## Security & production checklist
+
+- Keep `OPENAI_API_KEY` and `PRODUCTHUNT_API_TOKEN` server-side only; never expose them in the browser or widget exports.
+- Add authentication (API key/JWT) and tighten CORS once deployed.
+- Rate-limit `/agent` and `/api/top*` endpoints; clamp user-provided limits to sane values (already partially enforced in code).
+- Log errors and tool usage without storing sensitive content; monitor for failed API calls so you can refresh credentials.
+- For long-lived deployments, handle Product Hunt API quota/burst limits gracefully (retry with backoff, cache top results).
+
+---
+
+## Troubleshooting
+
+- **`/api/top*` returns empty arrays**: ensure `PRODUCTHUNT_API_TOKEN` is set and valid.
+- **Algolia search empty**: check outbound network access and confirm you didn’t hit rate limits.
+- **Chat replies lack tables**: confirm tool calls succeed (inspect `toolResults` or server logs); the agent falls back to narrative answers if no posts are returned.
+- **Confetti never fires**: double-check the action name (`triggerConfetti`) and that your handler loads `canvas-confetti` or provides a fallback.
+- **SSE disconnects immediately**: verify your reverse proxy supports streaming and that `Cache-Control: no-cache` headers are preserved.

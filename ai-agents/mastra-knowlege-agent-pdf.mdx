@@ -1,0 +1,346 @@
+---
+title: "Build a PDF Knowledge Agent with Mastra"
+sidebarTitle: "PDF Knowledge Agent"
+description: "Create a Mastra agent that ingests PDFs, performs hybrid (semantic + BM25) retrieval, and answers grounded questions in CometChat."
+---
+
+Give your chat experience document intelligence: ingest PDFs, run hybrid semantic + lexical retrieval, and stream grounded answers into CometChat.
+
+---
+
+## Quick links
+
+- Live (UI served from `docs/` if deployed to GitHub Pages): static upload + ask demo
+- Source code: [GitHub repository](https://github.com/cometchat/ai-agent-mastra-examples/tree/main/mastra-knowledge-agent-pdf)
+- Agent files: `src/mastra/agents/*`
+- Tools: `src/mastra/tools/*`
+- Workflow: `src/mastra/workflows/pdf-workflow.ts`
+- Server: `src/server.ts`
+
+---
+
+## What you’ll build
+
+- Dual Mastra agents:
+  - `pdfAgent` (multi‑PDF retrieval across all uploaded docs)
+  - `singlePdfAgent` (restricted to latest uploaded PDF)
+- Deterministic retrieval + answer workflow (`pdfWorkflow`)
+- Express API with upload, ask (JSON), and streaming (SSE) endpoints
+- Persisted hybrid vector + BM25 store (`.data/` namespace `pdf`)
+- Integration with CometChat AI Agents (endpoint wiring)
+
+---
+
+---
+
+## How it works
+
+- Users upload PDF(s) → server parses pages → chunks + embeddings generated → persisted in vector + manifest store.
+- Hybrid retrieval ranks candidate chunks: `score = α * cosine + (1-α) * sigmoid(BM25)` where `α = hybridAlpha`.
+- Multi‑query expansion (optional) generates paraphrased variants to boost recall.
+- Tools (`retrieve-pdf-context`, `retrieve-single-pdf-context`) return stitched context + source metadata.
+- Workflow (`pdfWorkflow`) orchestrates retrieval + answer; streaming endpoints emit `meta` then incremental `token` events.
+- Mastra agent(s) are exposed via REST endpoints you wire into CometChat AI Agents.
+
+---
+
+## Repo layout (key files)
+
+- `src/mastra/agents/pdf-agent.ts` – multi‑PDF agent
+- `src/mastra/agents/single-pdf-agent.ts` – single latest PDF agent
+- `src/mastra/tools/retrieve-pdf-context.ts` / `retrieve-single-pdf-context.ts` – hybrid retrieval tools
+- `src/mastra/workflows/pdf-workflow.ts` – deterministic orchestration
+- `src/lib/*` – vector store, embeddings, manifest, PDF parsing
+- `src/server.ts` – Express API (upload, ask, streaming, manifest ops)
+- `docs/index.html` – optional static UI
+- `.data/` – persisted vectors + manifest JSON
+
+---
+
+## Prerequisites
+
+- Node.js 20+
+- `OPENAI_API_KEY` (embeddings + chat model)
+- A CometChat app (to register the agent)
+- (Optional) `CORS_ORIGIN` if restricting browser origins
+
+---
+
+## Step 1 — Clone & install
+
+Clone the example and install dependencies:
+
+```bash
+git clone https://github.com/cometchat/ai-agent-mastra-examples.git
+cd ai-agent-mastra-examples/mastra-knowledge-agent-pdf
+npm install
+```
+
+> Create a `.env` with at least:
+> ```env
+> OPENAI_API_KEY=sk-...
+> PORT=3000
+> ```
+
+---
+
+## Step 2 — Define retrieval tools
+
+File: `src/mastra/tools/retrieve-pdf-context.ts` (multi) & `retrieve-single-pdf-context.ts` (single)
+
+```ts
+import { createTool } from '@mastra/core/tools';
+import { z } from 'zod';
+
+export const retrieverTool = createTool({ /* simplified example for tutorial brevity */ });
+```
+
+---
+
+## Step 3 — Create agents
+
+Files: `src/mastra/agents/pdf-agent.ts`, `src/mastra/agents/single-pdf-agent.ts`
+
+```ts
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
+import { retrieverTool } from '../tools/retriever-tool';
+
+export const pdfAgent = new Agent({ /* instruct to use retrieve-pdf-context, cite sources */ });
+export const singlePdfAgent = new Agent({ /* restrict answers to latest doc */ });
+```
+
+---
+
+## Step 4 — Wire Mastra & workflow
+
+File: `src/mastra/index.ts` registers agents + `pdfWorkflow` with storage (LibSQL or file‑backed).
+
+```ts
+import { Mastra } from '@mastra/core/mastra';
+import { LibSQLStore } from '@mastra/libsql';
+import { knowledgeAgent } from './agents/knowledge-agent';
+
+export const mastra = new Mastra({ /* agents, workflow, storage */ });
+```
+
+Start the dev server:
+
+```bash
+npm run dev
+```
+
+---
+
+## Step 5 — Run locally
+
+```text
+ ┌──────────────┐          ┌──────────────┐
+ │  Express API │ upload → │   PDF Parser │
+ └──────┬───────┘          └──────┬───────┘
+   │  chunks + embeddings    │
+   ▼                         │
+ ┌──────────────┐   upsert/search ┌──────────────┐
+ │ Vector Store │◀───────────────▶│ Embeddings   │
+ └──────┬───────┘                  └──────────────┘
+   │  hybrid retrieve
+   ▼
+ ┌──────────────┐  tool calls  ┌────────────────────┐
+ │ Mastra Agent │─────────────▶│ retrieve-* tools   │
+ └──────┬───────┘               └─────────┬──────────┘
+   │ stitched context                 │ fallback
+   ▼                                  │ broaden
+ ┌──────────────┐ answer tokens (SSE) ┌──────────────┐
+ │  Workflow    │────────────────────▶│   Client     │
+ └──────────────┘                     └──────────────┘
+```
+
+---
+
+## Step 6 — Upload and ask (API)
+
+| Agent | File | Purpose | Tool |
+|-------|------|---------|------|
+| `pdfAgent` | `src/mastra/agents/pdf-agent.ts` | Multi‑PDF retrieval QA | `retrieve-pdf-context` |
+| `singlePdfAgent` | `src/mastra/agents/single-pdf-agent.ts` | Latest single PDF QA | `retrieve-single-pdf-context` |
+
+Tool input examples:
+
+```ts
+// retrieve-pdf-context
+{ query, docIds?, topK=5, hybridAlpha=0.7, multiQuery=true, qVariants=3, maxContextChars=4000 }
+
+// retrieve-single-pdf-context
+{ query, docId?, topK=5, hybridAlpha=0.7, multiQuery=true, qVariants=3, maxContextChars=4000 }
+```
+
+Fallback widens search (higher `topK`, more `qVariants`) if initial context is sparse.
+
+---
+
+---
+
+### JSON ask (Mastra dev agent route)
+
+Mastra automatically exposes the API:
+
+```bash
+curl -X POST http://localhost:4111/api/agents/knowledge/generate   -H "Content-Type: application/json"   -d '{"messages":[{"role":"user","content":"What is covered in our docs?"}]}'
+```
+
+Expected response:
+
+```json
+{
+  "reply": "The docs cover..."
+}
+```
+
+---
+
+## Step 7 — Deploy & connect to CometChat
+
+1. Deploy the project (e.g., Vercel, Railway, or AWS).  
+2. Copy the deployed endpoint URL.  
+3. In **CometChat Dashboard → AI Agents**, add a new agent:  
+   - Agent ID: `knowledge`  
+   - Endpoint: `https://your-deployed-url/api/agents/knowledge/generate`  
+
+---
+
+## Step 8 — Optimize & extend
+
+- Add more documents to the `docs/` folder.  
+- Use embeddings + vector DB (Pinecone, Weaviate) for large datasets.  
+- Extend the agent with memory or multi-tool workflows.  
+
+---
+
+## Repository Links
+
+---
+
+## Environment variables
+
+| Name | Description |
+|------|-------------|
+| `OPENAI_API_KEY` | Required for embeddings + model |
+| `CORS_ORIGIN` | Optional allowed browser origin |
+| `PORT` | Server port (default 3000) |
+
+`.env` example:
+
+```env
+OPENAI_API_KEY=sk-...
+CORS_ORIGIN=http://localhost:3000
+PORT=3000
+```
+
+---
+
+## Endpoint summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/upload` | Upload a PDF (multipart) returns `{ docId, pages, chunks }` |
+| GET | `/api/documents` | List ingested documents |
+| DELETE | `/api/documents/:id` | Delete a document + vectors |
+| GET | `/api/documents/:id/file` | Stream stored original PDF |
+| POST | `/api/ask` | Multi‑PDF retrieval + answer (JSON) |
+| POST | `/api/ask/full` | Same as `/api/ask` (deterministic path) |
+| POST | `/api/ask/stream` | Multi‑PDF streaming (SSE) |
+| POST | `/api/ask/single` | Single latest PDF answer (JSON) |
+| POST | `/api/ask/single/stream` | Single latest PDF streaming (SSE) |
+
+### Curl Examples
+
+Upload:
+```bash
+curl -X POST http://localhost:3000/api/upload \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@/path/to/file.pdf"
+```
+
+Ask (multi):
+```bash
+curl -X POST http://localhost:3000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Summarize the abstract","topK":6}'
+```
+
+Stream (multi):
+```bash
+curl -N -X POST http://localhost:3000/api/ask/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"List key methods","multiQuery":true}'
+```
+
+Ask (single):
+```bash
+curl -X POST http://localhost:3000/api/ask/single \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What are the main conclusions?"}'
+```
+
+Stream (single):
+```bash
+curl -N -X POST http://localhost:3000/api/ask/single/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Give me an outline"}'
+```
+
+### SSE Events
+
+| Event | Payload | Notes |
+|-------|---------|-------|
+| `meta` | `{ sources, docId? }` | First packet with retrieval metadata |
+| `token` | `{ token }` | Incremental answer token chunk |
+| `done` | `{}` | Completion marker |
+| `error` | `{ error }` | Error occurred |
+
+---
+
+## Tuning & retrieval knobs
+
+| Parameter | Effect | Trade‑off |
+|-----------|--------|----------|
+| `hybridAlpha` | Higher = more semantic weight | Too high reduces keyword recall |
+| `topK` | More chunks = broader context | Larger responses, slower |
+| `multiQuery` | Recall across paraphrases | Extra model + embedding cost |
+| `qVariants` | Alternative queries for expansion | Diminishing returns >5 |
+| `maxContextChars` | Caps stitched context size | Too small omits evidence |
+
+Tip: For exploratory QA try `topK=8`, `qVariants=5`.
+
+---
+
+## Troubleshooting & debugging
+
+- Enable internal logging (if available) to inspect scoring.
+- Inspect vectors: open `.data/pdf-vectors.json`.
+- Manifest corrupted? Delete `.data/manifest.json` and re‑upload.
+- Low lexical relevance? Lower `hybridAlpha` (e.g. 0.55).
+- Noise / irrelevant chunks? Reduce `topK` or lower `qVariants`.
+
+---
+
+## Hardening & roadmap
+
+- SSE/WebSocket answer token streaming to clients (UI consumption)
+- Source highlighting + per‑chunk confidence
+- Semantic / layout‑aware advanced chunking
+- Vector deduplication & compression
+- Auth layer (API keys / JWT) & per‑user isolation
+- Background ingestion queue for large docs
+- Retrieval quality regression tests
+
+---
+
+**Repository Links**
+
+- Source: GitHub Repository
+- Multi agent: `pdf-agent.ts`
+- Single agent: `single-pdf-agent.ts`
+- Tools: `retrieve-pdf-context.ts`, `retrieve-single-pdf-context.ts`
+- Workflow: `pdf-workflow.ts`
+- Server: `server.ts`

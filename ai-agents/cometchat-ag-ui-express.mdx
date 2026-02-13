@@ -1,0 +1,280 @@
+---
+title: "AG-UI Express.js Implementation"
+sidebarTitle: "Express.js"
+description: "Implementation guide for building an AG-UI agent with Express.js."
+---
+
+### Prerequisites
+
+- Node.js (v16 or higher)
+- npm or pnpm
+- OpenAI API key (or other AI service)
+
+### Step 1: Project Setup
+
+```bash
+# Create project directory
+mkdir my-ag-ui-agent
+cd my-ag-ui-agent
+
+# Initialize package.json
+npm init -y
+
+# Install dependencies
+npm install express @ag-ui/core openai uuid cors dotenv
+npm install -D typescript @types/node @types/express ts-node nodemon
+```
+
+### Step 2: TypeScript Configuration
+
+Create `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+### Step 3: Create Express Server
+
+Create `src/server.ts`:
+
+```typescript
+import express, { Request, Response } from 'express';
+import cors from 'cors';
+import { OpenAI } from 'openai';
+import { EventType, RunAgentInput } from '@ag-ui/core';
+import { v4 as uuidv4 } from 'uuid';
+
+const app = express();
+const port = process.env.PORT || 8000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Initialize OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Event encoder for AG-UI events
+class EventEncoder {
+  encode(event: any): string {
+    return `data: ${JSON.stringify(event)}\n\n`;
+  }
+  
+  getContentType(): string {
+    return 'text/event-stream';
+  }
+}
+
+// AG-UI Agent Endpoint
+app.post('/agent', async (req: Request, res: Response) => {
+  const input: RunAgentInput = req.body;
+  const encoder = new EventEncoder();
+  
+  // Set up SSE headers
+  res.setHeader('Content-Type', encoder.getContentType());
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for nginx
+  
+  try {
+    // Emit RUN_STARTED
+    res.write(encoder.encode({
+      type: EventType.RUN_STARTED,
+      threadId: input.threadId,
+      runId: input.runId,
+    }));
+    
+    // Convert AG-UI messages to OpenAI format
+    const openaiMessages = input.messages.map((msg) => ({
+      role: msg.role as 'user' | 'assistant' | 'system',
+      content: msg.content || '',
+      ...(msg.role === 'assistant' && msg.toolCalls ? {
+        tool_calls: msg.toolCalls
+      } : {}),
+      ...(msg.role === 'tool' ? {
+        tool_call_id: msg.toolCallId
+      } : {})
+    }));
+    
+    // Convert AG-UI tools to OpenAI format
+    const openaiTools = input.tools?.map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    })) || [];
+    
+    // Call OpenAI with streaming
+    const stream = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: openaiMessages,
+      tools: openaiTools.length > 0 ? openaiTools : undefined,
+      stream: true,
+    });
+    
+    const messageId = uuidv4();
+    let hasStartedMessage = false;
+    
+    // Stream the response
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+      
+      // Handle text content
+      if (delta?.content) {
+        if (!hasStartedMessage) {
+          res.write(encoder.encode({
+            type: EventType.TEXT_MESSAGE_START,
+            messageId,
+            role: 'assistant',
+          }));
+          hasStartedMessage = true;
+        }
+        
+        res.write(encoder.encode({
+          type: EventType.TEXT_MESSAGE_CONTENT,
+          messageId,
+          delta: delta.content,
+        }));
+      }
+      
+      // Handle tool calls
+      if (delta?.tool_calls) {
+        for (const toolCall of delta.tool_calls) {
+          if (toolCall.function?.name) {
+            res.write(encoder.encode({
+              type: EventType.TOOL_CALL_START,
+              toolCallId: toolCall.id,
+              toolCallName: toolCall.function.name,
+              parentMessageId: messageId,
+            }));
+          }
+          
+          if (toolCall.function?.arguments) {
+            res.write(encoder.encode({
+              type: EventType.TOOL_CALL_ARGS,
+              toolCallId: toolCall.id,
+              delta: toolCall.function.arguments,
+            }));
+          }
+        }
+      }
+    }
+    
+    // End message if it was started
+    if (hasStartedMessage) {
+      res.write(encoder.encode({
+        type: EventType.TEXT_MESSAGE_END,
+        messageId,
+      }));
+    }
+    
+    // Emit RUN_FINISHED
+    res.write(encoder.encode({
+      type: EventType.RUN_FINISHED,
+      threadId: input.threadId,
+      runId: input.runId,
+    }));
+    
+    res.end();
+    
+  } catch (error: any) {
+    // Emit RUN_ERROR
+    res.write(encoder.encode({
+      type: EventType.RUN_ERROR,
+      message: error.message || 'An error occurred',
+    }));
+    res.end();
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`🚀 AG-UI Agent server running on port ${port}`);
+  console.log(`📍 Agent endpoint: http://localhost:${port}/agent`);
+  console.log(`💚 Health check: http://localhost:${port}/health`);
+});
+```
+
+### Step 4: Environment Configuration
+
+Create `.env`:
+
+```bash
+OPENAI_API_KEY=your-openai-api-key-here
+PORT=8000
+```
+
+### Step 5: Package Scripts
+
+Update `package.json`:
+
+```json
+{
+  "name": "my-ag-ui-agent",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  }
+}
+```
+
+### Step 6: Run the Server
+
+```bash
+# Development mode
+npm run dev
+
+# Production mode
+npm run build && npm start
+```
+
+### Step 7: Test Your Agent
+
+```bash
+curl -X POST http://localhost:8000/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "threadId": "test_thread_123",
+    "runId": "test_run_456",
+    "messages": [
+      {
+        "id": "msg_1",
+        "role": "user",
+        "content": "Hello! Can you help me?"
+      }
+    ],
+    "tools": [],
+    "context": [],
+    "state": {},
+    "forwardedProps": {}
+  }'
+```
+
+---
+

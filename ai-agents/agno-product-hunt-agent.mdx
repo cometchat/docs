@@ -1,0 +1,154 @@
+---
+title: "Launch a Product Hunt Agent with Agno"
+sidebarTitle: "Product Hunt Agent"
+description: "Build an Agno Product Hunt assistant that queries live launch data, triggers celebrations, and streams into CometChat."
+---
+
+An Agno agent can double as a launch strategist—fetching Product Hunt rankings, answering questions, and firing confetti when it is time to celebrate.
+
+***
+
+## What You'll Build
+
+* A **FastAPI** service that wraps an Agno agent with Product Hunt tools.
+* Tooling for Algolia search, GraphQL leaderboards, natural timeframe parsing, and confetti payloads.
+* `/api/chat` and `/stream` endpoints that share CometChat-compatible newline-delimited JSON payloads.
+* Optional Product Hunt GraphQL integration (falls back gracefully when no token is provided).
+
+***
+
+## Prerequisites
+
+* Python 3.10 or newer.
+* `OPENAI_API_KEY` with GPT-4o (or similar) access.
+* Optional `PRODUCTHUNT_API_TOKEN` for live leaderboard queries.
+* curl or an API client to verify endpoints.
+
+***
+
+## Quick links
+
+- Repo root: [ai-agent-agno-examples](https://github.com/cometchat/ai-agent-agno-examples)
+- Project folder: [`product_hunt_agent/`](https://github.com/cometchat/ai-agent-agno-examples/tree/main/product_hunt_agent)
+- Server entrypoint: [`product_hunt_agent/main.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/main.py)
+- Agent builder: [`product_hunt_agent/agent_builder.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/agent_builder.py)
+- Services & queries: [`product_hunt_agent/services.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/services.py)
+
+***
+
+## How it works
+
+- **Agent** — `create_product_hunt_agent` configures an `OpenAIChat` model, system prompt, and five tools (`getTopProducts`, `getTopProductsThisWeek`, `getTopProductsByTimeframe`, `searchProducts`, `triggerConfetti`).
+- **Data** — `services.py` wraps Product Hunt’s GraphQL API (with token), Algolia search, timezone-aware timeframe parsing, and safe fallbacks when the API token is missing.
+- **API** — FastAPI routes in `main.py` expose REST endpoints for ranked lists and search, plus `/api/chat` and `/stream` for conversations and newline-delimited event streaming.
+- **Parity** — The streaming payload mirrors CometChat’s Bring Your Own Agent format (`text_delta`, `tool_*`, `text_done`, `done`, `error`), so existing UI logic can be reused.
+
+***
+
+## Setup
+
+<Steps>
+  <Step title="Clone & install">
+    From your workspace: <code>git clone https://github.com/cometchat/ai-agent-agno-examples.git</code>. Inside the repo: <code>python3 -m venv .venv && source .venv/bin/activate && pip install -e .</code>
+  </Step>
+  <Step title="Configure environment">
+    Create <code>.env</code> with <code>OPENAI_API_KEY</code>. Add <code>PRODUCTHUNT_API_TOKEN</code> for GraphQL access. Optional knobs: <code>PRODUCTHUNT_DEFAULT_TIMEZONE</code>, <code>OPENAI_BASE_URL</code>, <code>PRODUCT_OPENAI_MODEL</code>.
+  </Step>
+  <Step title="Run the server">
+    Start FastAPI: <code>uvicorn product_hunt_agent.main:app --host 0.0.0.0 --port 8001 --reload</code>. Health check: <code>GET /healthz</code>; streaming lives at <code>POST /stream</code>.
+  </Step>
+</Steps>
+
+***
+
+## Project Structure
+
+- FastAPI routes & schemas
+  - [`product_hunt_agent/main.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/main.py)
+  - [`product_hunt_agent/schemas.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/schemas.py)
+  - [`product_hunt_agent/config.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/config.py)
+- Agent behavior
+  - [`product_hunt_agent/agent_builder.py`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/agent_builder.py)
+- Product Hunt services
+  - [`get_top_products_by_votes`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/services.py#L72)
+  - [`get_top_products_by_timeframe`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/services.py#L123)
+  - [`search_products`](https://github.com/cometchat/ai-agent-agno-examples/blob/main/product_hunt_agent/services.py#L201)
+
+***
+
+## Step 1 - Configure Settings
+
+`ProductHuntSettings` centralizes configuration (API keys, timeouts, default timezone). The FastAPI app loads it once and injects it via `Depends`, so each route reuses the same validated settings.
+
+***
+
+## Step 2 - Understand the Agent Tools
+
+`agent_builder.py` clamps incoming arguments, calls service helpers, and returns structured dictionaries the UI can render. Highlights:
+
+- `getTopProducts` — All-time votes.
+- `getTopProductsThisWeek` — Rolling window controlled by `days`.
+- `getTopProductsByTimeframe` — Natural language inputs such as `yesterday`, `last-week`, or ISO dates.
+- `searchProducts` — Uses Product Hunt’s public Algolia index (no token required).
+- `triggerConfetti` — Returns payloads that UI Kit Builder variants can pass to your frontend celebration handler.
+
+The system prompt instructs the agent to cite sources and explain data gaps whenever a tool returns empty results.
+
+***
+
+## Step 3 - Product Hunt Data Services
+
+`services.py` wraps the external APIs with resilient defaults:
+
+- `parse_timeframe` translates natural strings into UTC ranges using `pendulum`.
+- `fetch_graphql` only runs when `PRODUCTHUNT_API_TOKEN` is present; otherwise, helper functions return empty lists so the agent can respond gracefully.
+- `search_products` hits the public Algolia index (`Post_production`) with rate-limit friendly defaults.
+
+***
+
+## Step 4 - Test the API
+
+List top launches from the past week:
+
+```bash
+curl "http://localhost:8001/api/top-week?limit=5&days=7"
+```
+
+Ask the agent a question (non-streaming):
+
+```bash
+curl -X POST http://localhost:8001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+        "messages": [
+          { "role": "user", "content": "What should I highlight in my launch post?" }
+        ]
+      }'
+```
+
+Stream responses (newline-delimited JSON):
+
+```bash
+curl -N http://localhost:8001/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+        "thread_id": "launch-room",
+        "run_id": "run-457",
+        "messages": [
+          { "role": "user", "content": "Show me the top launches last week." }
+        ]
+      }'
+```
+
+Each line is a JSON object with `type` (e.g., `text_delta`, `tool_call_start`, `tool_result`, `text_done`, `done`) plus the echoed `thread_id` and `run_id`.
+
+***
+
+## Step 5 - Connect to CometChat
+
+- Deploy the service behind HTTPS and protect it with auth headers (use the agent’s **Headers** field when registering in CometChat).
+- Point the Agno agent variant at your `/stream` endpoint; reuse the same **Agent ID** from UI Kit Builder.
+- When the agent triggers `triggerConfetti`, listen for the tool event in your frontend to launch celebratory animations.
+- Echo `thread_id` and `run_id` in every streamed line so CometChat can correlate partial tool events and message chunks.
+
+You now have an Agno Product Hunt agent ready to ship inside CometChat-powered experiences.
