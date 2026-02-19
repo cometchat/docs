@@ -1,0 +1,1050 @@
+---
+title: "Push Notifications Guide"
+sidebarTitle: "Notifications"
+description: "Complete step-by-step guide to integrate push notifications for messages and calls"
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```javascript
+// Push notifications require:
+// 1. Firebase Cloud Messaging (FCM) setup
+// 2. CometChat Dashboard configuration
+// 3. Client-side token registration
+
+// Register FCM token with CometChat
+await CometChat.registerTokenForPushNotification(fcmToken);
+
+// Handle notification when app is in foreground
+messaging.onMessage((payload) => {
+  const data = payload.data;
+  if (data.type === "chat") {
+    showNotification(data.title, data.body);
+  } else if (data.type === "call") {
+    showIncomingCallUI(data);
+  }
+});
+
+// Unregister on logout
+await CometChat.unregisterTokenForPushNotification(fcmToken);
+```
+</Info>
+
+This guide walks you through integrating push notifications to alert users of new messages and incoming calls when your app is in the background or closed.
+
+<Note>
+**Prerequisites**
+- CometChat SDK already integrated
+- Firebase project with Cloud Messaging enabled
+- Push notifications enabled in your CometChat plan
+</Note>
+
+---
+
+## Overview
+
+Push notifications ensure users never miss important messages or calls:
+
+| Scenario | Without Push | With Push |
+|----------|--------------|-----------|
+| App in foreground | ✅ Real-time listeners | ✅ Real-time listeners |
+| App in background | ❌ No alerts | ✅ Push notification |
+| App closed | ❌ No alerts | ✅ Push notification |
+
+---
+
+## Step 1: Set Up Firebase Cloud Messaging
+
+### 1a. Create Firebase Project
+
+1. Go to [Firebase Console](https://console.firebase.google.com)
+2. Create a new project or select existing
+3. Navigate to **Project Settings → Cloud Messaging**
+4. Note your **Server Key** and **Sender ID**
+
+### 1b. Add Firebase to Your App
+
+<Tabs>
+<Tab title="npm">
+```bash
+npm install firebase
+```
+</Tab>
+<Tab title="CDN">
+```html
+<script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js"></script>
+```
+</Tab>
+</Tabs>
+
+### 1c. Initialize Firebase
+
+```javascript
+import { initializeApp } from "firebase/app";
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
+
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const app = initializeApp(firebaseConfig);
+const messaging = getMessaging(app);
+```
+
+---
+
+## Step 2: Configure CometChat Dashboard
+
+1. Go to [app.cometchat.com](https://app.cometchat.com)
+2. Select your app
+3. Navigate to **Notifications → Push Notifications**
+4. Enable push notifications
+5. Add your Firebase credentials:
+   - **FCM Server Key**: From Firebase Console
+   - **FCM Sender ID**: From Firebase Console
+
+---
+
+## Step 3: Request Notification Permission
+
+Before you can show push notifications, you must request permission from the user. Browsers require explicit user consent for notifications.
+
+```javascript
+/**
+ * Request permission to show notifications
+ * Must be called in response to a user action (click, tap)
+ * 
+ * @returns {boolean} - true if permission granted
+ */
+async function requestNotificationPermission() {
+  try {
+    // Notification.requestPermission() shows the browser's permission dialog
+    // Returns: "granted", "denied", or "default"
+    // 
+    // IMPORTANT: This must be triggered by a user action (click, tap)
+    // Calling it on page load will likely be blocked by the browser
+    const permission = await Notification.requestPermission();
+    
+    if (permission === "granted") {
+      // User allowed notifications
+      // You can now show notifications and register for push
+      console.log("Notification permission granted");
+      return true;
+    } else if (permission === "denied") {
+      // User blocked notifications
+      // You cannot show notifications or request again
+      // User must manually enable in browser settings
+      console.log("Notification permission denied");
+      return false;
+    } else {
+      // permission === "default"
+      // User dismissed the dialog without choosing
+      // You can ask again later
+      console.log("Notification permission dismissed");
+      return false;
+    }
+  } catch (error) {
+    // Some browsers don't support notifications
+    console.log("Permission request failed:", error);
+    return false;
+  }
+}
+
+// ==================== USAGE ====================
+// Call this when user clicks "Enable Notifications" button
+// NOT on page load - browsers block unprompted permission requests
+
+document.getElementById("enable-notifications-btn").addEventListener("click", async () => {
+  const granted = await requestNotificationPermission();
+  if (granted) {
+    // Proceed to get FCM token and register
+    await registerPushNotifications();
+  } else {
+    // Show message explaining how to enable manually
+    showMessage("To receive notifications, please enable them in your browser settings.");
+  }
+});
+```
+
+### What This Code Does
+
+1. **Requests Permission**: Shows the browser's notification permission dialog
+2. **Handles Response**: Processes granted, denied, or dismissed states
+3. **Returns Result**: Lets you know if you can proceed with registration
+
+### Permission States
+
+| State | Meaning | Can Request Again? |
+|-------|---------|-------------------|
+| `granted` | User allowed notifications | N/A - already allowed |
+| `denied` | User blocked notifications | No - must change in settings |
+| `default` | User dismissed dialog | Yes - can ask again |
+
+<Warning>
+**User Action Required**: Modern browsers block notification permission requests that aren't triggered by user interaction. Always request permission in response to a button click or similar action.
+</Warning>
+
+---
+
+## Step 4: Get FCM Token
+
+The FCM (Firebase Cloud Messaging) token uniquely identifies this browser/device for push notifications. Firebase uses this token to route notifications to the correct recipient.
+
+```javascript
+import { getToken } from "firebase/messaging";
+
+/**
+ * Get the FCM token for this browser/device
+ * This token is used to send push notifications to this specific client
+ * 
+ * @returns {string|null} - The FCM token, or null if failed
+ */
+async function getFCMToken() {
+  try {
+    // getToken() requests a unique token from Firebase
+    // The VAPID key authenticates your app with Firebase
+    // 
+    // This token:
+    // - Is unique to this browser on this device
+    // - May change if user clears browser data
+    // - Should be sent to your server and CometChat
+    const token = await getToken(messaging, {
+      vapidKey: "YOUR_VAPID_KEY"  // From Firebase Console → Web Push certificates
+    });
+    
+    if (token) {
+      console.log("FCM Token:", token);
+      // Token looks like: "dGVzdC10b2tlbi1mb3ItZGVtby1wdXJwb3Nlcy..."
+      // It's a long string that uniquely identifies this client
+      return token;
+    } else {
+      // No token available - usually means:
+      // - Notification permission not granted
+      // - Service worker not registered
+      // - Browser doesn't support push
+      console.log("No token available");
+      return null;
+    }
+  } catch (error) {
+    console.log("Token retrieval failed:", error);
+    // Common errors:
+    // - messaging/permission-blocked: User denied notifications
+    // - messaging/unsupported-browser: Browser doesn't support push
+    // - Invalid VAPID key
+    return null;
+  }
+}
+```
+
+### What This Code Does
+
+1. **Requests Token**: `getToken()` gets a unique identifier from Firebase
+2. **Authenticates with VAPID**: The VAPID key proves your app's identity
+3. **Returns Token**: This token is used to send notifications to this client
+
+### Finding Your VAPID Key
+
+1. Go to [Firebase Console](https://console.firebase.google.com)
+2. Select your project
+3. Navigate to **Project Settings → Cloud Messaging**
+4. Scroll to **Web Push certificates**
+5. Click **Generate key pair** if none exists
+6. Copy the **Key pair** value
+
+<Note>
+**Token Lifecycle**: FCM tokens can change when users clear browser data, update the browser, or when Firebase rotates tokens. Listen for token refresh events and update your server accordingly.
+</Note>
+
+---
+
+## Step 5: Register Token with CometChat
+
+After obtaining the FCM token, register it with CometChat so they know where to send push notifications for this user.
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+/**
+ * Complete push notification registration flow
+ * 1. Request permission
+ * 2. Get FCM token
+ * 3. Register with CometChat
+ * 
+ * @returns {boolean} - true if registration successful
+ */
+async function registerPushNotifications() {
+  // ==================== STEP 1: Request Permission ====================
+  const hasPermission = await requestNotificationPermission();
+  if (!hasPermission) {
+    console.log("Cannot register: permission not granted");
+    return false;
+  }
+
+  // ==================== STEP 2: Get FCM Token ====================
+  const fcmToken = await getFCMToken();
+  if (!fcmToken) {
+    console.log("Cannot register: failed to get FCM token");
+    return false;
+  }
+
+  // ==================== STEP 3: Register with CometChat ====================
+  try {
+    // registerTokenForPushNotification() tells CometChat:
+    // "Send push notifications for this user to this FCM token"
+    // 
+    // CometChat will now send notifications when:
+    // - User receives a new message (and app is in background)
+    // - User receives an incoming call
+    // - Other configured notification events occur
+    await CometChat.registerTokenForPushNotification(fcmToken);
+    console.log("Push notifications registered");
+    
+    // Store token for later unregistration (on logout)
+    // This ensures we can properly clean up
+    localStorage.setItem("fcmToken", fcmToken);
+    
+    return true;
+  } catch (error) {
+    console.log("Registration failed:", error);
+    // Common errors:
+    // - User not logged in to CometChat
+    // - Invalid FCM token
+    // - Push notifications not enabled in CometChat plan
+    return false;
+  }
+}
+```
+</Tab>
+<Tab title="TypeScript">
+```typescript
+/**
+ * Register for push notifications
+ * Handles the complete flow from permission to registration
+ */
+async function registerPushNotifications(): Promise<boolean> {
+  // Step 1: Get permission
+  const hasPermission = await requestNotificationPermission();
+  if (!hasPermission) return false;
+
+  // Step 2: Get FCM token
+  const fcmToken = await getFCMToken();
+  if (!fcmToken) return false;
+
+  // Step 3: Register with CometChat
+  try {
+    await CometChat.registerTokenForPushNotification(fcmToken);
+    console.log("Push notifications registered");
+    
+    // Store for cleanup on logout
+    localStorage.setItem("fcmToken", fcmToken);
+    return true;
+  } catch (error) {
+    console.log("Registration failed:", error);
+    return false;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Checks Permission**: Ensures user has granted notification permission
+2. **Gets FCM Token**: Obtains the unique device/browser identifier
+3. **Registers with CometChat**: Links the FCM token to the logged-in user
+4. **Stores Token**: Saves token for cleanup during logout
+
+### Registration Flow
+
+```
+User clicks "Enable Notifications"
+           │
+           ▼
+    requestPermission()
+           │
+           ├── denied → Show "enable in settings" message
+           │
+           ▼ granted
+       getFCMToken()
+           │
+           ├── failed → Show error message
+           │
+           ▼ success
+    registerTokenForPushNotification()
+           │
+           ▼
+    ✅ Push notifications active
+```
+
+<Warning>
+**Login Required**: You must be logged in to CometChat before registering for push notifications. The token is associated with the logged-in user.
+</Warning>
+
+---
+
+## Step 6: Handle Foreground Notifications
+
+When the app is in the foreground (user is actively using it), Firebase doesn't automatically show notifications. You need to handle them manually and decide how to display them.
+
+```javascript
+import { onMessage } from "firebase/messaging";
+
+// onMessage() listens for notifications when the app is in the foreground
+// These won't show automatically - you decide how to handle them
+onMessage(messaging, (payload) => {
+  console.log("Foreground message:", payload);
+
+  // payload.data contains the notification data from CometChat
+  const { data } = payload;
+  
+  // ==================== CHECK NOTIFICATION TYPE ====================
+  // CometChat sends different types of notifications
+  // Handle each type appropriately
+  
+  if (data.type === "chat") {
+    // ==================== CHAT NOTIFICATION ====================
+    // New message received while app is open
+    // You might want to:
+    // - Show a toast/snackbar notification
+    // - Play a sound
+    // - Update unread count badge
+    // - Skip if user is viewing that conversation
+    handleChatNotification(data);
+    
+  } else if (data.type === "call") {
+    // ==================== CALL NOTIFICATION ====================
+    // Incoming call while app is open
+    // You should show the incoming call UI immediately
+    // This is time-sensitive - user needs to answer quickly
+    handleCallNotification(data);
+  }
+});
+
+/**
+ * Handle a chat notification in the foreground
+ * Shows a browser notification or in-app toast
+ * 
+ * @param {Object} data - Notification data from CometChat
+ */
+function handleChatNotification(data) {
+  // Option 1: Show browser notification
+  // Good for: Consistent experience, works even if tab is not focused
+  new Notification(data.title, {
+    body: data.body,
+    icon: data.senderAvatar || "/default-avatar.png",
+    tag: data.conversationId  // Prevents duplicate notifications for same conversation
+  });
+
+  // Option 2: Show in-app notification (toast/snackbar)
+  // Good for: Custom styling, more control, less intrusive
+  showInAppNotification({
+    title: data.title,
+    body: data.body,
+    onClick: () => openConversation(data.conversationId)
+  });
+  
+  // Option 3: Just update UI (unread badge, etc.)
+  // Good for: Minimal interruption when user is actively chatting
+  updateUnreadBadge(data.conversationId);
+}
+
+/**
+ * Handle a call notification in the foreground
+ * Shows the incoming call UI
+ * 
+ * @param {Object} data - Notification data from CometChat
+ */
+function handleCallNotification(data) {
+  // Show incoming call UI immediately
+  // This should be prominent - calls are time-sensitive
+  showIncomingCallUI({
+    callerName: data.senderName,
+    callerAvatar: data.senderAvatar,
+    callType: data.callType,  // "audio" or "video"
+    sessionId: data.sessionId
+  });
+  
+  // Optionally play a ringtone
+  playRingtone();
+}
+```
+
+### What This Code Does
+
+1. **Listens for Messages**: `onMessage()` receives notifications when app is in foreground
+2. **Identifies Type**: Checks if it's a chat message or call notification
+3. **Handles Appropriately**: Shows notification, updates UI, or triggers call screen
+
+### Foreground Notification Options
+
+| Option | Best For | Pros | Cons |
+|--------|----------|------|------|
+| **Browser Notification** | Consistent UX | Works when tab unfocused | Can be intrusive |
+| **In-App Toast** | Custom styling | Full control | Only visible in app |
+| **Silent Update** | Active users | Non-intrusive | Easy to miss |
+
+<Note>
+**Smart Notifications**: Consider not showing notifications if the user is already viewing the conversation that the message is from. This prevents annoying duplicate alerts.
+</Note>
+
+---
+
+## Step 7: Handle Background Notifications
+
+When the app is in the background or closed, a service worker handles notifications. Create a service worker file to process and display these notifications.
+
+### 7a. Create Service Worker
+
+Create `firebase-messaging-sw.js` in your public folder (the root of your web server):
+
+```javascript
+// firebase-messaging-sw.js
+// This file runs in the background, separate from your main app
+// It handles push notifications when the app is not in the foreground
+
+// Import Firebase libraries for service workers
+// These are the "compat" versions designed for service worker environments
+importScripts("https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js");
+importScripts("https://www.gstatic.com/firebasejs/9.0.0/firebase-messaging-compat.js");
+
+// Initialize Firebase with the SAME config as your main app
+// This connects the service worker to your Firebase project
+firebase.initializeApp({
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+});
+
+const messaging = firebase.messaging();
+
+// ==================== HANDLE BACKGROUND MESSAGES ====================
+// This fires when a push notification arrives and the app is:
+// - In the background (another tab is focused)
+// - Minimized
+// - Closed entirely
+messaging.onBackgroundMessage((payload) => {
+  console.log("Background message:", payload);
+
+  const { data } = payload;
+  
+  // Build the notification to display
+  // These options control how the notification appears
+  const notificationTitle = data.title || "New Message";
+  const notificationOptions = {
+    body: data.body || "You have a new message",
+    icon: data.senderAvatar || "/default-avatar.png",  // Small icon
+    badge: "/badge-icon.png",  // Monochrome icon for status bar (mobile)
+    tag: data.conversationId,  // Groups notifications - same tag = replace
+    data: data  // Pass data for click handling
+  };
+
+  // Show the notification
+  // self.registration is the service worker's registration object
+  self.registration.showNotification(notificationTitle, notificationOptions);
+});
+
+// ==================== HANDLE NOTIFICATION CLICKS ====================
+// This fires when user clicks on a notification
+// Use this to open the app and navigate to the relevant screen
+self.addEventListener("notificationclick", (event) => {
+  // Close the notification
+  event.notification.close();
+
+  // Get the data we attached to the notification
+  const data = event.notification.data;
+  
+  // waitUntil() keeps the service worker alive until we're done
+  event.waitUntil(
+    // Find all open windows/tabs of our app
+    clients.matchAll({ type: "window" }).then((clientList) => {
+      // Check if app is already open
+      for (const client of clientList) {
+        if (client.url.includes(self.location.origin) && "focus" in client) {
+          // App is open - focus it and send a message
+          client.focus();
+          
+          // Tell the app which notification was clicked
+          // The app can then navigate to the right screen
+          client.postMessage({
+            type: "NOTIFICATION_CLICK",
+            data: data
+          });
+          return;
+        }
+      }
+      
+      // App is not open - open a new window
+      if (clients.openWindow) {
+        // Build the URL based on notification type
+        const url = data.type === "call" 
+          ? `/call/${data.sessionId}`      // Open call screen
+          : `/chat/${data.conversationId}`; // Open conversation
+        return clients.openWindow(url);
+      }
+    })
+  );
+});
+```
+
+### What This Code Does
+
+1. **Initializes Firebase**: Connects service worker to your Firebase project
+2. **Handles Background Messages**: `onBackgroundMessage` processes notifications when app is not active
+3. **Shows Notifications**: `showNotification` displays the system notification
+4. **Handles Clicks**: `notificationclick` event opens the app and navigates to the right screen
+
+### 7b. Register Service Worker
+
+Register the service worker in your main application code:
+
+```javascript
+// In your main app (e.g., index.js or App.js)
+// This tells the browser to use your service worker for push notifications
+
+if ("serviceWorker" in navigator) {
+  // Register the service worker
+  // The path is relative to your web root
+  navigator.serviceWorker.register("/firebase-messaging-sw.js")
+    .then((registration) => {
+      console.log("Service Worker registered:", registration);
+      // Service worker is now active and will handle background notifications
+    })
+    .catch((error) => {
+      console.log("Service Worker registration failed:", error);
+      // Common errors:
+      // - File not found (wrong path)
+      // - HTTPS required (service workers only work on HTTPS or localhost)
+      // - Syntax error in service worker file
+    });
+}
+```
+
+### Service Worker Requirements
+
+| Requirement | Description |
+|-------------|-------------|
+| **HTTPS** | Service workers only work on HTTPS (or localhost for development) |
+| **File Location** | Must be in your web root or a parent of the pages it controls |
+| **Same Origin** | Must be served from the same origin as your app |
+
+<Warning>
+**Firebase Config Must Match**: The Firebase configuration in your service worker must exactly match the configuration in your main app. Mismatched configs will cause notifications to fail.
+</Warning>
+
+---
+
+## Step 8: Handle Notification Clicks
+
+When a user clicks a notification (from the service worker), your app receives a message. Listen for these messages to navigate to the appropriate screen.
+
+```javascript
+// Listen for messages from the service worker
+// This fires when user clicks a notification and the app is already open
+navigator.serviceWorker.addEventListener("message", (event) => {
+  // Check if this is a notification click event
+  if (event.data.type === "NOTIFICATION_CLICK") {
+    const data = event.data.data;
+    
+    console.log("Notification clicked:", data);
+    
+    // ==================== HANDLE BASED ON TYPE ====================
+    // Navigate to the appropriate screen based on notification type
+    
+    if (data.type === "chat") {
+      // ==================== CHAT NOTIFICATION CLICKED ====================
+      // User clicked a message notification
+      // Navigate to that conversation
+      navigateToConversation(data.conversationId);
+      
+      // Optionally mark messages as read
+      markConversationAsRead(data.conversationId);
+      
+    } else if (data.type === "call") {
+      // ==================== CALL NOTIFICATION CLICKED ====================
+      // User clicked a call notification
+      // This might be a missed call or ongoing call
+      handleIncomingCall(data);
+    }
+  }
+});
+
+/**
+ * Navigate to a specific conversation
+ * Implementation depends on your routing library
+ * 
+ * @param {string} conversationId - The conversation to open
+ */
+function navigateToConversation(conversationId) {
+  // React Router example:
+  // history.push(`/chat/${conversationId}`);
+  
+  // Next.js example:
+  // router.push(`/chat/${conversationId}`);
+  
+  // Vanilla JS example:
+  window.location.href = `/chat/${conversationId}`;
+}
+
+/**
+ * Handle an incoming call from notification
+ * 
+ * @param {Object} data - Call notification data
+ */
+function handleIncomingCall(data) {
+  // Check if call is still active
+  // Calls have a timeout, so the call might have ended
+  
+  // If using CometChat call listeners, the call state
+  // should already be tracked. Just show the call UI.
+  showIncomingCallUI({
+    callerName: data.senderName,
+    callerAvatar: data.senderAvatar,
+    callType: data.callType,
+    sessionId: data.sessionId
+  });
+}
+```
+
+### What This Code Does
+
+1. **Listens for Service Worker Messages**: Receives notification click events
+2. **Identifies Notification Type**: Checks if it's a chat or call notification
+3. **Navigates Appropriately**: Opens the relevant screen in your app
+
+### Click Handling Flow
+
+```
+User clicks notification
+         │
+         ▼
+Service Worker receives click
+         │
+         ├── App is open → postMessage() to app
+         │                        │
+         │                        ▼
+         │              App receives message
+         │                        │
+         │                        ▼
+         │              Navigate to screen
+         │
+         └── App is closed → openWindow() with URL
+                                  │
+                                  ▼
+                          App opens at URL
+```
+
+<Note>
+**Deep Linking**: The notification click handler essentially implements deep linking. Make sure your app can handle being opened directly to a conversation or call screen.
+</Note>
+
+---
+
+## Step 9: Unregister on Logout
+
+When the user logs out, unregister the push token to stop receiving notifications for that user. This is important for security and user experience.
+
+```javascript
+/**
+ * Logout and clean up push notifications
+ * Unregisters the FCM token so the user stops receiving notifications
+ */
+async function logout() {
+  try {
+    // ==================== STEP 1: Get Stored FCM Token ====================
+    // We stored this during registration
+    const fcmToken = localStorage.getItem("fcmToken");
+    
+    if (fcmToken) {
+      // ==================== STEP 2: Unregister from CometChat ====================
+      // This tells CometChat to stop sending notifications to this token
+      // Important: Do this BEFORE logging out, while still authenticated
+      await CometChat.unregisterTokenForPushNotification(fcmToken);
+      
+      // Clean up stored token
+      localStorage.removeItem("fcmToken");
+      
+      console.log("Push notifications unregistered");
+    }
+    
+    // ==================== STEP 3: Logout from CometChat ====================
+    // This ends the user session
+    await CometChat.logout();
+    
+    console.log("Logged out successfully");
+    
+    // Navigate to login screen
+    // window.location.href = "/login";
+    
+  } catch (error) {
+    console.log("Logout failed:", error);
+    // Even if unregister fails, still try to logout
+    try {
+      await CometChat.logout();
+    } catch (e) {
+      // Logout also failed - force redirect anyway
+    }
+  }
+}
+```
+
+### What This Code Does
+
+1. **Retrieves Stored Token**: Gets the FCM token we saved during registration
+2. **Unregisters from CometChat**: Tells CometChat to stop sending notifications
+3. **Cleans Up Storage**: Removes the stored token
+4. **Logs Out**: Ends the CometChat session
+
+### Why Unregister?
+
+| Reason | Explanation |
+|--------|-------------|
+| **Security** | Prevents notifications going to wrong user if device is shared |
+| **Privacy** | User shouldn't receive notifications after logging out |
+| **Clean State** | Prepares for a different user to log in |
+| **Resource Efficiency** | Stops unnecessary notification delivery attempts |
+
+<Warning>
+**Order Matters**: Unregister the token BEFORE calling `CometChat.logout()`. After logout, you won't be authenticated to make the unregister call.
+</Warning>
+
+---
+
+## Complete Integration Example
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { initializeApp } from "firebase/app";
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
+
+class PushNotificationService {
+  constructor(firebaseConfig, vapidKey) {
+    this.firebaseConfig = firebaseConfig;
+    this.vapidKey = vapidKey;
+    this.messaging = null;
+    this.fcmToken = null;
+  }
+
+  async initialize() {
+    // Initialize Firebase
+    const app = initializeApp(this.firebaseConfig);
+    this.messaging = getMessaging(app);
+
+    // Register service worker
+    if ("serviceWorker" in navigator) {
+      await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+    }
+
+    // Set up foreground message handler
+    this.setupForegroundHandler();
+
+    // Set up notification click handler
+    this.setupClickHandler();
+  }
+
+  async register() {
+    // Request permission
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      console.log("Notification permission denied");
+      return false;
+    }
+
+    // Get FCM token
+    this.fcmToken = await getToken(this.messaging, {
+      vapidKey: this.vapidKey
+    });
+
+    if (!this.fcmToken) {
+      console.log("Failed to get FCM token");
+      return false;
+    }
+
+    // Register with CometChat
+    await CometChat.registerTokenForPushNotification(this.fcmToken);
+    localStorage.setItem("fcmToken", this.fcmToken);
+
+    console.log("Push notifications registered");
+    return true;
+  }
+
+  async unregister() {
+    const token = this.fcmToken || localStorage.getItem("fcmToken");
+    
+    if (token) {
+      await CometChat.unregisterTokenForPushNotification(token);
+      localStorage.removeItem("fcmToken");
+      this.fcmToken = null;
+    }
+  }
+
+  setupForegroundHandler() {
+    onMessage(this.messaging, (payload) => {
+      const { data } = payload;
+
+      if (data.type === "chat") {
+        this.showChatNotification(data);
+      } else if (data.type === "call") {
+        this.onIncomingCall?.(data);
+      }
+    });
+  }
+
+  setupClickHandler() {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      if (event.data.type === "NOTIFICATION_CLICK") {
+        this.onNotificationClick?.(event.data.data);
+      }
+    });
+  }
+
+  showChatNotification(data) {
+    // Check if we should show notification
+    // (e.g., don't show if user is viewing that conversation)
+    if (this.shouldShowNotification?.(data) === false) {
+      return;
+    }
+
+    new Notification(data.title, {
+      body: data.body,
+      icon: data.senderAvatar || "/default-avatar.png",
+      tag: data.conversationId
+    });
+  }
+
+  // Event handlers (set by consumer)
+  onIncomingCall = null;
+  onNotificationClick = null;
+  shouldShowNotification = null;
+}
+
+// Usage
+const pushService = new PushNotificationService(
+  {
+    apiKey: "...",
+    authDomain: "...",
+    projectId: "...",
+    messagingSenderId: "...",
+    appId: "..."
+  },
+  "YOUR_VAPID_KEY"
+);
+
+await pushService.initialize();
+
+// After CometChat login
+await pushService.register();
+
+// Set up handlers
+pushService.onIncomingCall = (data) => {
+  showIncomingCallUI(data);
+};
+
+pushService.onNotificationClick = (data) => {
+  if (data.type === "chat") {
+    navigateToConversation(data.conversationId);
+  }
+};
+
+pushService.shouldShowNotification = (data) => {
+  // Don't show if user is viewing this conversation
+  return currentConversationId !== data.conversationId;
+};
+
+// On logout
+await pushService.unregister();
+await CometChat.logout();
+```
+
+---
+
+## Notification Payload Structure
+
+CometChat sends notifications with this data structure:
+
+### Chat Notification
+
+```json
+{
+  "type": "chat",
+  "title": "John Doe",
+  "body": "Hello! How are you?",
+  "senderUid": "user_123",
+  "senderName": "John Doe",
+  "senderAvatar": "https://...",
+  "receiverUid": "user_456",
+  "receiverType": "user",
+  "conversationId": "user_user_123_user_456",
+  "messageId": "12345",
+  "messageType": "text"
+}
+```
+
+### Call Notification
+
+```json
+{
+  "type": "call",
+  "title": "Incoming Video Call",
+  "body": "John Doe is calling...",
+  "senderUid": "user_123",
+  "senderName": "John Doe",
+  "senderAvatar": "https://...",
+  "callType": "video",
+  "sessionId": "call_session_123"
+}
+```
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Notifications not appearing">
+    1. Check browser notification permissions
+    2. Verify FCM token is registered with CometChat
+    3. Check Firebase Console for delivery status
+    4. Ensure service worker is registered
+  </Accordion>
+  
+  <Accordion title="Token registration fails">
+    1. Verify CometChat user is logged in
+    2. Check FCM token is valid
+    3. Ensure push notifications are enabled in CometChat Dashboard
+  </Accordion>
+  
+  <Accordion title="Background notifications not working">
+    1. Verify service worker is registered
+    2. Check service worker console for errors
+    3. Ensure Firebase config in service worker matches app config
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat Integration" icon="message" href="/sdk/javascript/guide-chat-only">
+    Set up messaging first
+  </Card>
+  <Card title="Calling" icon="video" href="/sdk/javascript/guide-chat-calls">
+    Add voice and video calls
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/fundamentals/webhooks-overview">
+    Server-side notifications
+  </Card>
+  <Card title="Mobile SDKs" icon="mobile" href="/sdk/ios/overview">
+    iOS and Android push setup
+  </Card>
+</CardGroup>

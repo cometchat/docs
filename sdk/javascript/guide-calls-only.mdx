@@ -1,0 +1,992 @@
+---
+title: "Calls Integration Guide"
+sidebarTitle: "Calls Only"
+description: "Complete step-by-step guide to integrate voice and video calling without chat"
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```javascript
+// Standalone Calls Integration (No Chat SDK Required)
+// 1. Install
+npm install @cometchat/calls-sdk-javascript
+
+// 2. Initialize
+await CometChatCalls.init({ appId: "APP_ID", region: "REGION" });
+
+// 3. Generate call token (requires user auth token from REST API)
+const callToken = await CometChatCalls.generateToken(sessionId, userAuthToken);
+
+// 4. Start call session
+const callSettings = new CometChatCalls.CallSettingsBuilder()
+  .enableDefaultLayout(true)
+  .setCallListener({ onCallEnded: () => CometChatCalls.endSession() })
+  .build();
+CometChatCalls.startSession(callToken.token, callSettings, document.getElementById("call-container"));
+
+// 5. End call
+CometChatCalls.endSession();
+```
+</Info>
+
+This guide walks you through integrating CometChat voice and video calling as a standalone feature, without the Chat SDK. This is ideal for applications that only need calling capabilities.
+
+<Note>
+**Prerequisites**
+- A CometChat account with an app created at [app.cometchat.com](https://app.cometchat.com)
+- Your App ID and Region from the dashboard
+- Node.js 14+ or a modern browser
+- A backend server to generate user auth tokens via REST API
+</Note>
+
+---
+
+## Step 1: Install the Calls SDK
+
+<Tabs>
+<Tab title="npm">
+```bash
+npm install @cometchat/calls-sdk-javascript
+```
+</Tab>
+<Tab title="yarn">
+```bash
+yarn add @cometchat/calls-sdk-javascript
+```
+</Tab>
+<Tab title="CDN">
+```html
+<script src="https://unpkg.com/@cometchat/calls-sdk-javascript/CometChatCalls.js"></script>
+```
+</Tab>
+</Tabs>
+
+Import the SDK:
+
+```javascript
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+```
+
+---
+
+## Step 2: Initialize the Calls SDK
+
+Initialization prepares the Calls SDK to handle audio/video streams. Unlike the Chat SDK, the Calls SDK focuses solely on real-time media communication.
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+// Configuration object for the Calls SDK
+// Only requires appId and region - simpler than Chat SDK
+const callAppSettings = {
+  appId: "YOUR_APP_ID",    // Your CometChat App ID
+  region: "YOUR_REGION"    // "us" or "eu" - must match your app's region
+};
+
+// init() prepares the SDK for call operations
+// This sets up WebRTC capabilities and validates credentials
+CometChatCalls.init(callAppSettings).then(
+  () => {
+    console.log("Calls SDK initialized");
+    // SDK is ready - you can now generate call tokens
+  },
+  (error) => {
+    // Common errors: invalid appId, wrong region, network issues
+    console.log("Calls init failed:", error);
+  }
+);
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+async function initCallsSDK() {
+  const callAppSettings = {
+    appId: "YOUR_APP_ID",
+    region: "YOUR_REGION"
+  };
+
+  try {
+    // await ensures SDK is fully initialized before proceeding
+    await CometChatCalls.init(callAppSettings);
+    console.log("Calls SDK initialized");
+    return true;
+  } catch (error) {
+    console.log("Calls init failed:", error);
+    return false;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Configures SDK**: Sets your app credentials for authentication
+2. **Initializes WebRTC**: Prepares browser capabilities for audio/video
+3. **Validates Credentials**: Confirms your app exists and region is correct
+
+---
+
+## Step 3: Get User Auth Token
+
+Since you're using the Calls SDK standalone (without Chat SDK), you need to authenticate users differently. The Calls SDK requires a user auth token, which must be obtained from CometChat's REST API.
+
+<Warning>
+Since you're not using the Chat SDK, you must obtain user auth tokens via the CometChat REST API from your backend server. Never expose your REST API key in client-side code.
+</Warning>
+
+### Option A: Create Auth Token (Server-Side)
+
+This is the recommended approach for production. Your backend server creates auth tokens securely.
+
+```javascript
+// ⚠️ This code runs on YOUR BACKEND SERVER, not in the browser
+// Never expose your REST API key in client-side code
+
+const APP_ID = "YOUR_APP_ID";
+const REGION = "us";  // or "eu"
+const UID = "user_123";  // The user who needs the token
+
+// Make a POST request to CometChat's REST API
+const response = await fetch(
+  `https://${APP_ID}.api-${REGION}.cometchat.io/v3/users/${UID}/auth_tokens`,
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apiKey": "YOUR_REST_API_KEY",  // Keep this secret on server
+      "appId": APP_ID
+    }
+  }
+);
+
+const data = await response.json();
+const authToken = data.data.authToken;
+
+// Send authToken to your client app via your own API
+// The client will use this token to generate call tokens
+```
+
+### Option B: Get from Dashboard (Testing Only)
+
+For quick testing during development, you can manually create auth tokens:
+
+1. Navigate to **Users & Groups → Users**
+2. Select a user
+3. Click **+ Create Auth Token**
+
+<Note>
+Dashboard-created tokens are for testing only. In production, always generate tokens programmatically on your server.
+</Note>
+
+---
+
+## Step 4: Generate Call Token
+
+A call token authorizes a specific user to join a specific call session. Each participant needs their own call token, but they all use the same session ID to join the same call.
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+// Session ID uniquely identifies this call
+// All participants must use the SAME session ID to join the same call
+// Generate a unique ID for new calls, or use an existing ID to join
+const sessionId = "unique_session_id_" + Date.now();
+
+// User auth token from Step 3 (obtained from your backend)
+const userAuthToken = "USER_AUTH_TOKEN";
+
+// generateToken() creates a call-specific token for this user
+// This token authorizes the user to join the specified session
+CometChatCalls.generateToken(sessionId, userAuthToken).then(
+  (callToken) => {
+    console.log("Call token generated:", callToken.token);
+    // callToken.token is what you pass to startSession()
+    // Store sessionId to share with other participants
+  },
+  (error) => {
+    // Common errors: invalid auth token, expired token
+    console.log("Token generation failed:", error);
+  }
+);
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+async function generateCallToken(sessionId, userAuthToken) {
+  try {
+    // generateToken() returns an object with a 'token' property
+    const callToken = await CometChatCalls.generateToken(sessionId, userAuthToken);
+    console.log("Call token generated:", callToken.token);
+    return callToken.token;
+  } catch (error) {
+    console.log("Token generation failed:", error);
+    throw error;
+  }
+}
+
+// Usage for starting a new call
+const sessionId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+const token = await generateCallToken(sessionId, userAuthToken);
+
+// Usage for joining an existing call
+const existingSessionId = "session_id_from_caller";
+const token = await generateCallToken(existingSessionId, userAuthToken);
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Creates Session Identifier**: The session ID groups participants into the same call
+2. **Generates Secure Token**: The call token authorizes this user for this specific session
+3. **Enables Call Join**: The returned token is used to start or join the call session
+
+| Parameter | Description |
+|-----------|-------------|
+| `sessionId` | Unique identifier for the call session. All participants joining the same call must use the same session ID. Generate a new one for new calls. |
+| `userAuthToken` | The user's auth token obtained from the REST API. Identifies who is joining the call. |
+
+<Note>
+**Session ID Strategy**: Generate a unique session ID for each new call. Share this ID with other participants (via your app's UI, push notification, etc.) so they can join the same call.
+</Note>
+
+---
+
+## Step 5: Configure Call Settings
+
+Call settings define the behavior and appearance of the call UI, as well as event handlers for call lifecycle events. The `OngoingCallListener` receives real-time updates about participants and call state.
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+// OngoingCallListener handles real-time call events
+// These callbacks fire during an active call session
+const callListener = new CometChatCalls.OngoingCallListener({
+  // Called when another participant joins the call
+  // user object contains: getName(), getUid(), getAvatar()
+  onUserJoined: (user) => {
+    console.log("User joined:", user.getName());
+    // Update UI to show new participant
+    // Add their video stream to the grid
+  },
+  
+  // Called when a participant leaves the call
+  // Could be voluntary leave or network disconnection
+  onUserLeft: (user) => {
+    console.log("User left:", user.getName());
+    // Remove their video from the grid
+    // Update participant count
+  },
+  
+  // Called whenever the participant list changes
+  // userList is an array of all current participants
+  onUserListUpdated: (userList) => {
+    console.log("Participants:", userList.length);
+    // Useful for updating participant count badge
+    // Or rebuilding the video grid layout
+  },
+  
+  // Called when the call ends (by any participant or timeout)
+  // IMPORTANT: You must call endSession() to clean up resources
+  onCallEnded: () => {
+    console.log("Call ended");
+    CometChatCalls.endSession();  // Required cleanup
+    // Hide call UI and return to previous screen
+  },
+  
+  // Called when user clicks the end call button in default UI
+  // Only fires if using enableDefaultLayout(true)
+  onCallEndButtonPressed: () => {
+    console.log("End button pressed");
+    CometChatCalls.endSession();
+    // Navigate away from call screen
+  },
+  
+  // Called when a call error occurs
+  // Common errors: network issues, permission denied, device unavailable
+  onError: (error) => {
+    console.log("Call error:", error);
+    // Show error message to user
+    // Consider ending the call on critical errors
+  },
+  
+  // Called when available audio output devices change
+  // audioModes array contains available speakers/headphones
+  onAudioModesUpdated: (audioModes) => {
+    console.log("Audio modes:", audioModes);
+    // Update audio device selector UI
+  },
+  
+  // Called when any participant mutes/unmutes
+  // event contains: user, muted (boolean)
+  onUserMuted: (event) => {
+    console.log("User muted:", event);
+    // Show mute indicator on participant's video
+  },
+  
+  // Called when any participant starts screen sharing
+  onScreenShareStarted: () => {
+    console.log("Screen share started");
+    // Adjust layout to show screen share prominently
+  },
+  
+  // Called when screen sharing stops
+  onScreenShareStopped: () => {
+    console.log("Screen share stopped");
+    // Return to normal video grid layout
+  }
+});
+
+// CallSettingsBuilder configures the call UI and behavior
+// Chain methods to customize, then call build() to create settings
+const callSettings = new CometChatCalls.CallSettingsBuilder()
+  .enableDefaultLayout(true)      // Use CometChat's built-in call UI
+  .setIsAudioOnlyCall(false)      // false = video call, true = audio only
+  .setCallListener(callListener)  // Attach our event handlers
+  .build();                       // Create the settings object
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+// Create a reusable function to build call settings
+function createCallSettings(options = {}) {
+  const {
+    isAudioOnly = false,
+    startMuted = false,
+    startVideoOff = false,
+    onUserJoined,
+    onUserLeft,
+    onCallEnded,
+    onError
+  } = options;
+
+  // Create listener with provided callbacks or defaults
+  const callListener = new CometChatCalls.OngoingCallListener({
+    onUserJoined: onUserJoined || ((user) => {
+      console.log("User joined:", user.getName());
+    }),
+    onUserLeft: onUserLeft || ((user) => {
+      console.log("User left:", user.getName());
+    }),
+    onCallEnded: onCallEnded || (() => {
+      console.log("Call ended");
+      CometChatCalls.endSession();
+    }),
+    onCallEndButtonPressed: () => {
+      CometChatCalls.endSession();
+      onCallEnded?.();
+    },
+    onError: onError || ((error) => {
+      console.error("Call error:", error);
+    })
+  });
+
+  // Build settings with provided options
+  return new CometChatCalls.CallSettingsBuilder()
+    .enableDefaultLayout(true)
+    .setIsAudioOnlyCall(isAudioOnly)
+    .startWithAudioMuted(startMuted)
+    .startWithVideoMuted(startVideoOff)
+    .setCallListener(callListener)
+    .build();
+}
+
+// Usage
+const settings = createCallSettings({
+  isAudioOnly: false,
+  startMuted: false,
+  onUserJoined: (user) => updateParticipantList(user, 'joined'),
+  onUserLeft: (user) => updateParticipantList(user, 'left'),
+  onCallEnded: () => navigateToHome(),
+  onError: (error) => showErrorToast(error.message)
+});
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Creates Event Listener**: `OngoingCallListener` defines callbacks for call events:
+   - Participant join/leave notifications
+   - Call end detection
+   - Error handling
+   - Screen share and mute state changes
+
+2. **Configures Call UI**: `CallSettingsBuilder` customizes the call experience:
+   - Default layout provides ready-to-use call controls
+   - Audio/video settings control initial state
+   - Listener attachment connects your callbacks
+
+3. **Builds Settings Object**: `build()` creates the final configuration used by `startSession()`
+
+### Call Settings Options
+
+| Method | Description | Default |
+|--------|-------------|---------|
+| `enableDefaultLayout(boolean)` | Show/hide default UI controls (mute, video, end call buttons) | `true` |
+| `setIsAudioOnlyCall(boolean)` | Audio-only call (no video) or video call | `false` |
+| `startWithAudioMuted(boolean)` | Start with microphone muted | `false` |
+| `startWithVideoMuted(boolean)` | Start with camera off | `false` |
+| `showEndCallButton(boolean)` | Show the end call button in default UI | `true` |
+| `showMuteAudioButton(boolean)` | Show the mute/unmute button | `true` |
+| `showPauseVideoButton(boolean)` | Show the video on/off toggle | `true` |
+| `showScreenShareButton(boolean)` | Show the screen share button | `true` |
+
+<Note>
+**Default Layout vs Custom UI**: When `enableDefaultLayout(true)`, CometChat provides a complete call UI with all controls. Set to `false` if you want to build your own UI and control the call programmatically using the methods in Step 7.
+</Note>
+
+---
+
+## Step 6: Start Call Session
+
+Starting a call session renders the video/audio UI into a container element and establishes the WebRTC connection. The call token authorizes this specific user to join this specific session.
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+// The container element where the call UI will be rendered
+// Must have explicit dimensions - the call UI fills this container
+// HTML: <div id="call-container" style="width: 100%; height: 500px;"></div>
+const htmlElement = document.getElementById("call-container");
+
+// Call token from Step 4 - authorizes this user for this session
+const callToken = "GENERATED_CALL_TOKEN";
+
+// startSession() performs these operations:
+// 1. Requests camera/microphone permissions (if not already granted)
+// 2. Establishes WebRTC connection to CometChat media servers
+// 3. Renders the call UI into the container element
+// 4. Begins transmitting/receiving audio and video streams
+CometChatCalls.startSession(callToken, callSettings, htmlElement);
+
+// Note: startSession() doesn't return a Promise
+// Use the callListener callbacks to track session state
+```
+</Tab>
+<Tab title="React">
+```jsx
+import { useEffect, useRef, useCallback } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+/**
+ * CallScreen Component
+ * Renders a video call session in a container
+ * 
+ * Props:
+ * - callToken: The generated call token from CometChatCalls.generateToken()
+ * - onCallEnd: Callback when the call ends (for navigation/cleanup)
+ */
+function CallScreen({ callToken, onCallEnd }) {
+  // useRef to get a reference to the DOM element
+  // The call UI will be rendered inside this element
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    // Guard: Don't start if we don't have required data
+    if (!callToken || !containerRef.current) return;
+
+    // Create call listener with callbacks
+    // These handle call lifecycle events
+    const callListener = new CometChatCalls.OngoingCallListener({
+      onUserJoined: (user) => {
+        console.log("Participant joined:", user.getName());
+      },
+      onUserLeft: (user) => {
+        console.log("Participant left:", user.getName());
+      },
+      // When call ends (other party hangs up or timeout)
+      onCallEnded: () => {
+        CometChatCalls.endSession();  // Clean up resources
+        onCallEnd();                   // Notify parent component
+      },
+      // When user clicks end button in default UI
+      onCallEndButtonPressed: () => {
+        CometChatCalls.endSession();
+        onCallEnd();
+      },
+      onError: (error) => {
+        console.error("Call error:", error);
+        // Optionally end call on critical errors
+      }
+    });
+
+    // Build call settings
+    const callSettings = new CometChatCalls.CallSettingsBuilder()
+      .enableDefaultLayout(true)  // Use built-in UI
+      .setCallListener(callListener)
+      .build();
+
+    // Start the call session
+    // This renders the call UI into containerRef.current
+    CometChatCalls.startSession(callToken, callSettings, containerRef.current);
+
+    // Cleanup function - runs when component unmounts
+    // or when dependencies change
+    return () => {
+      CometChatCalls.endSession();  // Always clean up on unmount
+    };
+  }, [callToken, onCallEnd]);  // Re-run if these change
+
+  // Container must have dimensions for the call UI to render properly
+  return (
+    <div 
+      ref={containerRef} 
+      style={{ 
+        width: "100%", 
+        height: "500px",
+        backgroundColor: "#000"  // Black background while loading
+      }} 
+    />
+  );
+}
+
+export default CallScreen;
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Gets Container Element**: The call UI needs a DOM element to render into
+2. **Starts WebRTC Session**: `startSession()` establishes the peer-to-peer connection
+3. **Renders Call UI**: The default layout includes video feeds and control buttons
+4. **Handles Permissions**: Browser will prompt for camera/microphone access if needed
+
+### Container Requirements
+
+| Requirement | Description |
+|-------------|-------------|
+| **Dimensions** | Container must have explicit width and height (CSS or inline styles) |
+| **Visibility** | Container must be visible (not `display: none`) when starting |
+| **Single Session** | Only one call session can be active at a time |
+
+<Warning>
+**Browser Permissions**: The first time a user joins a call, the browser will request camera and microphone permissions. If denied, the call will fail. Handle this in your `onError` callback.
+</Warning>
+
+---
+
+## Step 7: Call Controls
+
+During an active call session, you can programmatically control audio, video, screen sharing, and device selection. These methods are useful when building a custom UI or adding keyboard shortcuts.
+
+```javascript
+// ==================== AUDIO CONTROLS ====================
+
+// Mute/unmute the local microphone
+// Other participants will stop/start hearing you
+CometChatCalls.muteAudio(true);   // Mute - others can't hear you
+CometChatCalls.muteAudio(false);  // Unmute - others can hear you
+
+// ==================== VIDEO CONTROLS ====================
+
+// Pause/resume the local camera
+// Other participants will see a placeholder or black screen when paused
+CometChatCalls.pauseVideo(true);   // Pause - camera off, others see placeholder
+CometChatCalls.pauseVideo(false);  // Resume - camera on, others see your video
+
+// ==================== SCREEN SHARING ====================
+
+// Start sharing your screen
+// Browser will prompt user to select screen/window/tab
+// Only one participant can screen share at a time
+CometChatCalls.startScreenShare();
+
+// Stop screen sharing and return to camera
+CometChatCalls.stopScreenShare();
+
+// ==================== CAMERA SWITCHING ====================
+
+// Switch between front and back camera (mobile devices only)
+// On desktop, use setVideoInputDevice() instead
+CometChatCalls.switchCamera();
+
+// ==================== DEVICE MANAGEMENT ====================
+
+// Get lists of available devices
+// Returns arrays of MediaDeviceInfo objects with deviceId and label
+const audioInputs = CometChatCalls.getAudioInputDevices();   // Microphones
+const audioOutputs = CometChatCalls.getAudioOutputDevices(); // Speakers/headphones
+const videoInputs = CometChatCalls.getVideoInputDevices();   // Cameras
+
+// Example: Build a device selector dropdown
+audioInputs.forEach(device => {
+  console.log(`Mic: ${device.label} (${device.deviceId})`);
+});
+
+// Switch to a specific device by its deviceId
+// Use deviceId from the arrays above
+CometChatCalls.setAudioInputDevice(deviceId);   // Change microphone
+CometChatCalls.setAudioOutputDevice(deviceId);  // Change speaker
+CometChatCalls.setVideoInputDevice(deviceId);   // Change camera
+
+// ==================== END CALL ====================
+
+// End the call session and clean up resources
+// This disconnects from the call and releases camera/microphone
+CometChatCalls.endSession();
+```
+
+### What This Code Does
+
+| Method | Action | Effect on Others |
+|--------|--------|------------------|
+| `muteAudio(true/false)` | Mute/unmute microphone | Others stop/start hearing you |
+| `pauseVideo(true/false)` | Turn camera off/on | Others see placeholder/your video |
+| `startScreenShare()` | Share screen | Others see your screen |
+| `stopScreenShare()` | Stop sharing | Others see your camera again |
+| `switchCamera()` | Toggle front/back camera | Others see different camera view |
+| `setAudioInputDevice(id)` | Change microphone | Audio quality may change |
+| `setAudioOutputDevice(id)` | Change speaker | Only affects local playback |
+| `setVideoInputDevice(id)` | Change camera | Others see different camera |
+| `endSession()` | Leave the call | You disappear from call |
+
+<Note>
+**Custom UI**: If you set `enableDefaultLayout(false)` in call settings, you must implement your own UI buttons that call these methods. The default layout already includes buttons for mute, video, screen share, and end call.
+</Note>
+
+---
+
+## Step 8: End Call Session
+
+Ending a call session disconnects from the WebRTC connection, releases camera/microphone resources, and cleans up the call UI. Always call `endSession()` when leaving a call.
+
+```javascript
+/**
+ * End the current call and clean up
+ * Call this when:
+ * - User clicks end call button (if using custom UI)
+ * - onCallEnded callback fires (other party ended)
+ * - User navigates away from call screen
+ * - An unrecoverable error occurs
+ */
+function endCall() {
+  // endSession() performs these operations:
+  // 1. Sends "leave" signal to other participants
+  // 2. Closes WebRTC peer connections
+  // 3. Stops local camera and microphone streams
+  // 4. Removes the call UI from the container
+  // 5. Cleans up internal SDK state
+  CometChatCalls.endSession();
+  
+  // Hide or remove the call container from your UI
+  const container = document.getElementById("call-container");
+  container.style.display = "none";
+  
+  // Navigate back to previous screen or show call ended message
+  // This depends on your app's navigation structure
+}
+
+// Alternative: End call with confirmation
+async function endCallWithConfirmation() {
+  const confirmed = confirm("Are you sure you want to end the call?");
+  if (confirmed) {
+    CometChatCalls.endSession();
+    // Navigate away
+  }
+}
+```
+
+### What This Code Does
+
+1. **Signals Other Participants**: Notifies others that you've left the call
+2. **Closes Connections**: Terminates WebRTC peer connections
+3. **Releases Hardware**: Stops camera and microphone access
+4. **Cleans Up UI**: Removes the call interface from the container
+5. **Resets State**: Prepares SDK for a new call session
+
+<Warning>
+**Always Call endSession()**: Failing to call `endSession()` can leave the camera/microphone active, cause memory leaks, and prevent starting new calls. Always call it in your cleanup code, error handlers, and component unmount functions.
+</Warning>
+
+---
+
+## Complete Integration Example
+
+This example shows a complete `StandaloneCallService` class that encapsulates all Calls SDK functionality. Use this as a reference for structuring your integration.
+
+```javascript
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+/**
+ * StandaloneCallService - A complete wrapper for CometChat Calls SDK
+ * 
+ * This class provides a clean interface for:
+ * - Initializing the Calls SDK
+ * - Starting new calls (as caller)
+ * - Joining existing calls (as participant)
+ * - Managing call controls (mute, video, screen share)
+ * 
+ * Note: This is for standalone calling WITHOUT the Chat SDK.
+ * User authentication is handled via REST API auth tokens.
+ * 
+ * Usage:
+ *   const callService = new StandaloneCallService("APP_ID", "REGION");
+ *   await callService.initialize();
+ *   const sessionId = await callService.startCall(authToken, true, container);
+ *   // Share sessionId with others to let them join
+ */
+class StandaloneCallService {
+  /**
+   * Create a new call service instance
+   * @param {string} appId - Your CometChat App ID
+   * @param {string} region - Your app region ("us" or "eu")
+   */
+  constructor(appId, region) {
+    this.appId = appId;
+    this.region = region;
+    this.currentSessionId = null;  // Track active call session
+  }
+
+  /**
+   * Initialize the Calls SDK
+   * Must be called once before any other operations
+   * Typically called at app startup
+   */
+  async initialize() {
+    await CometChatCalls.init({
+      appId: this.appId,
+      region: this.region
+    });
+    console.log("Calls SDK initialized");
+  }
+
+  /**
+   * Start a new call as the caller
+   * Generates a unique session ID and starts the call
+   * Share the returned sessionId with others to let them join
+   * 
+   * @param {string} userAuthToken - Auth token from REST API
+   * @param {boolean} isVideoCall - true for video, false for audio-only
+   * @param {HTMLElement} container - DOM element to render call UI
+   * @returns {string} - The session ID (share with other participants)
+   */
+  async startCall(userAuthToken, isVideoCall = true, container) {
+    // Generate unique session ID for this call
+    // Format: call_<timestamp>_<random> ensures uniqueness
+    this.currentSessionId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Generate call token for this user and session
+    const callToken = await CometChatCalls.generateToken(
+      this.currentSessionId,
+      userAuthToken
+    );
+
+    // Configure call settings
+    const callSettings = new CometChatCalls.CallSettingsBuilder()
+      .enableDefaultLayout(true)
+      .setIsAudioOnlyCall(!isVideoCall)
+      .setCallListener(this.getCallListener())
+      .build();
+
+    // Start the session - renders UI into container
+    CometChatCalls.startSession(callToken.token, callSettings, container);
+
+    // Return session ID so caller can share it with others
+    return this.currentSessionId;
+  }
+
+  /**
+   * Join an existing call as a participant
+   * Use the session ID provided by the caller
+   * 
+   * @param {string} sessionId - Session ID from the caller
+   * @param {string} userAuthToken - Auth token from REST API
+   * @param {HTMLElement} container - DOM element to render call UI
+   */
+  async joinCall(sessionId, userAuthToken, container) {
+    // Store the session ID we're joining
+    this.currentSessionId = sessionId;
+
+    // Generate call token for this user to join this session
+    const callToken = await CometChatCalls.generateToken(sessionId, userAuthToken);
+
+    // Build call settings with listener
+    const callSettings = new CometChatCalls.CallSettingsBuilder()
+      .enableDefaultLayout(true)
+      .setCallListener(this.getCallListener())
+      .build();
+
+    // Join the call session
+    CometChatCalls.startSession(callToken.token, callSettings, container);
+  }
+
+  /**
+   * Create the call event listener
+   * Handles participant join/leave, call end, and errors
+   * @returns {CometChatCalls.OngoingCallListener}
+   */
+  getCallListener() {
+    return new CometChatCalls.OngoingCallListener({
+      onUserJoined: (user) => {
+        console.log("User joined:", user);
+        // Trigger external callback if set
+        this.onParticipantJoined?.(user);
+      },
+      onUserLeft: (user) => {
+        console.log("User left:", user);
+        this.onParticipantLeft?.(user);
+      },
+      onCallEnded: () => {
+        console.log("Call ended");
+        this.endCall();
+        this.onCallEnded?.();
+      },
+      onCallEndButtonPressed: () => {
+        this.endCall();
+        this.onCallEnded?.();
+      },
+      onError: (error) => {
+        console.error("Call error:", error);
+        this.onError?.(error);
+      }
+    });
+  }
+
+  // ==================== CALL CONTROLS ====================
+
+  /**
+   * Mute or unmute the local microphone
+   * @param {boolean} mute - true to mute, false to unmute
+   */
+  muteAudio(mute) {
+    CometChatCalls.muteAudio(mute);
+  }
+
+  /**
+   * Pause or resume the local camera
+   * @param {boolean} pause - true to pause (camera off), false to resume
+   */
+  pauseVideo(pause) {
+    CometChatCalls.pauseVideo(pause);
+  }
+
+  /**
+   * Start sharing your screen
+   * Browser will prompt to select screen/window/tab
+   */
+  startScreenShare() {
+    CometChatCalls.startScreenShare();
+  }
+
+  /**
+   * Stop screen sharing and return to camera
+   */
+  stopScreenShare() {
+    CometChatCalls.stopScreenShare();
+  }
+
+  /**
+   * End the current call and clean up resources
+   */
+  endCall() {
+    CometChatCalls.endSession();
+    this.currentSessionId = null;
+  }
+
+  // ==================== EVENT HANDLERS ====================
+  // Set these to receive callbacks from the call
+  // Example: callService.onParticipantJoined = (user) => updateUI(user);
+  
+  onParticipantJoined = null;  // Called when someone joins
+  onParticipantLeft = null;    // Called when someone leaves
+  onCallEnded = null;          // Called when call ends
+  onError = null;              // Called on errors
+}
+
+// ==================== USAGE EXAMPLE ====================
+
+// 1. Create service instance with your credentials
+const callService = new StandaloneCallService("APP_ID", "REGION");
+
+// 2. Initialize SDK (do this once at app startup)
+await callService.initialize();
+
+// 3. Set up event handlers to update your UI
+callService.onParticipantJoined = (user) => {
+  console.log(`${user.getName()} joined the call`);
+  // Update participant list in UI
+};
+
+callService.onParticipantLeft = (user) => {
+  console.log(`${user.getName()} left the call`);
+  // Update participant list in UI
+};
+
+callService.onCallEnded = () => {
+  console.log("Call has ended");
+  // Navigate back to home screen
+};
+
+// 4a. Start a new call (as caller)
+const container = document.getElementById("call-container");
+const sessionId = await callService.startCall(userAuthToken, true, container);
+console.log("Share this session ID to invite others:", sessionId);
+
+// 4b. OR join an existing call (as participant)
+// const existingSessionId = "session_id_from_caller";
+// await callService.joinCall(existingSessionId, userAuthToken, container);
+
+// 5. Use call controls during the call
+// callService.muteAudio(true);      // Mute
+// callService.pauseVideo(true);     // Turn off camera
+// callService.startScreenShare();   // Share screen
+
+// 6. End the call when done
+// callService.endCall();
+```
+
+### Code Structure Explained
+
+| Method | Purpose | When to Call |
+|--------|---------|--------------|
+| `constructor()` | Store app credentials | Once when creating instance |
+| `initialize()` | Setup SDK | Once at app startup |
+| `startCall()` | Begin new call as caller | When user initiates a call |
+| `joinCall()` | Join existing call | When user accepts invitation |
+| `muteAudio()` | Toggle microphone | During active call |
+| `pauseVideo()` | Toggle camera | During active call |
+| `startScreenShare()` | Share screen | During active call |
+| `endCall()` | Leave and cleanup | When ending call |
+
+---
+
+## Sharing Calls with Others
+
+To enable multiple users to join the same call:
+
+1. **Caller** generates a session ID and starts the call
+2. **Caller** shares the session ID with other participants (via your app's UI, push notification, etc.)
+3. **Participants** use the same session ID to join the call
+
+```javascript
+// Caller
+const sessionId = await callService.startCall(callerAuthToken, true, container);
+// Send sessionId to other users via your backend
+
+// Participant
+await callService.joinCall(sessionId, participantAuthToken, container);
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Recording" icon="circle-dot" href="/sdk/javascript/recording">
+    Record calls for later playback
+  </Card>
+  <Card title="Virtual Background" icon="image" href="/sdk/javascript/virtual-background">
+    Add blur or custom backgrounds
+  </Card>
+  <Card title="Presenter Mode" icon="presentation-screen" href="/sdk/javascript/presenter-mode">
+    Create webinar-style experiences
+  </Card>
+  <Card title="Add Chat" icon="message" href="/sdk/javascript/guide-chat-calls">
+    Combine with messaging
+  </Card>
+</CardGroup>

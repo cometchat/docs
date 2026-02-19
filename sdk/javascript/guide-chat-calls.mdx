@@ -1,0 +1,1024 @@
+---
+title: "Chat + Calls Integration Guide"
+sidebarTitle: "Chat + Calls"
+description: "Complete step-by-step guide to integrate messaging with voice and video calling"
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```javascript
+// Chat + Calls Integration
+// 1. Install both SDKs
+npm install @cometchat/chat-sdk-javascript @cometchat/calls-sdk-javascript
+
+// 2. Initialize Chat SDK first
+await CometChat.init("APP_ID", appSettings);
+
+// 3. Initialize Calls SDK
+await CometChatCalls.init({ appId: "APP_ID", region: "REGION" });
+
+// 4. Login to Chat SDK
+await CometChat.login("UID", "AUTH_KEY");
+
+// 5. Initiate a call
+const call = new CometChat.Call("RECEIVER_UID", CometChat.CALL_TYPE.VIDEO, CometChat.RECEIVER_TYPE.USER);
+const outgoingCall = await CometChat.initiateCall(call);
+
+// 6. Listen for incoming calls
+CometChat.addCallListener("CALL_LISTENER", new CometChat.CallListener({
+  onIncomingCallReceived: (call) => { /* show incoming call UI */ },
+  onOutgoingCallAccepted: (call) => { /* start call session */ }
+}));
+```
+</Info>
+
+This guide walks you through integrating both CometChat messaging and calling into your application. The Chat SDK handles call signaling (initiating, accepting, rejecting calls), while the Calls SDK handles the actual audio/video streams.
+
+<Note>
+**Prerequisites**
+- A CometChat account with an app created at [app.cometchat.com](https://app.cometchat.com)
+- Your App ID, Region, and Auth Key from the dashboard
+- Node.js 14+ or a modern browser
+</Note>
+
+---
+
+## Step 1: Install Both SDKs
+
+<Tabs>
+<Tab title="npm">
+```bash
+npm install @cometchat/chat-sdk-javascript @cometchat/calls-sdk-javascript
+```
+</Tab>
+<Tab title="yarn">
+```bash
+yarn add @cometchat/chat-sdk-javascript @cometchat/calls-sdk-javascript
+```
+</Tab>
+</Tabs>
+
+Import both SDKs:
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+```
+
+---
+
+## Step 2: Initialize Both SDKs
+
+The Chat SDK handles user authentication, messaging, and call signaling (initiating, accepting, rejecting calls). The Calls SDK handles the actual WebRTC audio/video streams. Both must be initialized, with the Chat SDK first.
+
+<Warning>
+**Order matters**: Initialize the Chat SDK first, then the Calls SDK. The Chat SDK establishes the user session that the Calls SDK depends on.
+</Warning>
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+const APP_ID = "YOUR_APP_ID";
+const REGION = "YOUR_REGION";  // "us" or "eu"
+
+// ==================== STEP 2a: Initialize Chat SDK ====================
+// The Chat SDK handles:
+// - User authentication and sessions
+// - Call signaling (initiate, accept, reject, end)
+// - Real-time message delivery
+// - Presence (online/offline status)
+
+const chatSettings = new CometChat.AppSettingsBuilder()
+  .subscribePresenceForAllUsers()      // Get online/offline updates
+  .setRegion(REGION)                   // Connect to correct data center
+  .autoEstablishSocketConnection(true) // Auto-connect WebSocket on login
+  .build();
+
+CometChat.init(APP_ID, chatSettings).then(
+  () => {
+    console.log("Chat SDK initialized");
+    
+    // ==================== STEP 2b: Initialize Calls SDK ====================
+    // The Calls SDK handles:
+    // - WebRTC peer connections
+    // - Audio/video streaming
+    // - Screen sharing
+    // - Call UI rendering
+    
+    const callSettings = {
+      appId: APP_ID,
+      region: REGION
+    };
+    
+    return CometChatCalls.init(callSettings);
+  }
+).then(
+  () => {
+    console.log("Calls SDK initialized");
+    // Both SDKs ready - proceed to login
+  },
+  (error) => {
+    console.log("Initialization failed:", error);
+    // Handle error - check credentials, network, region
+  }
+);
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+/**
+ * Initialize both CometChat SDKs
+ * Must be called once at app startup, before login
+ * 
+ * @returns {boolean} - true if both SDKs initialized successfully
+ */
+async function initializeCometChat() {
+  const APP_ID = "YOUR_APP_ID";
+  const REGION = "YOUR_REGION";
+
+  try {
+    // Step 1: Initialize Chat SDK first
+    // This sets up user authentication and call signaling
+    const chatSettings = new CometChat.AppSettingsBuilder()
+      .subscribePresenceForAllUsers()
+      .setRegion(REGION)
+      .autoEstablishSocketConnection(true)
+      .build();
+
+    await CometChat.init(APP_ID, chatSettings);
+    console.log("Chat SDK initialized");
+
+    // Step 2: Initialize Calls SDK
+    // This sets up WebRTC for audio/video
+    await CometChatCalls.init({
+      appId: APP_ID,
+      region: REGION
+    });
+    console.log("Calls SDK initialized");
+
+    return true;
+  } catch (error) {
+    console.log("Initialization failed:", error);
+    // Common errors:
+    // - Invalid APP_ID
+    // - Wrong REGION (must match dashboard setting)
+    // - Network connectivity issues
+    return false;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Chat SDK Initialization**:
+   - Validates your app credentials
+   - Prepares WebSocket connection for real-time events
+   - Sets up call signaling infrastructure
+
+2. **Calls SDK Initialization**:
+   - Prepares WebRTC capabilities
+   - Sets up media server connections
+   - Enables audio/video streaming
+
+### Why Two SDKs?
+
+| SDK | Responsibility | Protocol |
+|-----|----------------|----------|
+| **Chat SDK** | User auth, messaging, call signaling | WebSocket |
+| **Calls SDK** | Audio/video streaming, screen share | WebRTC |
+
+The Chat SDK tells users "there's an incoming call" (signaling), while the Calls SDK actually transmits the audio and video (media).
+
+---
+
+## Step 3: Login
+
+Login authenticates the user with the Chat SDK and establishes their real-time connection. The Calls SDK uses the same user session, so you only need to login once.
+
+```javascript
+/**
+ * Login a user to CometChat
+ * This authenticates with the Chat SDK - the Calls SDK uses the same session
+ * 
+ * @param {string} uid - User's unique identifier
+ * @param {string} authKey - Your Auth Key (dev only) or use authToken for production
+ * @returns {CometChat.User} - The logged in user object
+ */
+async function login(uid, authKey) {
+  // Always check for existing session first
+  // This prevents duplicate logins and session conflicts
+  const loggedInUser = await CometChat.getLoggedinUser();
+  if (loggedInUser) {
+    console.log("Already logged in:", loggedInUser.getName());
+    return loggedInUser;
+  }
+
+  try {
+    // Login with Auth Key (development) or Auth Token (production)
+    // This establishes the WebSocket connection for real-time events
+    const user = await CometChat.login(uid, authKey);
+    console.log("Login successful:", user.getName());
+    
+    // After login, the user can:
+    // - Send and receive messages
+    // - Initiate and receive calls
+    // - See other users' online status
+    return user;
+  } catch (error) {
+    console.log("Login failed:", error);
+    // Common errors:
+    // - ERR_UID_NOT_FOUND: User doesn't exist in CometChat
+    // - ERR_AUTH_TOKEN_NOT_FOUND: Invalid auth key/token
+    throw error;
+  }
+}
+```
+
+### What This Code Does
+
+1. **Checks Existing Session**: `getLoggedinUser()` returns the current user or null
+2. **Authenticates User**: `login()` validates credentials with CometChat servers
+3. **Establishes Connection**: Opens WebSocket for real-time messaging and call signaling
+4. **Returns User Object**: Contains user profile data (uid, name, avatar, etc.)
+
+<Note>
+**Single Login**: You only login to the Chat SDK. The Calls SDK automatically uses the same authenticated session when generating call tokens.
+</Note>
+
+---
+
+## Step 4: Set Up Call Listeners
+
+Call listeners receive real-time notifications about call events. Register these after login to handle incoming calls, call acceptance/rejection, and call cancellation.
+
+```javascript
+const CALL_LISTENER_ID = "CALL_LISTENER";
+
+// addCallListener() registers callbacks for call signaling events
+// These events are separate from the actual audio/video (handled by Calls SDK)
+CometChat.addCallListener(
+  CALL_LISTENER_ID,
+  new CometChat.CallListener({
+    // ==================== INCOMING CALL ====================
+    // Called when another user calls you
+    // incomingCall contains: sender info, call type, session ID
+    onIncomingCallReceived: (incomingCall) => {
+      console.log("Incoming call from:", incomingCall.getSender().getName());
+      console.log("Call type:", incomingCall.getType()); // "audio" or "video"
+      
+      // Show incoming call UI with accept/reject buttons
+      // Store the call object to use when accepting/rejecting
+      showIncomingCallUI(incomingCall);
+    },
+    
+    // ==================== OUTGOING CALL ACCEPTED ====================
+    // Called when the person you're calling accepts
+    // This is your signal to start the actual call session
+    onOutgoingCallAccepted: (acceptedCall) => {
+      console.log("Call accepted");
+      
+      // Now start the audio/video session using Calls SDK
+      // The acceptedCall contains the session ID needed
+      startCallSession(acceptedCall);
+    },
+    
+    // ==================== OUTGOING CALL REJECTED ====================
+    // Called when the person you're calling rejects or is busy
+    onOutgoingCallRejected: (rejectedCall) => {
+      console.log("Call rejected");
+      
+      // Hide the "calling..." UI
+      // Show appropriate message (rejected, busy, etc.)
+      hideCallingUI();
+    },
+    
+    // ==================== INCOMING CALL CANCELLED ====================
+    // Called when the caller hangs up before you answer
+    onIncomingCallCancelled: (cancelledCall) => {
+      console.log("Incoming call cancelled");
+      
+      // Hide the incoming call UI
+      // The caller gave up waiting
+      hideIncomingCallUI();
+    }
+  })
+);
+
+// IMPORTANT: Remove listener when no longer needed
+// Call this on logout or component unmount to prevent memory leaks
+// CometChat.removeCallListener(CALL_LISTENER_ID);
+```
+
+### What This Code Does
+
+1. **Registers Event Handlers**: `addCallListener()` subscribes to call signaling events
+2. **Handles Incoming Calls**: `onIncomingCallReceived` fires when someone calls you
+3. **Handles Call Acceptance**: `onOutgoingCallAccepted` fires when your call is answered
+4. **Handles Rejections**: `onOutgoingCallRejected` fires when your call is declined
+5. **Handles Cancellations**: `onIncomingCallCancelled` fires when caller hangs up
+
+### Call Event Flow
+
+| Event | When It Fires | Your Action |
+|-------|---------------|-------------|
+| `onIncomingCallReceived` | Someone calls you | Show accept/reject UI |
+| `onOutgoingCallAccepted` | They answered your call | Start call session |
+| `onOutgoingCallRejected` | They rejected your call | Hide calling UI |
+| `onIncomingCallCancelled` | Caller hung up | Hide incoming call UI |
+
+<Note>
+**Signaling vs Media**: These listeners handle call signaling (who's calling whom). The actual audio/video is handled separately by the Calls SDK in Step 8.
+</Note>
+
+---
+
+## Step 5: Initiate a Call
+
+To start a call, create a Call object and use `initiateCall()`. This sends a call invitation to the recipient, who will receive it via their `onIncomingCallReceived` listener.
+
+### Call a User
+
+```javascript
+/**
+ * Initiate a call to another user
+ * This sends a call invitation - the actual audio/video starts after they accept
+ * 
+ * @param {string} receiverUID - The UID of the user to call
+ * @param {string} callType - CometChat.CALL_TYPE.VIDEO or AUDIO
+ * @returns {CometChat.Call} - The outgoing call object
+ */
+async function callUser(receiverUID, callType = CometChat.CALL_TYPE.VIDEO) {
+  // Create a Call object with:
+  // 1. receiverUID - Who you're calling
+  // 2. callType - VIDEO or AUDIO
+  // 3. receiverType - USER (for 1-on-1) or GROUP (for group calls)
+  const call = new CometChat.Call(
+    receiverUID,
+    callType,  // CometChat.CALL_TYPE.VIDEO or CometChat.CALL_TYPE.AUDIO
+    CometChat.RECEIVER_TYPE.USER  // This is a 1-on-1 call
+  );
+
+  try {
+    // initiateCall() sends the call invitation to the recipient
+    // They'll receive it via onIncomingCallReceived
+    // Returns immediately - doesn't wait for them to answer
+    const outgoingCall = await CometChat.initiateCall(call);
+    console.log("Call initiated:", outgoingCall);
+    
+    // Show "calling..." UI while waiting for response
+    // The recipient has ~45 seconds to answer before timeout
+    showOutgoingCallUI(outgoingCall);
+    
+    return outgoingCall;
+  } catch (error) {
+    console.log("Call initiation failed:", error);
+    // Common errors:
+    // - ERR_UID_NOT_FOUND: Recipient doesn't exist
+    // - ERR_USER_NOT_LOGGED_IN: You're not logged in
+    // - ERR_CALL_ALREADY_INITIATED: Already in a call
+    throw error;
+  }
+}
+
+// Usage: Start a video call to user_456
+await callUser("user_456", CometChat.CALL_TYPE.VIDEO);
+
+// Usage: Start an audio-only call
+await callUser("user_456", CometChat.CALL_TYPE.AUDIO);
+```
+
+### Call a Group
+
+```javascript
+/**
+ * Initiate a call to a group
+ * All online group members will receive the call invitation
+ * 
+ * @param {string} groupGUID - The GUID of the group to call
+ * @param {string} callType - CometChat.CALL_TYPE.VIDEO or AUDIO
+ * @returns {CometChat.Call} - The outgoing call object
+ */
+async function callGroup(groupGUID, callType = CometChat.CALL_TYPE.VIDEO) {
+  // For group calls, use the group's GUID as the receiver
+  const call = new CometChat.Call(
+    groupGUID,
+    callType,
+    CometChat.RECEIVER_TYPE.GROUP  // This is a group call
+  );
+
+  try {
+    // All online group members receive onIncomingCallReceived
+    // Multiple members can join the same call
+    const outgoingCall = await CometChat.initiateCall(call);
+    console.log("Group call initiated:", outgoingCall);
+    return outgoingCall;
+  } catch (error) {
+    console.log("Group call failed:", error);
+    // Additional error: ERR_NOT_A_MEMBER if you're not in the group
+    throw error;
+  }
+}
+```
+
+### What This Code Does
+
+1. **Creates Call Object**: Defines who you're calling and the call type
+2. **Sends Invitation**: `initiateCall()` notifies the recipient(s)
+3. **Returns Immediately**: Doesn't wait for answer - use listeners for response
+4. **Triggers Listener**: Recipient's `onIncomingCallReceived` fires
+
+| Parameter | Description |
+|-----------|-------------|
+| `receiverUID/GUID` | Who to call (user UID or group GUID) |
+| `callType` | `VIDEO` (camera + mic) or `AUDIO` (mic only) |
+| `receiverType` | `USER` for 1-on-1, `GROUP` for group calls |
+
+---
+
+## Step 6: Accept an Incoming Call
+
+When you receive an incoming call (via `onIncomingCallReceived`), use `acceptCall()` to answer it. This notifies the caller that you've accepted, triggering their `onOutgoingCallAccepted` listener.
+
+```javascript
+/**
+ * Accept an incoming call
+ * This notifies the caller and prepares for the call session
+ * 
+ * @param {CometChat.Call} incomingCall - The call object from onIncomingCallReceived
+ * @returns {CometChat.Call} - The accepted call object with session info
+ */
+async function acceptCall(incomingCall) {
+  // Get the session ID from the incoming call
+  // This ID links both parties to the same call session
+  const sessionId = incomingCall.getSessionId();
+
+  try {
+    // acceptCall() notifies the caller that you've answered
+    // The caller's onOutgoingCallAccepted will fire
+    // Returns the call object with updated status
+    const acceptedCall = await CometChat.acceptCall(sessionId);
+    console.log("Call accepted:", acceptedCall);
+    
+    // Now start the actual audio/video session
+    // Both parties should call startCallSession() at this point
+    startCallSession(acceptedCall);
+    
+    return acceptedCall;
+  } catch (error) {
+    console.log("Accept call failed:", error);
+    // Common errors:
+    // - ERR_CALL_NOT_FOUND: Call was cancelled or timed out
+    // - ERR_CALL_ALREADY_JOINED: You already accepted this call
+    throw error;
+  }
+}
+```
+
+### What This Code Does
+
+1. **Gets Session ID**: Extracts the unique call session identifier
+2. **Sends Acceptance**: `acceptCall()` notifies the caller you've answered
+3. **Triggers Caller's Listener**: Their `onOutgoingCallAccepted` fires
+4. **Starts Call Session**: Both parties now start the audio/video session
+
+<Note>
+**Both Parties Start Session**: After acceptance, both the caller (in `onOutgoingCallAccepted`) and receiver (after `acceptCall()`) should call `startCallSession()` to begin the actual audio/video.
+</Note>
+
+---
+
+## Step 7: Reject an Incoming Call
+
+If you don't want to answer an incoming call, use `rejectCall()` to decline it. You can specify different rejection statuses to indicate why you're not answering.
+
+```javascript
+/**
+ * Reject an incoming call
+ * This notifies the caller that you've declined
+ * 
+ * @param {CometChat.Call} incomingCall - The call object from onIncomingCallReceived
+ * @param {string} status - Rejection reason (REJECTED, BUSY, or CANCELLED)
+ * @returns {CometChat.Call} - The rejected call object
+ */
+async function rejectCall(incomingCall, status = CometChat.CALL_STATUS.REJECTED) {
+  const sessionId = incomingCall.getSessionId();
+
+  try {
+    // rejectCall() notifies the caller that you've declined
+    // The caller's onOutgoingCallRejected will fire
+    // The status parameter tells them why you rejected
+    const rejectedCall = await CometChat.rejectCall(sessionId, status);
+    console.log("Call rejected:", rejectedCall);
+    
+    // Hide the incoming call UI
+    hideIncomingCallUI();
+    
+    return rejectedCall;
+  } catch (error) {
+    console.log("Reject call failed:", error);
+    throw error;
+  }
+}
+
+// ==================== REJECTION STATUSES ====================
+// Use different statuses to communicate why you're not answering:
+
+// REJECTED - User explicitly declined the call
+// Use when: User clicks "Decline" button
+await rejectCall(incomingCall, CometChat.CALL_STATUS.REJECTED);
+
+// BUSY - User is already in another call
+// Use when: User is on another call and can't answer
+await rejectCall(incomingCall, CometChat.CALL_STATUS.BUSY);
+
+// CANCELLED - Caller cancelled before answer (usually automatic)
+// Use when: Implementing custom timeout or auto-reject
+await rejectCall(incomingCall, CometChat.CALL_STATUS.CANCELLED);
+```
+
+### What This Code Does
+
+1. **Gets Session ID**: Identifies which call to reject
+2. **Sends Rejection**: `rejectCall()` notifies the caller
+3. **Includes Status**: Tells caller why you rejected (declined, busy, etc.)
+4. **Triggers Caller's Listener**: Their `onOutgoingCallRejected` fires
+
+### Rejection Status Options
+
+| Status | Meaning | When to Use |
+|--------|---------|-------------|
+| `REJECTED` | User declined the call | User clicked "Decline" |
+| `BUSY` | User is on another call | Already in a call |
+| `CANCELLED` | Call was cancelled | Timeout or auto-reject |
+
+---
+
+## Step 8: Start the Call Session
+
+Once a call is accepted (either by you or the other party), start the actual audio/video session using the Calls SDK. This is where the WebRTC connection is established and media streams begin.
+
+```javascript
+/**
+ * Start the audio/video call session
+ * Called after a call is accepted (by either party)
+ * 
+ * @param {CometChat.Call} call - The accepted call object
+ */
+function startCallSession(call) {
+  // Get session ID - links both parties to the same call
+  const sessionId = call.getSessionId();
+  
+  // Get call type to configure audio-only vs video
+  const callType = call.getType();
+  
+  // Get the container element where call UI will render
+  const container = document.getElementById("call-container");
+
+  // ==================== STEP 1: Generate Call Token ====================
+  // The call token authorizes this user to join this specific session
+  // Uses the logged-in user's auth token from the Chat SDK
+  CometChatCalls.generateToken(sessionId, CometChat.getLoggedinUser().getAuthToken()).then(
+    (callToken) => {
+      // ==================== STEP 2: Configure Call Settings ====================
+      // Set up the call UI and event handlers
+      const callSettings = new CometChatCalls.CallSettingsBuilder()
+        .enableDefaultLayout(true)  // Use built-in call UI
+        .setIsAudioOnlyCall(callType === CometChat.CALL_TYPE.AUDIO)  // Match call type
+        .setCallListener(getCallSessionListener(sessionId))  // Attach event handlers
+        .build();
+
+      // ==================== STEP 3: Start the Session ====================
+      // This renders the call UI and establishes WebRTC connection
+      // Both parties' video/audio will appear in the container
+      CometChatCalls.startSession(callToken.token, callSettings, container);
+    },
+    (error) => {
+      console.log("Token generation failed:", error);
+      // Handle error - possibly end the call
+    }
+  );
+}
+
+/**
+ * Create event listener for the call session
+ * Handles participant events and call end
+ * 
+ * @param {string} sessionId - The call session ID
+ * @returns {CometChatCalls.OngoingCallListener}
+ */
+function getCallSessionListener(sessionId) {
+  return new CometChatCalls.OngoingCallListener({
+    // Called when another participant joins
+    onUserJoined: (user) => {
+      console.log("User joined:", user);
+      // Update participant list in UI
+    },
+    
+    // Called when a participant leaves
+    onUserLeft: (user) => {
+      console.log("User left:", user);
+      // Update participant list in UI
+    },
+    
+    // Called when the call ends (other party hung up)
+    onCallEnded: () => {
+      console.log("Call ended");
+      endCallSession(sessionId);
+    },
+    
+    // Called when user clicks end button in default UI
+    onCallEndButtonPressed: () => {
+      console.log("End button pressed");
+      endCallSession(sessionId);
+    },
+    
+    // Called on errors (network issues, permission denied, etc.)
+    onError: (error) => {
+      console.log("Call error:", error);
+      // Consider ending call on critical errors
+    }
+  });
+}
+```
+
+### What This Code Does
+
+1. **Generates Call Token**: Creates authorization for this user to join this session
+2. **Configures Settings**: Sets up call UI, audio/video mode, and event handlers
+3. **Starts WebRTC Session**: Establishes peer connection and begins streaming
+4. **Renders Call UI**: Displays video feeds and control buttons in the container
+
+### Call Session Flow
+
+```
+acceptCall() or onOutgoingCallAccepted
+           │
+           ▼
+    startCallSession()
+           │
+           ├── generateToken() → Get authorization
+           │
+           ├── CallSettingsBuilder → Configure UI and handlers
+           │
+           └── startSession() → Start WebRTC, render UI
+                    │
+                    ▼
+           ═══════════════════
+           AUDIO/VIDEO ACTIVE
+           ═══════════════════
+```
+
+<Note>
+**Both Parties Call This**: When a call is accepted, both the caller (in `onOutgoingCallAccepted`) and the receiver (after `acceptCall()`) should call `startCallSession()` to join the same session.
+</Note>
+
+---
+
+## Step 9: End the Call
+
+Ending a call requires cleanup in both SDKs: the Chat SDK (to update call status) and the Calls SDK (to close the WebRTC connection).
+
+```javascript
+/**
+ * End the current call and clean up both SDKs
+ * Call this when:
+ * - User clicks end call button (if using custom UI)
+ * - onCallEnded fires (other party ended)
+ * - An error requires ending the call
+ * 
+ * @param {string} sessionId - The call session ID
+ */
+async function endCallSession(sessionId) {
+  try {
+    // ==================== STEP 1: End in Chat SDK ====================
+    // This updates the call status in CometChat's system
+    // Notifies the other party that the call has ended
+    // Records the call in conversation history
+    await CometChat.endCall(sessionId);
+    
+    // ==================== STEP 2: Clear Active Call ====================
+    // Removes the call from the SDK's internal state
+    // Allows initiating new calls
+    CometChat.clearActiveCall();
+    
+    // ==================== STEP 3: End Calls SDK Session ====================
+    // Closes WebRTC peer connections
+    // Stops camera and microphone
+    // Removes call UI from container
+    CometChatCalls.endSession();
+    
+    // ==================== STEP 4: Update Your UI ====================
+    // Hide the call container
+    document.getElementById("call-container").style.display = "none";
+    
+    console.log("Call ended successfully");
+  } catch (error) {
+    console.log("End call failed:", error);
+    // Even if Chat SDK fails, still clean up Calls SDK
+    CometChat.clearActiveCall();
+    CometChatCalls.endSession();
+  }
+}
+```
+
+### What This Code Does
+
+1. **Updates Call Status**: `endCall()` marks the call as ended in CometChat
+2. **Clears Active Call**: `clearActiveCall()` resets SDK state for new calls
+3. **Closes WebRTC**: `endSession()` stops media streams and connections
+4. **Cleans Up UI**: Hides the call container
+
+### Cleanup Order
+
+| Step | SDK | Method | Purpose |
+|------|-----|--------|---------|
+| 1 | Chat | `endCall()` | Update call status, notify other party |
+| 2 | Chat | `clearActiveCall()` | Reset state for new calls |
+| 3 | Calls | `endSession()` | Close WebRTC, release camera/mic |
+
+<Warning>
+**Always Clean Up Both SDKs**: Failing to call both `CometChat.endCall()` and `CometChatCalls.endSession()` can leave resources hanging and prevent new calls from working properly.
+</Warning>
+
+---
+
+## Complete Integration Example
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+class ChatCallService {
+  constructor(appId, region, authKey) {
+    this.appId = appId;
+    this.region = region;
+    this.authKey = authKey;
+    this.currentCall = null;
+  }
+
+  // ==================== INITIALIZATION ====================
+  
+  async initialize() {
+    // Initialize Chat SDK
+    const chatSettings = new CometChat.AppSettingsBuilder()
+      .subscribePresenceForAllUsers()
+      .setRegion(this.region)
+      .build();
+
+    await CometChat.init(this.appId, chatSettings);
+    console.log("Chat SDK initialized");
+
+    // Initialize Calls SDK
+    await CometChatCalls.init({
+      appId: this.appId,
+      region: this.region
+    });
+    console.log("Calls SDK initialized");
+  }
+
+  async login(uid) {
+    const loggedInUser = await CometChat.getLoggedinUser();
+    if (loggedInUser) return loggedInUser;
+
+    return await CometChat.login(uid, this.authKey);
+  }
+
+  // ==================== MESSAGING ====================
+  
+  setupMessageListeners(onMessage) {
+    CometChat.addMessageListener(
+      "MESSAGE_LISTENER",
+      new CometChat.MessageListener({
+        onTextMessageReceived: onMessage,
+        onMediaMessageReceived: onMessage
+      })
+    );
+  }
+
+  async sendMessage(receiverUID, text) {
+    const message = new CometChat.TextMessage(
+      receiverUID,
+      text,
+      CometChat.RECEIVER_TYPE.USER
+    );
+    return await CometChat.sendMessage(message);
+  }
+
+  // ==================== CALLING ====================
+  
+  setupCallListeners(callbacks) {
+    CometChat.addCallListener(
+      "CALL_LISTENER",
+      new CometChat.CallListener({
+        onIncomingCallReceived: (call) => {
+          this.currentCall = call;
+          callbacks.onIncomingCall?.(call);
+        },
+        onOutgoingCallAccepted: (call) => {
+          this.currentCall = call;
+          callbacks.onCallAccepted?.(call);
+          this.startCallSession(call, callbacks.callContainer);
+        },
+        onOutgoingCallRejected: (call) => {
+          this.currentCall = null;
+          callbacks.onCallRejected?.(call);
+        },
+        onIncomingCallCancelled: (call) => {
+          this.currentCall = null;
+          callbacks.onCallCancelled?.(call);
+        }
+      })
+    );
+  }
+
+  async initiateCall(receiverUID, isVideo = true) {
+    const callType = isVideo ? CometChat.CALL_TYPE.VIDEO : CometChat.CALL_TYPE.AUDIO;
+    const call = new CometChat.Call(
+      receiverUID,
+      callType,
+      CometChat.RECEIVER_TYPE.USER
+    );
+
+    this.currentCall = await CometChat.initiateCall(call);
+    return this.currentCall;
+  }
+
+  async acceptCall(container) {
+    if (!this.currentCall) throw new Error("No incoming call");
+
+    const sessionId = this.currentCall.getSessionId();
+    const acceptedCall = await CometChat.acceptCall(sessionId);
+    this.currentCall = acceptedCall;
+    
+    this.startCallSession(acceptedCall, container);
+    return acceptedCall;
+  }
+
+  async rejectCall() {
+    if (!this.currentCall) return;
+
+    const sessionId = this.currentCall.getSessionId();
+    await CometChat.rejectCall(sessionId, CometChat.CALL_STATUS.REJECTED);
+    this.currentCall = null;
+  }
+
+  async startCallSession(call, container) {
+    const sessionId = call.getSessionId();
+    const user = await CometChat.getLoggedinUser();
+    
+    const callToken = await CometChatCalls.generateToken(
+      sessionId,
+      user.getAuthToken()
+    );
+
+    const callSettings = new CometChatCalls.CallSettingsBuilder()
+      .enableDefaultLayout(true)
+      .setIsAudioOnlyCall(call.getType() === CometChat.CALL_TYPE.AUDIO)
+      .setCallListener(new CometChatCalls.OngoingCallListener({
+        onCallEnded: () => this.endCall(),
+        onCallEndButtonPressed: () => this.endCall(),
+        onError: (error) => console.error("Call error:", error)
+      }))
+      .build();
+
+    CometChatCalls.startSession(callToken.token, callSettings, container);
+  }
+
+  async endCall() {
+    if (!this.currentCall) return;
+
+    const sessionId = this.currentCall.getSessionId();
+    
+    try {
+      await CometChat.endCall(sessionId);
+    } catch (e) {
+      // Call may already be ended
+    }
+    
+    CometChat.clearActiveCall();
+    CometChatCalls.endSession();
+    this.currentCall = null;
+  }
+
+  // ==================== CALL CONTROLS ====================
+  
+  muteAudio(mute) {
+    CometChatCalls.muteAudio(mute);
+  }
+
+  pauseVideo(pause) {
+    CometChatCalls.pauseVideo(pause);
+  }
+
+  startScreenShare() {
+    CometChatCalls.startScreenShare();
+  }
+
+  stopScreenShare() {
+    CometChatCalls.stopScreenShare();
+  }
+
+  // ==================== CLEANUP ====================
+  
+  async logout() {
+    CometChat.removeMessageListener("MESSAGE_LISTENER");
+    CometChat.removeCallListener("CALL_LISTENER");
+    await CometChat.logout();
+  }
+}
+
+// ==================== USAGE ====================
+
+const service = new ChatCallService("APP_ID", "REGION", "AUTH_KEY");
+
+// Initialize
+await service.initialize();
+await service.login("user_123");
+
+// Setup listeners
+service.setupMessageListeners((msg) => {
+  console.log("New message:", msg.getText());
+});
+
+service.setupCallListeners({
+  callContainer: document.getElementById("call-container"),
+  onIncomingCall: (call) => {
+    // Show incoming call UI
+    if (confirm(`Incoming ${call.getType()} call from ${call.getSender().getName()}. Accept?`)) {
+      service.acceptCall(document.getElementById("call-container"));
+    } else {
+      service.rejectCall();
+    }
+  },
+  onCallAccepted: (call) => {
+    console.log("Call connected");
+  },
+  onCallRejected: (call) => {
+    console.log("Call was rejected");
+  },
+  onCallCancelled: (call) => {
+    console.log("Call was cancelled");
+  }
+});
+
+// Send a message
+await service.sendMessage("user_456", "Hello!");
+
+// Start a video call
+await service.initiateCall("user_456", true);
+```
+
+---
+
+## Call Flow Diagram
+
+```
+┌─────────────┐                              ┌─────────────┐
+│   Caller    │                              │  Receiver   │
+└─────────────┘                              └─────────────┘
+       │                                            │
+       │  1. initiateCall()                         │
+       │ ─────────────────────────────────────────► │
+       │                                            │
+       │                    2. onIncomingCallReceived()
+       │                                            │
+       │                    3. acceptCall()         │
+       │ ◄───────────────────────────────────────── │
+       │                                            │
+       │  4. onOutgoingCallAccepted()               │
+       │                                            │
+       │  5. startCallSession() ◄──────────────────►│ 5. startCallSession()
+       │                                            │
+       │  ═══════════════════════════════════════   │
+       │         AUDIO/VIDEO CONNECTED              │
+       │  ═══════════════════════════════════════   │
+       │                                            │
+       │  6. endCall()                              │
+       │ ─────────────────────────────────────────► │
+       │                                            │
+       │                    7. onCallEnded()        │
+       │                                            │
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Recording" icon="circle-dot" href="/sdk/javascript/recording">
+    Record calls for later playback
+  </Card>
+  <Card title="Push Notifications" icon="bell" href="/sdk/javascript/guide-notifications">
+    Alert users of incoming calls
+  </Card>
+  <Card title="Groups" icon="users" href="/sdk/javascript/groups-overview">
+    Create group chats and calls
+  </Card>
+  <Card title="Moderation" icon="shield" href="/sdk/javascript/guide-moderation">
+    Add content moderation
+  </Card>
+</CardGroup>

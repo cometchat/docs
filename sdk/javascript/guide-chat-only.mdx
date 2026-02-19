@@ -1,0 +1,867 @@
+---
+title: "Chat Integration Guide"
+sidebarTitle: "Chat Only"
+description: "Complete step-by-step guide to integrate text and media messaging"
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```javascript
+// Complete Chat Integration in 5 Steps
+// 1. Install
+npm install @cometchat/chat-sdk-javascript
+
+// 2. Initialize (once at app start)
+await CometChat.init("APP_ID", new CometChat.AppSettingsBuilder().setRegion("REGION").build());
+
+// 3. Login
+await CometChat.login("USER_UID", "AUTH_KEY");  // Dev only
+// await CometChat.login("AUTH_TOKEN");         // Production
+
+// 4. Send Message
+const msg = new CometChat.TextMessage("RECEIVER_UID", "Hello!", CometChat.RECEIVER_TYPE.USER);
+await CometChat.sendMessage(msg);
+
+// 5. Receive Messages
+CometChat.addMessageListener("LISTENER_ID", new CometChat.MessageListener({
+  onTextMessageReceived: (msg) => console.log(msg.getText())
+}));
+```
+</Info>
+
+This guide walks you through integrating CometChat messaging into your JavaScript application. Follow these steps in order for a smooth integration.
+
+<Note>
+**Prerequisites**
+- A CometChat account with an app created at [app.cometchat.com](https://app.cometchat.com)
+- Your App ID, Region, and Auth Key from the dashboard
+- Node.js 14+ or a modern browser
+</Note>
+
+---
+
+## Step 1: Install the SDK
+
+<Tabs>
+<Tab title="npm">
+```bash
+npm install @cometchat/chat-sdk-javascript
+```
+</Tab>
+<Tab title="yarn">
+```bash
+yarn add @cometchat/chat-sdk-javascript
+```
+</Tab>
+<Tab title="CDN">
+```html
+<script src="https://unpkg.com/@cometchat/chat-sdk-javascript/CometChat.js"></script>
+```
+</Tab>
+</Tabs>
+
+Import the SDK in your code:
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+```
+
+---
+
+## Step 2: Initialize CometChat
+
+Initialization establishes the connection between your app and CometChat's servers. This step configures the SDK with your app credentials and sets up the WebSocket connection for real-time messaging.
+
+<Warning>
+**Call `init()` once** at application startup, before any other CometChat methods. Calling it multiple times can cause issues.
+</Warning>
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+const appID = "YOUR_APP_ID";
+const region = "YOUR_REGION"; // "us" or "eu"
+
+// AppSettingsBuilder configures how the SDK behaves:
+// - subscribePresenceForAllUsers(): Receive online/offline status updates for all users
+// - setRegion(): Connect to the correct data center (us or eu)
+// - autoEstablishSocketConnection(): Automatically connect WebSocket on login
+const appSettings = new CometChat.AppSettingsBuilder()
+  .subscribePresenceForAllUsers()
+  .setRegion(region)
+  .autoEstablishSocketConnection(true)
+  .build();
+
+// init() returns a Promise - the SDK is ready when it resolves
+// All other CometChat methods will fail if called before init() completes
+CometChat.init(appID, appSettings).then(
+  () => {
+    console.log("CometChat initialized successfully");
+    // SDK is now ready - you can proceed to login
+  },
+  (error) => {
+    console.log("Initialization failed:", error);
+    // Common errors: invalid appID, network issues, wrong region
+  }
+);
+```
+</Tab>
+<Tab title="TypeScript">
+```typescript
+const appID: string = "YOUR_APP_ID";
+const region: string = "YOUR_REGION";
+
+// AppSettingsBuilder with TypeScript types for better IDE support
+const appSettings: CometChat.AppSettings = new CometChat.AppSettingsBuilder()
+  .subscribePresenceForAllUsers()
+  .setRegion(region)
+  .autoEstablishSocketConnection(true)
+  .build();
+
+CometChat.init(appID, appSettings).then(
+  (): void => {
+    console.log("CometChat initialized successfully");
+  },
+  (error: CometChat.CometChatException): void => {
+    // CometChatException contains error code and message for debugging
+    console.log("Initialization failed:", error);
+  }
+);
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+async function initCometChat() {
+  const appID = "YOUR_APP_ID";
+  const region = "YOUR_REGION";
+
+  const appSettings = new CometChat.AppSettingsBuilder()
+    .subscribePresenceForAllUsers()
+    .setRegion(region)
+    .autoEstablishSocketConnection(true)
+    .build();
+
+  try {
+    // await blocks until initialization completes
+    // This ensures the SDK is ready before proceeding
+    await CometChat.init(appID, appSettings);
+    console.log("CometChat initialized successfully");
+    return true;
+  } catch (error) {
+    // Handle initialization errors (network, invalid credentials, etc.)
+    console.log("Initialization failed:", error);
+    return false;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Creates App Settings**: `AppSettingsBuilder` configures SDK behavior:
+   - `subscribePresenceForAllUsers()` - Enables real-time online/offline status for all users
+   - `setRegion()` - Connects to the correct data center (must match your app's region)
+   - `autoEstablishSocketConnection()` - Automatically opens WebSocket when user logs in
+
+2. **Initializes the SDK**: `CometChat.init()` performs these operations:
+   - Validates your App ID and region
+   - Sets up internal SDK state
+   - Prepares the WebSocket connection (but doesn't connect yet)
+   - Returns a Promise that resolves when ready
+
+| Parameter | Description |
+|-----------|-------------|
+| `appID` | Your unique App ID from the CometChat dashboard. Found in Dashboard → App Settings |
+| `region` | Your app region: `"us"` (United States) or `"eu"` (Europe). Must match your app's region |
+
+---
+
+## Step 3: Create Users (If Needed)
+
+CometChat maintains its own user database that mirrors your application's users. Before a user can send or receive messages, they must exist in CometChat. This step registers users from your app with CometChat.
+
+<Note>
+CometChat doesn't manage your user database. Create users in your backend first, then register them with CometChat using the same UID. This ensures user IDs are consistent across your app and CometChat.
+</Note>
+
+<Warning>
+**UID Format**: User IDs can only contain alphanumeric characters, underscores (`_`), and hyphens (`-`). No spaces or special characters allowed. Max 100 characters.
+</Warning>
+
+<Tabs>
+<Tab title="JavaScript">
+```javascript
+const uid = "user_123";  // Must match the user ID in your app's database
+const name = "John Doe"; // Display name shown in chat UI
+
+// Create a User object with the unique identifier
+const user = new CometChat.User(uid);
+user.setName(name);  // Required: display name for the user
+
+// createUser() registers this user with CometChat
+// The Auth Key is required for user creation (server-side operation)
+CometChat.createUser(user, "YOUR_AUTH_KEY").then(
+  (createdUser) => {
+    // createdUser contains the full user object with CometChat-assigned properties
+    console.log("User created:", createdUser);
+    // User can now login and send/receive messages
+  },
+  (error) => {
+    // Common errors: duplicate UID, invalid characters in UID, invalid Auth Key
+    console.log("User creation failed:", error);
+  }
+);
+```
+</Tab>
+<Tab title="Async/Await">
+```javascript
+async function createUser(uid, name) {
+  // Create User object - uid is the unique identifier, name is the display name
+  const user = new CometChat.User(uid);
+  user.setName(name);
+
+  try {
+    // Register user with CometChat - requires Auth Key
+    // In production, this should be done on your backend server
+    const createdUser = await CometChat.createUser(user, "YOUR_AUTH_KEY");
+    console.log("User created:", createdUser);
+    return createdUser;
+  } catch (error) {
+    // Handle errors: ERR_UID_ALREADY_EXISTS means user already registered
+    console.log("User creation failed:", error);
+    throw error;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Creates a User Object**: `new CometChat.User(uid)` creates a user representation with:
+   - `uid` - Unique identifier (should match your app's user ID)
+   - `name` - Display name shown in chat interfaces
+
+2. **Registers with CometChat**: `createUser()` sends the user data to CometChat servers:
+   - Creates a new user record in CometChat's database
+   - Returns the complete user object with additional CometChat properties
+   - Fails if the UID already exists (user already registered)
+
+3. **When to Call This**:
+   - When a new user signs up in your app
+   - During initial data migration from your existing user database
+   - NOT needed if user already exists in CometChat
+
+---
+
+## Step 4: Login
+
+Login authenticates a user and establishes their real-time connection to CometChat. After login, the user can send/receive messages and their online status becomes visible to others.
+
+<Warning>
+**Security**: Use Auth Key only during development. In production, generate Auth Tokens on your server and use `CometChat.login(authToken)` instead. Auth Keys have full access to your app and should never be exposed in client-side production code.
+</Warning>
+
+<Tabs>
+<Tab title="Development (Auth Key)">
+```javascript
+async function login(uid) {
+  // IMPORTANT: Always check for existing session first
+  // This prevents unnecessary API calls and potential session conflicts
+  const loggedInUser = await CometChat.getLoggedinUser();
+  if (loggedInUser) {
+    // User already has an active session - reuse it
+    console.log("Already logged in:", loggedInUser.getName());
+    return loggedInUser;
+  }
+
+  // Login with Auth Key - DEVELOPMENT ONLY
+  // Auth Key provides full access and should never be in production client code
+  try {
+    // login() authenticates the user and establishes WebSocket connection
+    // Returns the User object with all profile information
+    const user = await CometChat.login(uid, "YOUR_AUTH_KEY");
+    console.log("Login successful:", user.getName());
+    return user;
+  } catch (error) {
+    // Common errors: invalid UID, user doesn't exist, invalid Auth Key
+    console.log("Login failed:", error);
+    throw error;
+  }
+}
+```
+</Tab>
+<Tab title="Production (Auth Token)">
+```javascript
+async function loginWithToken(authToken) {
+  // Check for existing session to avoid unnecessary login calls
+  const loggedInUser = await CometChat.getLoggedinUser();
+  if (loggedInUser) {
+    console.log("Already logged in:", loggedInUser.getName());
+    return loggedInUser;
+  }
+
+  // Login with Auth Token - PRODUCTION RECOMMENDED
+  // Auth Token is generated on your server using the REST API
+  // It's user-specific and can have expiration, making it more secure
+  try {
+    // Single-parameter login() uses Auth Token
+    const user = await CometChat.login(authToken);
+    console.log("Login successful:", user.getName());
+    return user;
+  } catch (error) {
+    // Common errors: expired token, invalid token, user doesn't exist
+    console.log("Login failed:", error);
+    throw error;
+  }
+}
+```
+</Tab>
+</Tabs>
+
+### What This Code Does
+
+1. **Checks Existing Session**: `getLoggedinUser()` returns the currently logged-in user or `null`:
+   - Prevents duplicate login attempts
+   - Reuses existing WebSocket connection
+   - Avoids session conflicts
+
+2. **Authenticates User**: `login()` performs these operations:
+   - Validates credentials with CometChat servers
+   - Creates a user session
+   - Establishes WebSocket connection for real-time messaging
+   - Returns the User object with profile data
+
+3. **Two Authentication Methods**:
+   - **Auth Key** (development): Quick setup, but exposes full app access
+   - **Auth Token** (production): Generated server-side, user-specific, can expire
+
+<Note>
+**Always check `getLoggedinUser()` first** to avoid unnecessary login calls and potential session issues. The SDK maintains session state, so users don't need to login again after page refresh if the session is still valid.
+</Note>
+
+---
+
+## Step 5: Send Messages
+
+Sending messages is the core functionality of chat. CometChat supports text messages, media messages (images, videos, audio, files), and custom messages for specialized data.
+
+### Text Message
+
+Text messages are the most common message type. They contain plain text content and can be sent to individual users or groups.
+
+<Tabs>
+<Tab title="To User">
+```javascript
+async function sendTextMessage(receiverUID, text) {
+  // TextMessage constructor takes 3 parameters:
+  // 1. receiverUID - The UID of the user who will receive this message
+  // 2. text - The message content (string)
+  // 3. receiverType - USER or GROUP (determines routing)
+  const textMessage = new CometChat.TextMessage(
+    receiverUID,
+    text,
+    CometChat.RECEIVER_TYPE.USER  // Indicates this is a 1-on-1 message
+  );
+
+  try {
+    // sendMessage() transmits the message to CometChat servers
+    // The server routes it to the recipient and stores it for history
+    // Returns the sent message with server-assigned ID and timestamp
+    const message = await CometChat.sendMessage(textMessage);
+    console.log("Message sent:", message);
+    // message.getId() - unique message ID
+    // message.getSentAt() - server timestamp
+    return message;
+  } catch (error) {
+    // Common errors: user doesn't exist, network issues, rate limit exceeded
+    console.log("Message failed:", error);
+    throw error;
+  }
+}
+
+// Usage: Send "Hello!" to user with UID "user_456"
+await sendTextMessage("user_456", "Hello!");
+```
+</Tab>
+<Tab title="To Group">
+```javascript
+async function sendGroupMessage(groupGUID, text) {
+  // For group messages, use the group's GUID as the receiver
+  // RECEIVER_TYPE.GROUP tells CometChat to broadcast to all group members
+  const textMessage = new CometChat.TextMessage(
+    groupGUID,
+    text,
+    CometChat.RECEIVER_TYPE.GROUP  // Broadcasts to all group members
+  );
+
+  try {
+    // Group messages are delivered to all members who are online
+    // Offline members receive them when they fetch message history
+    const message = await CometChat.sendMessage(textMessage);
+    console.log("Message sent:", message);
+    return message;
+  } catch (error) {
+    // Common errors: group doesn't exist, user not a member, banned from group
+    console.log("Message failed:", error);
+    throw error;
+  }
+}
+
+// Usage: Send to group with GUID "group_123"
+await sendGroupMessage("group_123", "Hello everyone!");
+```
+</Tab>
+</Tabs>
+
+### Media Message
+
+Media messages allow sending files like images, videos, audio recordings, and documents. The SDK handles file upload automatically.
+
+```javascript
+async function sendMediaMessage(receiverUID, file, type) {
+  // MediaMessage constructor takes 4 parameters:
+  // 1. receiverUID - Recipient's UID or group GUID
+  // 2. file - File object (from input element or Blob)
+  // 3. type - MESSAGE_TYPE.IMAGE, VIDEO, AUDIO, or FILE
+  // 4. receiverType - USER or GROUP
+  const mediaMessage = new CometChat.MediaMessage(
+    receiverUID,
+    file,
+    type,  // Determines how the file is processed and displayed
+    CometChat.RECEIVER_TYPE.USER
+  );
+
+  try {
+    // sendMediaMessage() uploads the file to CometChat's servers
+    // Then sends a message with the file URL to the recipient
+    // Progress can be tracked with onProgress callback (not shown here)
+    const message = await CometChat.sendMediaMessage(mediaMessage);
+    console.log("Media sent:", message);
+    // message.getAttachment() - contains URL, name, size, mimeType
+    return message;
+  } catch (error) {
+    // Common errors: file too large, unsupported format, network issues
+    console.log("Media failed:", error);
+    throw error;
+  }
+}
+
+// Usage with HTML file input
+// <input type="file" id="file-input" accept="image/*">
+const fileInput = document.getElementById("file-input");
+fileInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];  // Get the selected file
+  // Determine type based on file MIME type
+  await sendMediaMessage("user_456", file, CometChat.MESSAGE_TYPE.IMAGE);
+});
+```
+
+### What This Code Does
+
+1. **Creates Message Object**: Constructs a message with recipient, content, and type
+2. **Sends to Server**: `sendMessage()` or `sendMediaMessage()` transmits to CometChat
+3. **Server Processing**: CometChat stores the message and routes it to recipients
+4. **Returns Confirmation**: The sent message object includes server-assigned ID and timestamp
+
+| Message Type | Use Case | Max Size |
+|--------------|----------|----------|
+| `TEXT` | Plain text chat | 64 KB |
+| `IMAGE` | Photos, screenshots | 25 MB |
+| `VIDEO` | Video clips | 100 MB |
+| `AUDIO` | Voice messages | 25 MB |
+| `FILE` | Documents, PDFs | 25 MB |
+
+---
+
+## Step 6: Receive Messages
+
+Real-time message reception is handled through listeners. The SDK maintains a WebSocket connection and invokes your callback functions when events occur. This enables instant message delivery without polling.
+
+<Warning>
+**Register listeners AFTER login**. Listeners won't work if the user isn't logged in because the WebSocket connection is established during login.
+</Warning>
+
+```javascript
+// Unique ID for this listener - used to remove it later
+// Use descriptive IDs like "CHAT_SCREEN_LISTENER" or "NOTIFICATION_LISTENER"
+const listenerID = "UNIQUE_LISTENER_ID";
+
+// addMessageListener() registers callbacks for various message events
+// The SDK calls these functions automatically when events occur
+CometChat.addMessageListener(
+  listenerID,
+  new CometChat.MessageListener({
+    // Called when a text message is received from another user
+    // textMessage contains: sender, text, timestamp, conversation info
+    onTextMessageReceived: (textMessage) => {
+      console.log("Text message:", textMessage.getText());
+      console.log("From:", textMessage.getSender().getName());
+      // Update your UI to display the new message
+    },
+    
+    // Called when a media message (image, video, etc.) is received
+    // mediaMessage.getAttachment() contains the file URL and metadata
+    onMediaMessageReceived: (mediaMessage) => {
+      console.log("Media message:", mediaMessage.getAttachment());
+      // getAttachment() returns: { url, name, size, mimeType, extension }
+    },
+    
+    // Called when another user starts typing in a conversation with you
+    // Useful for showing "User is typing..." indicator
+    onTypingStarted: (typingIndicator) => {
+      console.log(`${typingIndicator.getSender().getName()} is typing...`);
+      // Show typing indicator in UI
+    },
+    
+    // Called when the user stops typing (after ~5 seconds of inactivity)
+    onTypingEnded: (typingIndicator) => {
+      console.log(`${typingIndicator.getSender().getName()} stopped typing`);
+      // Hide typing indicator in UI
+    },
+    
+    // Called when your sent messages are delivered to the recipient's device
+    // Useful for showing delivery checkmarks (✓✓)
+    onMessagesDelivered: (messageReceipt) => {
+      console.log("Delivered:", messageReceipt.getMessageId());
+      // Update message status in UI to "delivered"
+    },
+    
+    // Called when the recipient has read your messages
+    // Useful for showing read receipts (blue checkmarks)
+    onMessagesRead: (messageReceipt) => {
+      console.log("Read:", messageReceipt.getMessageId());
+      // Update message status in UI to "read"
+    }
+  })
+);
+
+// IMPORTANT: Remove listener when no longer needed
+// This prevents memory leaks and duplicate event handling
+// Call this on component unmount or when navigating away
+// CometChat.removeMessageListener(listenerID);
+```
+
+### What This Code Does
+
+1. **Registers Event Handlers**: `addMessageListener()` subscribes to real-time events
+2. **WebSocket Events**: The SDK receives events via WebSocket and invokes your callbacks
+3. **Multiple Listeners**: You can register multiple listeners with different IDs for different parts of your app
+
+### Event Types Explained
+
+| Event | When It Fires | Common Use |
+|-------|---------------|------------|
+| `onTextMessageReceived` | New text message arrives | Display in chat UI |
+| `onMediaMessageReceived` | New media message arrives | Display image/video preview |
+| `onTypingStarted` | User begins typing | Show "typing..." indicator |
+| `onTypingEnded` | User stops typing | Hide typing indicator |
+| `onMessagesDelivered` | Message reaches recipient | Show ✓✓ checkmarks |
+| `onMessagesRead` | Recipient reads message | Show blue checkmarks |
+
+<Note>
+**Listener Lifecycle**: Register listeners after login, remove them on logout or component unmount. Using unique IDs allows you to manage multiple listeners independently.
+</Note>
+
+---
+
+## Step 7: Fetch Message History
+
+When a user opens a conversation, you need to load previous messages. The `MessagesRequestBuilder` provides a paginated way to fetch message history with various filtering options.
+
+```javascript
+async function fetchMessages(uid, limit = 30) {
+  // MessagesRequestBuilder configures what messages to fetch
+  // setUID() - Fetch messages from a specific user conversation
+  // setLimit() - Number of messages per page (max 100)
+  const messagesRequest = new CometChat.MessagesRequestBuilder()
+    .setUID(uid)      // For user conversations - use setGUID() for groups
+    .setLimit(limit)  // How many messages to fetch (default 30, max 100)
+    .build();         // Creates the request object
+
+  try {
+    // fetchPrevious() retrieves older messages (pagination going backward)
+    // Returns an array of message objects sorted by timestamp (oldest first)
+    // Call fetchPrevious() again on the same request object to get the next page
+    const messages = await messagesRequest.fetchPrevious();
+    console.log("Messages:", messages);
+    // Each message has: getId(), getText(), getSender(), getSentAt(), etc.
+    return messages;
+  } catch (error) {
+    // Common errors: invalid UID, network issues
+    console.log("Fetch failed:", error);
+    throw error;
+  }
+}
+
+// For group conversations, use setGUID() instead of setUID()
+async function fetchGroupMessages(guid, limit = 30) {
+  const messagesRequest = new CometChat.MessagesRequestBuilder()
+    .setGUID(guid)    // Group's unique identifier
+    .setLimit(limit)
+    .build();
+
+  const messages = await messagesRequest.fetchPrevious();
+  return messages;
+}
+```
+
+### What This Code Does
+
+1. **Builds Request**: `MessagesRequestBuilder` configures the query parameters
+2. **Fetches Messages**: `fetchPrevious()` retrieves messages from the server
+3. **Pagination**: Calling `fetchPrevious()` again on the same request gets the next page
+4. **Returns Array**: Messages are returned as an array, oldest first
+
+### Additional Filtering Options
+
+```javascript
+// Advanced message fetching with filters
+const messagesRequest = new CometChat.MessagesRequestBuilder()
+  .setUID(uid)
+  .setLimit(50)
+  .setMessageId(lastMessageId)        // Fetch messages before this ID
+  .setTimestamp(timestamp)            // Fetch messages before this time
+  .hideDeletedMessages(true)          // Exclude deleted messages
+  .setCategories(["message"])         // Only fetch regular messages
+  .setTypes(["text", "image"])        // Only text and image messages
+  .build();
+```
+
+| Method | Description |
+|--------|-------------|
+| `setUID(uid)` | Fetch messages from a user conversation |
+| `setGUID(guid)` | Fetch messages from a group conversation |
+| `setLimit(n)` | Number of messages per page (max 100) |
+| `setMessageId(id)` | Fetch messages before/after this message |
+| `hideDeletedMessages(true)` | Exclude deleted messages |
+| `setCategories([...])` | Filter by message category |
+| `setTypes([...])` | Filter by message type |
+
+---
+
+## Step 8: Logout
+
+Logout ends the user's session and disconnects from CometChat. This should be called when the user signs out of your application.
+
+```javascript
+async function logout() {
+  try {
+    // logout() performs these operations:
+    // 1. Closes the WebSocket connection
+    // 2. Clears the local session data
+    // 3. Notifies the server to end the session
+    // 4. User's status changes to "offline" for other users
+    await CometChat.logout();
+    console.log("Logout successful");
+    // Redirect to login page or update UI
+  } catch (error) {
+    // Logout rarely fails, but handle it gracefully
+    console.log("Logout failed:", error);
+  }
+}
+```
+
+### What This Code Does
+
+1. **Closes WebSocket**: Disconnects the real-time connection
+2. **Clears Session**: Removes local authentication state
+3. **Updates Status**: User appears offline to other users
+4. **Cleanup**: Prepares for a new user to login
+
+<Note>
+**Best Practice**: Remove all message listeners before logout to prevent memory leaks and ensure clean state for the next user.
+</Note>
+
+```javascript
+// Complete logout with cleanup
+async function cleanLogout() {
+  // Remove all listeners first
+  CometChat.removeMessageListener("CHAT_LISTENER");
+  CometChat.removeUserListener("USER_LISTENER");
+  CometChat.removeGroupListener("GROUP_LISTENER");
+  
+  // Then logout
+  await CometChat.logout();
+}
+```
+
+---
+
+## Complete Integration Example
+
+This example shows a complete `ChatService` class that encapsulates all CometChat functionality. Use this as a reference for structuring your integration.
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+
+/**
+ * ChatService - A complete wrapper for CometChat SDK
+ * 
+ * This class provides a clean interface for:
+ * - Initializing the SDK
+ * - User authentication
+ * - Sending and receiving messages
+ * - Managing listeners
+ * 
+ * Usage:
+ *   const chat = new ChatService("APP_ID", "REGION", "AUTH_KEY");
+ *   await chat.initialize();
+ *   await chat.login("user_123");
+ *   chat.setupListeners((msg) => console.log(msg));
+ *   await chat.sendMessage("user_456", "Hello!");
+ */
+class ChatService {
+  constructor(appID, region, authKey) {
+    this.appID = appID;
+    this.region = region;
+    this.authKey = authKey;
+    this.listenerID = "CHAT_LISTENER";
+  }
+
+  /**
+   * Initialize CometChat SDK
+   * Must be called once before any other operations
+   * Typically called at app startup
+   */
+  async initialize() {
+    const appSettings = new CometChat.AppSettingsBuilder()
+      .subscribePresenceForAllUsers()  // Enable presence updates
+      .setRegion(this.region)          // Connect to correct data center
+      .build();
+
+    await CometChat.init(this.appID, appSettings);
+    console.log("CometChat initialized");
+  }
+
+  /**
+   * Login a user to CometChat
+   * Checks for existing session first to avoid duplicate logins
+   * @param {string} uid - User's unique identifier
+   * @returns {CometChat.User} - The logged in user object
+   */
+  async login(uid) {
+    // Check for existing session
+    const loggedInUser = await CometChat.getLoggedinUser();
+    if (loggedInUser) return loggedInUser;
+
+    // Perform login
+    return await CometChat.login(uid, this.authKey);
+  }
+
+  /**
+   * Register message listeners for real-time updates
+   * Call this after login to start receiving messages
+   * @param {Function} onMessage - Callback for new messages
+   */
+  setupListeners(onMessage) {
+    CometChat.addMessageListener(
+      this.listenerID,
+      new CometChat.MessageListener({
+        onTextMessageReceived: onMessage,    // Text messages
+        onMediaMessageReceived: onMessage    // Media messages
+      })
+    );
+  }
+
+  /**
+   * Send a text message to another user
+   * @param {string} receiverUID - Recipient's user ID
+   * @param {string} text - Message content
+   * @returns {CometChat.TextMessage} - The sent message
+   */
+  async sendMessage(receiverUID, text) {
+    const message = new CometChat.TextMessage(
+      receiverUID,
+      text,
+      CometChat.RECEIVER_TYPE.USER
+    );
+    return await CometChat.sendMessage(message);
+  }
+
+  /**
+   * Fetch message history for a conversation
+   * @param {string} uid - User ID to fetch messages from
+   * @param {number} limit - Number of messages to fetch
+   * @returns {Array} - Array of message objects
+   */
+  async fetchMessages(uid, limit = 30) {
+    const request = new CometChat.MessagesRequestBuilder()
+      .setUID(uid)
+      .setLimit(limit)
+      .build();
+    return await request.fetchPrevious();
+  }
+
+  /**
+   * Logout and cleanup
+   * Removes listeners and ends the session
+   */
+  async logout() {
+    CometChat.removeMessageListener(this.listenerID);
+    await CometChat.logout();
+  }
+}
+
+// ============================================
+// USAGE EXAMPLE
+// ============================================
+
+// 1. Create service instance with your credentials
+const chat = new ChatService("APP_ID", "REGION", "AUTH_KEY");
+
+// 2. Initialize SDK (do this once at app startup)
+await chat.initialize();
+
+// 3. Login user (after user authenticates in your app)
+await chat.login("user_123");
+
+// 4. Setup listeners to receive real-time messages
+chat.setupListeners((msg) => {
+  console.log("New message:", msg);
+  // Update your UI here
+});
+
+// 5. Send a message
+await chat.sendMessage("user_456", "Hello!");
+
+// 6. Fetch message history when opening a conversation
+const messages = await chat.fetchMessages("user_456", 50);
+
+// 7. Logout when user signs out
+await chat.logout();
+```
+
+### Code Structure Explained
+
+| Method | Purpose | When to Call |
+|--------|---------|--------------|
+| `constructor()` | Store credentials | Once when creating instance |
+| `initialize()` | Setup SDK | Once at app startup |
+| `login()` | Authenticate user | After user signs in |
+| `setupListeners()` | Enable real-time | After login |
+| `sendMessage()` | Send chat message | When user sends |
+| `fetchMessages()` | Load history | When opening conversation |
+| `logout()` | End session | When user signs out |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Groups" icon="users" href="/sdk/javascript/groups-overview">
+    Create and manage group conversations
+  </Card>
+  <Card title="Typing Indicators" icon="keyboard" href="/sdk/javascript/typing-indicators">
+    Show real-time typing status
+  </Card>
+  <Card title="Read Receipts" icon="check-double" href="/sdk/javascript/delivery-read-receipts">
+    Track message delivery and read status
+  </Card>
+  <Card title="Add Calling" icon="video" href="/sdk/javascript/guide-chat-calls">
+    Add voice and video calling
+  </Card>
+</CardGroup>
