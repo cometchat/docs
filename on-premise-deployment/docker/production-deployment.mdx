@@ -1,0 +1,299 @@
+---
+title: "Production Deployment"
+sidebarTitle: "Production Deployment"
+---
+
+This guide walks through deploying CometChat on-premise to a Docker Swarm cluster. The deployment process uses automated scripts to ensure consistent, repeatable deployments with proper service orchestration and zero-downtime updates.
+
+**Deployment Overview:**
+- Initialize Docker Swarm cluster for container orchestration
+- Deploy all services using infrastructure-as-code approach
+- Configure domain mappings and TLS certificates
+- Validate deployment health across all components
+- Establish operational procedures for updates and maintenance
+
+**Prerequisites:**
+- Infrastructure meeting [hardware requirements](./prerequisites)
+- Docker Engine >= 24 installed on all nodes
+- Network connectivity between cluster nodes
+- Domain names configured and DNS records pointing to your cluster
+- TLS/SSL certificates for HTTPS endpoints
+
+## Initialize Docker Swarm (manager node)
+
+Docker Swarm provides native clustering and orchestration for Docker containers. Initialize Swarm on your primary manager node:
+
+```bash
+# Initialize Swarm cluster
+docker swarm init
+
+# For hosts with multiple network interfaces, specify the advertise address
+docker swarm init --advertise-addr <manager-ip>
+
+# Verify cluster status
+docker node ls
+```
+
+**Expected output**: You should see one node listed with STATUS "Ready" and MANAGER STATUS showing "Leader".
+
+**Multi-node clusters:**
+For high availability, add additional manager and worker nodes:
+
+```bash
+# On manager node: Get join token for additional managers
+docker swarm join-token manager
+
+# On manager node: Get join token for worker nodes
+docker swarm join-token worker
+
+# On additional nodes: Run the join command provided above
+docker swarm join --token <token> <manager-ip>:2377
+```
+
+**High availability recommendations:**
+- Deploy 3 or 5 manager nodes (odd numbers for quorum)
+- Distribute manager nodes across availability zones when possible
+- Use worker nodes for application workloads, managers for orchestration only
+
+## Clone the repository
+
+Clone the CometChat on-premise repository to access deployment scripts and configuration files:
+
+```bash
+git clone https://github.com/cometchat/cometchat-on-premise.git
+cd cometchat-on-premise
+```
+
+To access the repository, [contact us](https://www.cometchat.com/contact-sales).
+
+## Deploy the complete infrastructure
+
+Run the following from the repository root on the Swarm manager node:
+
+```bash
+./deploy.sh
+```
+
+**What the deployment script does:**
+1. Initializes required Docker volumes for persistent data
+2. Creates secure overlay networks for service communication
+3. Deploys all services defined in `docker-compose.yml` with proper dependencies
+4. Starts components in the correct order (data stores → backend services → frontend)
+5. Applies health checks and restart policies
+
+**Deployment time**: Initial deployment typically takes 5-10 minutes depending on image pull speeds and cluster size.
+
+**Monitoring deployment progress:**
+
+```bash
+# Watch service deployment status
+watch docker service ls
+
+# Check specific service deployment
+docker service ps <service-name>
+
+# View service logs during deployment
+docker service logs -f <service-name>
+```
+
+**Deployment validation:**
+After deployment completes, verify all services are running:
+
+```bash
+# All services should show replicas as "X/X" (e.g., "1/1" or "3/3")
+docker service ls
+
+# Check for any failed services
+docker service ls | grep "0/"
+```
+
+## NGINX reverse proxy
+
+NGINX serves as the edge layer, handling TLS termination, API routing, WebSocket protocol upgrades, and proxy buffering for optimal performance.
+
+**Configuration files to update:**
+
+Each service has a dedicated NGINX configuration file that must be updated with your production domain:
+
+- `chatapi.conf` - Chat API routing and WebSocket upgrade rules
+- `extensions.conf` - Extensions API routing
+- `mgmtapi.conf` - Management API routing
+- `notifications.conf` - Notifications service routing
+- `dashboard.conf` - Frontend dashboard routing
+- `globalwebhooks.conf` - Webhooks service routing
+- `moderation.conf` - Moderation service routing
+- `websocket.conf` - WebSocket gateway routing
+
+**Key NGINX responsibilities:**
+- **TLS/SSL Termination**: Decrypt HTTPS traffic at the edge, communicate with backend services over encrypted overlay network
+- **Load Balancing**: Distribute requests across service replicas using round-robin or least-connections algorithms
+- **WebSocket Upgrades**: Handle HTTP to WebSocket protocol upgrades for real-time connections
+- **Request Buffering**: Buffer client requests to protect backend services from slow clients
+- **Rate Limiting**: Protect services from abuse and DDoS attacks (configure as needed)
+
+**TLS certificate configuration:**
+Place your TLS certificates in the NGINX configuration directory and reference them in each `.conf` file:
+
+```nginx
+ssl_certificate /path/to/your/certificate.crt;
+ssl_certificate_key /path/to/your/private.key;
+```
+
+**Important**: Reload NGINX after updating certificates to apply changes without downtime:
+
+```bash
+docker service update --force nginx
+```
+
+**Security recommendations:**
+- Use TLS 1.2 or higher only
+- Configure strong cipher suites
+- Enable HSTS (HTTP Strict Transport Security)
+- Implement rate limiting for public endpoints
+
+## Domain configuration
+
+Deployments require updating domain references across multiple services and configuration files. Replace all instances of `<your-domain>` with your actual domain.
+
+**Services requiring domain configuration:**
+- Chat API - Core messaging service endpoints
+- Management API - Administrative and configuration endpoints
+- Extensions - Custom extension endpoints
+- Notifications - Push notification service
+- Moderation - Content moderation service
+- Webhooks - Outbound webhook delivery
+- Data Sync Service - Data synchronization
+- NGINX - Reverse proxy routing rules
+
+**Critical alignment:**
+Ensure the WebSocket host configured in Chat API matches your chosen domain exactly (e.g., `websocket.chat.example.com`). Mismatched domains will cause WebSocket connection failures.
+
+**Configuration checklist:**
+1. Update all service environment variables with your domains
+2. Update NGINX configuration files with matching domains
+3. Verify DNS records point to your cluster load balancer
+4. Configure TLS certificates for all public-facing domains
+5. Test domain resolution from external networks
+
+**Example domain structure:**
+```
+api.example.com          → Chat API
+apiclient.example.com    → Client API
+apimgmt.example.com      → Management API
+websocket.example.com    → WebSocket Gateway
+notifications.example.com → Notifications Service
+webhooks.example.com     → Webhooks Service
+moderation.example.com   → Moderation Service
+app.example.com          → Dashboard
+```
+
+**Note**: Ensure consistency across all configuration files and DNS records.
+
+For detailed environment variable mappings, see the [Configuration Reference](./configuration-reference).
+
+## Useful commands (Swarm operations)
+
+### General service management
+
+```bash
+# List all nodes in the cluster
+docker node ls
+
+# List all services and their status
+docker service ls
+
+# View detailed service information
+docker service inspect <service-name>
+
+# Check service replica status and placement
+docker service ps <service-name>
+
+# Follow service logs in real-time
+docker service logs -f <service-name>
+
+# Execute command in a service container
+docker exec -it <container-id> bash
+
+# Drain a node for maintenance (stops scheduling new tasks)
+docker node update --availability drain <node-name>
+
+# Return node to active status
+docker node update --availability active <node-name>
+
+# Scale a service to more replicas
+docker service scale <service-name>=3
+```
+
+### Stack operations
+
+```bash
+# Deploy or update entire stack
+docker stack deploy -c docker-compose.yml cometchat
+
+# Remove entire stack (WARNING: destructive)
+docker stack rm cometchat
+
+# List all services in a stack
+docker stack services cometchat
+
+# List all tasks in a stack
+docker stack ps cometchat
+
+# View stack configuration
+docker stack config -c docker-compose.yml
+```
+
+### Troubleshooting commands
+
+```bash
+# View service events and errors
+docker service ps <service-name> --no-trunc
+
+# Inspect service configuration
+docker service inspect <service-name> --pretty
+
+# Check service update status
+docker service inspect <service-name> --format='{{json .UpdateStatus}}'
+
+# View container resource usage
+docker stats
+
+# Inspect network configuration
+docker network inspect <network-name>
+
+# View volume information
+docker volume ls
+docker volume inspect <volume-name>
+```
+
+## Health check endpoints
+
+After deployment, verify all services are healthy by checking their health endpoints:
+
+| Component | URL |
+| --- | --- |
+| Dashboard | `https://app.example.com` |
+| Chat API | `https://api.example.com/health-check` |
+| Client API | `https://apiclient.example.com/health-check` |
+| Management API | `https://apimgmt.example.com/health-check` |
+| Notifications | `https://notifications.example.com/health-check` |
+| Moderation | `https://rule.example.com/health` |
+| WebSocket | `https://websocket.example.com/v1/health` |
+| Webhooks | `https://webhooks.example.com/v1/webhooks/health-check` |
+
+Replace `example.com` with your actual domain.
+
+**Health check validation:**
+
+```bash
+# Check all health endpoints
+curl -f https://api.example.com/health-check || echo "Chat API unhealthy"
+curl -f https://websocket.example.com/v1/health || echo "WebSocket unhealthy"
+curl -f https://notifications.example.com/health-check || echo "Notifications unhealthy"
+```
+
+**Expected responses:**
+- HTTP 200 status code indicates healthy service
+- HTTP 503 or connection errors indicate service issues requiring investigation
+
+**Automation**: Health checks should be integrated into monitoring and automated validation scripts. See the [Monitoring](./monitoring) guide for comprehensive health monitoring setup.

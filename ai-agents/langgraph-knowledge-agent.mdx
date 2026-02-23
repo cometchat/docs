@@ -1,0 +1,118 @@
+---
+title: "Build Your Knowledge Agent with LangGraph"
+sidebarTitle: "Knowledge Agent"
+description: "Use LangGraph (TypeScript or Python) to stream a search-backed knowledge agent and adapt it for CometChat."
+---
+
+This LangGraph sample wires a ChatOpenAI model to a `search_docs` tool, streams intermediate graph state, and shows how to reuse the same thread across turns. Both TypeScript and Python servers expose a `/kickoff` NDJSON stream that CometChat can consume.
+
+***
+
+## What You'll Build
+
+* A **LangGraph** state machine with an assistant node and a tool node.  
+* An in-memory **knowledge base** plus a `search_docs` tool that returns cited bullets.  
+* Streaming runs that keep history via the built-in `MemorySaver` checkpointer.  
+* A starting point you can wrap in HTTP + SSE for CometChat’s Bring Your Own Agent flow.  
+
+***
+
+## Prerequisites
+
+* TypeScript: Node.js 18+ (Node 20 recommended); `OPENAI_API_KEY` in `.env` (optional `KNOWLEDGE_OPENAI_MODEL`, default `gpt-4o-mini`).  
+* Python: Python 3.10+; `OPENAI_API_KEY` in `.env` (optional `MODEL`, default `gpt-4o-mini`).  
+* CometChat app + AI Agent entry.  
+
+***
+
+## Quick links
+
+- Repo root: [ai-agent-lang-graph-examples](https://github.com/cometchat/ai-agent-lang-graph-examples)
+- TypeScript project: [typescript/langgraph-knowledge-agent](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/typescript/langgraph-knowledge-agent) (`src/graph.ts`, `src/server.ts`, `.env.example`)
+- Python project: [python/langgraph_knowledge_agent](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/python/langgraph_knowledge_agent) (`agent.py`, `server.py`, `.env`)
+
+***
+
+## How it works
+
+- **Graph** — `StateGraph(MessagesAnnotation)` adds `assistant` (ChatOpenAI bound to tools) and `tools` (executes tool calls) nodes, with conditional edges that loop until no more tool calls are requested.
+- **Tooling** — `search_docs` (in `src/graph.ts`) calls `searchDocs` over a small mock corpus (`src/data/corpus.ts`) and formats matches as markdown bullets for citations.
+- **State** — `MemorySaver` checkpoints are keyed by `configurable.thread_id`, so multiple turns share context.
+- **Streaming** — `app.stream(..., { streamMode: "values" })` yields incremental states; each message printed in `src/index.ts` shows the graph progressing through tool calls and replies.
+
+***
+
+## Setup (TypeScript)
+
+<Steps>
+  <Step title="Install">
+    <code>cd typescript/langgraph-knowledge-agent && npm install</code>
+  </Step>
+  <Step title="Env">
+    Copy <code>../.env.example</code> to <code>.env</code>; set <code>OPENAI_API_KEY</code> (optional <code>KNOWLEDGE_OPENAI_MODEL</code>).
+  </Step>
+  <Step title="Run demo">
+    <code>npm run demo -- "How do I stream intermediate results?"</code> (streams tool calls + replies to stdout).
+  </Step>
+  <Step title="Run server">
+    <code>npm run server</code> → <code>POST /kickoff</code> on <code>http://localhost:3000</code>.
+  </Step>
+</Steps>
+
+## Setup (Python)
+
+<Steps>
+  <Step title="Install">
+    <code>cd python && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt</code>
+  </Step>
+  <Step title="Env">
+    Create <code>.env</code> with <code>OPENAI_API_KEY</code> (optional <code>MODEL</code>).
+  </Step>
+  <Step title="Run server">
+    <code>python -m langgraph_knowledge_agent.server</code> → <code>POST /kickoff</code> on <code>http://localhost:8000</code>.
+  </Step>
+</Steps>
+
+***
+
+## Project structure
+
+- **TypeScript**: Graph [src/graph.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-knowledge-agent/src/graph.ts), Demo [src/index.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-knowledge-agent/src/index.ts), Server [src/server.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-knowledge-agent/src/server.ts), Data [src/data](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/typescript/langgraph-knowledge-agent/src/data), Config [.env.example](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-knowledge-agent/.env.example) + [package.json](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-knowledge-agent/package.json)
+- **Python**: Graph [agent.py](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_knowledge_agent/agent.py), Server [server.py](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_knowledge_agent/server.py), Data [data/](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/python/langgraph_knowledge_agent/data), Config [.env](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_knowledge_agent/.env) + [requirements.txt](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_knowledge_agent/requirements.txt)
+
+***
+
+## Step 1 - Inspect the LangGraph
+
+`buildKnowledgeGraph` (in `src/graph.ts`) binds `search_docs` to `ChatOpenAI`, routes every assistant reply through `shouldCallTools`, and executes tool calls via `runTools`. The system sets temperature to 0 and defaults to `gpt-4o-mini` unless you override `KNOWLEDGE_OPENAI_MODEL`.
+
+***
+
+## Streaming API (HTTP)
+
+Event order (both TypeScript and Python servers): `text_start` → `text_delta` chunks → `tool_call_start` → `tool_call_args` → `tool_call_end` → `tool_result` → `text_end` → `done` (`error` on failure). Each event includes `message_id`; echo `thread_id`/`run_id` from the client if you want threading.
+
+Example requests:
+
+```bash
+# TypeScript (localhost:3000/kickoff)
+curl -N http://localhost:3000/kickoff \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"How do I stream intermediate results from LangGraph?"}]}'
+
+# Python (localhost:8000/kickoff)
+curl -N http://localhost:8000/kickoff \
+  -H "Content-Type: application/json" \
+  -d '{"thread_id":"t1","run_id":"r1","messages":[{"role":"user","content":"How do I stream intermediate results from LangGraph?"}]}'
+```
+
+`messages` must be non-empty; invalid payloads return 400.
+
+***
+
+## Adapt for CometChat
+
+- Point CometChat BYO Agent at your public `/kickoff` endpoint (TypeScript or Python).
+- Parse the NDJSON events; render `text_delta` streaming, show `tool_call_*` steps if desired, and stop on `text_end`/`done`.
+- Keep `OPENAI_API_KEY` (and any model overrides) server-side; add auth headers on the route if needed.
+- Swap the mock `search_docs` implementation with your own retrieval layer while keeping the same tool signature.

@@ -1,0 +1,107 @@
+---
+title: "Launch a Product Hunt Agent with LangGraph"
+sidebarTitle: "Product Hunt Agent"
+description: "Build a LangGraph agent (TypeScript or Python) with Product Hunt-style tools, stream graph state, and prep it for CometChat."
+---
+
+A compact LangGraph example (TypeScript and Python) that binds a ChatOpenAI model to Product Hunt-inspired tools, loops until tool calls are complete, and streams every graph state. Both servers expose `/kickoff` as NDJSON with tool call events.
+
+***
+
+## What You'll Build
+
+* A **LangGraph** with assistant + tool executor nodes.  
+* Two tools: `list_top_posts` (sorted by votes) and `search_launches` (keyword/topic search).  
+* Streaming runs keyed by `thread_id`, kept in sync via `MemorySaver`.  
+* A template you can expose over HTTP/SSE to connect with CometChat’s AI Agents.  
+
+***
+
+## Prerequisites
+
+* TypeScript: Node.js 18+ (Node 20 recommended); `OPENAI_API_KEY` in `.env` (optional `PRODUCT_OPENAI_MODEL`, default `gpt-4o-mini`).  
+* Python: Python 3.10+; `OPENAI_API_KEY` in `.env` (optional `MODEL`, default `gpt-4o-mini`).  
+* CometChat app + AI Agent entry.  
+
+***
+
+## Quick links
+
+- Repo root: [ai-agent-lang-graph-examples](https://github.com/cometchat/ai-agent-lang-graph-examples)
+- TypeScript project: [typescript/langgraph-product-hunt-agent](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/typescript/langgraph-product-hunt-agent) (`src/graph.ts`, `src/server.ts`, `.env.example`)
+- Python project: [python/langgraph_product_hunt_agent](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/python/langgraph_product_hunt_agent) (`agent.py`, `server.py`, `.env`)
+
+***
+
+## How it works
+
+- **Tools** — `list_top_posts` and `search_launches` live in `src/graph.ts`, backed by helpers in `src/data/search.ts`. Both return markdown bullets so the assistant can cite results directly.
+- **Graph** — `StateGraph(MessagesAnnotation)` alternates between the assistant node and the `tools` node based on `shouldCallTools`; tool outputs are fed back as `ToolMessage` objects.
+- **State** — `MemorySaver` checkpoints per `configurable.thread_id` let you run multi-turn conversations on the same graph instance.
+- **Streaming** — `app.stream` emits state snapshots (`streamMode: "values"`). The console demo prints each message as the model calls tools and drafts the response.
+
+***
+
+## Setup (TypeScript)
+
+<Steps>
+  <Step title="Install">
+    <code>cd typescript/langgraph-product-hunt-agent && npm install</code>
+  </Step>
+  <Step title="Env">
+    Copy <code>../.env.example</code> to <code>.env</code>; set <code>OPENAI_API_KEY</code> (optional <code>PRODUCT_OPENAI_MODEL</code>).
+  </Step>
+  <Step title="Run demo">
+    <code>npm run demo -- "Top Product Hunt style launches right now?"</code>
+  </Step>
+  <Step title="Run server">
+    <code>npm run server</code> → <code>POST /kickoff</code> on <code>http://localhost:3000</code>.
+  </Step>
+</Steps>
+
+## Setup (Python)
+
+<Steps>
+  <Step title="Install">
+    <code>cd python && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt</code>
+  </Step>
+  <Step title="Env">
+    Create <code>.env</code> with <code>OPENAI_API_KEY</code> (optional <code>MODEL</code>).
+  </Step>
+  <Step title="Run server">
+    <code>python -m langgraph_product_hunt_agent.server</code> → <code>POST /kickoff</code> on <code>http://localhost:8000</code>.
+  </Step>
+</Steps>
+
+***
+
+## Project structure
+
+- **TypeScript**: Graph [src/graph.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-product-hunt-agent/src/graph.ts), Demo [src/index.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-product-hunt-agent/src/index.ts), Server [src/server.ts](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-product-hunt-agent/src/server.ts), Data [src/data](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/typescript/langgraph-product-hunt-agent/src/data), Config [.env.example](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-product-hunt-agent/.env.example) + [package.json](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/typescript/langgraph-product-hunt-agent/package.json)
+- **Python**: Graph [agent.py](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_product_hunt_agent/agent.py), Server [server.py](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_product_hunt_agent/server.py), Data [data/](https://github.com/cometchat/ai-agent-lang-graph-examples/tree/main/python/langgraph_product_hunt_agent/data), Config [.env](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_product_hunt_agent/.env) + [requirements.txt](https://github.com/cometchat/ai-agent-lang-graph-examples/blob/main/python/langgraph_product_hunt_agent/requirements.txt)
+
+***
+
+## Step 1 - Understand the agent tools
+
+`buildProductHuntGraph` binds both tools to `ChatOpenAI` (temperature 0 by default). The graph checks each assistant reply for `tool_calls`, routes to the `tools` node to execute them, then loops back until there are none left.
+
+***
+
+## Streaming API (HTTP)
+
+Event order (TypeScript and Python servers): `text_start` → `text_delta` chunks → `tool_call_start` → `tool_call_args` → `tool_call_end` → `tool_result` → `text_end` → `done` (`error` on failure). Each event includes `message_id`; echo `thread_id`/`run_id` from the client if you want threading.
+
+Example requests:
+
+```bash
+# TypeScript (localhost:3000/kickoff)
+curl -N http://localhost:3000/kickoff \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What are the top Product Hunt style launches right now?"}]}'
+
+# Python (localhost:8000/kickoff)
+curl -N http://localhost:8000/kickoff \
+  -H "Content-Type: application/json" \
+  -d '{"thread_id":"t1","run_id":"r1","messages":[{"role":"user","content":"What are the top Product Hunt style launches right now?"}]}'
+```

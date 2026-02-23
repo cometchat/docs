@@ -1,0 +1,196 @@
+---
+title: "Upgrades"
+sidebarTitle: "Upgrades"
+---
+
+This document outlines the recommended upgrade strategy to ensure zero downtime and safe production rollouts.
+
+## Required inputs
+
+Before starting the upgrade, ensure you have:
+
+- Target release version (e.g., v3.9.52)
+- Container registry access credentials
+- Access to the Swarm manager node
+
+## Pre-upgrade checklist
+
+Before performing any upgrade:
+
+1. **Backup critical data**:
+   - Database snapshots (TiDB/TiKV)
+   - Redis persistence files
+   - Configuration files
+
+2. **Verify current system health**:
+   ```bash
+   docker service ls
+   docker stack ps <stack-name>
+   ```
+
+3. **Test the upgrade in a staging environment** first
+
+4. **Schedule maintenance window** (if needed for major upgrades)
+
+5. **Notify team members** of the upgrade
+
+## Upgrade execution steps
+
+Upgrades should be performed during low-traffic periods whenever possible.
+
+### Step 1: Pull latest images
+
+```bash
+docker pull <registry>/chat-api:<new-version>
+docker pull <registry>/websocket-gateway:<new-version>
+# Pull other service images as needed
+```
+
+### Step 2: Apply updates using the update script
+
+To update services without full redeploy:
+
+```bash
+./update.sh
+```
+
+This script is provided as part of the CometChat on-premise deployment and must be executed from the Swarm manager node. It performs rolling updates of services while maintaining availability and honoring Docker Swarm update policies.
+
+### Step 3: Monitor the rollout
+
+Watch service updates in real-time:
+
+```bash
+docker service ps <service-name> --no-trunc
+docker service logs -f <service-name>
+```
+
+### Step 4: Verify health checks
+
+Ensure new replicas pass health checks:
+
+```bash
+docker service inspect <service-name> --format='{{json .UpdateStatus}}'
+```
+
+## Rolling updates
+
+Docker Swarm performs rolling updates automatically when using `./update.sh` or manual service updates:
+
+```bash
+# Example for updating a single service
+docker service update --image <registry>/chat-api:<new-version> <service-name>
+```
+
+The process:
+- Deploy new service replicas alongside existing ones
+- Gradually shift traffic to the updated replicas
+- Retire older replicas only after health checks pass
+
+### Configure update behavior
+
+Control rolling update parameters:
+
+```bash
+docker service update \
+  --update-parallelism 2 \
+  --update-delay 10s \
+  --update-failure-action rollback \
+  <service-name>
+```
+
+## Database migrations
+
+### Step 1: Backup database
+
+```bash
+# TiDB backup example
+tiup br backup full --pd <pd-address> --storage "local:///backup/$(date +%Y%m%d)"
+```
+
+### Step 2: Test migration in staging
+
+Always test migrations in a staging environment before production.
+
+### Step 3: Run migration
+
+```bash
+# Example migration command (adjust for your setup)
+docker exec -it <api-container> npm run migrate
+```
+
+**Important:** Ensure only one instance runs migrations to avoid concurrent schema changes.
+
+### Best practices
+
+- Prefer backward-compatible schema changes
+- Avoid dropping or renaming columns while serving live traffic
+- Use feature flags to decouple code deployment from schema changes
+- Keep migrations idempotent (safe to run multiple times)
+
+## Post-upgrade verification
+
+After upgrade completes:
+
+1. **Check service status**:
+   ```bash
+   docker service ls
+   docker service ps <service-name>
+   ```
+
+2. **Verify application health**:
+   ```bash
+   curl http://<api-endpoint>/health
+   ```
+
+3. **Monitor logs for errors**:
+   ```bash
+   docker service logs --tail 100 <service-name>
+   ```
+
+4. **Check metrics and dashboards** (Prometheus/Grafana) for latency, error rates, and resource spikes
+
+5. **Test critical user flows** (login, messaging, etc.)
+
+## Rollback procedures
+
+If issues are detected after upgrade:
+
+### Automatic rollback
+
+Docker Swarm can automatically rollback on failure:
+
+```bash
+docker service update --rollback <service-name>
+```
+
+### Manual rollback to previous image
+
+```bash
+docker service update --image <registry>/chat-api:<previous-version> <service-name>
+```
+
+### Database rollback
+
+If database migration needs reverting:
+
+```bash
+# Run down migration (adjust for your setup)
+docker exec -it <api-container> npm run migrate:down
+```
+
+Or restore from backup:
+
+```bash
+# TiDB restore example
+tiup br restore full --pd <pd-address> --storage "local:///backup/<backup-date>"
+```
+
+### Rollback checklist
+
+1. Revert service images to previous versions
+2. Rollback database migrations if schema changed
+3. Restore configuration files if modified
+4. Validate application behavior and data integrity
+5. Monitor the system for 15–30 minutes before restoring full traffic
+6. Document the issue and root cause for post-mortem

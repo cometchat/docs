@@ -1,0 +1,141 @@
+---
+title: "Build Your Knowledge Agent with CrewAI"
+sidebarTitle: "Knowledge Agent"
+description: "Create a CrewAI knowledge agent that answers from your docs, streams NDJSON to CometChat, and cites sources."
+---
+
+
+Based on the refreshed [`ai-agent-crew-ai-examples`](https://github.com/cometchat/ai-agent-crew-ai-examples) codebase, here’s how to run the `knowledge_agent` FastAPI service, ingest docs, and stream answers into CometChat.
+
+***
+
+## What you’ll build
+
+- A **CrewAI** agent that grounds replies in your ingested docs (per namespace).
+- A **FastAPI** service with ingest/search/generate endpoints plus a `/stream` SSE.
+- **CometChat AI Agent** wiring that consumes newline-delimited JSON chunks (`text_start`, `text_delta`, `text_end`, `done`).
+
+***
+
+## Prerequisites
+
+- Python 3.10+ with `pip` (or `uv`)
+- `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `KNOWLEDGE_OPENAI_MODEL`, `KNOWLEDGE_EMBEDDING_MODEL`)
+- A CometChat app + AI Agent entry
+
+***
+
+## Run the updated sample
+
+<Steps>
+  <Step title="Install & start">
+    In <code>ai-agent-crew-ai-examples/</code>:
+    <pre><code className="language-bash">python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn knowledge_agent.main:app --host 0.0.0.0 --port 8000 --reload</code></pre>
+    Env supports <code>.env</code> at repo root or inside <code>knowledge_agent/.env</code>.
+  </Step>
+  <Step title="Set env">
+    <code>OPENAI_API_KEY</code> is required. Optional: <code>OPENAI_BASE_URL</code>, <code>KNOWLEDGE_OPENAI_MODEL</code> (default <code>gpt-4o-mini</code>), <code>KNOWLEDGE_EMBEDDING_MODEL</code> (default <code>text-embedding-3-small</code>).
+  </Step>
+  <Step title="Storage">
+    Ingested files land in <code>knowledge_agent/data/knowledge/&lt;namespace&gt;/</code> and embeddings persist to <code>knowledge_agent/data/chroma/&lt;namespace&gt;/</code>. Duplicate hashes are skipped automatically.
+  </Step>
+</Steps>
+
+***
+
+## API surface (FastAPI)
+
+- `POST /api/tools/ingest` — accept JSON or `multipart/form-data` with `sources` (text/markdown/url) and optional file uploads; returns `saved`, `skipped`, `errors`.
+- `POST /api/tools/searchDocs` — semantic search via Chroma; accepts `namespace`, `query`, `max_results`.
+- `POST /api/agents/knowledge/generate` — single, non-streaming completion (requires at least one message).
+- `POST /stream` — newline-delimited JSON over SSE (`text_start`, `text_delta`, `text_end`, `done`; `error` on failure) ready for CometChat BYOA.
+- Validation/behavior: `/ingest` dedupes by content hash (skips duplicates) and returns `207` when mixed `errors`/`saved`; `/stream` rejects empty `messages`.
+
+### Ingest examples
+
+```bash
+curl -X POST http://localhost:8000/api/tools/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+        "namespace": "default",
+        "sources": [
+          { "type": "url", "value": "https://docs.crewai.com/" },
+          { "type": "markdown", "title": "Notes", "value": "# CrewAI Rocks" }
+        ]
+      }'
+```
+
+Multipart uploads are also supported:
+
+```bash
+curl -X POST http://localhost:8000/api/tools/ingest \
+  -H "Accept: application/json" \
+  -F "namespace=default" \
+  -F "sources=[{\"type\":\"text\",\"value\":\"Hello\"}]" \
+  -F "files=@/path/to/file.pdf"
+```
+
+### Search + answer
+
+```bash
+curl -X POST http://localhost:8000/api/tools/searchDocs \
+  -H "Content-Type: application/json" \
+  -d '{"namespace":"default","query":"CrewAI agent lifecycle","max_results":4}'
+```
+
+```bash
+curl -N http://localhost:8000/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+        "thread_id": "thread_1",
+        "run_id": "run_001",
+        "messages": [
+          { "role": "user", "content": "Summarize the CrewAI agent lifecycle." }
+        ]
+      }'
+```
+
+Streaming payload shape:
+
+```json
+{"type":"text_start","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"text_delta","content":"...","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"text_end","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"done","thread_id":"...","run_id":"..."}
+# errors (if thrown) look like:
+{"type":"error","message":"...","message_id":"...","thread_id":"...","run_id":"..."}
+```
+
+***
+
+## Crew internals (for reference)
+
+`knowledge_agent/knowledge_manager.py` builds a search tool per namespace, wired into a CrewAI agent:
+
+```python
+search_tool = self._create_search_tool(normalised)
+agent = Agent(
+    role="Knowledge Librarian",
+    goal="Answer user questions with relevant citations from the knowledge base.",
+    tools=[search_tool],
+    llm=model,
+)
+task = Task(
+    description="Use search_knowledge_base before answering.\nConversation: {conversation}\nLatest: {question}",
+    expected_output="A concise, cited answer grounded in ingested docs.",
+    agent=agent,
+)
+crew = Crew(agents=[agent], tasks=[task], process=Process.sequential)
+```
+
+***
+
+## Wire it to CometChat
+
+- Dashboard → **AI Agent → BYO Agents** and then **Get Started / Integrate → Choose CrewAI**. → **Agent ID** (e.g., `knowledge`) → **Deployment URL** = your public `/stream`.
+- The SSE stream is newline-delimited JSON; CometChat AG-UI adapters parse `text_start`/`text_delta`/`text_end` and stop on `done`. Message IDs, thread IDs, and run IDs are included for threading.
+- Use namespaces to keep customer/workspace data separate; pass `namespace` in the payload or inside `tool_params.namespace` (either works; defaults to `default` if omitted).
+- Keep secrets server-side; add auth headers on the FastAPI route if needed.

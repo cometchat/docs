@@ -1,410 +1,470 @@
 ---
-title: "Web"
+title: "Web Push Notifications"
+description: "Set up FCM web push for CometChat React UI Kit—service worker, VAPID keys, token registration, and foreground/background handlers."
 ---
 
-The Push Notification extension allows you to send push notifications to mobile apps and desktop browsers.
-
-Push notifications will work in all desktop browsers which support [Push API](https://caniuse.com/#feat=push-api). These include:
-
-1. Chrome 50+
-2. Firefox 44+
-3. Edge 17+
-4. Opera 42+
-
 <Card
-  title="I want to checkout the sample app"
+  title="React UI Kit Sample App"
   icon="github"
-  href="https://github.com/cometchat/cometchat-push-notification-app-react/tree/v4-push-notifications-extension"
+  href="https://github.com/cometchat/cometchat-uikit-react"
 >
-  Push notifications sample app for Web (React)
-
-  View on Github
+  Reference implementation of React UI Kit, FCM and Push Notification Setup.
 </Card>
 
-## Firebase Project Setup
+## What this guide covers
 
-Visit [Firebase Console](https://console.firebase.google.com) and login/signup using your Gmail ID.
+- CometChat dashboard setup (FCM provider + Provider ID) and Firebase web config + VAPID key.
+- Service worker + Firebase Messaging wiring for foreground/background pushes.
+- Token registration/unregistration with `CometChatNotifications` and navigation on notification click.
+- Testing and troubleshooting tips for web push.
 
-### Step 1: Create a new Firebase Project
+{/* ## What you need first
 
-<Frame>
-  <img src="/images/2b2f10a0-1623199729-ff39ea8363485acfdf5c2625e9676556.png" />
-</Frame>
+- CometChat App ID, Region, Auth Key; Push Notifications enabled with an **FCM provider** (copy the Provider ID).
+- Firebase project with a **Web app** registered; Firebase config object; **VAPID key** from Cloud Messaging.
+- Node 18+ and a modern browser that supports service workers/notifications. */}
 
-This is a simple 3 step process where:
+## How CometChat + FCM work on web
 
-1. You give a name to your project
-2. Add Google Analytics to your project (Optional)
-3. Configure Google Analytics account (Optional)
+- **Provider ID**: Tells CometChat which Firebase credentials to use when sending to your web app.
+- **Tokens**: `getToken` returns a browser token (per origin/device). Register it after login:
+  `CometChatNotifications.registerPushToken(token, CometChatNotifications.PushPlatforms.FCM_WEB, providerId)`.
+- **Handlers**: Foreground messages come via `messaging.onMessage`; background uses `firebase-messaging-sw.js` with `onBackgroundMessage`.
+- **Navigation**: Service worker sends a postMessage or focuses the client; the app routes to the right view.
 
-Click on Create and you are ready to go.
+## 1. Dashboard: enable push + add FCM provider
 
-### Step 2: Add Firebase to your Web App
-
-1. Click on the Web icon on the below screen and Register your app with a nickname.
-2. Once done, click on Continue to Console.
-
-<Frame>
-  <img src="/images/52e6548c-1623199732-71d1533ce5f42500dbf817df27946be2.png" />
-</Frame>
-
-### Step 3: Download the service account file
+1. Go to **Notifications → Settings** and enable **Push Notifications**.
+2. Add/configure an **FCM** provider and copy the **Provider ID** (used in code).
 
 <Frame>
-  <img src="/images/2836ba6c-cometchat-firebase-get-service-account-3ed293fb42bfd421d5127639f2857277.png" />
+  <img src="/images/80a520bb-pushnotification-enable-e64632d479a2ebba111453b95bd522c6.png" alt="Firebase - Push Notifications" />
 </Frame>
 
-## Extension settings
+## 2. Firebase setup (web app + VAPID)
 
-### Step 1: Enable the extension
-
-1. Login to [CometChat](https://app.cometchat.com/login) and select your app.
-2. Go to the Extensions section and Enable the Push Notifications extension.
-3. Open the settings for the extension and add all the mentioned settings and hit save.
+1. In Firebase Console, create/select a project.
+2. Add a **Web** app (`</>`), copy the **Firebase config** object.
+3. In **Project settings → Cloud Messaging**, generate/copy the **VAPID key** under Web Push certificates.
 
 <Frame>
-  <img src="/images/790e609a-cometchat-extensions-push-notifications-2d0156e297965960863d547589c46044.png" />
+  <img src="/images/push-notifications-fcm-web.png" alt="Firebase - Push Notifications" />
 </Frame>
 
-### Step 2: Save your settings
+## 3. Install dependencies
 
-On the Settings page you need to enter the following:
+Install firebase SDK:
 
-1. **Set extension version**
-
-* If you are setting it for the first time, Select `V2` to start using the token-based version of the Push Notification extension.
-* If you already have an app using `V1` and want to migrate your app to use `V2`, then Select `V1 & V2` option. This ensures that the users viewing the older version of your app also receive Push Notifications.
-* Eventually, when all your users are on the latest version of your app, you can change this option to `V2`, thus turning off `V1` (Topic-based) Push Notifications completely.
-
-2. **Select the platforms that you want to support**
-
-* Select from Web, Android, Ionic, React Native, Flutter & iOS.
-
-3. **Notification payload settings**
-
-* You can control if the notification key should be in the Payload or not. Learn more about the FCM Messages [here](https://firebase.google.com/docs/cloud-messaging/concept-options).
-
-4. **Push payload message options**
-
-<Frame>
-  <img src="/images/10dbaaf4-cometchat-push-notifications-extension-settings-payload-message-options-28494a3c1ed3d9e7a65dd171d17cb12d.png" />
-</Frame>
-
-* The maximum payload size supported by FCM and APNs for push notifications is approximately 4 KB. Due to the inclusion of CometChat's message object, the payload size may exceed this limit, potentially leading to non-delivery of push notifications for certain messages. The options provided allow you to remove the sender's metadata, receiver's metadata, message metadata and trim the content of the text field.
-
-* The message metadata includes the outputs of the Thumbnail Generation, Image Moderation, and Smart Replies extensions. You may want to retain this metadata if you need to customize the notification displayed to the end user based on these outputs.
-
-5. **Notification Triggers**
-
-<Frame>
-  <img src="/images/e53ecc4b-cometchat-extensions-push-notification-triggers-f847cdea801fcb44572e67c83d3faf66.png" />
-</Frame>
-
-* Select the triggers for sending Push Notifications. These triggers can be classified into 3 main categories:
-
-  1. Message Notifications
-  2. Call Notifications
-  3. Group Notifications
-
-* These are pretty self-explanatory and you can toggle them as per your requirement.
-
-## Web App Setup
-
-### Step 1: Folder and files setup
-
-Create a folder with the following three files:
-
-| Files                     | Description                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------- |
-| index.html                | Displays a simple User Login Form.                                                          |
-| PushNotification.js       | File with the logic to initialize CometChat and Firebase.                                   |
-| firebase-messaging-sw\.js | Service worker shows Push Notifications when the tab is either in the background or closed. |
-
-### Step 2: Add the Firebase Config to the HTML File
-
-1. Go to the Firebase Console and click on the Web app and open up the Settings page.
-2. Go to the "General" tab on the Settings page.
-3. Scroll down and copy the Firebase SDK snippet and paste in the \<head> tag of your index.html file.
-
-<Frame>
-  <img src="/images/9f1013b4-1623199739-ec5872d1da0be4a1cd4276b0f06a37c3.png" />
-</Frame>
-
-### Step 3: Setup index.html file
-
-1. Include the latest CometChat library using CDN.
-
-2. Register the service worker file.
-
-3. Also, include the `PushNotification.js`.
-
-4. The \<body> has a simple form:
-
-   1. Text input for UID.
-   2. Login button.
-   3. Logout button.
-
-Once done, your `index.html` file should look like this:
-
-<Tabs>
-<Tab title="HTML">
-```html
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Push Notification Sample</title>
-
-  <!-- The core Firebase JS SDK is always required and must be listed first -->
-  <script src="https://www.gstatic.com/firebasejs/7.21.0/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/7.21.0/firebase-messaging.js"></script>
-
-  <!-- Firebase config and initialization -->
-  <script>
-    const FIREBASE_CONFIG = {
-      // Your Config
-    };
-    // Initialize Firebase only once
-    firebase.initializeApp(FIREBASE_CONFIG);
-  </script>
-
-  <!-- Register the service worker. -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/firebase-messaging-sw.js');
-      });
-    }
-  </script>
-
-  <!-- CometChat import -->
-  <script type="text/javascript" src="https://unpkg.com/@cometchat/chat-sdk-javascript/CometChat.js"></script>
-
-  <!-- Our app file with the CometChat and Firebase logic -->
-  <script src="PushNotification.js" defer></script>
-</head>
-
-<body>
-  Push Notifications (Legacy)</br>
-  <input type="text" id='uid'></input></br>
-  <button id='loginButton'>Login</button>
-  <button id='logoutButton'>Logout</button>
-</body>
-
-</html>
+```bash
+npm install firebase@^10.3.1
 ```
 
-</Tab>
+## 4. Constants
 
-</Tabs>
+File: `src/AppConstants.js` (or equivalent)
 
-### Step 4: Setup the service worker file
+Set the CometChat Constants from your dashboard and Firebase config + VAPID key.
 
-1. Use `importScripts` to include the `firebase-app.js` and `firebase-messaging.js` files in the service worker.
-2. Also paste in the `FIREBASE_CONFIG` object again in this file.
-3. Initialize the Firebase object using the config.
-4. Call the messaging() on the Firebase object.
-
-Once done, your `firebase-messaging-sw.js` file should look like this:
-
-<Tabs>
-<Tab title="JavaScript">
-```js
-importScripts('https://www.gstatic.com/firebasejs/7.21.0/firebase-app.js');
-importScripts(
-  'https://www.gstatic.com/firebasejs/7.21.0/firebase-messaging.js'
-);
-
-const FIREBASE_CONFIG = {
-  // Your Config
+```js lines highlight={2-5, 9-15, 18}
+export const COMETCHAT_CONSTANTS = {
+  APP_ID: "",
+  REGION: "",
+  AUTH_KEY: "",
+  FCM_PROVIDER_ID: "",
 };
 
-// Initialize firebase in the service worker.
-firebase.initializeApp(FIREBASE_CONFIG);
+export const FIREBASE_CONFIG = { 
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: "",
+  measurementId: ""
+};
 
-// Start Receiving Push Notifications when
-// the browser tab is in the background or closed.
-firebase.messaging();
+export const FIREBASE_VAPID_KEY = "";
 ```
 
-</Tab>
+## 4. Configure Firebase (frontend)
 
-</Tabs>
+File: `src/firebase.js` (or equivalent)
 
-### Step 5: Setup the PushNotification.js file
+This code:
+- Initializes Firebase app and messaging.
+- Requests notification permission, fetches FCM token, and registers it with CometChat after login.
+- Sets up foreground message handler to show notifications.
 
-Now our simple web app has the following:
+```js lines
+import { initializeApp } from "firebase/app";
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
+import { CometChatNotifications } from "@cometchat/chat-sdk-javascript";
+import { COMETCHAT_CONSTANTS, FIREBASE_CONFIG, FIREBASE_VAPID_KEY } from "./AppConstants";
 
-1. Setup required to start using Firebase SDK.
-2. Service worker registration when the index.html loads for the first time.
+let messagingInstance = null;
 
-Next, we can focus on the flow to setup CometChat login process along with the steps required to setup Push Notifications using Firebase Cloud Messaging (or FCM).
+export default async function firebaseInitialize(navigate) {
+  try {
+    // Check if Firebase is already initialized
+    let app;
+    try {
+      app = initializeApp(FIREBASE_CONFIG);
+    } catch (error) {
+      // Firebase might already be initialized
+      const { getApps } = await import("firebase/app");
+      const apps = getApps();
+      if (apps.length > 0) {
+        app = apps[0];
+      } else {
+        throw error;
+      }
+    }
 
-During login:
+    messagingInstance = getMessaging(app);
 
-1. Initialize CometChat.
-2. Login using CometChat user.
-3. Ask for the User's permission to show Push Notifications.
-4. If permission is granted, obtain the `FCM_TOKEN`.
-5. Register the obtained `FCM_TOKEN` with the extension.
+    // Check notification permission first
+    if (Notification.permission === "default") {
+      return;
+    }
 
-During logout:
+    if (Notification.permission !== "granted") {
+      return;
+    }
 
-1. First delete the token using the firebase object.
-2. Logout CometChat user.
+    // Get FCM token
+    const currentToken = await getToken(messagingInstance, {
+      vapidKey: FIREBASE_VAPID_KEY,
+    });
 
-The above steps have been implemented in the `login` and `logout` functions in the `PushNotifications.js` file. You can copy paste the below code. Do not forget to replace the `APP_ID`, `REGION`, `AUTH_KEY` of your app in the code below.
+    if (currentToken) {
+      
+      // Check if user is logged in before registering
+      const { CometChat } = await import("@cometchat/chat-sdk-javascript");
+      const loggedInUser = await CometChat.getLoggedinUser();
+      
+      if (!loggedInUser) {
+        return;
+      }
 
-<Tabs>
-<Tab title="JavaScript">
-```js
-const APP_ID = 'APP_ID';
-const REGION = 'REGION';
-const AUTH_KEY = 'AUTH_KEY';
+      // Register push token with CometChat
+      try {
+        const payload = await CometChatNotifications.registerPushToken(
+          currentToken,
+          CometChatNotifications.PushPlatforms.FCM_WEB,
+          COMETCHAT_CONSTANTS.FCM_PROVIDER_ID
+        );
+      } catch (err) {
+        console.error("Firebase initialization error:", err);
+      }
+    } else {
+      console.error("No registration token available. Request permission to generate one.");
+    }
+  } catch (err) {
+    console.error("Firebase initialization error:", err);
+  }
 
-const APP_SETTING = new CometChat.AppSettingsBuilder()
-  .subscribePresenceForAllUsers()
-  .setRegion(REGION)
-  .build();
-let FCM_TOKEN = '';
+  // Set up foreground message handler
+  if (messagingInstance) {
+    onMessage(messagingInstance, function (payload) {
+    
+    // Show notification when app is in foreground
+    if (Notification.permission === "granted") {
+      const notificationTitle = payload.data?.title || "New Message";
+      let notificationBody = payload.data?.body || "";
+      
+      // Handle call notifications
+      if (payload.data?.type === "call") {
+        switch (payload.data.callAction) {
+          case "cancelled":
+            notificationBody = "Call cancelled";
+            break;
+          case "initiated":
+            notificationBody = `Incoming ${payload.data.callType} call`;
+            break;
+          default:
+            break;
+        }
+      }
+      
+      const notificationOptions = {
+        body: notificationBody,
+        icon: payload.data?.senderAvatar || "/logo192.png",
+        data: payload.data,
+        tag: payload.data?.tag,
+        requireInteraction: false,
+      };
+      
+      new Notification(notificationTitle, notificationOptions);
+    }
+    });
+  }
+}
 
-let loginButton;
-let logoutButton;
-
-const login = async () => {
-  const UID = document.getElementById('uid').value;
-  if (!UID) {
-    document.getElementById('uid').focus();
+// Function to register push token after login
+export async function registerPushTokenAfterLogin() {
+  if (!messagingInstance) {
     return;
   }
-  loginButton.disabled = true;
-  console.log('Initiating login... ');
+
   try {
-    // CC init
-    await CometChat.init(APP_ID, APP_SETTING);
+    const currentToken = await getToken(messagingInstance, {
+      vapidKey: FIREBASE_VAPID_KEY,
+    });
 
-    // User login
-    const loginResponse = await CometChat.login(UID, AUTH_KEY);
-    console.log('1. User login complete', loginResponse);
-
-    CometChat.getLoggedinUser().then((user) => console.log(user.name));
-    // Change the page title
-    document.title = UID + ' logged in';
-
-    // Fetch the FCM Token
-    const messaging = firebase.messaging();
-    FCM_TOKEN = await messaging.getToken();
-    console.log('2. Received FCM Token', FCM_TOKEN);
-
-    // Register the FCM Token
-    await CometChat.registerTokenForPushNotification(FCM_TOKEN);
-    console.log('3. Registered FCM Token');
-
-    logoutButton.disabled = false;
-  } catch (error) {
-    console.error(error);
+    if (currentToken) {
+      const payload = await CometChatNotifications.registerPushToken(
+        currentToken,
+        CometChatNotifications.PushPlatforms.FCM_WEB,
+        COMETCHAT_CONSTANTS.FCM_PROVIDER_ID
+      );
+    }
+  } catch (err) {
+    console.error("Error registering push token after login:", err);
   }
-};
-
-const logout = async () => {
-  console.log('Initiating logout...');
-  loginButton.disabled = true;
-  logoutButton.disabled = true;
-  try {
-    // Delete the token
-    const messaging = firebase.messaging();
-    await messaging.deleteToken();
-
-    // Logout the user
-    await CometChat.logout();
-    console.log('5. Logged out');
-
-    // Refresh the page.
-    init();
-    window.location.reload();
-  } catch (error) {
-    console.error(error);
-  }
-};
-
-const init = () => {
-  // Basic initialization
-  loginButton = document.getElementById('loginButton');
-  logoutButton = document.getElementById('logoutButton');
-
-  loginButton.addEventListener('click', login);
-  logoutButton.addEventListener('click', logout);
-
-  logoutButton.disabled = true;
-};
-
-window.onload = () => {
-  // Call the initialization function on load.
-  setTimeout(init, 300);
-};
+}
 ```
 
-</Tab>
+Use your **VAPID key** in `getToken` calls.
 
-</Tabs>
+## 5. Service worker (background pushes)
 
-## Start receiving Push Notifications
+File: `public/firebase-messaging-sw.js`
 
-1. You can now host the project folder using Nginx, Apache web server, or even VSCode Live server extension.
-2. Launch the web app in a browser and open the browser console to see the logs.
-3. Enter the UID of the user and click on login.
-4. When asked for permission to show notifications, click on Allow.
-5. Once you see logs saying that the FCM Token has been registered, either send the browser tab to the background or close it completely.
-6. Send a message to this logged-in user from another device (using our Sample Apps) and you should be able to see the Push Notifications.
+This code:
+- Initializes Firebase app in the service worker.
+- Handles background messages with `onBackgroundMessage`.
+- Manages notification clicks to focus the app and send data for navigation.
+- Ensure your app registers the service worker (e.g., in `index.tsx`) and listens for `message` events to navigate. 
 
-## Stop receiving Push Notifications
+```js lines
+/* eslint-disable no-restricted-globals */
+/* eslint-disable no-undef */
+// required to setup background notification handler when browser is not in focus or in background and
+// In order to receive the onMessage event,  app must define the Firebase messaging service worker
+// self.importScripts("localforage.js");
 
-1. Reopen the previous closed browser tab and click on logout.
-2. The `FCM_TOKEN` will be deleted on the extension's end on the `CometChat.logout()` call.
-3. As a good practice, the `FCM_TOKEN` should also be deleted using the `firebase.messaging().deleteToken()`.
-
-## Custom body for notifications
-
-To send custom body for notifications or to receive notification of `CustomMessage`, you need to set metadata while sending the `CustomMessage`.
-
-<Tabs>
-<Tab title="JavaScript">
-```js
-var receiverID = 'UID';
-var customData = {
-  latitude: '50.6192171633316',
-  longitude: '-72.68182268750002',
-};
-
-var customType = 'location';
-var receiverType = CometChat.RECEIVER_TYPE.USER;
-var metadata = {
-  pushNotification: 'Your Notification Message',
-};
-
-var customMessage = new CometChat.CustomMessage(
-  receiverID,
-  receiverType,
-  customType,
-  customData
+importScripts(
+  "https://www.gstatic.com/firebasejs/9.15.0/firebase-app-compat.js"
 );
+importScripts(
+  "https://www.gstatic.com/firebasejs/9.15.0/firebase-messaging-compat.js"
+);
+var TAG = "[Firebase-sw.js]";
 
-customMessage.setMetadata(metadata);
-
-CometChat.sendCustomMessage(customMessage).then(
-  (message) => {
-    // Message sent successfully.
-    console.log('custom message sent successfully', message);
-  },
-  (error) => {
-    console.log('custom message sending failed with error', error);
-    // Handle exception.
+self.addEventListener("notificationclick", async function (event) {
+  console.log(TAG, "notificationclick", event, event.clientId);
+  if (event?.notification?.data) {
+    let data = event.notification.data;
+    event.waitUntil(
+      self.clients
+        .matchAll({ type: "window", includeUncontrolled: true })
+        .then((clientList) => {
+          if (clientList.length > 0) {
+            clientList[0].postMessage({
+              message: data,
+            });
+            return (
+              clientList[0]
+                .focus()
+                .catch((error) => {
+                  console.log(error);
+                  return self.clients.openWindow(clientList[0].url); // Adjust this URL as necessary for your application
+                })
+            );
+          } else {
+            // Open a new client (tab) if there are no existing clients
+            self.clients.openWindow("/");
+            setTimeout(() => {
+              self.clients
+                .matchAll({ type: "window", includeUncontrolled: true })
+                .then((clientList) => {
+                  if (clientList.length > 0) {
+                    clientList[0].postMessage({
+                      message: {...data,fromBackground: true},
+                    });
+                  }
+                  return;
+                });
+            }, 1500);
+          }
+        })
+    );
   }
+
+  event.notification.close();
+});
+// "Default" Firebase configuration (prevents errors)
+const defaultConfig = {
+  apiKey: true,
+  projectId: true,
+  messagingSenderId: true,
+  appId: true,
+};
+
+// Initialize Firebase app
+firebase.initializeApp(self.firebaseConfig || defaultConfig);
+let messaging;
+try {
+  messaging = firebase.messaging();
+  // Customize background notification handling here
+  messaging.onBackgroundMessage((payload) => {
+    console.log("Background Message:", payload);
+    const notificationTitle = payload.data.title;
+    if (
+      payload.data.type === "call" &&
+      (payload.data.callAction === "unanswered" ||
+        payload.data.callAction === "busy" ||
+        payload.data.callAction === "ongoing")
+    ) {
+      return;
+    }
+    let body = payload.data.body;
+    if (payload.data.type === "call") {
+      switch (payload.data.callAction) {
+        case "cancelled":
+          body = `Call cancelled`;
+          break;
+        case "initiated":
+          body = `Incoming ${payload.data.callType} call`;
+          break;
+        default:
+          break;
+      }
+    }
+    const notificationOptions = {
+      title: payload.data.title,
+      icon: payload.data.senderAvatar,
+      data: payload.data,
+      tag: payload.data.tag,
+      body: body,
+    };
+    self.registration.showNotification(notificationTitle, notificationOptions);
+  });
+} catch (err) {
+  console.error("Failed to initialize Firebase Messaging", err);
+}
+```
+
+Ensure your app registers the service worker (e.g., in `index.tsx`) and listens for `message` events to navigate.
+
+## 6. Request permission + register token after login
+
+In your app initialization (e.g., `App.tsx`):
+
+This code:
+- Requests notification permission.
+- Fetches FCM token and registers it with CometChat after user login.
+- Handles token refresh by re-registering if it changes.
+
+```ts lines
+const token = await getToken(messaging, { vapidKey: VAPID_KEY });
+await CometChatNotifications.registerPushToken(
+  token,
+  CometChatNotifications.PushPlatforms.FCM_WEB,
+  COMETCHAT_CONSTANTS.FCM_PROVIDER_ID
 );
 ```
 
-</Tab>
+- Run after the user logs in; retry on failure.
+- On logout: `CometChatNotifications.unregisterPushToken()` before ending the session.
+- Handle token refresh by calling `getToken` again and re-registering if it changes.
 
-</Tabs>
+**Example Implementation**: 
+
+This code:
+- Initializes CometChat UI Kit.
+- Initializes Firebase messaging.
+- Logs in the user if not already logged in.
+- Mounts the React app.
+- Registers the push token after login. 
+
+```tsx lines highlight={11, 13, 41, 57}
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import App from "./App.tsx";
+import { COMETCHAT_CONSTANTS } from "./AppConstants.ts";
+
+import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+
+// Your firebase helper (from firebase.js)
+// Adjust the path if your file lives somewhere else.
+import firebaseInitialize, { registerPushTokenAfterLogin } from "./firebase";
+
+const UID = "cometchat-uid-1";
+
+/**
+ * Configure the CometChat UI Kit using the UIKitSettingsBuilder.
+ */
+const UIKitSettings = new UIKitSettingsBuilder()
+  .setAppId(COMETCHAT_CONSTANTS.APP_ID)
+  .setRegion(COMETCHAT_CONSTANTS.REGION)
+  .setAuthKey(COMETCHAT_CONSTANTS.AUTH_KEY)
+  .subscribePresenceForAllUsers()
+  .build();
+
+function mountApp() {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>
+  );
+}
+
+async function boot() {
+  try {
+    // 1) Init CometChat UIKit
+    await CometChatUIKit.init(UIKitSettings);
+    console.log("CometChat UI Kit initialized successfully.");
+
+    // 2) Init Firebase messaging + foreground handlers once
+    // (This sets up messagingInstance and onMessage handler in your firebase.js)
+    await firebaseInitialize();
+
+    // 3) Login if needed
+    const existing = await CometChatUIKit.getLoggedinUser();
+    if (!existing) {
+      const user = await CometChatUIKit.login(UID);
+      console.log("Login Successful:", { user });
+    } else {
+      console.log("User already logged in:", { user: existing });
+    }
+
+    // 4) Mount UI (don’t block UI on push)
+    mountApp();
+
+    // 5) Register push AFTER login (requests permission if needed)
+    // Non-blocking so app loads even if user denies permission
+    void registerPushTokenAfterLogin();
+  } catch (error) {
+    console.error("CometChat UI Kit initialization/login failed:", error);
+  }
+}
+
+boot();
+```
+
+## 7. Foreground + background handling
+
+- **Foreground**: `messaging.onMessage` → show a `Notification` or in-app toast; deep link using payload data.
+- **Background/killed**: service worker `onBackgroundMessage` shows the notification; `notificationclick` focuses the tab and sends a message for navigation.
+- Suppress duplicates if the conversation is already active.
+
+## 8. Testing checklist
+
+1. Service worker registered (DevTools → Application → Service Workers shows “activated”).
+2. Permission prompt appears and is granted (`Notification.permission === "granted"`).
+3. Login → token fetched → `registerPushToken` succeeds (check console/logs).
+4. Foreground message shows a notification; click navigates to the right chat.
+5. Background/tab inactive message shows a notification; click focuses tab and routes correctly.
+6. Logout → `unregisterPushToken` runs without errors.
+
+## 9. Troubleshooting
+
+| Symptom | Quick checks |
+| --- | --- |
+| No notification | Service worker registered? Permission granted? VAPID key matches Firebase project? FCM Provider ID set in code? |
+| Token registration fails | Run after login; confirm Provider ID; ensure correct Firebase config domain/origin; check console errors. |
+| Click does nothing | Ensure `notificationclick` handler posts a message or opens the client; app listens for postMessage to navigate. |
+| Foreground only | Verify `onBackgroundMessage` in service worker; confirm service worker file is in `/public` and registered. |
+| Wrong project | Config/VAPID from a different Firebase project will invalidate tokens—recreate tokens after updating. |

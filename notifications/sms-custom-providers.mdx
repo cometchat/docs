@@ -1,0 +1,187 @@
+---
+title: "Custom Providers"
+---
+
+Use a custom provider to send CometChat SMS notifications through any gateway via webhook. Twilio is built-in; choose custom when you want another SMS service or your own bridge.
+
+## Prerequisites
+
+1. Public `https://` webhook that accepts `POST` JSON.
+2. Return `200 OK` within ~2 seconds (do heavy work async).
+3. Secure the endpoint (recommended): Basic Auth or a verified signature. With Basic Auth, requests include:
+
+```html
+Authorization: Basic <Base64-encoded-credentials>
+```
+
+## Add credentials
+
+1. Click on the "+ Add Credentials" button.
+2. Enable the provider.
+3. Enter the publicly accessible webhook URL.
+4. (Recommended) Enable Basic Authentication and set username/password.
+5. Decide if you want to **Trigger only if phone number is stored with CometChat** (via [Update Contact details API](https://api-explorer.cometchat.com/reference/notifications-update-contact-details)); when off, the webhook fires regardless.
+6. Save the credentials.
+
+<Frame>
+  <img src="/images/7a3c6338-cometchat-sms-notifications-custom-provider-268e15d0ed5778ccdb0fff5b61d79d81.png" />
+</Frame>
+
+## How delivery works
+
+The Custom provider is triggered once for an event in one-on-one conversation. In case of notifying users in a group, the custom provider is triggered once for each user present in that group.
+
+<Tabs>
+<Tab title="One-on-one conversation">
+```json
+{
+  "trigger": "sms-notification-payload-generated",
+  "data": {
+    "to": {
+      "uid": "cometchat-uid-1",
+      "phno": "+919299334134", // Optional
+      "name": "Andrew Joseph"
+    },
+    "messages": [
+      {
+        "sender": {
+          "uid": "cometchat-uid-4",
+          "avatar": "https://assets.cometchat.io/sampleapp/v2/users/cometchat-uid-4.webp",
+          "name": "Susan Marie"
+        },
+        "message": "Are we meeting on this weekend?",
+        "messageObject": {CometChat Message Object}, // Present if "Include message object" is enabled. The message object is present for new messages or in case a message was edited
+      },
+      {
+        "sender": {
+          "uid": "cometchat-uid-4",
+          "avatar": "https://assets.cometchat.io/sampleapp/v2/users/cometchat-uid-4.webp",
+          "name": "Susan Marie"
+        },
+        "message": "📷 Has shared an image",
+        "messageObject": {CometChat Message Object}, // Present if "Include message object" is enabled. The message object is present for new messages or in case a message was edited
+      }
+    ],
+    "senderDetails": {
+      "uid": "cometchat-uid-4",
+      "name": "Susan Marie",
+      "avatar": "https://assets.cometchat.io/sampleapp/v2/users/cometchat-uid-4.webp"
+    },
+    "smsContent": "You've received new messages from Susan Marie! Read them at https://your-website.com/chat."
+  },
+  "appId": "app123",
+  "region": "us/eu/in",
+  "webhook": "custom"
+}
+```
+
+</Tab>
+
+<Tab title="Group conversation">
+```json
+{
+  "trigger": "sms-notification-payload-generated",
+  "data": {
+    "to": {
+      "uid": "cometchat-uid-1",
+      "phno": "+919299334134", // Optional
+      "name": "Andrew Joseph"
+    },
+    "messages": [
+      {
+        "sender": {
+          "uid": "cometchat-uid-5",
+          "avatar": "https://assets.cometchat.io/sampleapp/v2/users/cometchat-uid-5.webp",
+          "name": "John Paul"
+        },
+        "message": "Hello all! What's up?",
+        "messageObject": {CometChat Message Object}, // Present if "Include message object" is enabled. The message object is present for new messages or in case a message was edited
+      },
+      {
+        "sender": {
+          "uid": "cometchat-uid-4",
+          "avatar": "https://assets.cometchat.io/sampleapp/v2/users/cometchat-uid-4.webp",
+          "name": "Susan Marie"
+        },
+        "message": "This is the place I was thinking about",
+        "messageObject": {CometChat Message Object}, // Present if "Include message object" is enabled. The message object is present for new messages or in case a message was edited
+      }
+    ],
+    "groupDetails": {
+      "guid": "cometchat-guid-1",
+      "name": "Hiking Group",
+      "icon": "https://assets.cometchat.io/sampleapp/v2/groups/cometchat-guid-1.webp"
+    },
+    "smsContent": "You've received new messages in Hiking Group! Read them at https://your-website.com."
+  },
+  "appId": "app123",
+  "region": "us/eu/in",
+  "webhook": "custom"
+}
+```
+
+</Tab>
+
+</Tabs>
+
+#### Sample server-side code
+
+```javascript
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+const basicAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  next();
+};
+
+const triggerSMSNotification = async (to = {}, data = {}) => {
+  let { name, uid, phno } = to;
+  let { groupDetails, senderDetails, smsContent } = data;
+
+  if (!uid) throw new Error('Missing data.to.uid');
+  if (!smsContent) throw new Error('Missing data.smsContent');
+
+  if (groupDetails) console.log('Received webhook for group SMS notification');
+  if (senderDetails) console.log('Received webhook for one-on-one SMS notification');
+
+  if (phno == null) {
+    phno = await fetchPhoneNumberFor(uid);
+  }
+
+  if (!phno) throw new Error(`Phone number not available for uid=${uid}`);
+
+  return await sendSMS(phno, smsContent);
+};
+
+app.post('/webhook', basicAuth, (req, res) => {
+  const { trigger, data, appId, region, webhook } = req.body || {};
+  const { to } = data || {};
+
+  if (trigger !== 'sms-notification-payload-generated' || webhook !== 'custom') {
+    return res.status(400).json({ message: 'Invalid trigger or webhook type' });
+  }
+
+  console.log('Received Webhook:', JSON.stringify(req.body, null, 2));
+
+  triggerSMSNotification(to, data)
+    .then((result) => {
+      console.log('Successfully triggered SMS notification for', appId, to?.uid, result);
+    })
+    .catch((error) => {
+      console.error('Something went wrong while triggering SMS notification for', appId, to?.uid, error.message);
+    });
+
+  res.status(200).json({ message: 'Webhook received successfully' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
+```

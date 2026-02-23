@@ -1,0 +1,102 @@
+---
+title: "Build a Product Hunt Agent with CrewAI"
+sidebarTitle: "Product Hunt Agent"
+description: "Create a CrewAI agent that fetches Product Hunt posts, answers launch questions, and can trigger frontend actions like confetti."
+---
+
+
+Refreshed for the latest [`ai-agent-crew-ai-examples`](https://github.com/cometchat/ai-agent-crew-ai-examples) codebase: run the `product_hunt_agent` FastAPI service, wire it to CometChat, and stream SSE updates (with optional confetti actions).
+
+---
+
+## What you’ll build
+
+- A CrewAI agent with tools to **get top posts**, **search**, **timeframes**, and **trigger confetti**.
+- A FastAPI `/stream` endpoint emitting newline-delimited JSON (`text_start`, `text_delta`, `text_end`, `done`).
+- CometChat AI Agent wiring that consumes those SSE chunks; your UI listens for the confetti payload.
+- Streaming events follow `text_start` → `text_delta` chunks → `text_end` → `done` (errors emit `type: "error"`).
+
+---
+
+## Prerequisites
+
+- Python 3.10+ with `pip`
+- `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `PRODUCT_OPENAI_MODEL`)
+- Optional: `PRODUCTHUNT_API_TOKEN` for live GraphQL data (empty lists when missing)
+- CometChat app + AI Agent entry
+
+---
+
+## Run the updated sample
+
+<Steps>
+  <Step title="Install & start">
+    In <code>ai-agent-crew-ai-examples/</code>:
+    <pre><code className="language-bash">python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn product_hunt_agent.main:app --host 0.0.0.0 --port 8001 --reload</code></pre>
+  </Step>
+  <Step title="Set env">
+    Required: <code>OPENAI_API_KEY</code>. Optional: <code>PRODUCTHUNT_API_TOKEN</code> (GraphQL), <code>PRODUCTHUNT_DEFAULT_TIMEZONE</code> (default <code>America/New_York</code>).
+  </Step>
+</Steps>
+
+***
+
+## API surface (FastAPI)
+
+- `GET /api/top` — top posts by votes (`limit` 1–10).
+- `GET /api/top-week` — rolling window (default 7 days) with `limit` and `days`.
+- `GET /api/top-range` — timeframe queries (`timeframe`, `tz`, `limit`); supports `"today"`, `"yesterday"`, `"last_week"`, `"last_month"`, or ISO dates.
+- `GET /api/search` — Algolia search (`q`, `limit`).
+- `POST /api/chat` — non-streaming CrewAI answer.
+- `POST /stream` — SSE stream (`text_start`, `text_delta`, `text_end`, `done`) ready for CometChat.
+- `POST /api/chat` payload: `{"message": "…", "messages": [{ "role": "user", "content": "…" }]}` (array is required if `message` is omitted).
+
+### Streaming example
+
+```bash
+curl -N http://localhost:8001/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+        "messages": [
+          { "role": "user", "content": "What were the top launches last week?" }
+        ]
+      }'
+```
+
+Streaming payload shape:
+
+```json
+{"type":"text_start","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"text_delta","content":"...","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"text_end","message_id":"...","thread_id":"...","run_id":"..."}
+{"type":"done","thread_id":"...","run_id":"..."}
+# errors (when thrown) look like:
+{"type":"error","message":"...","message_id":"...","thread_id":"...","run_id":"..."}
+```
+
+***
+
+## Crew internals (for reference)
+
+Key tools in `product_hunt_agent/agent_builder.py`:
+
+```python
+@tool("getTopProducts")          # votes-ranked, clamps limit 1-10
+@tool("getTopProductsThisWeek")  # rolling-week window, clamps days 1-31 and limit 1-10
+@tool("getTopProductsByTimeframe")  # "today", "yesterday", "last_week", ISO, ranges; clamps limit 1-10
+@tool("searchProducts")          # Algolia search (no token needed)
+@tool("triggerConfetti")         # returns payload: colors, particleCount, spread, startVelocity, origin, ticks, disableSound
+```
+
+All tools run server-side; if `PRODUCTHUNT_API_TOKEN` is missing, top/timeframe queries return empty arrays but still respond cleanly (search still works via Algolia defaults).
+
+***
+
+## Wire it to CometChat
+
+- Dashboard → **AI Agent → BYO Agents** and then **Get Started / Integrate → Choose CrewAI**. → **Agent ID** (e.g., `product_hunt`) → **Deployment URL** = your public `/stream`.
+- Listen for `text_start`/`text_delta`/`text_end` to render streaming text; stop on `done`.
+- When `triggerConfetti` returns, map the payload to your UI handler (Widget/React UI Kit). Keep API tokens server-side.

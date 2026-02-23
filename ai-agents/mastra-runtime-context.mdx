@@ -1,0 +1,307 @@
+---
+title: "RuntimeContext"
+description: "Access user authentication data and contextual information in Mastra agents through CometChat's runtime context."
+---
+
+import { Callout } from 'mintlify';
+
+When your Mastra agents are integrated with CometChat, they automatically receive rich contextual information about the user and message through the `cometchatContext` object. This enables your agents to provide personalized responses, authenticate API calls, and access session-specific data.
+
+## Runtime Context Structure
+
+The `cometchatContext` is available within Mastra's runtime context and contains the following structure:
+
+```javascript
+{
+  cometchatContext: {
+    sender: {
+      uid: "user123",           // Sender's unique identifier
+      role: "admin"             // Sender's role (optional)
+    },
+    messageMetadata: {
+      // Custom metadata fields (only present if set when sending message)
+      // Examples of what you might include:
+      // platform: "web", // or "ios", "android", "react-native"
+      // appVersion: "1.2.3",
+      // sessionId: "session_abc123",
+      // currentPage: "/products/electronics/smartphones", // Current page/route user is on
+      // pageTitle: "Smartphones - Electronics",
+      // timestamp: 1704067200000,
+      // locale: "en-US",
+      // deviceType: "mobile" // or "desktop", "tablet"
+    }
+  }
+}
+```
+
+## Accessing Context in Mastra Agents
+
+### Runtime Context Access Pattern
+
+In Mastra, you access the CometChat context through the `runtimeContext.get()` method within your tool's execute function. The context data is stored under the key `'cometchatContext'`:
+
+```javascript
+import { createTool } from '@mastra/core';
+
+export const contextExampleTool = createTool({
+  id: 'context-example',
+  execute: async ({ runtimeContext }) => {
+    // Access the CometChat context
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    
+    // Extract sender and metadata
+    const { sender, messageMetadata } = cometchatContext;
+    
+    // Use the context data
+    console.log(`User: ${sender.uid}, Role: ${sender.role}`);
+    
+    return { success: true };
+  }
+});
+```
+
+### In Tool Functions
+
+Access the context within your Mastra tool functions:
+
+```javascript
+import { createTool } from '@mastra/core';
+import { z } from 'zod';
+
+export const productQueryTool = createTool({
+  id: 'product-query-tool',
+  description: 'Query product information and details',
+  inputSchema: z.object({
+    query: z.string().describe('Product-related question or search query')
+  }),
+  execute: async ({ query, runtimeContext }) => {
+    // Access CometChat context using runtimeContext.get()
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    const { sender, messageMetadata } = cometchatContext;
+    
+    // Use sender info for personalization
+    console.log(`Product query from ${sender.uid}: ${query}`);
+    
+    // Use page context to understand what product user is viewing
+    const currentPage = messageMetadata.currentPage;
+    const pageTitle = messageMetadata.pageTitle;
+    const userLocale = messageMetadata.locale;
+    
+    // Make API call with current page context
+    const response = await fetch(`/api/products/query`, {
+      method: 'POST',
+      headers: {
+        'User-ID': sender.uid,
+        'Current-Page': currentPage,
+        'Accept-Language': userLocale,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        query,
+        pageContext: {
+          url: currentPage,
+          title: pageTitle
+        }
+      })
+    });
+    
+    return response.json();
+  }
+});
+```
+
+## Common Use Cases
+
+### User Authentication & Business Logic
+
+Use the context to validate user access based on sender information:
+
+```javascript
+export const userValidationTool = createTool({
+  id: 'user-validation-tool',
+  description: 'Validate user identity and role',
+  inputSchema: z.object({
+    action: z.string()
+  }),
+  execute: async ({ action, runtimeContext }) => {
+    // Access CometChat context
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    const { sender } = cometchatContext;
+    
+    // Use sender info for validation
+    const userId = sender.uid;
+    const userRole = sender.role;
+    
+    console.log(`User ${userId} with role ${userRole} attempting: ${action}`);
+    
+    // Basic role validation
+    if (!userId) {
+      return { 
+        error: 'User identification required' 
+      };
+    }
+    
+    // Role-based access (if role is available)
+    if (userRole) {
+      console.log(`Validated user role: ${userRole}`);
+    }
+    
+    // Proceed with action
+    return {
+      success: true,
+      userId,
+      userRole: userRole || 'guest',
+      action,
+      timestamp: new Date().toISOString()
+    };
+  }
+});
+```
+
+### Role-Based Responses
+
+Customize agent behavior based on user roles:
+
+```javascript
+export const adminTool = createTool({
+  id: 'admin-operations-tool',
+  description: 'Perform administrative operations',
+  inputSchema: z.object({
+    action: z.string()
+  }),
+  execute: async ({ action, runtimeContext }) => {
+    // Access CometChat context
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    const { sender } = cometchatContext;
+    
+    // Check user role
+    if (sender.role !== 'admin') {
+      return { 
+        error: 'Access denied. Admin privileges required.' 
+      };
+    }
+    
+    // Proceed with admin action
+    return performAdminAction(action);
+  }
+});```
+```
+
+### Session Management
+
+Access session-specific data for stateful interactions:
+
+```javascript
+export const sessionTool = createTool({
+  id: 'user-session-tool',
+  description: 'Get current user session information',
+  inputSchema: z.object({}),
+  execute: async ({ runtimeContext }) => {
+    // Access CometChat context
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    const { sender, messageMetadata } = cometchatContext;
+    
+    return {
+      userId: sender.uid,
+      sessionId: messageMetadata.sessionId,
+      organizationId: messageMetadata.organizationId,
+      preferences: messageMetadata.userPreferences || {}
+    };
+  }
+});```
+```
+
+### Custom Validation Patterns
+
+Implement sophisticated business logic validation using message metadata:
+
+```javascript
+export const departmentAccessTool = createTool({
+  id: 'department-access-tool',
+  description: 'Validate department-specific access and permissions',
+  inputSchema: z.object({
+    resource: z.string(),
+    operation: z.enum(['read', 'write', 'delete'])
+  }),
+  execute: async ({ resource, operation, runtimeContext }) => {
+    const cometchatContext = runtimeContext.get('cometchatContext');
+    const { sender, messageMetadata } = cometchatContext;
+    
+    // Multi-level validation checks
+    const {
+      departmentId,
+      customPermissions,
+      sessionContext,
+      organizationId
+    } = messageMetadata;
+    
+    // Department-based access control
+    const resourceDepartmentMap = {
+      'financial_reports': ['finance', 'executive'],
+      'hr_documents': ['hr', 'management'],
+      'product_data': ['engineering', 'product', 'marketing']
+    };
+    
+    const allowedDepartments = resourceDepartmentMap[resource];
+    if (!allowedDepartments?.includes(departmentId)) {
+      return {
+        error: `Access denied. Resource '${resource}' not available to department '${departmentId}'`,
+        allowedDepartments
+      };
+    }
+    
+    // Operation-specific permission check
+    const requiredPermission = `${operation}_${resource}`;
+    if (!customPermissions?.includes(requiredPermission)) {
+      return {
+        error: `Insufficient permissions for '${operation}' on '${resource}'`,
+        requiredPermission,
+        userPermissions: customPermissions
+      };
+    }
+    
+    // Time-based access (business hours check)
+    const userTimezone = sessionContext?.timezone || 'UTC';
+    const currentHour = new Date().toLocaleString('en-US', { 
+      timeZone: userTimezone, 
+      hour12: false, 
+      hour: 'numeric' 
+    });
+    
+    if (resource === 'financial_reports' && (currentHour < 9 || currentHour > 17)) {
+      return {
+        error: 'Financial reports only accessible during business hours (9 AM - 5 PM)',
+        currentTime: currentHour,
+        timezone: userTimezone
+      };
+    }
+    
+    // Language localization check
+    const userLanguage = sessionContext?.language || 'en';
+    const supportedLanguages = ['en', 'es', 'fr', 'de'];
+    if (!supportedLanguages.includes(userLanguage)) {
+      return {
+        warning: `Content may not be available in '${userLanguage}'. Defaulting to English.`,
+        defaultLanguage: 'en'
+      };
+    }
+    
+    // All validations passed
+    return {
+      access: 'granted',
+      resource,
+      operation,
+      userId: sender.uid,
+      departmentId,
+      timestamp: new Date().toISOString(),
+      language: userLanguage
+    };
+  }
+});
+```
+
+## Next Steps
+
+- Learn how to build [Knowledge Agents](/ai-agents/mastra-knowledge-agent) that use context
+- Explore [Backend Tools](/ai-agents/mastra-backend-tools-agent) for API integrations
+- Set up [Frontend Actions](/ai-agents/mastra-frontend-actions-agent) with user context

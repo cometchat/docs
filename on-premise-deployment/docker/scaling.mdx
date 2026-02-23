@@ -1,0 +1,191 @@
+---
+title: "Scaling"
+sidebarTitle: "Scaling"
+---
+
+Guidelines for scaling platform components based on load and resource requirements. Proper scaling ensures optimal performance, cost efficiency, and user experience as your deployment grows.
+
+**Scaling Strategies:**
+- **Vertical scaling**: Increase resources (CPU, RAM, storage) on existing nodes
+- **Horizontal scaling**: Add more service replicas or nodes to distribute load
+- **Capacity planning**: Proactively scale based on growth projections and monitoring data
+
+**When to scale:**
+- CPU utilization consistently above 70%
+- Memory usage approaching 85%
+- API latency exceeding SLA targets (P95 > 100ms)
+- WebSocket connection limits approaching capacity
+- Database query performance degrading
+
+## Vertical scaling
+
+Increase system resource limits and tune configurations to handle more load on existing servers. Vertical scaling is often the first step before adding more nodes.
+
+**Benefits:**
+- Simpler than horizontal scaling (no distributed system complexity)
+- Immediate performance improvement
+- Lower operational overhead
+
+**Limitations:**
+- Hardware limits (maximum CPU, RAM per server)
+- Single point of failure remains
+- Downtime required for hardware upgrades
+
+**Key optimizations:**
+- Raise file descriptor limits for high-concurrency workloads
+- Tune kernel network queues (`somaxconn`, `netdev_max_backlog`)
+- Increase worker processes and thread pools where supported
+- Allocate more CPU and memory to Docker services
+
+### Configure file descriptor limits
+
+1. Edit `/etc/security/limits.conf` and add:
+
+```
+* soft nofile 500000
+* hard nofile 500000
+root soft nofile 500000
+root hard nofile 500000
+```
+
+2. Configure systemd defaults:
+
+```bash
+echo "DefaultLimitNOFILE=500000" | sudo tee -a /etc/systemd/system.conf
+echo "DefaultLimitNOFILE=500000" | sudo tee -a /etc/systemd/user.conf
+```
+
+3. Reboot to apply changes:
+
+```bash
+sudo reboot
+```
+
+4. Verify:
+
+```bash
+ulimit -n
+```
+
+### Allocate more resources to Docker services
+
+Increase CPU and memory limits for services experiencing resource constraints:
+
+```bash
+# Update service resource limits
+docker service update \
+  --limit-cpu 4 \
+  --limit-memory 8G \
+  chat-api
+
+# Verify updated limits
+docker service inspect chat-api --format='{{.Spec.TaskTemplate.Resources.Limits}}'
+```
+
+## Horizontal scaling
+
+Add more service replicas or nodes to distribute load across multiple servers. Horizontal scaling provides better fault tolerance and unlimited growth potential.
+
+**Note:** Docker Swarm supports horizontal scaling through manual commands. Unlike Kubernetes, which offers automatic scaling based on metrics (HPA/VPA), Docker Swarm requires you to manually scale services using the commands below. Monitor your metrics and scale proactively based on load patterns.
+
+### Scaling application services
+
+**WebSocket Gateway:**
+- **Scaling ratio**: Add ~1 replica per 1,000-1,500 peak concurrent connections (PCC)
+- **Command**: `docker service scale websocket=5`
+- **Considerations**: Ensure load balancer distributes connections evenly; sticky sessions if needed are typically handled at the NGINX layer using IP hash or consistent hashing
+
+**Chat API:**
+- **Scaling trigger**: Scale out when average CPU utilization exceeds ~60%
+- **Command**: `docker service scale chat-api=5`
+- **Considerations**: Stateless design allows unlimited horizontal scaling
+
+**Notifications Service:**
+- **Scaling trigger**: High push notification queue depth or processing delays
+- **Command**: `docker service scale notifications=3`
+
+**Webhooks Service:**
+- **Scaling trigger**: Webhook delivery delays or high retry rates
+- **Command**: `docker service scale webhooks=3`
+
+### Scaling data stores
+
+**Kafka:**
+- **Scaling method**: Increase partition count to improve throughput and parallelism
+- **Command**: 
+  ```bash
+  kafka-topics --alter --topic <topic-name> \
+    --partitions <new-partition-count> \
+    --bootstrap-server <kafka-broker>
+  ```
+- **Considerations**: More partitions = more parallelism, but also more overhead; balance based on workload. Avoid frequent partition changes during peak traffic to prevent rebalance storms.
+
+**Redis:**
+- **Scaling trigger**: Enable Redis Cluster mode when deployments exceed ~200k MAU
+- **Benefits**: Distributes data across multiple nodes, improves scalability and fault tolerance
+- **⚠️ Warning**: Redis Cluster mode is not backward-compatible with standalone Redis. Migration requires application awareness and careful testing.
+
+**TiDB/TiKV:**
+- **Scaling method**: Add more TiKV nodes to distribute data and increase storage capacity
+- **Command**: Add nodes to cluster using TiUP
+- **Considerations**: TiDB automatically rebalances data across new nodes
+
+**MongoDB:**
+- **Scaling method**: Enable sharding for horizontal data distribution
+- **⚠️ Warning**: Shard key selection is critical and effectively irreversible. Poor shard keys can cause uneven data distribution and performance issues.
+
+### Monitoring scaling effectiveness
+
+After scaling, monitor these metrics to validate improvements:
+
+- **CPU and memory utilization**: Should decrease proportionally
+- **API latency**: P95 and P99 should improve
+- **Error rates**: Should remain stable or decrease
+- **Throughput**: Requests per second should increase
+- **Connection counts**: Should distribute evenly across replicas
+
+**Important**: If metrics do not improve within 10–15 minutes, reassess scaling assumptions or investigate downstream bottlenecks.
+
+## When to migrate to Kubernetes
+
+Docker Swarm is recommended for most deployments up to ~200k MAU. Consider migrating to Kubernetes when you need advanced orchestration features or exceed Swarm's practical limits.
+
+**Kubernetes migration triggers:**
+
+- **Scale**: MAU exceeds ~200k or peak concurrent connections exceed ~20k
+- **Multi-region**: You need active-active deployments across multiple geographic regions
+- **Latency requirements**: Sub-50ms latency targets requiring advanced traffic management
+- **Autoscaling**: Dynamic autoscaling based on custom metrics (HPA/VPA) is critical
+- **Service mesh**: You need mTLS, advanced traffic routing, or observability features (Istio, Linkerd)
+- **Cloud-native tooling**: You want to leverage Kubernetes-native tools and operators
+
+**Kubernetes benefits:**
+- Unlimited horizontal scalability with automated capacity management
+- Advanced autoscaling (Horizontal Pod Autoscaler, Vertical Pod Autoscaler)
+- Multi-region active-active deployments with global load balancing
+- Service mesh integration for mTLS and advanced traffic management
+- Rich ecosystem of operators and tools (Kafka operators, database operators)
+- GitOps workflows for declarative infrastructure management
+
+**Migration considerations:**
+- Higher operational complexity and learning curve
+- More infrastructure overhead (control plane, etcd, etc.)
+- Requires Kubernetes expertise on the team
+- Migration effort for existing deployments
+
+**Next steps for Kubernetes:**
+
+Our solutions team provides Kubernetes reference architectures, migration planning, and ongoing operational guidance tailored to your specific requirements.
+
+**Contact Enterprise Solutions:**
+
+For Kubernetes reference architectures, migration planning, and ongoing operational guidance tailored to your specific requirements, [contact us](https://www.cometchat.com/contact-sales).
+
+**What to prepare:**
+- Current or projected MAU and PCC
+- Geographic distribution requirements
+- Compliance requirements (GDPR, HIPAA, SOC 2)
+- Existing infrastructure and Kubernetes experience
+- Timeline and deployment goals
+
+For detailed Kubernetes deployment information, see the [Kubernetes Overview](../kubernetes/overview).

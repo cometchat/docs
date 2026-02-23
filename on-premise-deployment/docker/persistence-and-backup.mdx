@@ -1,0 +1,233 @@
+---
+title: "Persistence & Backup"
+sidebarTitle: "Persistence & Backup"
+---
+
+Defines how persistent data is stored, backed up, and restored in production environments. Proper backup and disaster recovery procedures are essential for business continuity and data protection.
+
+**Key Objectives:**
+- Protect against data loss from hardware failures, human errors, or disasters
+- Enable point-in-time recovery for compliance and operational requirements
+- Minimize Recovery Time Objective (RTO) and Recovery Point Objective (RPO)
+- Validate backup integrity through regular restore testing
+
+## Volume layout
+
+Docker volumes provide persistent storage for stateful services. Each service stores data at specific mount points within containers:
+
+| Service | Default path | Data stored |
+| --- | --- | --- |
+| TiKV | `/data` | Distributed key-value data, Raft logs |
+| PD | `/data` | Cluster metadata, timestamp oracle |
+| Kafka | `/var/lib/kafka/data` | Message logs, topic partitions |
+| Redis | `/data` | Cache data, session state |
+| MongoDB | `/data/db` | Document collections, indexes |
+
+**Storage requirements:**
+- All persistent volumes should be backed by SSD or NVMe storage for production deployments
+- Provision adequate IOPS for database workloads (minimum 3000 IOPS for TiKV)
+- Monitor disk space usage and set alerts at 75% capacity
+- Plan for 30-50% growth buffer beyond current usage
+
+## Backup strategy
+
+Implement automated, regular backups for all stateful services with appropriate retention policies:
+
+### TiDB backups
+
+**Frequency**: Daily full backups, hourly incremental backups (for critical deployments)
+
+**Method**: Use TiDB BR (Backup & Restore) tool for consistent cluster snapshots
+
+```bash
+# Full backup
+tiup br backup full \
+  --pd <pd-address>:2379 \
+  --storage "local:///backup/$(date +%Y%m%d)" \
+  --ratelimit 120 \
+  --log-file backup.log
+
+# Incremental backup
+tiup br backup incremental \
+  --pd <pd-address>:2379 \
+  --storage "local:///backup/incremental/$(date +%Y%m%d_%H%M)" \
+  --lastbackupts <last-backup-timestamp>
+```
+
+**Storage**: Secure, off-cluster storage (S3, NFS, or dedicated backup server)
+
+**Retention**: 30 days for daily backups, 90 days for monthly backups (adjust based on compliance requirements)
+
+### Kafka backups
+
+**Frequency**: Weekly segment-level backups
+
+**Method**: Copy Kafka data directories or use MirrorMaker for replication to backup cluster
+
+```bash
+# Stop Kafka broker (if taking offline backup)
+docker service scale kafka=0
+
+# Backup Kafka data directory
+tar -czf kafka-backup-$(date +%Y%m%d).tar.gz /var/lib/kafka/data
+
+# Restart Kafka broker
+docker service scale kafka=1
+```
+
+**⚠️ Warning**: Stopping Kafka brokers will interrupt message delivery. Perform offline backups only during maintenance windows.
+
+**Retention**: 4 weeks (Kafka data is typically transient with configurable retention)
+
+### MongoDB backups
+
+**Frequency**: Daily backups
+
+**Method**: Use mongodump for logical backups or filesystem snapshots for physical backups
+
+```bash
+# Logical backup with mongodump
+# Ensure mongodump uses a read-only backup user with minimal privileges
+docker exec mongodb mongodump \
+  --out /backup/mongodb-$(date +%Y%m%d) \
+  --gzip
+
+# Copy backup to secure storage
+docker cp mongodb:/backup/mongodb-$(date +%Y%m%d) /secure/backup/location/
+```
+
+**Retention**: 30 days for daily backups, 1 year for monthly backups
+
+### Redis backups
+
+**Frequency**: RDB snapshots every 6 hours
+
+**Method**: Redis automatically creates RDB snapshots based on configuration
+
+```bash
+# Trigger manual snapshot
+docker exec redis redis-cli BGSAVE
+
+# Copy RDB file to backup location
+docker cp redis:/data/dump.rdb /backup/redis-$(date +%Y%m%d_%H%M).rdb
+```
+
+**Note**: Redis data is non-authoritative and can be safely rebuilt from TiDB and Kafka in most scenarios. Backups are primarily for faster recovery rather than data preservation.
+
+**Retention**: 7 days (cache data has short-term value)
+
+### Backup validation
+
+**Monthly restore tests**: Perform full restore to staging environment to verify backup integrity
+
+```bash
+# Example: Restore TiDB backup
+tiup br restore full \
+  --pd <staging-pd-address>:2379 \
+  --storage "local:///backup/20240119" \
+  --log-file restore.log
+
+# Verify data integrity
+# Run application smoke tests against restored data
+```
+
+**Validation checklist**:
+- Backup files are complete and not corrupted
+- Restore process completes without errors
+- Data integrity checks pass (row counts, checksums)
+- Application can connect and query restored data
+- Restore time meets RTO requirements
+
+## Disaster recovery
+
+Establish comprehensive disaster recovery procedures to ensure business continuity in the event of catastrophic failures.
+
+### Recovery objectives
+
+Define clear recovery targets based on business requirements:
+
+- **RTO (Recovery Time Objective)**: Maximum acceptable downtime (typically 1-4 hours for production systems)
+- **RPO (Recovery Point Objective)**: Maximum acceptable data loss (typically 1-24 hours depending on backup frequency)
+
+**Note**: Actual RTO/RPO depends on backup size, network bandwidth, and restore automation maturity. Test and validate your specific recovery times.
+
+### Disaster recovery procedures
+
+**Full cluster restoration from backups:**
+
+1. **Provision new infrastructure** matching production specifications
+2. **Restore data stores** in dependency order:
+   - TiDB/TiKV (primary data store) - Restore TiDB first as it is the authoritative source of user, conversation, and message metadata
+   - MongoDB (metadata and configuration)
+   - Kafka (if message history is critical)
+   - Redis (optional, can rebuild from primary data)
+
+3. **Restore application services** and verify connectivity
+4. **Validate data integrity** through application smoke tests
+5. **Update DNS** to point to new cluster
+6. **Monitor closely** for 24-48 hours post-recovery
+
+**Example TiDB restore:**
+
+```bash
+# Restore TiDB cluster from backup
+tiup br restore full \
+  --pd <new-pd-address>:2379 \
+  --storage "s3://backup-bucket/20240119" \
+  --log-file restore.log
+
+# Verify cluster health
+tiup cluster display <cluster-name>
+
+# Run data integrity checks
+# Check row counts, run application queries
+```
+
+### Geographic redundancy
+
+**Backup storage locations:**
+- Maintain a minimum of three geographically isolated backup copies
+- Primary backup: Same region as production (fast recovery)
+- Secondary backup: Different region (regional disaster protection)
+- Tertiary backup: Different cloud provider or on-premiseises (provider-level disaster protection)
+
+**Important**: Ensure backups are completed and verified before object storage lifecycle rules expire older snapshots.
+
+**Replication strategies:**
+- Use cloud storage replication (S3 cross-region replication, GCS multi-region)
+- Implement backup verification at each location
+- Test restore from each backup location quarterly
+
+### Disaster recovery testing
+
+**Quarterly DR simulations:**
+
+Run staged disaster recovery exercises to validate procedures and train teams:
+
+1. **Warm-standby restoration**: Restore to standby environment, validate without cutting over
+2. **Full cluster rehydration**: Complete restore from backups in isolated environment
+3. **Failover testing**: Practice DNS cutover and traffic migration procedures
+4. **Rollback testing**: Validate ability to roll back to previous state if needed
+
+**DR drill checklist:**
+- [ ] Backup files are accessible from all locations
+- [ ] Restore procedures are documented and up-to-date
+- [ ] Team members know their roles and responsibilities
+- [ ] Communication channels are established
+- [ ] Restore time meets RTO requirements
+- [ ] Data integrity is validated post-restore
+- [ ] Application functionality is verified
+- [ ] Lessons learned are documented and procedures updated
+
+### Backup security
+
+**Encryption:**
+- Encrypt backups at rest using AES-256 or equivalent
+- Encrypt backups in transit using TLS
+- Store encryption keys separately from backup data (use key management service)
+
+**Access control:**
+- Restrict backup access to authorized personnel only
+- Use separate credentials for backup operations
+- Audit all backup access and modifications
+- Implement multi-factor authentication for backup system access

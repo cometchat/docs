@@ -1,0 +1,218 @@
+---
+title: "Security"
+sidebarTitle: "Security"
+---
+
+Security controls focus on authentication, secrets management, network isolation, TLS posture, and protective controls against abuse.
+
+## Authentication
+
+Use JWT-based authentication with RSA key pairs so only authorized users interact with the platform.
+
+Actionable steps:
+- Generate an RSA key pair (example):
+
+```bash
+openssl genpkey -algorithm RSA -out private.key -pkeyopt rsa_keygen_bits:3072
+openssl rsa -pubout -in private.key -out public.key
+```
+
+- Validate JWTs in your backend with the public key.
+- Rotate signing keys every 30-90 days for long-running deployments.
+
+## Secrets management
+
+Centralize and encrypt sensitive data such as passwords, API keys, database credentials, and tokens. Avoid storing secrets directly in environment variables or committing them to configuration files. Use secrets managers or mounted secret files instead.
+
+### HashiCorp Vault (recommended for enterprise)
+
+Vault provides enterprise-grade secrets management with RBAC, audit logging, and encrypted storage:
+
+**Key features:**
+- Dynamic secrets with automatic rotation
+- Fine-grained access control policies
+- Comprehensive audit trails for compliance
+- Encryption as a service
+- Multi-cloud and hybrid support
+
+**Basic usage:**
+
+```bash
+# Store a secret
+vault kv put secret/database/password value="your-secure-password"
+
+# Retrieve a secret
+vault kv get secret/database/password
+
+# Rotate a secret
+vault kv put secret/database/password value="new-secure-password"
+```
+
+**Integration with applications:**
+- Use Vault APIs or client libraries to retrieve secrets at runtime
+- Implement automatic secret rotation without service restarts
+- Configure lease durations and renewal policies
+- Enable audit logging for all secret access
+
+### Docker Swarm secrets
+
+For simpler deployments, use Docker Swarm's built-in secrets management:
+
+**Create and use secrets:**
+
+```bash
+# Create a secret from stdin
+echo "your-secure-password" | docker secret create db_password -
+
+# Create a secret from file
+docker secret create tls_cert ./certificate.crt
+
+# List secrets
+docker secret ls
+
+# Use secret in service
+docker service create \
+  --name myservice \
+  --secret db_password \
+  myimage:latest
+```
+
+**Access secrets in containers:**
+Secrets are mounted as files in `/run/secrets/` directory:
+
+```bash
+# Read secret in application
+cat /run/secrets/db_password
+```
+
+**Security properties:**
+- Encrypted in transit and at rest
+- Only accessible to authorized services
+- Automatically removed when service is deleted
+- Immutable (must delete and recreate to update)
+
+### Best practices
+
+- **Principle of least privilege**: Grant secrets access only to services that need them
+- **Regular rotation**: Rotate secrets on a defined schedule (30-90 days)
+- **Audit logging**: Monitor and log all secret access for security analysis
+- **Backup and recovery**: Maintain secure backups of secrets management systems
+- **Separation of duties**: Require multiple approvals for sensitive secret operations
+
+## Network security
+
+Run backend services on private overlay networks and expose only NGINX to the internet.
+
+Actionable steps:
+- Create a private overlay network:
+
+```bash
+docker network create --driver overlay private_network
+```
+
+- Harden firewall rules to allow only the necessary ports (80/443) and block the rest. Apply firewall rules at the host or network perimeter level, not inside containers:
+
+```bash
+sudo ufw allow 80,443/tcp
+sudo ufw default deny incoming
+sudo ufw enable
+```
+
+## TLS configuration
+
+Encrypt all traffic with modern TLS protocols and strong cipher suites.
+
+### NGINX TLS configuration
+
+Configure NGINX with security best practices:
+
+```nginx
+# Use only modern TLS versions
+ssl_protocols TLSv1.2 TLSv1.3;
+
+# Strong cipher suites (prioritize forward secrecy)
+ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';
+ssl_prefer_server_ciphers off;
+
+# Enable HSTS (HTTP Strict Transport Security)
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+# Disable SSL session tickets for better security
+ssl_session_tickets off;
+
+# OCSP stapling for certificate validation
+ssl_stapling on;
+ssl_stapling_verify on;
+resolver 8.8.8.8 8.8.4.4 valid=300s;  # Use internal DNS resolvers where required by corporate security policies
+resolver_timeout 5s;
+
+# DH parameters for forward secrecy
+ssl_dhparam /path/to/dhparam.pem;
+```
+
+### Certificate management
+
+**Obtain certificates:**
+- **Let's Encrypt**: Free, automated certificates with 90-day validity
+- **Commercial CA**: Extended validation (EV) certificates for enterprise trust
+- **Internal CA**: For internal services and development environments
+
+**Certificate rotation strategy:**
+
+```bash
+# Generate DH parameters (one-time, takes several minutes)
+openssl dhparam -out /etc/nginx/dhparam.pem 2048
+
+# Maintain multiple certificates for zero-downtime rotation
+# 1. Obtain new certificate
+# 2. Update NGINX configuration with new certificate path
+# 3. Test configuration
+nginx -t
+
+# 4. Reload NGINX (zero downtime)
+docker service update --force nginx
+```
+
+**Automation with Let's Encrypt:**
+- Use Certbot or similar tools for automatic renewal
+- Configure renewal hooks to reload NGINX after certificate updates
+- Monitor certificate expiration dates (alert 30 days before expiry)
+
+### Internal service encryption
+
+**Docker Swarm overlay network encryption:**
+
+```bash
+# Create encrypted overlay network
+docker network create \
+  --driver overlay \
+  --opt encrypted \
+  secure_backend
+```
+
+**Benefits:**
+- Automatic encryption of all inter-service communication
+- No application code changes required
+- Protects against network sniffing within the cluster
+
+**Database connections:**
+- Enable TLS for TiDB, MongoDB, and Redis connections
+- Use certificate-based authentication where supported
+- Encrypt backup data in transit and at rest
+
+## Additional security measures
+
+- Rate limiting: protect against abuse or DDoS using NGINX rate limits. Tune rate limits based on expected traffic patterns to avoid impacting legitimate users:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=mylimit:10m rate=10r/s;
+limit_req zone=mylimit burst=20;
+```
+
+- IP allowlisting: restrict access to sensitive services:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 3306
+```
+
+- Log monitoring: collect and monitor logs (e.g., Prometheus alerts, Grafana dashboards, ELK/Loki) to detect suspicious activity.

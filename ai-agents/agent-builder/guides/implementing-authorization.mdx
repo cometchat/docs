@@ -1,0 +1,294 @@
+---
+title: "Implementing Authorization with API Tools"
+sidebarTitle: "Auth with API Tools"
+description: "Use API tools to create custom authorization layers that control access to your AI agent, tools, or knowledge base."
+---
+
+import { Callout, Steps, Step } from 'mintlify';
+
+## Overview
+
+You can use API tools to create a custom authorization layer that controls access to your AI agent, specific tools, or knowledge base. This allows you to enforce business rules, subscription tiers, or permissions before the agent processes requests.
+
+## How It Works
+
+1. Create an API tool that calls your authorization endpoint
+2. Pass user context (`sender.uid`, `sender.role`, custom variables) to your backend
+3. Your backend returns authorization decisions
+4. The agent uses the response to determine what actions are allowed
+
+## Pattern 1: Gate Access to the Entire Agent
+
+Create an API tool that checks if a user can access the agent at all.
+
+**API Tool Configuration:**
+
+| Field | Value |
+|-------|-------|
+| Name | checkUserAccess |
+| Endpoint | `https://your-api.com/auth/agent-access` |
+| Method | POST |
+
+**Headers:**
+```json
+{
+  "Content-Type": "application/json",
+  "X-API-Key": "your-secret-key"
+}
+```
+
+**Body Template:**
+```json
+{
+  "userId": "@var-auth:sender.uid",
+  "userRole": "@var-auth:sender.role"
+}
+```
+
+**Your Backend Response:**
+```json
+{
+  "allowed": true,
+  "reason": "User has active subscription",
+  "tier": "premium"
+}
+```
+
+**Agent Instructions:**
+```
+Before answering any question, first call the checkUserAccess tool. 
+If the response shows allowed=false, politely inform the user they 
+don't have access and explain the reason.
+
+If allowed=true, proceed with their request.
+```
+
+## Pattern 2: Control Access to Specific Tools
+
+Gate access to sensitive tools based on user permissions.
+
+**API Tool Configuration:**
+
+| Field | Value |
+|-------|-------|
+| Name | checkToolPermission |
+| Endpoint | `https://your-api.com/auth/tool-permission` |
+| Method | GET |
+
+**Parameters (defined in API Tool):**
+
+| Key | Type | Description | Required |
+|-----|------|-------------|----------|
+| toolName | string | The name of the tool the user is trying to access | Yes |
+
+<Callout type="info" title="How Parameters Work">
+Parameters defined in the API tool are sent as **query parameters** when the API call is made. The agent fills in these values based on the parameter description. In this case, the request would be:
+`GET https://your-api.com/auth/tool-permission?toolName=exportData`
+</Callout>
+
+**Headers:**
+```json
+{
+  "X-User-Id": "@var-auth:sender.uid",
+  "X-Subscription-Tier": "@var-custom:userTier"
+}
+```
+
+**Your Backend Logic:**
+```javascript
+// Example backend implementation
+app.get('/auth/tool-permission', (req, res) => {
+  const toolName = req.query.toolName;
+  const userId = req.headers['x-user-id'];
+  const subscriptionTier = req.headers['x-subscription-tier'];
+  
+  const toolPermissions = {
+    'basic': ['search', 'summarize'],
+    'premium': ['search', 'summarize', 'analyze', 'export'],
+    'enterprise': ['search', 'summarize', 'analyze', 'export', 'admin']
+  };
+  
+  const allowed = toolPermissions[subscriptionTier]?.includes(toolName);
+  
+  res.json({
+    allowed,
+    message: allowed ? 'Access granted' : `Upgrade to access ${toolName}`
+  });
+});
+```
+
+**Agent Instructions:**
+```
+Before using any tool, call checkToolPermission and pass the name of 
+the tool you're about to use as the toolName parameter.
+
+If the response shows allowed=false, inform the user they don't have 
+access to that feature and suggest upgrading.
+```
+
+## Pattern 3: Knowledge Base Access Control
+
+Control access to the knowledge base or validate retrieved information.
+
+<Callout type="warning" title="Current Limitation">
+ Access control can be applied at two levels: gating access to the entire knowledge base, or validating/redacting information after retrieval.
+</Callout>
+
+### Option A: Gate Access to Knowledge Base
+
+Check if a user can use the knowledge base at all before searching.
+
+**API Tool Configuration:**
+
+| Field | Value |
+|-------|-------|
+| Name | checkKnowledgeAccess |
+| Endpoint | `https://your-api.com/auth/knowledge-access` |
+| Method | POST |
+
+**Body Template:**
+```json
+{
+  "userId": "@var-auth:sender.uid",
+  "userRole": "@var-auth:sender.role",
+  "clearanceLevel": "@var-custom:clearanceLevel"
+}
+```
+
+**Your Backend Response:**
+```json
+{
+  "allowed": true,
+  "reason": "User has knowledge base access"
+}
+```
+
+**Agent Instructions:**
+```
+Before searching the knowledge base, call checkKnowledgeAccess.
+If allowed=false, inform the user they don't have access to search 
+the knowledge base and explain why.
+```
+
+### Option B: Validate Retrieved Information
+
+After retrieving information from the knowledge base, validate whether the user should see it.
+
+**API Tool Configuration:**
+
+| Field | Value |
+|-------|-------|
+| Name | validateKnowledgeResponse |
+| Endpoint | `https://your-api.com/auth/validate-knowledge` |
+| Method | POST |
+
+**Parameters (defined in API Tool):**
+
+| Key | Type | Description | Required |
+|-----|------|-------------|----------|
+| retrievedContent | string | The content retrieved from knowledge base | Yes |
+
+**Headers:**
+```json
+{
+  "X-User-Id": "@var-auth:sender.uid",
+  "X-Clearance-Level": "@var-custom:clearanceLevel"
+}
+```
+
+**Your Backend Response:**
+```json
+{
+  "allowed": true,
+  "redactedContent": null,
+  "message": "Content approved for user"
+}
+```
+
+Or if content should be redacted:
+```json
+{
+  "allowed": false,
+  "redactedContent": "This information is restricted to authorized personnel.",
+  "message": "Content contains confidential information"
+}
+```
+
+**Agent Instructions:**
+```
+After retrieving information from the knowledge base, call 
+validateKnowledgeResponse with the retrieved content.
+
+If allowed=false, use the redactedContent in your response instead 
+of the original content. Never share restricted information.
+```
+
+## Pattern 4: Rate Limiting / Usage Tracking
+
+Track and limit API usage per user.
+
+**API Tool:** `checkUsageQuota`
+
+**Endpoint:** `https://your-api.com/auth/usage-quota`
+
+**Body Template:**
+```json
+{
+  "userId": "@var-auth:sender.uid",
+  "action": "agent_query"
+}
+```
+
+**Your Backend Response:**
+```json
+{
+  "allowed": true,
+  "remainingQueries": 47,
+  "resetAt": "2024-01-15T00:00:00Z",
+  "tier": "free",
+  "upgradeUrl": "https://your-app.com/upgrade"
+}
+```
+
+## Setting Up Custom Variables for Auth
+
+To pass additional user context beyond the built-in auth variables:
+
+**User Metadata Variables** – Pull from CometChat user metadata
+- Source Type: `User Metadata`
+- Source Path: `subscriptionTier` (or your metadata field)
+
+**Message Metadata Variables** – Pull from message context
+- Source Type: `Message Metadata`
+- Source Path: `sessionToken`
+
+**Constant Variables** – Static configuration values
+- Source Type: `Constant`
+- Value: Your API key or config value
+
+## Best Practices
+
+<Callout type="warning" title="Fail Secure">
+If your auth API is unreachable, default to denying access rather than allowing it.
+</Callout>
+
+- **Cache Decisions** – Have your backend cache auth decisions to reduce latency
+- **Log Access** – Track who accessed what for audit purposes
+- **Graceful Degradation** – Provide helpful messages when access is denied
+- **Use HTTPS** – Always use secure endpoints for auth calls
+
+## Example Agent Instructions Template
+
+```
+You are a helpful assistant with access control.
+
+AUTHORIZATION RULES:
+1. At the start of each conversation, call checkUserAccess to verify 
+   the user can use this agent
+2. Before using any tool, call checkToolPermission with the tool name
+3. Before searching the knowledge base, call checkKnowledgeAccess
+4. If any authorization check fails, explain the limitation politely 
+   and suggest how to get access
+
+Never bypass these checks. User safety and data security are paramount.
+```
