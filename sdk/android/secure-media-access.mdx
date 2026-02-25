@@ -1,0 +1,935 @@
+---
+title: "Secure Media Access"
+sidebarTitle: "Secure Media Access"
+description: "Enhanced security for file transfers using HTTP header-based token transmission in CometChat Android SDK"
+---
+
+## Overview
+
+Secure Media Access provides enhanced security for file transfers in CometChat by transmitting the File Access Token (FAT) via HTTP headers instead of URL query parameters. This prevents token exposure in server logs, browser history, and network monitoring tools.
+
+By default, CometChat uses the `EMBEDDED` mode, which appends the FAT token to media URLs as a query parameter (`?fat=xxx`). While functional, this approach can expose tokens in logs and browser history. The `HEADER_BASED` mode offers a more secure alternative by transmitting the token via HTTP headers instead.
+
+<Note>
+If you're using CometChat UIKit, no action is required. The UIKit handles secure media automatically.
+</Note>
+
+## Requirements
+
+- Android SDK v4.1.0+
+- Backend support for secure media access
+
+---
+
+## Choose Your Approach
+
+There are two ways to load media securely. Choose the one that fits your use case:
+
+| Approach | Best For | Method |
+| -------- | -------- | ------ |
+| **Approach A: Header-Based Requests** | OkHttp, custom networking | `SecureMediaHelper.createSecureOkHttpClientBuilder()` |
+| **Approach B: Presigned URLs** | Third-party libraries (Glide, Coil, Picasso) | `CometChat.fetchPresignedUrl()` |
+
+<Warning>
+Pick ONE approach and use it consistently throughout your app. Do not mix both approaches for the same media type.
+</Warning>
+
+---
+
+## Approach A: Header-Based Requests
+
+Use this approach when you have direct control over the network request (e.g., using OkHttp). The SDK injects the FAT token into the HTTP headers automatically.
+
+### Step 1: Enable Header-Based Mode
+
+Add `.setSecureMediaMode(SecureMediaMode.HEADER_BASED)` during SDK initialization:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+val appSettings = AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)  // Enable header-based mode
+    .setRegion("us")
+    .build()
+
+CometChat.init(this, appID, appSettings, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(successMessage: String?) {
+        Log.d(TAG, "CometChat initialized with secure media")
+    }
+
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "Initialization failed: ${e?.message}")
+    }
+})
+```
+</Tab>
+
+<Tab title="Java">
+```java
+AppSettings appSettings = new AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)  // Enable header-based mode
+    .setRegion("us")
+    .build();
+
+CometChat.init(this, appID, appSettings, new CometChat.CallbackListener<String>() {
+    @Override
+    public void onSuccess(String successMessage) {
+        Log.d(TAG, "CometChat initialized with secure media");
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Initialization failed: " + e.getMessage());
+    }
+});
+```
+</Tab>
+</Tabs>
+
+### Step 2: Load Media Using Header-Based Requests
+
+Use `SecureMediaHelper.createSecureOkHttpClientBuilder()` to create an OkHttpClient with the FAT header interceptor:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// Create OkHttpClient with FAT header injection
+val client = SecureMediaHelper.createSecureOkHttpClientBuilder().build()
+
+// Load an image
+fun loadImage(urlString: String, imageView: ImageView) {
+    val request = Request.Builder()
+        .url(urlString)
+        .build()
+    
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Log.e(TAG, "Failed to load image: ${e.message}")
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            response.body?.byteStream()?.let { inputStream ->
+                val bitmap = BitmapFactory.decodeStream(inputStream)
+                runOnUiThread {
+                    imageView.setImageBitmap(bitmap)
+                }
+            }
+        }
+    })
+}
+
+// Usage
+loadImage(mediaMessage.attachment?.fileUrl ?: "", myImageView)
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// Create OkHttpClient with FAT header injection
+OkHttpClient client = SecureMediaHelper.createSecureOkHttpClientBuilder().build();
+
+// Load an image
+public void loadImage(String urlString, ImageView imageView) {
+    Request request = new Request.Builder()
+        .url(urlString)
+        .build();
+    
+    client.newCall(request).enqueue(new Callback() {
+        @Override
+        public void onFailure(Call call, IOException e) {
+            Log.e(TAG, "Failed to load image: " + e.getMessage());
+        }
+
+        @Override
+        public void onResponse(Call call, Response response) throws IOException {
+            if (response.body() != null) {
+                InputStream inputStream = response.body().byteStream();
+                Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                runOnUiThread(() -> imageView.setImageBitmap(bitmap));
+            }
+        }
+    });
+}
+
+// Usage
+loadImage(mediaMessage.getAttachment().getFileUrl(), myImageView);
+```
+</Tab>
+</Tabs>
+
+### Step 3: Handle Video/Audio with MediaPlayer
+
+For MediaPlayer, use `SecureMediaHelper.getSecureHeaders()` to get the headers map:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun playVideo(url: String, context: Context) {
+    val headers = SecureMediaHelper.getSecureHeaders(url)
+    
+    val mediaPlayer = MediaPlayer()
+    mediaPlayer.setDataSource(context, Uri.parse(url), headers)
+    mediaPlayer.prepareAsync()
+    mediaPlayer.setOnPreparedListener { mp ->
+        mp.start()
+    }
+}
+
+// For ExoPlayer
+fun playVideoWithExoPlayer(url: String, context: Context): ExoPlayer {
+    val headers = SecureMediaHelper.getSecureHeaders(url)
+    
+    val dataSourceFactory = DefaultHttpDataSource.Factory()
+        .setDefaultRequestProperties(headers)
+    
+    val mediaItem = MediaItem.fromUri(url)
+    val player = ExoPlayer.Builder(context).build()
+    
+    player.setMediaSource(
+        ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(mediaItem)
+    )
+    player.prepare()
+    
+    return player
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public void playVideo(String url, Context context) {
+    Map<String, String> headers = SecureMediaHelper.getSecureHeaders(url);
+    
+    MediaPlayer mediaPlayer = new MediaPlayer();
+    try {
+        mediaPlayer.setDataSource(context, Uri.parse(url), headers);
+        mediaPlayer.prepareAsync();
+        mediaPlayer.setOnPreparedListener(mp -> mp.start());
+    } catch (IOException e) {
+        Log.e(TAG, "Error playing video: " + e.getMessage());
+    }
+}
+
+// For ExoPlayer
+public ExoPlayer playVideoWithExoPlayer(String url, Context context) {
+    Map<String, String> headers = SecureMediaHelper.getSecureHeaders(url);
+    
+    DefaultHttpDataSource.Factory dataSourceFactory = new DefaultHttpDataSource.Factory()
+        .setDefaultRequestProperties(headers);
+    
+    MediaItem mediaItem = MediaItem.fromUri(url);
+    ExoPlayer player = new ExoPlayer.Builder(context).build();
+    
+    player.setMediaSource(
+        new ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(mediaItem)
+    );
+    player.prepare();
+    
+    return player;
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Approach B: Presigned URLs
+
+Use this approach when working with third-party image loading libraries like Glide, Coil, or Picasso. These libraries don't support custom headers easily, so you fetch a temporary presigned URL instead.
+
+<Warning>
+Presigned URLs expire after approximately 5 minutes. Always fetch a fresh URL before each load. Never cache presigned URLs.
+</Warning>
+
+### Step 1: Initialize SDK (No Special Mode Required)
+
+Presigned URLs work regardless of the secure media mode setting:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+val appSettings = AppSettings.AppSettingsBuilder()
+    .setRegion("us")
+    .build()
+
+CometChat.init(this, appID, appSettings, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(successMessage: String?) {
+        Log.d(TAG, "CometChat initialized")
+    }
+
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "Initialization failed: ${e?.message}")
+    }
+})
+```
+</Tab>
+
+<Tab title="Java">
+```java
+AppSettings appSettings = new AppSettings.AppSettingsBuilder()
+    .setRegion("us")
+    .build();
+
+CometChat.init(this, appID, appSettings, new CometChat.CallbackListener<String>() {
+    @Override
+    public void onSuccess(String successMessage) {
+        Log.d(TAG, "CometChat initialized");
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Initialization failed: " + e.getMessage());
+    }
+});
+```
+</Tab>
+</Tabs>
+
+### Step 2: Fetch Presigned URL and Load Media
+
+Use `CometChat.fetchPresignedUrl()` to get a temporary URL, then pass it to your image library:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// With Glide
+fun loadImageWithGlide(urlString: String, imageView: ImageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        object : CometChat.CallbackListener<String>() {
+            override fun onSuccess(presignedUrl: String) {
+                // Use the presigned URL with Glide
+                Glide.with(imageView.context)
+                    .load(presignedUrl)
+                    .into(imageView)
+            }
+
+            override fun onError(e: CometChatException) {
+                Log.e(TAG, "Failed to get presigned URL: ${e.message}")
+            }
+        }
+    )
+}
+
+// With Coil
+fun loadImageWithCoil(urlString: String, imageView: ImageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        object : CometChat.CallbackListener<String>() {
+            override fun onSuccess(presignedUrl: String) {
+                // Use the presigned URL with Coil
+                imageView.load(presignedUrl)
+            }
+
+            override fun onError(e: CometChatException) {
+                Log.e(TAG, "Failed to get presigned URL: ${e.message}")
+            }
+        }
+    )
+}
+
+// Usage
+loadImageWithGlide(mediaMessage.attachment?.fileUrl ?: "", myImageView)
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// With Glide
+public void loadImageWithGlide(String urlString, ImageView imageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        new CometChat.CallbackListener<String>() {
+            @Override
+            public void onSuccess(String presignedUrl) {
+                // Use the presigned URL with Glide
+                Glide.with(imageView.getContext())
+                    .load(presignedUrl)
+                    .into(imageView);
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.e(TAG, "Failed to get presigned URL: " + e.getMessage());
+            }
+        }
+    );
+}
+
+// With Picasso
+public void loadImageWithPicasso(String urlString, ImageView imageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        new CometChat.CallbackListener<String>() {
+            @Override
+            public void onSuccess(String presignedUrl) {
+                // Use the presigned URL with Picasso
+                Picasso.get()
+                    .load(presignedUrl)
+                    .into(imageView);
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.e(TAG, "Failed to get presigned URL: " + e.getMessage());
+            }
+        }
+    );
+}
+
+// Usage
+loadImageWithGlide(mediaMessage.getAttachment().getFileUrl(), myImageView);
+```
+</Tab>
+</Tabs>
+
+### Step 3: Handle URL Expiry with Retry Logic
+
+Since presigned URLs expire, implement retry logic for 403 errors:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun loadImageWithRetry(url: String, imageView: ImageView, retryCount: Int = 0) {
+    CometChat.fetchPresignedUrl(
+        url,
+        object : CometChat.CallbackListener<String>() {
+            override fun onSuccess(presignedUrl: String) {
+                Glide.with(imageView.context)
+                    .load(presignedUrl)
+                    .listener(object : RequestListener<Drawable> {
+                        override fun onLoadFailed(
+                            e: GlideException?,
+                            model: Any?,
+                            target: Target<Drawable>,
+                            isFirstResource: Boolean
+                        ): Boolean {
+                            // Check for expiry (403 Forbidden)
+                            if (retryCount < 1) {
+                                loadImageWithRetry(url, imageView, retryCount + 1)
+                            }
+                            return false
+                        }
+
+                        override fun onResourceReady(
+                            resource: Drawable,
+                            model: Any,
+                            target: Target<Drawable>?,
+                            dataSource: DataSource,
+                            isFirstResource: Boolean
+                        ): Boolean {
+                            return false
+                        }
+                    })
+                    .into(imageView)
+            }
+
+            override fun onError(e: CometChatException) {
+                Log.e(TAG, "Error: ${e.message}")
+            }
+        }
+    )
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public void loadImageWithRetry(String url, ImageView imageView, int retryCount) {
+    CometChat.fetchPresignedUrl(
+        url,
+        new CometChat.CallbackListener<String>() {
+            @Override
+            public void onSuccess(String presignedUrl) {
+                Glide.with(imageView.getContext())
+                    .load(presignedUrl)
+                    .listener(new RequestListener<Drawable>() {
+                        @Override
+                        public boolean onLoadFailed(
+                            GlideException e,
+                            Object model,
+                            Target<Drawable> target,
+                            boolean isFirstResource
+                        ) {
+                            // Check for expiry (403 Forbidden)
+                            if (retryCount < 1) {
+                                loadImageWithRetry(url, imageView, retryCount + 1);
+                            }
+                            return false;
+                        }
+
+                        @Override
+                        public boolean onResourceReady(
+                            Drawable resource,
+                            Object model,
+                            Target<Drawable> target,
+                            DataSource dataSource,
+                            boolean isFirstResource
+                        ) {
+                            return false;
+                        }
+                    })
+                    .into(imageView);
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.e(TAG, "Error: " + e.getMessage());
+            }
+        }
+    );
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Methods and Enums
+
+### SecureMediaMode Enum
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+enum class SecureMediaMode {
+    EMBEDDED,      // FAT in URL as ?fat=xxx (default)
+    HEADER_BASED   // FAT sent via HTTP header (secure)
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public enum SecureMediaMode {
+    EMBEDDED,      // FAT in URL as ?fat=xxx (default)
+    HEADER_BASED   // FAT sent via HTTP header (secure)
+}
+```
+</Tab>
+</Tabs>
+
+| Mode | Value | Description |
+| ---- | ----- | ----------- |
+| `EMBEDDED` | 0 | Token appended to URL as `?fat=xxx` (default behavior) |
+| `HEADER_BASED` | 1 | Token sent via HTTP `fat` header (more secure) |
+
+---
+
+### SecureMediaHelper.createSecureOkHttpClientBuilder()
+
+Creates an `OkHttpClient.Builder` with the FAT token interceptor configured.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun createSecureOkHttpClientBuilder(): OkHttpClient.Builder
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public static OkHttpClient.Builder createSecureOkHttpClientBuilder()
+```
+</Tab>
+</Tabs>
+
+**Returns:** `OkHttpClient.Builder` with FAT interceptor if in header-based mode.
+
+**Behavior:**
+- Strips existing `?fat=` query parameter from URL
+- Adds FAT header if URL requires secure access
+- Decodes percent-encoded FAT token before adding
+
+---
+
+### CometChat.fetchPresignedUrl()
+
+Fetches a temporary presigned URL for CometChat media. Works regardless of `SecureMediaMode`.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun fetchPresignedUrl(
+    url: String,
+    callback: CometChat.CallbackListener<String>
+)
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public static void fetchPresignedUrl(
+    String url,
+    CometChat.CallbackListener<String> callback
+)
+```
+</Tab>
+</Tabs>
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| url | `String` | CometChat media URL (attachment, avatar, group icon) |
+| callback | `CallbackListener<String>` | Callback with presigned URL string or error |
+
+**Error Codes:**
+
+| Code | Description |
+| ---- | ----------- |
+| `ERR_NOT_LOGGED_IN` | User must be logged in |
+| `ERR_INVALID_URL` | Invalid CometChat media URL |
+| `ERR_NETWORK` | Network request failed |
+| `ERR_INVALID_RESPONSE` | Invalid server response |
+
+---
+
+### SecureMediaHelper.getFat()
+
+Returns the current FAT token for manual header injection.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun getFat(): String?
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public static String getFat()
+```
+</Tab>
+</Tabs>
+
+**Returns:** FAT token string, or `null` if user is not logged in.
+
+---
+
+### SecureMediaHelper Utility Methods
+
+| Method | Description | Returns |
+| ------ | ----------- | ------- |
+| `isHeaderModeEnabled()` | Checks if header mode is enabled and configured | `Boolean` |
+| `requiresSecureAccess(url: String)` | Checks if a URL requires FAT header injection | `Boolean` |
+| `hasFatQueryParam(url: String)` | Checks if URL contains a FAT query parameter | `Boolean` |
+| `stripFatQueryParam(url: String)` | Removes FAT query parameter from URL | `String` |
+| `getSecureMediaHost()` | Returns the secure media host from backend | `String?` |
+| `getSecureHeaders(url: String)` | Returns headers map for MediaPlayer/ExoPlayer | `Map<String, String>` |
+
+---
+
+## Additional Examples
+
+### Download File (Approach A)
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun downloadFile(urlString: String, onComplete: (File?) -> Unit) {
+    val client = SecureMediaHelper.createSecureOkHttpClientBuilder().build()
+    
+    val request = Request.Builder()
+        .url(urlString)
+        .build()
+    
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            onComplete(null)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            response.body?.let { body ->
+                val fileName = Uri.parse(urlString).lastPathSegment ?: "download"
+                val file = File(context.cacheDir, fileName)
+                
+                file.outputStream().use { output ->
+                    body.byteStream().copyTo(output)
+                }
+                
+                onComplete(file)
+            } ?: onComplete(null)
+        }
+    })
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public void downloadFile(String urlString, Consumer<File> onComplete) {
+    OkHttpClient client = SecureMediaHelper.createSecureOkHttpClientBuilder().build();
+    
+    Request request = new Request.Builder()
+        .url(urlString)
+        .build();
+    
+    client.newCall(request).enqueue(new Callback() {
+        @Override
+        public void onFailure(Call call, IOException e) {
+            onComplete.accept(null);
+        }
+
+        @Override
+        public void onResponse(Call call, Response response) throws IOException {
+            if (response.body() != null) {
+                String fileName = Uri.parse(urlString).getLastPathSegment();
+                if (fileName == null) fileName = "download";
+                
+                File file = new File(context.getCacheDir(), fileName);
+                
+                try (InputStream input = response.body().byteStream();
+                     OutputStream output = new FileOutputStream(file)) {
+                    byte[] buffer = new byte[4096];
+                    int bytesRead;
+                    while ((bytesRead = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, bytesRead);
+                    }
+                }
+                
+                onComplete.accept(file);
+            } else {
+                onComplete.accept(null);
+            }
+        }
+    });
+}
+```
+</Tab>
+</Tabs>
+
+### Play Audio (Approach A)
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun playAudio(url: String, context: Context): MediaPlayer {
+    val headers = SecureMediaHelper.getSecureHeaders(url)
+    
+    return MediaPlayer().apply {
+        setDataSource(context, Uri.parse(url), headers)
+        prepareAsync()
+        setOnPreparedListener { start() }
+    }
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public MediaPlayer playAudio(String url, Context context) throws IOException {
+    Map<String, String> headers = SecureMediaHelper.getSecureHeaders(url);
+    
+    MediaPlayer mediaPlayer = new MediaPlayer();
+    mediaPlayer.setDataSource(context, Uri.parse(url), headers);
+    mediaPlayer.prepareAsync();
+    mediaPlayer.setOnPreparedListener(MediaPlayer::start);
+    
+    return mediaPlayer;
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Troubleshooting
+
+### 401 Unauthorized
+
+| Cause | Solution |
+| ----- | -------- |
+| User not logged in | Ensure login completes before loading media |
+| FAT not included | Use `SecureMediaHelper.createSecureOkHttpClientBuilder()` or `fetchPresignedUrl()` |
+| Wrong mode | Verify `setSecureMediaMode(SecureMediaMode.HEADER_BASED)` was called (Approach A only) |
+
+### Images Not Loading
+
+Debug with:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+Log.d(TAG, "Header mode enabled: ${SecureMediaHelper.isHeaderModeEnabled()}")
+Log.d(TAG, "FAT available: ${SecureMediaHelper.getFat() != null}")
+Log.d(TAG, "Secure host: ${SecureMediaHelper.getSecureMediaHost()}")
+```
+</Tab>
+
+<Tab title="Java">
+```java
+Log.d(TAG, "Header mode enabled: " + SecureMediaHelper.isHeaderModeEnabled());
+Log.d(TAG, "FAT available: " + (SecureMediaHelper.getFat() != null));
+Log.d(TAG, "Secure host: " + SecureMediaHelper.getSecureMediaHost());
+```
+</Tab>
+</Tabs>
+
+### Video Won't Play
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// ❌ Wrong - no FAT header
+val player = MediaPlayer()
+player.setDataSource(videoUrl)
+
+// ✅ Correct - FAT header injected
+val headers = SecureMediaHelper.getSecureHeaders(videoUrl)
+val player = MediaPlayer()
+player.setDataSource(context, Uri.parse(videoUrl), headers)
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// ❌ Wrong - no FAT header
+MediaPlayer player = new MediaPlayer();
+player.setDataSource(videoUrl);
+
+// ✅ Correct - FAT header injected
+Map<String, String> headers = SecureMediaHelper.getSecureHeaders(videoUrl);
+MediaPlayer player = new MediaPlayer();
+player.setDataSource(context, Uri.parse(videoUrl), headers);
+```
+</Tab>
+</Tabs>
+
+### Presigned URL Expired (403)
+
+Always fetch a fresh presigned URL before each load:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// ❌ Wrong - caching presigned URL
+val cachedUrl = presignedUrl  // Don't do this!
+
+// ✅ Correct - fetch fresh each time
+CometChat.fetchPresignedUrl(originalUrl, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(freshUrl: String) {
+        // Use immediately
+    }
+    override fun onError(e: CometChatException) {}
+})
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// ❌ Wrong - caching presigned URL
+String cachedUrl = presignedUrl;  // Don't do this!
+
+// ✅ Correct - fetch fresh each time
+CometChat.fetchPresignedUrl(originalUrl, new CometChat.CallbackListener<String>() {
+    @Override
+    public void onSuccess(String freshUrl) {
+        // Use immediately
+    }
+    @Override
+    public void onError(CometChatException e) {}
+});
+```
+</Tab>
+</Tabs>
+
+---
+
+## Migration Guide
+
+### Upgrading from Embedded to Header-Based Mode
+
+If you're currently using the default `EMBEDDED` mode and want to switch to `HEADER_BASED`:
+
+#### 1. Update Initialization
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// Before (embedded mode - default)
+val appSettings = AppSettings.AppSettingsBuilder()
+    .setRegion("us")
+    .build()
+
+// After (header-based mode)
+val appSettings = AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)  // Add this line
+    .setRegion("us")
+    .build()
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// Before (embedded mode - default)
+AppSettings appSettings = new AppSettings.AppSettingsBuilder()
+    .setRegion("us")
+    .build();
+
+// After (header-based mode)
+AppSettings appSettings = new AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)  // Add this line
+    .setRegion("us")
+    .build();
+```
+</Tab>
+</Tabs>
+
+#### 2. Update Media Loading Code
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// Before
+val client = OkHttpClient()
+val request = Request.Builder().url(url).build()
+
+// After
+val client = SecureMediaHelper.createSecureOkHttpClientBuilder().build()
+val request = Request.Builder().url(url).build()
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// Before
+OkHttpClient client = new OkHttpClient();
+Request request = new Request.Builder().url(url).build();
+
+// After
+OkHttpClient client = SecureMediaHelper.createSecureOkHttpClientBuilder().build();
+Request request = new Request.Builder().url(url).build();
+```
+</Tab>
+</Tabs>
+
+#### 3. Update MediaPlayer Code
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// Before
+val player = MediaPlayer()
+player.setDataSource(videoUrl)
+
+// After
+val headers = SecureMediaHelper.getSecureHeaders(videoUrl)
+val player = MediaPlayer()
+player.setDataSource(context, Uri.parse(videoUrl), headers)
+```
+</Tab>
+
+<Tab title="Java">
+```java
+// Before
+MediaPlayer player = new MediaPlayer();
+player.setDataSource(videoUrl);
+
+// After
+Map<String, String> headers = SecureMediaHelper.getSecureHeaders(videoUrl);
+MediaPlayer player = new MediaPlayer();
+player.setDataSource(context, Uri.parse(videoUrl), headers);
+```
+</Tab>
+</Tabs>

@@ -1124,3 +1124,234 @@ CometChatUIKit.sendCustomInteractiveMessage(customInteractiveMessage, false, obj
 > Note: To display custom messages in the [MessageList](/ui-kit/android/message-list), you must create and register a new [MessageTemplate](/ui-kit/android/message-template#new-templates) that defines how to render your custom message types
 
 ***
+
+### Secure Media Access
+
+When your app handles media files (images, videos, audio, documents), CometChat uses a File Access Token (FAT) to authenticate requests. This ensures that only authorized users can access media content.
+
+The UI Kit automatically handles secure media loading for all built-in components like `MessageList`, `ImageBubble`, `VideoBubble`, and `FileBubble`. No additional configuration is required when using these components.
+
+#### When Do You Need This?
+
+If you're building custom media handling outside the UI Kit components—such as displaying media in a custom view, downloading files manually, or integrating with third-party image libraries—you'll need to handle secure media access yourself.
+
+#### Secure Media Modes
+
+CometChat supports two modes for transmitting the File Access Token:
+
+| Mode | Description |
+| ---- | ----------- |
+| `EMBEDDED` | Token is appended to the URL as a query parameter (`?fat=xxx`). This is the default behavior. |
+| `HEADER_BASED` | Token is sent via HTTP headers instead of the URL. This prevents token exposure in server logs, browser history, and network monitoring tools. More secure for production apps. |
+
+#### Enabling Header-Based Mode
+
+To enable header-based secure media mode, configure it during UI Kit initialization:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+val uiKitSettings = UIKitSettings.UIKitSettingsBuilder()
+    .setAppId("YOUR_APP_ID")
+    .setRegion("YOUR_REGION")
+    .setAuthKey("YOUR_AUTH_KEY")
+    .subscribePresenceForAllUsers()
+    .build()
+
+// Initialize with header-based secure media
+val appSettings = AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)
+    .setRegion("YOUR_REGION")
+    .build()
+
+CometChat.init(this, "YOUR_APP_ID", appSettings, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(successMessage: String?) {
+        CometChatUIKit.init(this@MainActivity, uiKitSettings, object : CometChat.CallbackListener<String>() {
+            override fun onSuccess(s: String?) {
+                Log.d(TAG, "CometChat UI Kit initialized with secure media")
+            }
+
+            override fun onError(e: CometChatException?) {
+                Log.e(TAG, "Initialization failed: ${e?.message}")
+            }
+        })
+    }
+
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "CometChat SDK init failed: ${e?.message}")
+    }
+})
+```
+</Tab>
+
+<Tab title="Java">
+```java
+UIKitSettings uiKitSettings = new UIKitSettings.UIKitSettingsBuilder()
+    .setAppId("YOUR_APP_ID")
+    .setRegion("YOUR_REGION")
+    .setAuthKey("YOUR_AUTH_KEY")
+    .subscribePresenceForAllUsers()
+    .build();
+
+// Initialize with header-based secure media
+AppSettings appSettings = new AppSettings.AppSettingsBuilder()
+    .setSecureMediaMode(SecureMediaMode.HEADER_BASED)
+    .setRegion("YOUR_REGION")
+    .build();
+
+CometChat.init(this, "YOUR_APP_ID", appSettings, new CometChat.CallbackListener<String>() {
+    @Override
+    public void onSuccess(String successMessage) {
+        CometChatUIKit.init(MainActivity.this, uiKitSettings, new CometChat.CallbackListener<String>() {
+            @Override
+            public void onSuccess(String s) {
+                Log.d(TAG, "CometChat UI Kit initialized with secure media");
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.e(TAG, "Initialization failed: " + e.getMessage());
+            }
+        });
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "CometChat SDK init failed: " + e.getMessage());
+    }
+});
+```
+</Tab>
+</Tabs>
+
+#### Loading Media in Custom Implementations
+
+If you're loading media outside the UI Kit components, use these methods:
+
+**Option 1: Header-Based Requests (for OkHttp, MediaPlayer)**
+
+Use `SecureMediaHelper.createSecureOkHttpClientBuilder()` to create an OkHttpClient with the FAT header injected:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun loadImage(urlString: String, imageView: ImageView) {
+    val client = SecureMediaHelper.createSecureOkHttpClientBuilder().build()
+    
+    val request = Request.Builder()
+        .url(urlString)
+        .build()
+    
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Log.e(TAG, "Failed to load image: ${e.message}")
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            response.body?.byteStream()?.let { inputStream ->
+                val bitmap = BitmapFactory.decodeStream(inputStream)
+                runOnUiThread {
+                    imageView.setImageBitmap(bitmap)
+                }
+            }
+        }
+    })
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public void loadImage(String urlString, ImageView imageView) {
+    OkHttpClient client = SecureMediaHelper.createSecureOkHttpClientBuilder().build();
+    
+    Request request = new Request.Builder()
+        .url(urlString)
+        .build();
+    
+    client.newCall(request).enqueue(new Callback() {
+        @Override
+        public void onFailure(Call call, IOException e) {
+            Log.e(TAG, "Failed to load image: " + e.getMessage());
+        }
+
+        @Override
+        public void onResponse(Call call, Response response) throws IOException {
+            if (response.body() != null) {
+                InputStream inputStream = response.body().byteStream();
+                Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                runOnUiThread(() -> imageView.setImageBitmap(bitmap));
+            }
+        }
+    });
+}
+```
+</Tab>
+</Tabs>
+
+**Option 2: Presigned URLs (for Glide, Coil, Picasso)**
+
+Use `CometChat.fetchPresignedUrl()` to get a temporary URL that works with third-party libraries:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun loadImageWithGlide(urlString: String, imageView: ImageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        object : CometChat.CallbackListener<String>() {
+            override fun onSuccess(presignedUrl: String) {
+                // Use the presigned URL with Glide
+                Glide.with(imageView.context)
+                    .load(presignedUrl)
+                    .into(imageView)
+            }
+
+            override fun onError(e: CometChatException) {
+                Log.e(TAG, "Failed to get presigned URL: ${e.message}")
+            }
+        }
+    )
+}
+```
+</Tab>
+
+<Tab title="Java">
+```java
+public void loadImageWithGlide(String urlString, ImageView imageView) {
+    CometChat.fetchPresignedUrl(
+        urlString,
+        new CometChat.CallbackListener<String>() {
+            @Override
+            public void onSuccess(String presignedUrl) {
+                // Use the presigned URL with Glide
+                Glide.with(imageView.getContext())
+                    .load(presignedUrl)
+                    .into(imageView);
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.e(TAG, "Failed to get presigned URL: " + e.getMessage());
+            }
+        }
+    );
+}
+```
+</Tab>
+</Tabs>
+
+<Warning>
+Presigned URLs expire after approximately 5 minutes. Always fetch a fresh URL before each load and never cache presigned URLs.
+</Warning>
+
+#### Quick Reference
+
+| Scenario | Recommended Approach |
+| -------- | -------------------- |
+| Using UI Kit components | No action needed—handled automatically |
+| Using OkHttp directly | `SecureMediaHelper.createSecureOkHttpClientBuilder()` |
+| Using Glide, Coil, Picasso | `CometChat.fetchPresignedUrl()` |
+| Playing video/audio with MediaPlayer | Use `SecureMediaHelper.getSecureHeaders()` |
+
+***
