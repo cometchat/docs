@@ -1,0 +1,573 @@
+---
+title: "Giphy GIF Integration"
+---
+
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// Fetch trending GIFs
+const response = await CometChat.callExtension(
+  "gifs-giphy",
+  "GET",
+  "v1/trending?offset=0&limit=20",
+  undefined
+);
+
+// Search GIFs
+const searchResponse = await CometChat.callExtension(
+  "gifs-giphy",
+  "GET",
+  `v1/search?query=${encodeURIComponent(query)}&limit=20`,
+  undefined
+);
+```
+
+- **Extension Setup** → [CometChat Dashboard](https://app.cometchat.com)
+- **Giphy API** → [developers.giphy.com](https://developers.giphy.com)
+</Info>
+
+## Overview
+
+This guide explains how to integrate Giphy GIFs into your CometChat UIKit React Native application using a custom GIF keyboard. Users can search and send animated GIFs directly in chat conversations.
+
+## Prerequisites
+
+Before implementing Giphy integration, ensure you have:
+
+- CometChat UIKit React Native installed and configured
+- CometChat application with valid App ID and Auth Key
+- Giphy account with API Key
+
+<Steps>
+  <Step title="Get Giphy API Key">
+    1. Visit [developers.giphy.com](https://developers.giphy.com) and sign up
+    2. Create a new app and select **API**
+    3. Enter your App name and description
+    4. Click **Create App**
+    5. Copy the **API Key** from the dashboard
+  </Step>
+  <Step title="Enable Giphy Extension">
+    1. Log in to [CometChat Dashboard](https://app.cometchat.com)
+    2. Select your application
+    3. Navigate to **Extensions** section
+    4. Find **Giphy** and click **Enable**
+    5. Click **Settings** and enter your Giphy API Key
+    6. Click **Save**
+  </Step>
+</Steps>
+
+---
+
+## Implementation
+
+### Step 1: Configure Android for GIF Animation
+
+Add Fresco GIF support to `android/app/build.gradle`:
+
+<Tabs>
+<Tab title="Gradle">
+```gradle
+dependencies {
+    // ... existing dependencies
+    
+    // GIF animation support
+    implementation 'com.facebook.fresco:animated-gif:3.6.0'
+}
+```
+</Tab>
+</Tabs>
+
+Clean and rebuild:
+
+```bash
+cd android && ./gradlew clean
+cd .. && npx react-native run-android
+```
+
+### Step 2: Create the Giphy Service
+
+Create `src/utils/giphyService.ts`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+export interface GiphyGif {
+  id: string;
+  title: string;
+  url: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+}
+
+const parseGiphyResponse = (response: any): GiphyGif[] => {
+  const data = response?.data || response?.body?.data || [];
+
+  return data.map((gif: any) => ({
+    id: gif.id,
+    title: gif.title || "",
+    url: gif.images?.original?.url || gif.images?.downsized?.url || "",
+    previewUrl:
+      gif.images?.fixed_height?.url || gif.images?.original?.url || "",
+    width: parseInt(gif.images?.original?.width || "200", 10),
+    height: parseInt(gif.images?.original?.height || "200", 10),
+  }));
+};
+
+/**
+ * Get trending GIFs from Giphy
+ */
+export const getTrendingGifs = async (
+  offset: number = 0,
+  limit: number = 20
+): Promise<GiphyGif[]> => {
+  try {
+    const url = `v1/trending?offset=${offset}&limit=${limit}`;
+
+    const response: any = await CometChat.callExtension(
+      "gifs-giphy",
+      "GET",
+      url,
+      undefined
+    );
+
+    return parseGiphyResponse(response);
+  } catch (error) {
+    console.warn("Failed to fetch trending GIFs:", error);
+    return [];
+  }
+};
+
+/**
+ * Search for GIFs by keyword
+ */
+export const searchGifs = async (
+  query: string,
+  offset: number = 0,
+  limit: number = 20,
+  lang: string = "en"
+): Promise<GiphyGif[]> => {
+  if (!query?.trim()) return [];
+
+  try {
+    const url = `v1/search?offset=${offset}&limit=${limit}&lang=${lang}&query=${encodeURIComponent(query.trim())}`;
+
+    const response: any = await CometChat.callExtension(
+      "gifs-giphy",
+      "GET",
+      url,
+      undefined
+    );
+
+    return parseGiphyResponse(response);
+  } catch (error) {
+    console.warn("Failed to search GIFs:", error);
+    return [];
+  }
+};
+```
+</Tab>
+</Tabs>
+
+### Step 3: Create the GIF Keyboard Component
+
+Create `src/components/GiphyKeyboard.tsx`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  FlatList,
+  TextInput,
+  ActivityIndicator,
+  StyleSheet,
+  Dimensions,
+  Image,
+} from "react-native";
+import {
+  getTrendingGifs,
+  searchGifs,
+  GiphyGif,
+} from "../utils/giphyService";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const GIF_WIDTH = (SCREEN_WIDTH - 36) / 2;
+
+interface Props {
+  onGifSelect: (gif: GiphyGif) => void;
+  onClose?: () => void;
+}
+
+const GiphyKeyboard: React.FC<Props> = ({ onGifSelect, onClose }) => {
+  const [gifs, setGifs] = useState<GiphyGif[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTimeout, setSearchTimeout] =
+    useState<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    loadGifs();
+  }, []);
+
+  const loadGifs = async () => {
+    setLoading(true);
+    const result = await getTrendingGifs(0, 30);
+    setGifs(result);
+    setLoading(false);
+  };
+
+  const handleSearchChange = useCallback(
+    (text: string) => {
+      setSearchQuery(text);
+      if (searchTimeout) clearTimeout(searchTimeout);
+
+      if (!text.trim()) {
+        loadGifs();
+        return;
+      }
+
+      const timeout = setTimeout(async () => {
+        setLoading(true);
+        const result = await searchGifs(text, 0, 30);
+        setGifs(result);
+        setLoading(false);
+      }, 500);
+
+      setSearchTimeout(timeout);
+    },
+    [searchTimeout]
+  );
+
+  const renderGif = ({ item }: { item: GiphyGif }) => (
+    <TouchableOpacity
+      style={styles.gifItem}
+      onPress={() => onGifSelect(item)}
+    >
+      <Image
+        source={{ uri: item.previewUrl }}
+        style={styles.gifImage}
+        resizeMode="cover"
+      />
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>GIFs</Text>
+        {onClose && (
+          <TouchableOpacity onPress={onClose}>
+            <Text style={styles.closeText}>Close</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search GIFs..."
+        value={searchQuery}
+        onChangeText={handleSearchChange}
+      />
+
+      {loading ? (
+        <ActivityIndicator size="large" style={styles.loader} />
+      ) : (
+        <FlatList
+          data={gifs}
+          renderItem={renderGif}
+          keyExtractor={(item) => item.id}
+          numColumns={2}
+          showsVerticalScrollIndicator={false}
+        />
+      )}
+
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>Powered by GIPHY</Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: 450,
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    padding: 16,
+  },
+  headerTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  closeText: {
+    color: "#00CCFF",
+  },
+  searchInput: {
+    backgroundColor: "#F5F5F5",
+    borderRadius: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    padding: 10,
+  },
+  loader: {
+    height: 200,
+  },
+  gifItem: {
+    width: GIF_WIDTH,
+    height: 150,
+    margin: 4,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  gifImage: {
+    width: "100%",
+    height: "100%",
+  },
+  footer: {
+    padding: 8,
+    alignItems: "center",
+  },
+  footerText: {
+    fontSize: 11,
+    color: "#999",
+  },
+});
+
+export default GiphyKeyboard;
+```
+</Tab>
+</Tabs>
+
+### Step 4: Integrate with Messages Component
+
+Add the GIF keyboard to your Messages component using `AuxiliaryButtonView`:
+
+<Note>
+Always wrap your selection handlers with `useCallback` to prevent unnecessary re-renders and improve performance.
+</Note>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useCallback } from "react";
+import { View, TouchableOpacity, Text } from "react-native";
+import {
+  CometChatMessageComposer,
+  CometChatMessageList,
+  CometChatUIKit,
+  CometChatUIEventHandler,
+  MessageEvents,
+  messageStatus,
+} from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import GiphyKeyboard from "./GiphyKeyboard";
+import { GiphyGif } from "../utils/giphyService";
+
+interface MessagesProps {
+  user?: CometChat.User;
+  group?: CometChat.Group;
+}
+
+const Messages: React.FC<MessagesProps> = ({ user, group }) => {
+  const [showGiphyKeyboard, setShowGiphyKeyboard] = useState(false);
+
+  const handleGifSelect = useCallback(
+    async (gif: GiphyGif) => {
+      const receiverId = user?.getUid() || group?.getGuid();
+      const receiverType = user
+        ? CometChat.RECEIVER_TYPE.USER
+        : CometChat.RECEIVER_TYPE.GROUP;
+
+      if (!receiverId) return;
+
+      const me = await CometChat.getLoggedinUser();
+      if (!me) return;
+
+      // Send GIF as extension_sticker to use built-in sticker rendering
+      const customData = {
+        stickerUrl: gif.url,
+        sticker_url: gif.url,
+        sticker_name: gif.title || "GIF",
+      };
+
+      const customMessage = new CometChat.CustomMessage(
+        receiverId,
+        receiverType,
+        "extension_sticker",
+        customData
+      );
+
+      customMessage.setCategory(CometChat.CATEGORY_CUSTOM);
+      customMessage.setMuid(Date.now().toString());
+      customMessage.setSender(me);
+      if (user) customMessage.setReceiver(user);
+      if (group) customMessage.setReceiver(group);
+      customMessage.setMetadata({ incrementUnreadCount: true });
+
+      CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+        message: customMessage,
+        status: messageStatus.inprogress,
+      });
+
+      try {
+        const sent = await CometChatUIKit.sendCustomMessage(customMessage);
+        CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+          message: sent,
+          status: messageStatus.success,
+        });
+      } catch (err) {
+        CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+          message: customMessage,
+          status: messageStatus.error,
+        });
+      }
+
+      setShowGiphyKeyboard(false);
+    },
+    [user, group]
+  );
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatMessageList user={user} group={group} />
+
+      <CometChatMessageComposer
+        user={user}
+        group={group}
+        AuxiliaryButtonView={() => (
+          <TouchableOpacity
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 12,
+              backgroundColor: "#00CCFF",
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+            onPress={() => setShowGiphyKeyboard(!showGiphyKeyboard)}
+          >
+            <Text style={{ color: "#FFF", fontSize: 10, fontWeight: "700" }}>
+              GIF
+            </Text>
+          </TouchableOpacity>
+        )}
+      />
+
+      {showGiphyKeyboard && (
+        <GiphyKeyboard
+          onGifSelect={handleGifSelect}
+          onClose={() => setShowGiphyKeyboard(false)}
+        />
+      )}
+    </View>
+  );
+};
+
+export default Messages;
+```
+</Tab>
+</Tabs>
+
+---
+
+## API Reference
+
+### Endpoints
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `v1/trending` | GET | Get trending GIFs |
+| `v1/search` | GET | Search GIFs by keyword |
+
+### Query Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `offset` | number | Pagination offset for results |
+| `limit` | number | Number of GIFs to fetch |
+| `lang` | string | 2-letter ISO 639-1 language code (search only) |
+| `query` | string | Search term (search only) |
+
+---
+
+## Customization
+
+<AccordionGroup>
+  <Accordion title="Change Grid Layout">
+    To show more or fewer GIFs per row:
+    
+    ```tsx
+    // 3 GIFs per row
+    const GIF_WIDTH = (SCREEN_WIDTH - 40) / 3;
+    // In FlatList: numColumns={3}
+    ```
+  </Accordion>
+  <Accordion title="Custom Search Debounce">
+    Adjust the delay before search triggers (default 500ms):
+    
+    ```tsx
+    const SEARCH_DEBOUNCE_MS = 300; // Faster search
+    ```
+  </Accordion>
+  <Accordion title="Localization">
+    Change language for region-specific GIF results:
+    
+    ```tsx
+    const result = await searchGifs(query, 0, 30, "es"); // Spanish
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="GIFs Not Animating">
+    1. Verify Fresco dependency version is `3.6.0`
+    2. Clean and rebuild: `cd android && ./gradlew clean && cd .. && npx react-native run-android`
+  </Accordion>
+  <Accordion title="GIFs Not Loading">
+    1. Verify Giphy extension is enabled in CometChat Dashboard
+    2. Check that Giphy API Key is correctly configured
+    3. Ensure user is logged in before fetching GIFs
+  </Accordion>
+  <Accordion title="GIF Not Sending">
+    1. Verify receiver ID is valid
+    2. Check message type is `extension_sticker`
+    3. Ensure `stickerUrl` is included in customData
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Stipop Stickers" icon="face-smile" href="/ui-kit/react-native/guide-stipop-integration">
+    Add sticker support with Stipop integration
+  </Card>
+  <Card title="Rich Media Preview" icon="image" href="/ui-kit/react-native/guide-rich-media-preview">
+    Display rich link previews in messages
+  </Card>
+  <Card title="Message Composer" icon="pen" href="/ui-kit/react-native/message-composer">
+    Customize the message input component
+  </Card>
+  <Card title="Extensions Overview" icon="puzzle-piece" href="/ui-kit/react-native/extensions">
+    Explore all available extensions
+  </Card>
+</CardGroup>

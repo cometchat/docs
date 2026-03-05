@@ -1,0 +1,434 @@
+---
+title: "TinyURL Integration"
+---
+
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// Shorten URLs in text
+const response = await CometChat.callExtension(
+  "url-shortener-tinyurl",
+  "POST",
+  "v1/shorten",
+  { text: "Check out https://example.com/very/long/url/path" }
+);
+
+// Response: { minifiedText: "Check out https://tinyurl.com/abc123" }
+```
+
+- **Extension Setup** → [CometChat Dashboard](https://app.cometchat.com)
+- **TinyURL API** → [tinyurl.com](https://tinyurl.com)
+</Info>
+
+## Overview
+
+The TinyURL extension automatically shortens long URLs in messages before sending, making chat messages cleaner and more readable. This is especially useful for sharing links that would otherwise take up multiple lines.
+
+<Warning>
+`onSendButtonPress` is a POST-send callback (fires AFTER message is sent). You CANNOT use it to modify message text before sending. To shorten URLs before sending, you MUST use `SendButtonView` prop with custom send logic.
+</Warning>
+
+## Prerequisites
+
+Before implementing TinyURL integration, ensure you have:
+
+- CometChat UIKit React Native installed and configured
+- A CometChat application with valid App ID and Auth Key
+- A TinyURL account with API token
+
+<Steps>
+  <Step title="Get TinyURL API Token">
+    1. Visit [tinyurl.com](https://tinyurl.com) and create an account
+    2. Log in and click **Account** in the top right corner
+    3. In the left navigation pane, select **API**
+    4. Create an API Token by giving it a name and permission to **Create TinyURL**
+    5. Copy the API Token
+  </Step>
+  <Step title="Enable TinyURL Extension">
+    1. Log in to [CometChat Dashboard](https://app.cometchat.com)
+    2. Select your application
+    3. Navigate to **Extensions** section
+    4. Find **TinyURL** and click **Enable**
+    5. Click **Settings** for the extension
+    6. Enter your TinyURL API Token
+    7. (Optional) If you have a paid plan, enter your custom domain. Default is `tinyurl.com`
+    8. Click **Save**
+  </Step>
+</Steps>
+
+<Note>
+If you are not using a custom domain, save `tinyurl.com` as the default value in the domain field.
+</Note>
+
+---
+
+## Implementation
+
+### Step 1: Create the TinyURL Service
+
+Create `src/utils/tinyUrlService.ts`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// URL regex pattern to detect URLs in text (with or without protocol)
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+
+/**
+ * Check if text contains any URLs
+ */
+export const containsUrl = (text: string): boolean => {
+  URL_REGEX.lastIndex = 0;
+  return URL_REGEX.test(text);
+};
+
+/**
+ * Shorten URLs in text using TinyURL extension
+ * @param text - The message text that may contain URLs
+ * @returns Promise with the text containing shortened URLs
+ */
+export const shortenUrls = async (text: string): Promise<string> => {
+  URL_REGEX.lastIndex = 0;
+
+  if (!containsUrl(text)) {
+    return text;
+  }
+
+  try {
+    const response: any = await CometChat.callExtension(
+      "url-shortener-tinyurl",
+      "POST",
+      "v1/shorten",
+      { text }
+    );
+
+    if (response?.minifiedText) {
+      return response.minifiedText;
+    }
+
+    return text;
+  } catch (error) {
+    console.warn("TinyURL shortening failed:", error);
+    return text;
+  }
+};
+
+/**
+ * Process message text before sending
+ * Shortens any URLs found in the text
+ */
+export const processMessageText = async (text: string): Promise<string> => {
+  const trimmedText = text.trim();
+
+  if (!trimmedText) {
+    return trimmedText;
+  }
+
+  URL_REGEX.lastIndex = 0;
+  if (containsUrl(trimmedText)) {
+    return await shortenUrls(trimmedText);
+  }
+
+  return trimmedText;
+};
+```
+</Tab>
+</Tabs>
+
+### Step 2: Integrate with Message Sending
+
+To shorten URLs before sending, use the `SendButtonView` prop with a custom send button:
+
+<Warning>
+Never define `SendButtonView` inline - it causes lag on every keystroke. Always memoize with `useCallback`.
+</Warning>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useCallback } from "react";
+import { View, TouchableOpacity, Image } from "react-native";
+import {
+  CometChatMessageComposer,
+  CometChatMessageList,
+  CometChatUIKit,
+  CometChatUIEventHandler,
+  MessageEvents,
+  messageStatus,
+} from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import { processMessageText } from "../utils/tinyUrlService";
+
+interface MessagesProps {
+  user?: CometChat.User;
+  group?: CometChat.Group;
+}
+
+const Messages: React.FC<MessagesProps> = ({ user, group }) => {
+  // 1. Add state for composer text
+  const [composerText, setComposerText] = useState("");
+
+  // 2. Create memoized send handler (prevents lag)
+  const handleCustomSend = useCallback(async () => {
+    const receiverId = user?.getUid() || group?.getGuid();
+    const receiverType = user
+      ? CometChat.RECEIVER_TYPE.USER
+      : CometChat.RECEIVER_TYPE.GROUP;
+
+    if (!receiverId) return;
+
+    const me = await CometChat.getLoggedinUser();
+    if (!me) return;
+
+    const trimmedText = composerText.trim();
+    if (!trimmedText) return;
+
+    // Shorten URLs BEFORE creating the message
+    const processedText = await processMessageText(trimmedText);
+
+    const message = new CometChat.TextMessage(
+      receiverId,
+      processedText,
+      receiverType
+    );
+    message.setMuid(Date.now().toString());
+    message.setSender(me);
+
+    // Emit in-progress event for UI feedback
+    CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+      message,
+      status: messageStatus.inprogress,
+    });
+
+    try {
+      const sent = await CometChatUIKit.sendTextMessage(message);
+      CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+        message: sent,
+        status: messageStatus.success,
+      });
+    } catch (err) {
+      CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+        message,
+        status: messageStatus.error,
+      });
+    }
+
+    // Clear composer
+    setComposerText("");
+    CometChatUIEventHandler.emitUIEvent("ccComposeMessage", { text: "" });
+  }, [user, group, composerText]);
+
+  // 3. Create memoized button view (CRITICAL for performance)
+  const CustomSendButtonView = useCallback(() => {
+    const isDisabled = composerText.trim().length === 0;
+    return (
+      <TouchableOpacity
+        disabled={isDisabled}
+        onPress={handleCustomSend}
+        style={{ opacity: isDisabled ? 0.5 : 1 }}
+      >
+        <Image
+          source={require("../assets/send-icon.png")}
+          style={{ width: 24, height: 24 }}
+        />
+      </TouchableOpacity>
+    );
+  }, [composerText, handleCustomSend]);
+
+  // 4. Use in composer
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatMessageList user={user} group={group} />
+
+      <CometChatMessageComposer
+        user={user}
+        group={group}
+        onTextChange={setComposerText}
+        SendButtonView={CustomSendButtonView}
+      />
+    </View>
+  );
+};
+
+export default Messages;
+```
+</Tab>
+</Tabs>
+
+---
+
+## API Reference
+
+### Endpoint
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `v1/shorten` | POST | Shorten URLs in text |
+
+### Request Body
+
+```json
+{
+  "text": "Your message with https://example.com/long/url"
+}
+```
+
+### Response
+
+```json
+{
+  "minifiedText": "Your message with https://tinyurl.com/abc123"
+}
+```
+
+### URL Detection Regex
+
+The regex pattern used to detect URLs:
+
+```tsx
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+```
+
+This matches:
+- URLs starting with `http://` or `https://`
+- URLs starting with `www.`
+- Any characters until whitespace
+
+---
+
+## Customization
+
+<AccordionGroup>
+  <Accordion title="Skip Shortening for Short URLs">
+    By default, all URLs are shortened. To only shorten URLs longer than a certain length:
+    
+    ```tsx
+    const MIN_URL_LENGTH = 30;
+
+    export const containsLongUrl = (text: string): boolean => {
+      URL_REGEX.lastIndex = 0;
+      const urls = text.match(URL_REGEX) || [];
+      return urls.some((url) => url.length > MIN_URL_LENGTH);
+    };
+
+    export const processMessageText = async (text: string): Promise<string> => {
+      const trimmedText = text.trim();
+      if (!trimmedText) return trimmedText;
+
+      // Only shorten if URL is longer than MIN_URL_LENGTH
+      if (containsLongUrl(trimmedText)) {
+        return await shortenUrls(trimmedText);
+      }
+      return trimmedText;
+    };
+    ```
+  </Accordion>
+  <Accordion title="Strict URL Detection (Protocol Required)">
+    If you only want to detect URLs with `http://` or `https://` (not `www.`):
+    
+    ```tsx
+    // Strict: requires protocol
+    const URL_REGEX = /(https?:\/\/[^\s]+)/gi;
+    ```
+  </Accordion>
+  <Accordion title="Extended URL Detection">
+    To also detect URLs without any prefix (like `example.com`):
+    
+    ```tsx
+    // Extended: matches domain patterns too
+    const URL_REGEX =
+      /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s]*)/gi;
+    ```
+  </Accordion>
+  <Accordion title="Custom Domain">
+    If you have a TinyURL paid plan with a custom domain:
+    
+    1. Go to CometChat Dashboard > Extensions > TinyURL > Settings
+    2. Enter your custom domain (e.g., `links.yourdomain.com`)
+    3. Save settings
+    
+    Shortened URLs will now use your custom domain.
+  </Accordion>
+  <Accordion title="Error Handling">
+    Implement custom error handling:
+    
+    ```tsx
+    export const shortenUrlsWithFallback = async (
+      text: string
+    ): Promise<string> => {
+      try {
+        const response = await CometChat.callExtension(
+          "url-shortener-tinyurl",
+          "POST",
+          "v1/shorten",
+          { text }
+        );
+
+        return response?.minifiedText || text;
+      } catch (error: any) {
+        if (error.code === "ERR_EXTENSION_NOT_ENABLED") {
+          console.warn("TinyURL extension not enabled");
+        } else if (error.code === "ERR_RATE_LIMIT") {
+          console.warn("TinyURL rate limit exceeded");
+        }
+        return text;
+      }
+    };
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="URLs Not Being Shortened">
+    1. Verify the TinyURL extension is enabled in CometChat Dashboard
+    2. Confirm your TinyURL API token is correctly configured
+    3. Check that the URL format is valid (must start with `http://`, `https://`, or `www.`)
+    4. Ensure you are calling `processMessageText` before sending
+  </Accordion>
+  <Accordion title="Extension Call Failing">
+    1. Check console for error messages
+    2. Verify CometChat SDK is properly initialized
+    3. Ensure user is logged in before calling the extension
+    4. Check network connectivity
+  </Accordion>
+  <Accordion title="Rate Limiting">
+    TinyURL may have rate limits on their API. If you encounter rate limiting:
+    
+    1. Implement caching for already shortened URLs
+    2. Add retry logic with exponential backoff
+    3. Consider upgrading your TinyURL plan
+  </Accordion>
+  <Accordion title="Custom Domain Not Working">
+    1. Verify domain is correctly configured in TinyURL dashboard
+    2. Ensure domain is saved in CometChat extension settings
+    3. Check DNS configuration for custom domain
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Rich Media Preview" icon="image" href="/ui-kit/react-native/guide-rich-media-preview">
+    Display rich link previews in messages
+  </Card>
+  <Card title="Giphy GIFs" icon="images" href="/ui-kit/react-native/guide-giphy-integration">
+    Add GIF support with Giphy integration
+  </Card>
+  <Card title="Message Composer" icon="pen" href="/ui-kit/react-native/message-composer">
+    Customize the message input component
+  </Card>
+  <Card title="Extensions Overview" icon="puzzle-piece" href="/ui-kit/react-native/extensions">
+    Explore all available extensions
+  </Card>
+</CardGroup>

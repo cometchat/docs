@@ -1,0 +1,625 @@
+---
+title: "Stipop Sticker Integration"
+---
+
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// Fetch trending stickers
+const response = await CometChat.callExtension(
+  "stickers-stipop",
+  "GET",
+  "v1/trending?lang=en&limit=20&pageNumber=1&countryCode=US",
+  undefined
+);
+
+// Search stickers
+const searchResponse = await CometChat.callExtension(
+  "stickers-stipop",
+  "GET",
+  `v1/search?query=${encodeURIComponent(query)}&limit=20`,
+  undefined
+);
+```
+
+- **Extension Setup** → [CometChat Dashboard](https://app.cometchat.com)
+- **Stipop API** → [stipop.io](https://stipop.io)
+</Info>
+
+## Overview
+
+This guide explains how to integrate Stipop stickers into your CometChat UIKit React Native application using a custom sticker keyboard. Users can browse trending stickers and search for specific ones to send in conversations.
+
+## Prerequisites
+
+Before implementing Stipop integration, ensure you have:
+
+- CometChat UIKit React Native installed and configured
+- CometChat application with valid App ID and Auth Key
+- Stipop account with Application ID and API Key
+
+<Steps>
+  <Step title="Get Stipop Credentials">
+    1. Visit [stipop.io](https://stipop.io) and sign up
+    2. Provide required details (Application name, Website, Category, Region, App MAU)
+    3. Click **Get Started**
+    4. Copy the **API Key** from the Dashboard
+    5. Go to **Settings** > **Application** tab and copy the **Application ID**
+  </Step>
+  <Step title="Enable Stipop Extension">
+    1. Log in to [CometChat Dashboard](https://app.cometchat.com)
+    2. Select your application
+    3. Navigate to **Extensions** section
+    4. Find **Stipop** and click **Enable**
+    5. Click **Settings** and enter your Stipop Application ID and API Key
+    6. Click **Save**
+  </Step>
+</Steps>
+
+---
+
+## Implementation
+
+### Step 1: Configure Android for GIF Animation
+
+Add Fresco GIF support to `android/app/build.gradle`:
+
+<Tabs>
+<Tab title="Gradle">
+```gradle
+dependencies {
+    // ... existing dependencies
+    
+    // GIF animation support for stickers
+    implementation 'com.facebook.fresco:animated-gif:3.6.0'
+}
+```
+</Tab>
+</Tabs>
+
+Clean and rebuild:
+
+```bash
+cd android && ./gradlew clean
+cd .. && npx react-native run-android
+```
+
+### Step 2: Create the Stipop Service
+
+Create `src/utils/stipopService.ts`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+export interface StipopSticker {
+  stickerId: number;
+  stickerImg: string;
+  stickerUrl?: string;
+  keyword?: string;
+  packageId: number;
+  stickerSetName?: string;
+}
+
+export interface StipopQueryParams {
+  lang?: string;
+  limit?: number;
+  pageNumber?: number;
+  countryCode?: string;
+}
+
+const DEFAULT_PARAMS: StipopQueryParams = {
+  lang: "en",
+  limit: 20,
+  pageNumber: 1,
+  countryCode: "US",
+};
+
+const buildQueryString = (params: StipopQueryParams): string => {
+  const p = { ...DEFAULT_PARAMS, ...params };
+  return `?lang=${p.lang}&limit=${p.limit}&pageNumber=${p.pageNumber}&countryCode=${p.countryCode}`;
+};
+
+/**
+ * Get trending stickers from Stipop
+ */
+export const getTrendingStickers = async (
+  params: StipopQueryParams = {}
+): Promise<StipopSticker[]> => {
+  try {
+    const qs = buildQueryString(params);
+
+    const response: any = await CometChat.callExtension(
+      "stickers-stipop",
+      "GET",
+      `v1/trending${qs}`,
+      undefined
+    );
+
+    // Handle stickerList response
+    if (response?.body?.stickerList || response?.stickerList) {
+      const list = response?.body?.stickerList || response?.stickerList;
+      return list.map((sticker: any) => ({
+        stickerId: sticker.stickerId,
+        stickerImg: sticker.stickerImg,
+        stickerUrl: sticker.stickerImg,
+        packageId: sticker.packageId,
+        keyword: sticker.keyword,
+      }));
+    }
+
+    // Handle packageList response
+    if (response?.packageList) {
+      return response.packageList
+        .filter((pkg: any) => pkg.packageAnimated === "Y")
+        .map((pkg: any) => ({
+          stickerId: pkg.packageId,
+          stickerImg: pkg.packageImg,
+          stickerUrl: pkg.packageImg,
+          packageId: pkg.packageId,
+          keyword: pkg.packageName,
+        }));
+    }
+
+    return [];
+  } catch (error) {
+    console.warn("Failed to fetch trending stickers:", error);
+    return [];
+  }
+};
+
+/**
+ * Search for stickers by keyword
+ */
+export const searchStickers = async (
+  query: string,
+  params: StipopQueryParams = {}
+): Promise<StipopSticker[]> => {
+  if (!query?.trim()) return [];
+
+  try {
+    const p = { ...DEFAULT_PARAMS, ...params };
+    const qs = `?lang=${p.lang}&limit=${p.limit}&pageNumber=${p.pageNumber}&query=${encodeURIComponent(query.trim())}`;
+
+    const response: any = await CometChat.callExtension(
+      "stickers-stipop",
+      "GET",
+      `v1/search${qs}`,
+      undefined
+    );
+
+    if (response?.body?.stickerList || response?.stickerList) {
+      const list = response?.body?.stickerList || response?.stickerList;
+      return list.map((sticker: any) => ({
+        stickerId: sticker.stickerId,
+        stickerImg: sticker.stickerImg,
+        stickerUrl: sticker.stickerImg,
+        packageId: sticker.packageId,
+        keyword: sticker.keyword,
+      }));
+    }
+
+    return [];
+  } catch (error) {
+    console.warn("Failed to search stickers:", error);
+    return [];
+  }
+};
+```
+</Tab>
+</Tabs>
+
+### Step 3: Create the Sticker Keyboard Component
+
+Create `src/components/StipopStickerKeyboard.tsx`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  FlatList,
+  TextInput,
+  ActivityIndicator,
+  StyleSheet,
+  Dimensions,
+  Image,
+} from "react-native";
+import {
+  getTrendingStickers,
+  searchStickers,
+  StipopSticker,
+} from "../utils/stipopService";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const STICKER_SIZE = (SCREEN_WIDTH - 48) / 4;
+
+interface Props {
+  onStickerSelect: (sticker: StipopSticker) => void;
+  onClose?: () => void;
+}
+
+const StipopStickerKeyboard: React.FC<Props> = ({
+  onStickerSelect,
+  onClose,
+}) => {
+  const [stickers, setStickers] = useState<StipopSticker[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTimeout, setSearchTimeout] =
+    useState<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    loadStickers();
+  }, []);
+
+  const loadStickers = async () => {
+    setLoading(true);
+    const result = await getTrendingStickers({ limit: 40 });
+    setStickers(result);
+    setLoading(false);
+  };
+
+  const handleSearchChange = useCallback(
+    (text: string) => {
+      setSearchQuery(text);
+      if (searchTimeout) clearTimeout(searchTimeout);
+
+      if (!text.trim()) {
+        loadStickers();
+        return;
+      }
+
+      const timeout = setTimeout(async () => {
+        setLoading(true);
+        const result = await searchStickers(text, { limit: 40 });
+        setStickers(result);
+        setLoading(false);
+      }, 500);
+
+      setSearchTimeout(timeout);
+    },
+    [searchTimeout]
+  );
+
+  const renderSticker = ({ item }: { item: StipopSticker }) => (
+    <TouchableOpacity
+      style={styles.stickerItem}
+      onPress={() => onStickerSelect(item)}
+    >
+      <Image
+        source={{ uri: item.stickerImg }}
+        style={styles.stickerImage}
+        resizeMode="contain"
+      />
+    </TouchableOpacity>
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Stickers</Text>
+        {onClose && (
+          <TouchableOpacity onPress={onClose}>
+            <Text style={styles.closeText}>Close</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Search stickers..."
+        value={searchQuery}
+        onChangeText={handleSearchChange}
+      />
+
+      {loading ? (
+        <ActivityIndicator size="large" style={styles.loader} />
+      ) : (
+        <FlatList
+          data={stickers}
+          renderItem={renderSticker}
+          keyExtractor={(item) => item.stickerId.toString()}
+          numColumns={4}
+          showsVerticalScrollIndicator={false}
+        />
+      )}
+
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>Powered by Stipop</Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: 400,
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    padding: 16,
+  },
+  headerTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  closeText: {
+    color: "#6851D6",
+  },
+  searchInput: {
+    backgroundColor: "#F5F5F5",
+    borderRadius: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    padding: 10,
+  },
+  loader: {
+    height: 200,
+  },
+  stickerItem: {
+    width: STICKER_SIZE,
+    height: STICKER_SIZE,
+    padding: 4,
+  },
+  stickerImage: {
+    width: "100%",
+    height: "100%",
+  },
+  footer: {
+    padding: 8,
+    alignItems: "center",
+  },
+  footerText: {
+    fontSize: 11,
+    color: "#999",
+  },
+});
+
+export default StipopStickerKeyboard;
+```
+</Tab>
+</Tabs>
+
+### Step 4: Integrate with Messages Component
+
+Add the sticker keyboard to your Messages component using `AuxiliaryButtonView`:
+
+<Note>
+Always wrap your selection handlers with `useCallback` to prevent unnecessary re-renders and improve performance.
+</Note>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useCallback } from "react";
+import { View, TouchableOpacity, Text } from "react-native";
+import {
+  CometChatMessageComposer,
+  CometChatMessageList,
+  CometChatUIKit,
+  CometChatUIEventHandler,
+  MessageEvents,
+  messageStatus,
+} from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import StipopStickerKeyboard from "./StipopStickerKeyboard";
+import { StipopSticker } from "../utils/stipopService";
+
+interface MessagesProps {
+  user?: CometChat.User;
+  group?: CometChat.Group;
+}
+
+const Messages: React.FC<MessagesProps> = ({ user, group }) => {
+  const [showStickerKeyboard, setShowStickerKeyboard] = useState(false);
+
+  const handleStickerSelect = useCallback(
+    async (sticker: StipopSticker) => {
+      const receiverId = user?.getUid() || group?.getGuid();
+      const receiverType = user
+        ? CometChat.RECEIVER_TYPE.USER
+        : CometChat.RECEIVER_TYPE.GROUP;
+
+      if (!receiverId) return;
+
+      const me = await CometChat.getLoggedinUser();
+      if (!me) return;
+
+      const stickerUrl = sticker.stickerUrl || sticker.stickerImg;
+
+      const customData = {
+        stickerUrl: stickerUrl,
+        sticker_url: stickerUrl,
+        sticker_name: sticker.stickerSetName || sticker.keyword || "Sticker",
+      };
+
+      const customMessage = new CometChat.CustomMessage(
+        receiverId,
+        receiverType,
+        "extension_sticker",
+        customData
+      );
+
+      customMessage.setCategory(CometChat.CATEGORY_CUSTOM);
+      customMessage.setMuid(Date.now().toString());
+      customMessage.setSender(me);
+      if (user) customMessage.setReceiver(user);
+      if (group) customMessage.setReceiver(group);
+      customMessage.setMetadata({ incrementUnreadCount: true });
+
+      CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+        message: customMessage,
+        status: messageStatus.inprogress,
+      });
+
+      try {
+        const sent = await CometChatUIKit.sendCustomMessage(customMessage);
+        CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+          message: sent,
+          status: messageStatus.success,
+        });
+      } catch (err) {
+        CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageSent, {
+          message: customMessage,
+          status: messageStatus.error,
+        });
+      }
+
+      setShowStickerKeyboard(false);
+    },
+    [user, group]
+  );
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatMessageList user={user} group={group} />
+
+      <CometChatMessageComposer
+        user={user}
+        group={group}
+        AuxiliaryButtonView={() => (
+          <TouchableOpacity
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 14,
+              backgroundColor: "#6851D6",
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+            onPress={() => setShowStickerKeyboard(!showStickerKeyboard)}
+          >
+            <Text style={{ color: "#FFF", fontWeight: "600" }}>S</Text>
+          </TouchableOpacity>
+        )}
+      />
+
+      {showStickerKeyboard && (
+        <StipopStickerKeyboard
+          onStickerSelect={handleStickerSelect}
+          onClose={() => setShowStickerKeyboard(false)}
+        />
+      )}
+    </View>
+  );
+};
+
+export default Messages;
+```
+</Tab>
+</Tabs>
+
+---
+
+## API Reference
+
+### Endpoints
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `v1/trending` | GET | Get trending stickers |
+| `v1/search` | GET | Search stickers by keyword |
+
+### Query Parameters
+
+| Parameter | Type | Description | Default |
+| --- | --- | --- | --- |
+| `lang` | string | 2-letter ISO 639-1 language code | `en` |
+| `limit` | number | Max stickers per page (max: 50) | `20` |
+| `pageNumber` | number | Page number for pagination | `1` |
+| `countryCode` | string | 2-letter ISO 3166-1 country code | `US` |
+| `query` | string | Search term (search endpoint only) | - |
+
+---
+
+## Customization
+
+<AccordionGroup>
+  <Accordion title="Change Grid Layout">
+    To show more or fewer stickers per row:
+    
+    ```tsx
+    // 3 stickers per row
+    const STICKER_SIZE = (SCREEN_WIDTH - 40) / 3;
+    // In FlatList: numColumns={3}
+    
+    // 5 stickers per row
+    const STICKER_SIZE = (SCREEN_WIDTH - 56) / 5;
+    // In FlatList: numColumns={5}
+    ```
+  </Accordion>
+  <Accordion title="Filter Animated Stickers Only">
+    To only show animated stickers:
+    
+    ```tsx
+    const result = await getTrendingStickers({ limit: 40 });
+    const animatedOnly = result.filter(
+      (s) => s.stickerImg?.endsWith(".gif") || s.stickerUrl?.endsWith(".gif")
+    );
+    setStickers(animatedOnly);
+    ```
+  </Accordion>
+  <Accordion title="Localization">
+    Change language and country for region-specific stickers:
+    
+    ```tsx
+    const result = await getTrendingStickers({
+      lang: "ko", // Korean
+      countryCode: "KR", // South Korea
+      limit: 40,
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Stickers Not Animating">
+    1. Verify Fresco dependency version is `3.6.0`
+    2. Clean and rebuild: `cd android && ./gradlew clean && cd .. && npx react-native run-android`
+  </Accordion>
+  <Accordion title="Stickers Not Loading">
+    1. Verify Stipop extension is enabled in CometChat Dashboard
+    2. Check that Stipop credentials are correctly configured
+    3. Ensure user is logged in before fetching stickers
+  </Accordion>
+  <Accordion title="Sticker Not Sending">
+    1. Verify receiver ID is valid
+    2. Check message type is `extension_sticker`
+    3. Ensure `stickerUrl` is included in customData
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Giphy GIFs" icon="images" href="/ui-kit/react-native/guide-giphy-integration">
+    Add GIF support with Giphy integration
+  </Card>
+  <Card title="Rich Media Preview" icon="image" href="/ui-kit/react-native/guide-rich-media-preview">
+    Display rich link previews in messages
+  </Card>
+  <Card title="Message Composer" icon="pen" href="/ui-kit/react-native/message-composer">
+    Customize the message input component
+  </Card>
+  <Card title="Extensions Overview" icon="puzzle-piece" href="/ui-kit/react-native/extensions">
+    Explore all available extensions
+  </Card>
+</CardGroup>

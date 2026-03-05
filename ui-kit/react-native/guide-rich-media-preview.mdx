@@ -1,0 +1,519 @@
+---
+title: "Rich Media Preview Integration"
+---
+
+<Info>
+**Quick Reference for AI Agents & Developers**
+
+```tsx
+// Extract rich media data from message metadata
+const getRichMediaData = (message: CometChat.BaseMessage) => {
+  const metadata = message.getMetadata?.() || message.metadata;
+  if (!metadata) return null;
+
+  const injectedObject = metadata["@injected"];
+  if (!injectedObject?.extensions) return null;
+
+  return injectedObject.extensions["rich-media"] || null;
+};
+
+// Rich media data structure
+interface RichMediaData {
+  url: string;
+  meta?: {
+    title?: string;
+    description?: string;
+    site?: string;
+  };
+  links?: {
+    thumbnail?: Array<{ href: string }>;
+    icon?: Array<{ href: string }>;
+  };
+}
+```
+
+- **Extension Setup** → [CometChat Dashboard](https://app.cometchat.com)
+- **iFramely API** → [iframely.com](https://iframely.com)
+</Info>
+
+## Overview
+
+The Rich Media Preview extension automatically generates rich preview cards for URLs shared in chat messages. When a user sends a message containing a URL, the extension fetches metadata (title, description, thumbnail) using iFramely and injects it into the message.
+
+## How It Works
+
+1. User sends a message containing a URL
+2. The message is sent to CometChat servers
+3. The Rich Media Preview extension detects the URL
+4. iFramely fetches metadata (title, description, thumbnail) from the URL
+5. The message is updated with rich media data in the `@injected.extensions.rich-media` metadata
+6. The updated message is delivered to recipients
+
+<Note>
+Rich media data is injected by the backend AFTER the message is sent. The preview card appears after a brief moment when the message is updated with metadata.
+</Note>
+
+## Prerequisites
+
+Before implementing Rich Media Preview, ensure you have:
+
+- CometChat UIKit React Native installed and configured
+- A CometChat application with valid App ID and Auth Key
+- An iFramely account with API key
+
+<Steps>
+  <Step title="Get iFramely API Key">
+    1. Visit [iframely.com](https://iframely.com) and create an account
+    2. Navigate to your dashboard
+    3. Copy your API key
+  </Step>
+  <Step title="Enable Rich Media Preview Extension">
+    1. Log in to [CometChat Dashboard](https://app.cometchat.com)
+    2. Select your application
+    3. Navigate to **Extensions** section
+    4. Find **Rich Media Preview** and click **Enable**
+    5. Click **Settings** for the extension
+    6. Enter your iFramely API key
+    7. Click **Save**
+  </Step>
+</Steps>
+
+---
+
+## Implementation
+
+### Step 1: Create the Rich Media Preview Bubble Component
+
+Create `src/components/RichMediaPreviewBubble.tsx`:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React from "react";
+import {
+  View,
+  Text,
+  Image,
+  TouchableOpacity,
+  Linking,
+  StyleSheet,
+} from "react-native";
+
+interface RichMediaData {
+  url: string;
+  meta?: {
+    title?: string;
+    description?: string;
+    site?: string;
+    canonical?: string;
+  };
+  links?: {
+    thumbnail?: Array<{ href: string }>;
+    icon?: Array<{ href: string }>;
+  };
+}
+
+interface RichMediaPreviewBubbleProps {
+  richMediaData: RichMediaData;
+  messageText: string;
+  isOutgoing: boolean;
+}
+
+/**
+ * Extracts rich-media extension data from message metadata
+ * Returns null if data is not sufficient for a meaningful preview
+ */
+export const getRichMediaData = (message: any): RichMediaData | null => {
+  try {
+    const metadata = message.getMetadata?.() || message.metadata;
+    if (!metadata) return null;
+
+    const injectedObject = metadata["@injected"];
+    if (!injectedObject?.extensions) return null;
+
+    const richMedia = injectedObject.extensions["rich-media"];
+    if (!richMedia) return null;
+
+    // Check if there's meaningful data to display
+    const hasTitle =
+      richMedia.meta?.title && richMedia.meta.title.trim().length > 0;
+    const hasThumbnail = richMedia.links?.thumbnail?.[0]?.href;
+
+    // Only return rich media data if we have at least a title or thumbnail
+    if (!hasTitle && !hasThumbnail) {
+      return null;
+    }
+
+    return richMedia;
+  } catch (e) {
+    return null;
+  }
+};
+
+const getDomain = (urlString: string): string => {
+  try {
+    if (!urlString) return "";
+    const match = urlString.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)/i);
+    return match ? match[1].replace("www.", "") : urlString;
+  } catch {
+    return urlString || "";
+  }
+};
+
+const getFaviconUrl = (urlString: string): string => {
+  const domain = getDomain(urlString);
+  return domain
+    ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32`
+    : "";
+};
+
+const RichMediaPreviewBubble: React.FC<RichMediaPreviewBubbleProps> = ({
+  richMediaData,
+  messageText,
+  isOutgoing,
+}) => {
+  const { url, meta, links } = richMediaData;
+
+  const thumbnailUrl = links?.thumbnail?.[0]?.href || null;
+  const iconUrl = links?.icon?.[0]?.href || getFaviconUrl(url);
+  const domain = meta?.site || getDomain(url);
+
+  const handleOpenUrl = () => {
+    Linking.openURL(url).catch((err) =>
+      console.warn("Failed to open URL:", err)
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      <TouchableOpacity onPress={handleOpenUrl} activeOpacity={0.7}>
+        <Text style={styles.urlText} numberOfLines={2}>
+          {url}
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.card}
+        onPress={handleOpenUrl}
+        activeOpacity={0.85}
+      >
+        {thumbnailUrl && (
+          <Image
+            source={{ uri: thumbnailUrl }}
+            style={styles.thumbnail}
+            resizeMode="cover"
+          />
+        )}
+
+        <View style={styles.content}>
+          <View style={styles.domainRow}>
+            {iconUrl ? (
+              <Image
+                source={{ uri: iconUrl }}
+                style={styles.favicon}
+                resizeMode="contain"
+              />
+            ) : null}
+            <Text style={styles.domain} numberOfLines={1}>
+              {(domain || "").toUpperCase()}
+            </Text>
+          </View>
+
+          {meta?.title && (
+            <Text style={styles.title} numberOfLines={2}>
+              {meta.title}
+            </Text>
+          )}
+
+          {meta?.description && (
+            <Text style={styles.description} numberOfLines={2}>
+              {meta.description}
+            </Text>
+          )}
+        </View>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    maxWidth: 280,
+    minWidth: 220,
+  },
+  urlText: {
+    fontSize: 14,
+    color: "#0066CC",
+    marginBottom: 8,
+    textDecorationLine: "underline",
+  },
+  card: {
+    backgroundColor: "#F8F8F8",
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  thumbnail: {
+    width: "100%",
+    height: 140,
+    backgroundColor: "#EEEEEE",
+  },
+  content: {
+    padding: 12,
+    backgroundColor: "#FFFFFF",
+  },
+  domainRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  favicon: {
+    width: 16,
+    height: 16,
+    marginRight: 6,
+    borderRadius: 2,
+  },
+  domain: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#888888",
+    letterSpacing: 0.5,
+    flex: 1,
+  },
+  title: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#1A1A1A",
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  description: {
+    fontSize: 13,
+    color: "#666666",
+    lineHeight: 18,
+  },
+});
+
+export default RichMediaPreviewBubble;
+```
+</Tab>
+</Tabs>
+
+### Step 2: Override Message Templates
+
+In your Messages component, override the text message template to use the Rich Media Preview bubble:
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import React, { useState, useEffect } from "react";
+import { Text } from "react-native";
+import {
+  CometChatMessageList,
+  CometChatMessageTemplate,
+  ChatConfigurator,
+  useTheme,
+} from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import RichMediaPreviewBubble, {
+  getRichMediaData,
+} from "./RichMediaPreviewBubble";
+
+interface MessagesProps {
+  user?: CometChat.User;
+  group?: CometChat.Group;
+}
+
+const Messages: React.FC<MessagesProps> = ({ user, group }) => {
+  const theme = useTheme();
+  const [myUid, setMyUid] = useState<string | null>(null);
+
+  useEffect(() => {
+    CometChat.getLoggedinUser().then((user) => {
+      setMyUid(user?.getUid() || null);
+    });
+  }, []);
+
+  const getTemplates = (): CometChatMessageTemplate[] => {
+    const templates = ChatConfigurator.getDataSource().getAllMessageTemplates(
+      theme
+    );
+
+    templates.forEach((template) => {
+      if (template.type === "text" && template.category === "message") {
+        const originalContentView = template.ContentView;
+
+        template.ContentView = (
+          msg: CometChat.BaseMessage,
+          alignment: any
+        ) => {
+          const textMessage = msg as CometChat.TextMessage;
+          const richMediaData = getRichMediaData(msg);
+
+          if (richMediaData) {
+            const isOutgoing = msg.getSender()?.getUid() === myUid;
+            return (
+              <RichMediaPreviewBubble
+                richMediaData={richMediaData}
+                messageText={textMessage.getText()}
+                isOutgoing={isOutgoing}
+              />
+            );
+          }
+
+          if (originalContentView) {
+            return originalContentView(msg, alignment);
+          }
+          return <Text>{textMessage.getText()}</Text>;
+        };
+      }
+    });
+
+    return templates;
+  };
+
+  return (
+    <CometChatMessageList
+      user={user}
+      group={group}
+      templates={getTemplates()}
+    />
+  );
+};
+
+export default Messages;
+```
+</Tab>
+</Tabs>
+
+---
+
+## Rich Media Response Structure
+
+When a message contains a URL, the extension adds the following metadata:
+
+```json
+{
+  "@injected": {
+    "extensions": {
+      "rich-media": {
+        "url": "https://example.com",
+        "meta": {
+          "title": "Page Title",
+          "description": "Page description text",
+          "site": "Example",
+          "canonical": "https://example.com/"
+        },
+        "links": {
+          "thumbnail": [
+            {
+              "href": "https://example.com/image.png",
+              "type": "image/png"
+            }
+          ],
+          "icon": [
+            {
+              "href": "https://example.com/favicon.ico",
+              "type": "image/icon"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Customization
+
+<AccordionGroup>
+  <Accordion title="Show Preview Only for Specific Domains">
+    To only show rich media preview for certain domains:
+    
+    ```tsx
+    const ALLOWED_DOMAINS = ["youtube.com", "twitter.com", "github.com"];
+
+    export const getRichMediaData = (message: any): RichMediaData | null => {
+      // ... existing extraction logic ...
+
+      if (richMedia?.url) {
+        const domain = new URL(richMedia.url).hostname.replace("www.", "");
+        if (!ALLOWED_DOMAINS.some((d) => domain.includes(d))) {
+          return null; // Skip preview for non-allowed domains
+        }
+      }
+
+      return richMedia;
+    };
+    ```
+  </Accordion>
+  <Accordion title="Require Both Title and Thumbnail">
+    By default, preview shows if there's either a title OR thumbnail. To require both:
+    
+    ```tsx
+    // Only show preview if BOTH title and thumbnail exist
+    if (!hasTitle || !hasThumbnail) {
+      return null;
+    }
+    ```
+  </Accordion>
+  <Accordion title="Custom Thumbnail Height">
+    Adjust thumbnail size based on your design:
+    
+    ```tsx
+    thumbnail: {
+      width: "100%",
+      height: 180, // Default is 140, increase for larger previews
+    },
+    ```
+  </Accordion>
+  <Accordion title="Hide Description">
+    For a more compact preview without description, remove the description section from the component.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Preview Not Appearing">
+    1. Verify the Rich Media Preview extension is enabled in CometChat Dashboard
+    2. Confirm your iFramely API key is correctly configured
+    3. Check that the URL is publicly accessible
+    4. Some URLs may not return metadata if the site blocks crawlers
+    5. URLs without sufficient metadata (no title and no thumbnail) will display as plain text
+  </Accordion>
+  <Accordion title="Thumbnail Not Loading">
+    1. Check if the thumbnail URL is valid and accessible
+    2. Some sites may block external image requests
+    3. The fallback favicon from Google should display if thumbnail fails
+  </Accordion>
+  <Accordion title="Template Override Not Working">
+    1. Ensure `templates={getTemplates()}` is passed to `CometChatMessageList`
+    2. Verify the template type and category match: `type === 'text'` and `category === 'message'`
+    3. Check that `myUid` state is properly initialized
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="TinyURL Integration" icon="link" href="/ui-kit/react-native/guide-tinyurl-integration">
+    Automatically shorten long URLs in messages
+  </Card>
+  <Card title="Giphy GIFs" icon="images" href="/ui-kit/react-native/guide-giphy-integration">
+    Add GIF support with Giphy integration
+  </Card>
+  <Card title="Message List" icon="list" href="/ui-kit/react-native/message-list">
+    Customize how messages are displayed
+  </Card>
+  <Card title="Extensions Overview" icon="puzzle-piece" href="/ui-kit/react-native/extensions">
+    Explore all available extensions
+  </Card>
+</CardGroup>
