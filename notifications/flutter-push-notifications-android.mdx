@@ -18,6 +18,7 @@ description: "CometChat push notifications in Flutter apps on Android using Fire
 - Copying the sample notification stack and aligning package IDs/provider IDs.
 - Native Android glue (manifest, MethodChannel, lock-screen call activity/receiver).
 - Token registration, notification/call handling, navigation, testing, and troubleshooting.
+- App icon badge count and grouped notifications using `unreadMessageCount` from the CometChat push payload.
 
 {/* ## What you need first
 
@@ -187,7 +188,154 @@ FirebaseMessaging.instance.onTokenRefresh.listen(
 - `VoipNotificationHandler.handleNativeCallIntent` reads Accept/Decline extras passed from `CallActionReceiver` via the MethodChannel if the user acted before Flutter started.
 - `saveAppSettingsToNative()` runs during `FirebaseService.init` to persist App ID/Region for the native receiver; keep it in place or `CallActionReceiver` cannot initialize CometChat when rejecting a call from the lock screen.
 
-## 6. Testing checklist
+## 6. Badge count and grouped notifications
+
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field (a string) representing the total unread messages across all conversations for the logged-in user. You can use this to set the app icon badge and enrich local notifications.
+
+### 6.1 Enable unread badge count on the CometChat Dashboard
+
+1. Go to **CometChat Dashboard → Notification Engine → Settings → Preferences → Push Notification Preferences**.
+2. Scroll to the bottom and enable the **Unread Badge Count** toggle.
+
+This ensures CometChat includes the `unreadMessageCount` field in every push payload sent to your app.
+
+### 6.2 Add the `app_badge_plus` dependency
+
+```yaml lines
+dependencies:
+  app_badge_plus: ^1.2.6
+```
+
+Run `flutter pub get`.
+
+### 6.3 Expected payload format
+
+CometChat sends FCM data messages with this structure (relevant fields):
+
+```json
+{
+  "data": {
+    "unreadMessageCount": "5",
+    "title": "New Message",
+    "alert": "John: Hello!",
+    "conversationId": "user_abc123",
+    "conversationType": "user"
+  }
+}
+```
+
+`unreadMessageCount` is a string representing the total unread messages across all conversations for the logged-in user.
+
+### 6.4 Update the app badge from the push payload
+
+Inside your local notification handler (for example `LocalNotificationService.showNotification`), parse `unreadMessageCount` and update the badge:
+
+```dart lines
+import 'package:app_badge_plus/app_badge_plus.dart';
+
+// Inside showNotification, after receiving notificationData:
+final unreadCountRaw = notificationData['unreadMessageCount'];
+int unreadMessageCount = int.tryParse(unreadCountRaw?.toString() ?? '') ?? 0;
+
+if (unreadMessageCount >= 0) {
+  try {
+    await AppBadgePlus.updateBadge(unreadMessageCount);
+  } catch (e) {
+    debugPrint('Error updating badge count: $e');
+  }
+}
+```
+
+On Android, `app_badge_plus` uses launcher-specific APIs (Samsung, Huawei, etc.) to display a badge number on the app icon. Passing `0` clears the badge.
+
+### 6.5 Show grouped notifications with unread count
+
+Use `conversationId.hashCode` as the notification ID so each new message from the same conversation replaces the previous notification instead of creating a new one. Accumulate message lines per conversation for inbox-style display:
+
+```dart lines
+// Stable notification ID per conversation
+final int notificationId = conversationId.isNotEmpty
+    ? conversationId.hashCode
+    : DateTime.now().microsecondsSinceEpoch.hashCode;
+
+// Accumulate messages for inbox-style display
+static final Map<String, List<String>> _conversationMessages = {};
+_conversationMessages.putIfAbsent(conversationId, () => []);
+_conversationMessages[conversationId]!.add(messageBody);
+
+final messages = _conversationMessages[conversationId]!;
+
+// Choose notification style based on message count
+StyleInformation styleInformation;
+if (messages.length == 1) {
+  styleInformation = const DefaultStyleInformation(false, false);
+} else {
+  styleInformation = InboxStyleInformation(
+    messages,
+    contentTitle: title,
+    summaryText: unreadMessageCount > 0
+        ? '$unreadMessageCount unread ${unreadMessageCount == 1 ? 'message' : 'messages'}'
+        : '${messages.length} messages',
+  );
+}
+
+final androidDetails = AndroidNotificationDetails(
+  notificationChannelId,
+  notificationChannelName,
+  importance: Importance.max,
+  priority: Priority.high,
+  icon: 'ic_launcher',
+  styleInformation: styleInformation,
+  subText: unreadMessageCount > 0
+      ? '$unreadMessageCount unread ${unreadMessageCount == 1 ? 'message' : 'messages'}'
+      : null,
+  number: messages.length > 1 ? messages.length : null,
+);
+```
+
+- `subText` shows the unread count below the notification title on most Android devices.
+- `number` displays a count badge on the notification icon (Samsung One UI).
+- When the user opens a conversation, clear its accumulated messages by removing the key from `_conversationMessages`.
+
+### 6.6 Clear badge and notifications when the app opens
+
+Clear the badge count and dismiss all local notifications when the app launches and every time it resumes from the background. Add `WidgetsBindingObserver` to your root widget and register/remove the observer in `initState()` and `dispose()`:
+
+```dart lines
+Future<void> _clearBadge() async {
+  try {
+    LocalNotificationService.flutterLocalNotificationsPlugin.cancelAll();
+    await AppBadgePlus.updateBadge(0);
+    debugPrint("The badge was cleared");
+  } catch (e) {
+    debugPrint("Error in clearing the badge value $e");
+  }
+}
+
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addObserver(this);
+  _clearBadge();
+}
+
+@override
+void didChangeAppLifecycleState(AppLifecycleState state) {
+  if (state == AppLifecycleState.resumed) {
+    _clearBadge();
+  }
+}
+
+@override
+void dispose() {
+  WidgetsBinding.instance.removeObserver(this);
+  super.dispose();
+}
+```
+
+`cancelAll()` removes stale notification banners from the tray so they stay in sync with the badge count.
+
+## 7. Testing checklist
 
 1. Run on a physical Android device. Grant notification, microphone, and camera permissions when prompted (Android 13+ requires `POST_NOTIFICATIONS`).
 2. Send a message from another user:
@@ -200,7 +348,7 @@ FirebaseMessaging.instance.onTokenRefresh.listen(
    - Declining from the notification triggers `CallActionReceiver` to reject the call server-side.
 5. Rotate through Wi-Fi/cellular and reinstall the app to confirm token registration works after refresh events.
 
-## 7. Troubleshooting tips
+## 8. Troubleshooting tips
 
 | Symptom | Quick checks |
 | --- | --- |

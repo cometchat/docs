@@ -635,21 +635,294 @@ To handle notification taps and navigate to the appropriate chat screen, you nee
 {/* :TODO: Add code snippets and explanation for setting up Notifee handlers and navigation logic. */}
 
 
-## 7. Testing checklist
+## 7. Badge Count Implementation
 
-1. Android: install on device, grant POST_NOTIFICATIONS; log in and verify FCM token registration success.
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field that represents the total number of unread messages across all conversations for the logged-in user. You can use this value to update the app icon badge, providing users with a visual indicator of unread messages.
+
+### 7.1 Enable Unread Badge Count on the CometChat Dashboard
+
+<Steps>
+  <Step title="Navigate to Push Notification Preferences">
+    Go to **CometChat Dashboard → Notifications Engine → Settings → Preferences → Push Notification Preferences**.
+  </Step>
+  <Step title="Enable the Toggle">
+    Scroll down and enable the **Unread Badge Count** toggle.
+  </Step>
+</Steps>
+
+Once enabled, CometChat automatically includes the `unreadMessageCount` field in every push payload sent to your app.
+
+### 7.2 Expected Payload Format
+
+CometChat sends push notifications with the following structure:
+
+```json
+{
+  "data": {
+    "unreadMessageCount": "5",
+    "title": "New Message",
+    "body": "John: Hello!",
+    "conversationId": "user_abc123",
+    "receiverType": "user",
+    "type": "chat"
+  }
+}
+```
+
+<Note>
+The `unreadMessageCount` field is a **string** representing the total unread messages across all conversations for the logged-in user.
+</Note>
+
+### 7.3 Handle Badge Count in Background Messages
+
+Update your FCM background message handler in `index.js` to extract and set the badge count:
+
+```javascript
+import messaging from "@react-native-firebase/messaging";
+import notifee from "@notifee/react-native";
+
+messaging().setBackgroundMessageHandler(async (remoteMessage) => {
+  const data = remoteMessage.data || {};
+
+  // Extract and set badge count from push payload
+  const unreadCount = data?.unreadMessageCount;
+  if (unreadCount !== undefined && unreadCount !== null) {
+    const count = parseInt(unreadCount, 10);
+    if (!isNaN(count) && count >= 0) {
+      try {
+        await notifee.setBadgeCount(count);
+        console.log("Badge count updated (Android):", count);
+      } catch (error) {
+        console.error("Error setting badge:", error);
+      }
+    }
+  }
+
+  // Display local notification
+  await displayLocalNotification(remoteMessage);
+});
+```
+
+### 7.4 Handle Badge Count in Foreground Messages
+
+In your `App.tsx`, set up a listener for foreground FCM messages:
+
+```typescript
+import messaging from "@react-native-firebase/messaging";
+import notifee from "@notifee/react-native";
+
+useEffect(() => {
+  if (Platform.OS === "android") {
+    const unsubscribe = messaging().onMessage(async (remoteMessage) => {
+      // Extract and set badge count from push payload
+      const unreadCount = remoteMessage.data?.unreadMessageCount;
+      if (unreadCount !== undefined && unreadCount !== null) {
+        const count = parseInt(unreadCount as string, 10);
+        if (!isNaN(count) && count >= 0) {
+          try {
+            await notifee.setBadgeCount(count);
+            console.log("Badge count updated (Android):", count);
+          } catch (error) {
+            console.error("Error setting badge:", error);
+          }
+        }
+      }
+
+      // Display local notification
+      await displayLocalNotification(remoteMessage);
+    });
+
+    return () => unsubscribe();
+  }
+}, []);
+```
+
+### 7.5 Display Local Notification with Badge Count
+
+Update your notification display function to include the badge count:
+
+```typescript
+import notifee, { AndroidImportance } from "@notifee/react-native";
+
+export async function displayLocalNotification(remoteMessage: any) {
+  const { title, body, senderAvatar } = remoteMessage.data || {};
+
+  // Create notification channel
+  const channelId = await notifee.createChannel({
+    id: "chat-messages",
+    name: "Chat Messages",
+    vibration: true,
+    importance: AndroidImportance.HIGH,
+  });
+
+  // Parse badge count from payload
+  const unreadCount = remoteMessage.data?.unreadMessageCount;
+  const badgeCount = unreadCount ? parseInt(unreadCount, 10) : undefined;
+
+  // Optionally enhance title with unread count
+  const displayTitle =
+    badgeCount && badgeCount > 1
+      ? `${title || "New Message"} (${badgeCount} unread)`
+      : title || "New Message";
+
+  // Update badge count
+  if (badgeCount && badgeCount > 0) {
+    await notifee.setBadgeCount(badgeCount);
+  }
+
+  // Display notification with fixed ID to prevent badge accumulation
+  // on devices that sum badge counts from multiple notifications
+  await notifee.displayNotification({
+    id: "chat-notification",
+    title: displayTitle,
+    body: body || "You received a new message.",
+    android: {
+      channelId,
+      autoCancel: true,
+      smallIcon: "ic_notification",
+      largeIcon:
+        senderAvatar ||
+        "https://cdn-icons-png.flaticon.com/512/149/149071.png",
+      importance: AndroidImportance.HIGH,
+      badgeCount: badgeCount,
+      pressAction: {
+        id: "default",
+      },
+    },
+    data: {
+      receiverType: remoteMessage.data?.receiverType,
+      sender: remoteMessage.data?.sender,
+      conversationId: remoteMessage.data?.conversationId,
+    },
+  });
+}
+```
+
+### 7.6 Clear Badge When App Becomes Active
+
+Clear all notifications and reset the badge when the app returns to the foreground:
+
+```typescript
+import { AppState, AppStateStatus, Platform } from "react-native";
+import notifee from "@notifee/react-native";
+
+useEffect(() => {
+  const handleAppStateChange = async (nextState: AppStateStatus) => {
+    if (nextState === "active" && Platform.OS === "android") {
+      // Clear all notifications (also resets badge count)
+      await notifee.cancelAllNotifications();
+      console.log("Notifications cleared (Android)");
+    }
+  };
+
+  const subscription = AppState.addEventListener("change", handleAppStateChange);
+  return () => subscription.remove();
+}, []);
+```
+
+### 7.7 Clear Badge on Logout
+
+When a user logs out, clear the badge so it doesn't show a stale count on the login screen or for the next user:
+
+```typescript
+import notifee from "@notifee/react-native";
+import { CometChat, CometChatNotifications } from "@cometchat/chat-sdk-react-native";
+
+const handleLogout = async () => {
+  // Unregister push token first
+  await CometChatNotifications.unregisterPushToken();
+
+  // Clear badge before logout
+  await notifee.setBadgeCount(0);
+  await notifee.cancelAllNotifications();
+
+  // Logout from CometChat
+  await CometChat.logout();
+  console.log("User logged out, badge cleared");
+};
+```
+
+### 7.8 Clear Badge on Fresh Install / No Logged-In User
+
+Clear the badge during app initialization when no user is logged in. This handles cases where badge count may persist after app reinstall:
+
+```typescript
+import notifee from "@notifee/react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// During app initialization, after CometChat.init()
+const initializeApp = async () => {
+  // Initialize CometChat first
+  await CometChatUIKit.init(uiKitSettings);
+
+  // Check if user is logged in
+  const loggedInUser = await CometChat.getLoggedinUser();
+
+  if (!loggedInUser) {
+    // No user logged in - clear any stale badge
+    await notifee.setBadgeCount(0);
+    await notifee.cancelAllNotifications();
+    console.log("No logged-in user, badge cleared");
+  }
+};
+```
+
+### 7.9 Clear Badge in Login Listener (Safety Net)
+
+Register a login listener to clear the badge on logout as a backup mechanism:
+
+```typescript
+import notifee from "@notifee/react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+useEffect(() => {
+  const listenerID = "BADGE_LOGOUT_LISTENER";
+
+  CometChat.addLoginListener(
+    listenerID,
+    new CometChat.LoginListener({
+      logoutOnSuccess: async () => {
+        // Safety net: clear badge when logout succeeds
+        await notifee.setBadgeCount(0);
+        await notifee.cancelAllNotifications();
+        console.log("Logout listener: badge cleared");
+      },
+    })
+  );
+
+  return () => {
+    CometChat.removeLoginListener(listenerID);
+  };
+}, []);
+```
+
+### 7.10 Key Implementation Notes
+
+| Consideration | Details |
+| --- | --- |
+| **Backend-driven badge count** | The `unreadMessageCount` value comes directly from CometChat's backend via the push payload, ensuring consistency across all devices. |
+| **Fixed notification ID** | Using a fixed notification ID (`'chat-notification'`) prevents certain devices from accumulating badge counts across multiple notifications. The badge always reflects the exact `unreadMessageCount` from the backend. |
+| **Clear on app active** | Always clear the badge when the app becomes active. New notifications will update the badge with the fresh `unreadMessageCount` from the backend. |
+| **Clear on logout** | Always clear the badge when a user logs out to prevent stale counts for the next user. |
+| **Clear on fresh install** | Clear the badge during app initialization when no user is logged in to handle reinstall scenarios. |
+| **Login listener safety net** | Use CometChat's login listener as a backup to ensure badge is cleared on logout. |
+| **Title enhancement** | Optionally display the unread count in the notification title (e.g., "John (5 unread)") for devices that don't support app icon badges. |
+
+## 8. Testing Checklist
+
+1. Install on a physical Android device, grant `POST_NOTIFICATIONS` permission, log in, and verify FCM token registration succeeds.
 2. Send a message from another user:
-   - Foreground: Notifee banner shows unless that chat is open.
-   - Background/terminated: tap opens the correct conversation; Notifee background handler runs.
-3. VoIP call: send `callAction=initiated` push; expect native dialer to show. Answer and verify the call connects; send `callAction=ended` to clear it.
-4. Rotate tokens (reinstall or revoke) and confirm `onTokenRefresh` re-registers.
+   - **Foreground:** Notifee banner appears unless that chat is already open.
+   - **Background/terminated:** Tap opens the correct conversation; Notifee background handler runs.
+3. **VoIP call:** Send a `callAction=initiated` push; expect the native dialer to appear. Answer and verify the call connects; send `callAction=ended` to dismiss it.
+4. Rotate tokens (reinstall or revoke) and confirm `onTokenRefresh` re-registers the new token.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
-| Symptom | Quick checks |
+| Symptom | Quick Checks |
 | --- | --- |
 | No pushes | Confirm `google-services.json` location, package IDs match Firebase, Push extension enabled with correct provider IDs, permissions granted. |
-| Token registration fails | Ensure registration runs **after login**, provider IDs are set, and `registerDeviceForRemoteMessages()` is called (Android). |
+| Token registration fails | Ensure registration runs **after login**, provider IDs are set, and `registerDeviceForRemoteMessages()` is called. |
 {/* | Notification taps do nothing | Keep Notifee foreground/background handlers and ensure the navigation ref is ready before routing. | */}
 {/* | Call UI not showing | Verify CallKeep setup, telecom permissions, and that `VoipNotificationHandler.initialize()` runs post-login. | */}
 {/* | Inline reply needed | Extend Notifee action buttons; CometChat expects you to send the message manually after reading `remoteMessage.data`. | */}

@@ -17,6 +17,7 @@ description: "CometChat push notifications in Flutter apps on iOS using Apple Pu
 - Apple + Firebase setup (entitlements, APNs key, `GoogleService-Info.plist`).
 - Copying the sample notification stack and aligning package IDs/provider IDs.
 - Token registration, navigation from pushes, testing, and troubleshooting.
+- App icon badge count using `unreadMessageCount` from the CometChat push payload.
 
 {/* ## What you need first
 
@@ -126,7 +127,13 @@ dependencies:
   permission_handler: ^11.3.0
 ```
 
-Run `flutter pub get`, then `flutterfire configure` if you still need to generate `firebase_options.dart`.
+Run `flutter pub get`, then install the native pods:
+
+```bash
+cd ios && pod install && cd ..
+```
+
+Then run `flutterfire configure` if you still need to generate `firebase_options.dart`.
 
 ## 5. Configure the native iOS layer
 
@@ -197,7 +204,117 @@ This registers the device token against the APNs provider selected in `CometChat
 - `FlutterCallkitIncoming.onEvent` is already wired inside `APNSService` to accept or end calls initiated by CallKit.
 - When native CallKit UI accepts/ends a call, Swift invokes `onCallAcceptedFromNative` / `onCallEndedFromNative` on the MethodChannel; `APNSService` then calls `FlutterCallkitIncoming.setCallConnected` or `CometChat.endCall()` to keep both stacks synchronized.
 
-## 7. Testing checklist
+## 7. Badge count using `unreadMessageCount`
+
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field representing the total unread messages across all conversations for the logged-in user. On iOS the badge can be updated from both the client side and the server side.
+
+If you use only APNs (no FCM on iOS), the badge is handled entirely by the server. CometChat sets the `aps.badge` value in the push payload, and iOS updates the app icon badge automatically when the notification is delivered. No additional dependency or client-side code is required — you can skip straight to section 7.5 to handle clearing the badge when the app opens.
+
+### 7.1 Enable unread badge count on the CometChat Dashboard
+
+1. Go to **CometChat Dashboard → Notification Engine → Settings → Preferences → Push Notification Preferences**.
+2. Scroll to the bottom and enable the **Unread Badge Count** toggle.
+
+This ensures CometChat includes the `unreadMessageCount` field in every push payload (and sets `aps.badge` for APNs) sent to your app.
+
+### 7.2 Expected payload format
+
+CometChat sends APNs payloads with this structure (relevant fields):
+
+```json
+{
+  "aps": {
+    "alert": {
+      "title": "New Message",
+      "body": "John: Hello!"
+    },
+    "badge": 5,
+    "sound": "default"
+  },
+  "unreadMessageCount": 5,
+  "conversationId": "user_abc123"
+}
+```
+
+The `aps.badge` field is set by CometChat server-side. iOS updates the app icon badge automatically when the push is delivered — no client code is needed for this path.
+
+### 7.3 Client-side badge via FCM on iOS
+
+The steps below apply only if you register FCM tokens on iOS and show local notifications from Flutter. If you use pure APNs, skip to section 7.3.
+
+Add the `app_badge_plus` dependency:
+
+```yaml lines
+dependencies:
+  app_badge_plus: ^1.2.6
+```
+
+Run `flutter pub get`, then install the native pods:
+
+```bash
+cd ios && pod install && cd ..
+```
+
+### 7.4 Update the badge from local notifications
+
+Inside your notification handler (for example `APNSService._showNotification`), parse `unreadMessageCount` and set the badge:
+
+```dart lines
+import 'package:app_badge_plus/app_badge_plus.dart';
+
+final unreadCountRaw = notificationData['unreadMessageCount'];
+int unreadMessageCount = int.tryParse(unreadCountRaw?.toString() ?? '') ?? 0;
+
+if (unreadMessageCount >= 0) {
+  try {
+    await AppBadgePlus.updateBadge(unreadMessageCount);
+  } catch (e) {
+    debugPrint('Error updating badge count: $e');
+  }
+}
+```
+
+On iOS, `app_badge_plus` sets the native `UIApplication.shared.applicationIconBadgeNumber`. Passing `0` clears the badge.
+
+### 7.5 Clear badge and notifications when the app opens
+
+This is required regardless of whether you use APNs or FCM. Clear the badge count and dismiss all local notifications when the app launches and every time it resumes from the background. Add `WidgetsBindingObserver` to your root widget and register/remove the observer in `initState()` and `dispose()`:
+
+```dart lines
+Future<void> _clearBadge() async {
+  try {
+    LocalNotificationService.flutterLocalNotificationsPlugin.cancelAll();
+    await AppBadgePlus.updateBadge(0);
+    debugPrint("The badge was cleared");
+  } catch (e) {
+    debugPrint("Error in clearing the badge value $e");
+  }
+}
+
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addObserver(this);
+  _clearBadge();
+}
+
+@override
+void didChangeAppLifecycleState(AppLifecycleState state) {
+  if (state == AppLifecycleState.resumed) {
+    _clearBadge();
+  }
+}
+
+@override
+void dispose() {
+  WidgetsBinding.instance.removeObserver(this);
+  super.dispose();
+}
+```
+
+`cancelAll()` removes stale notification banners from the tray so they stay in sync with the badge count.
+
+## 8. Testing checklist
 
 1. Run the app on a physical device in debug first. Grant notification, microphone, camera, and Bluetooth permissions when prompted.
 2. Send a message from another user:
@@ -210,7 +327,7 @@ This registers the device token against the APNs provider selected in `CometChat
 5. Decline the call and confirm both CallKit and Flutter clean up (`BoolSingleton` resets, overlays dismissed).
 6. Rotate through Wi-Fi/cellular and reinstall the app to confirm token registration works after refresh events.
 
-## 8. Troubleshooting tips
+## 9. Troubleshooting tips
 
 | Symptom | Quick checks |
 | --- | --- |

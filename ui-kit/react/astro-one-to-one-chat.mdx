@@ -1,270 +1,262 @@
 ---
-title: "Building a One-to-One/Group Chat in Astro"
-sidebarTitle: "One To One/Group Chat"
+title: "One-to-One / Group Chat"
+sidebarTitle: "One-to-One / Group Chat"
+description: "Build a focused one-to-one or group chat experience in Astro with CometChat React UI Kit."
 ---
 
-The One‑to‑One/Group chat layout focuses on a single conversation, ideal for support chats and private messaging. This guide uses Astro with React islands and the CometChat React UI Kit.
+<Accordion title="AI Integration Quick Reference">
 
-***
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react` |
+| Framework | Astro (with `@astrojs/react` islands) |
+| Components | `CometChatMessageHeader`, `CometChatMessageList`, `CometChatMessageComposer` |
+| Layout | Single chat window — no sidebar, no conversation list |
+| Prerequisite | Complete [Astro Integration](/ui-kit/react/astro-integration) Steps 1–5 first |
+| SSR | `client:only="react"` directive — CometChat requires browser APIs |
+| Pattern | Support chat, embedded widgets, focused messaging |
 
-## User Interface Preview
+</Accordion>
+
+This guide builds a single chat window — no sidebar, no conversation list. Users go directly into a one-to-one or group chat. Good for support chat, embedded widgets, or any focused messaging experience.
+
+This assumes you've already completed [Astro Integration](/ui-kit/react/astro-integration) (project created, React added, UI Kit installed).
 
 <Frame>
-  <img src="https://mintcdn.com/cometchat-22654f5b/sVDw7GNAn28WGWte/images/4d640baf-chat_experience_one_on_one-db9d6d7716241c59bb026625b05019fe.png?fit=max&auto=format&n=sVDw7GNAn28WGWte&q=85&s=06320cc3e46aa95cb0538c84df500aae" alt="Dedicated one-to-one or group chat screen" />
+  <img src="/images/4d640baf-chat_experience_one_on_one-db9d6d7716241c59bb026625b05019fe.png" />
 </Frame>
 
-**Key Components**
+---
 
-1. Chat Header – recipient details and status
-2. Message View – history and live messages
-3. Message Composer – text, media, attachments
+## What You're Building
 
-***
+Three components stacked vertically:
 
-## Prerequisites
+1. **Chat header** — displays recipient name, avatar, online status, and optional call buttons
+2. **Message list** — real-time chat history with scrolling
+3. **Message composer** — text input with media, emojis, and reactions
 
-- Astro project with React integration
-- CometChat credentials in `.env`
+---
 
-<Steps>
-<Step title="Create or open an Astro project">
-  ```bash
-  npm create astro@latest
-  cd <my-astro-app>
-  npm install
-  ```
+## Step 1 — Create the React Island
 
-  <Info>
-  If you already have the sample `astro-one-to-one-chat` project, open it instead.
-  </Info>
-</Step>
+Create a `OneToOneChat` component inside `src/components/`. This handles init, login, fetches the target user, and renders the chat UI.
 
-<Step title="Add React and install CometChat UI Kit">
-  ```bash
-  npx astro add react
-  npm i @cometchat/chat-uikit-react react react-dom
-  ```
+<Tree>
+  <Tree.Folder name="src" defaultOpen>
+    <Tree.Folder name="components" defaultOpen>
+      <Tree.File name="OneToOneChat.tsx" />
+      <Tree.File name="OneToOneChat.css" />
+    </Tree.Folder>
+  </Tree.Folder>
+</Tree>
 
-  Add required environment variables to `.env`:
-  ```bash
-  PUBLIC_COMETCHAT_APP_ID=your_app_id
-  PUBLIC_COMETCHAT_REGION=your_region
-  PUBLIC_COMETCHAT_AUTH_KEY=your_auth_key
-  # Login user and the peer for one-to-one
-  PUBLIC_COMETCHAT_LOGIN_UID=cometchat-uid-3
-  PUBLIC_COMETCHAT_TARGET_UID=cometchat-uid-1
-  ```
+<Tabs>
+<Tab title="TypeScript">
 
-  <Warning>
-  Use Auth Tokens in production instead of Auth Keys.
-  </Warning>
-</Step>
+```tsx title="OneToOneChat.tsx" lines highlight={14-16, 37, 55, 62}
+import { useEffect, useState } from "react";
+import {
+  CometChatMessageComposer,
+  CometChatMessageHeader,
+  CometChatMessageList,
+  CometChatUIKit,
+  UIKitSettingsBuilder,
+} from "@cometchat/chat-uikit-react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import "@cometchat/chat-uikit-react/css-variables.css";
+import "./OneToOneChat.css";
 
-<Step title="Initialize CometChat (src/lib/cometchat-init.js)">
-  Create `src/lib/cometchat-init.js` used by the island to initialize the UI Kit and handle login.
+const COMETCHAT_CONSTANTS = {
+  APP_ID: "",    // Replace with your App ID
+  REGION: "",    // Replace with your Region
+  AUTH_KEY: "",  // Replace with your Auth Key (dev only)
+};
 
-  ```javascript src/lib/cometchat-init.js
-  import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+export default function OneToOneChat() {
+  const [user, setUser] = useState<CometChat.User | undefined>(undefined);
+  const [selectedUser, setSelectedUser] = useState<CometChat.User | undefined>(undefined);
+  const [selectedGroup, setSelectedGroup] = useState<CometChat.Group | undefined>(undefined);
 
-  const APP_ID   = import.meta.env.PUBLIC_COMETCHAT_APP_ID;
-  const REGION   = import.meta.env.PUBLIC_COMETCHAT_REGION;
-  const AUTH_KEY = import.meta.env.PUBLIC_COMETCHAT_AUTH_KEY;
-
-  export async function initCometChat() {
-    if (!APP_ID || !REGION || !AUTH_KEY) {
-      throw new Error("Missing PUBLIC_COMETCHAT_* env vars.");
-    }
-
-    const settings = new UIKitSettingsBuilder()
-      .setAppId(APP_ID)
-      .setRegion(REGION)
-      .setAuthKey(AUTH_KEY) // use Auth Tokens in prod
+  useEffect(() => {
+    const UIKitSettings = new UIKitSettingsBuilder()
+      .setAppId(COMETCHAT_CONSTANTS.APP_ID)
+      .setRegion(COMETCHAT_CONSTANTS.REGION)
+      .setAuthKey(COMETCHAT_CONSTANTS.AUTH_KEY)
       .subscribePresenceForAllUsers()
       .build();
 
-    await CometChatUIKit.init(settings);
-  }
-
-  export async function ensureLogin(uid) {
-    const existing = await CometChatUIKit.getLoggedinUser();
-    if (!existing) await CometChatUIKit.login(uid);
-  }
-  ```
-</Step>
-
-<Step title="Build the React island (src/components/OneToOneChat.jsx)">
-  This component initializes CometChat, logs in the desired user, and loads a single peer (user or group) to chat with.
-
-  ```javascript src/components/OneToOneChat.jsx
-  import { useEffect, useState } from "react";
-  import {
-    CometChatUIKit,
-    CometChatMessageHeader,
-    CometChatMessageList,
-    CometChatMessageComposer,
-  } from "@cometchat/chat-uikit-react";
-  import "@cometchat/chat-uikit-react/css-variables.css";
-  import { initCometChat, ensureLogin } from "../lib/cometchat-init.js";
-
-  // current user + peer
-  const LOGIN_UID  = import.meta.env.PUBLIC_COMETCHAT_LOGIN_UID;   // e.g., cometchat-uid-3
-  const TARGET_UID = import.meta.env.PUBLIC_COMETCHAT_TARGET_UID;  // e.g., cometchat-uid-1
-
-  export default function OneToOneChat() {
-    const [phase, setPhase] = useState("boot"); // boot | ready | error
-    const [errorMsg, setErrorMsg] = useState("");
-    const [peer, setPeer] = useState(null);     // CometChat.User
-
-    useEffect(() => {
-      let cancelled = false;
-
-      (async () => {
-        try {
-          if (!LOGIN_UID || !TARGET_UID) {
-            throw new Error("Missing PUBLIC_COMETCHAT_LOGIN_UID or PUBLIC_COMETCHAT_TARGET_UID.");
+    CometChatUIKit.init(UIKitSettings)
+      .then(() => {
+        console.log("Initialization completed successfully");
+        CometChatUIKit.getLoggedinUser().then((loggedInUser) => {
+          if (!loggedInUser) {
+            CometChatUIKit.login("cometchat-uid-2")
+              .then((u) => {
+                console.log("Login Successful", { u });
+                setUser(u);
+              })
+              .catch((error) => console.error("Login failed", error));
+          } else {
+            console.log("Already logged-in", { loggedInUser });
+            setUser(loggedInUser);
           }
+        });
+      })
+      .catch((error) => console.error("Initialization failed", error));
+  }, []);
 
-          // 1) Initialize CometChat
-          await initCometChat();
+  useEffect(() => {
+    if (user) {
+      // Fetch the user whose chat you want to load
+      const UID = "cometchat-uid-1";
+      CometChat.getUser(UID).then(
+        (u) => setSelectedUser(u),
+        (error) => console.log("User fetching failed with error:", error)
+      );
 
-          // 2) Handle user switching - logout if different user
-          try {
-            const currentUser = await CometChatUIKit.getLoggedinUser();
-            if (currentUser && currentUser.uid !== LOGIN_UID) {
-              await CometChatUIKit.logout();
-            }
-          } catch (error) {
-            // No existing user session
-          }
+      // To load a group chat instead, uncomment below:
+      // const GUID = "GUID";
+      // CometChat.getGroup(GUID).then(
+      //   (group) => setSelectedGroup(group),
+      //   (error) => console.log("Group fetching failed with error:", error)
+      // );
+    }
+  }, [user]);
 
-          // 3) Ensure logged in as correct user
-          await ensureLogin(LOGIN_UID);
+  if (!user) return <div>Initializing Chat...</div>;
 
-          // 4) Fetch the peer user
-          const { CometChat } = await import("@cometchat/chat-sdk-javascript");
-          const u = await CometChat.getUser(TARGET_UID);
-
-          if (!cancelled) {
-            setPeer(u);
-            setPhase("ready");
-          }
-        } catch (e) {
-          if (!cancelled) {
-            setErrorMsg(String(e?.message || e));
-            setPhase("error");
-          }
-        }
-      })();
-
-      return () => { cancelled = true; };
-    }, [LOGIN_UID, TARGET_UID]); // Re-run when these change
-
-    if (phase === "boot")  return (
-      <div style={{ padding: 16 }}>
-        <div>Loading…</div>
-      </div>
-    );
-    
-    if (phase === "error") return (
-      <div style={{ padding: 16, color: "crimson" }}>
-        <div><b>Error:</b> {errorMsg}</div>
-      </div>
-    );
-
-    if (!peer) return <div className="cc-one-to-one__empty">Invalid target user.</div>;
-
-    return (
-      <div className="cc-one-to-one">
-        <CometChatMessageHeader user={peer} />
-        <div className="cc-one-to-one__list-slot">
-          <CometChatMessageList user={peer} />
+  return (
+    <>
+      {selectedUser || selectedGroup ? (
+        <div className="messages-wrapper">
+          <CometChatMessageHeader user={selectedUser} group={selectedGroup} />
+          <CometChatMessageList user={selectedUser} group={selectedGroup} />
+          <CometChatMessageComposer user={selectedUser} group={selectedGroup} />
         </div>
-        <CometChatMessageComposer user={peer} />
-      </div>
-    );
-  }
-  ```
-</Step>
-
-<Step title="Render the page (src/pages/index.astro)">
-  Import the island and styles, then hydrate on the client.
-
-  ```astro src/pages/index.astro
-  ---
-  import OneToOneChat from "../components/OneToOneChat.jsx";
-  import "../styles/globals.css";        // your existing base CSS (optional, recommended)
-  import "../styles/one-to-one.css";     // the file from this setup
-  ---
-
-  <html lang="en">
-    <head>
-      <meta charset="utf-8" />
-      <title>One-to-One Chat</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-    </head>
-    <body>
-      <!-- client-only island; CometChat needs browser APIs -->
-      <OneToOneChat client:only="react" />
-    </body>
-  </html>
-  ```
-</Step>
-
-<Step title="Run and verify">
-  ```bash
-  npm run dev
-  ```
-
-  <Check>
-  Set `PUBLIC_COMETCHAT_LOGIN_UID` and `PUBLIC_COMETCHAT_TARGET_UID` then verify messages appear for the selected peer.
-  </Check>
-</Step>
-</Steps>
-
-***
-
-## Switch to Group Chat
-
-To load a group instead of a user, fetch it with the SDK and pass it to the UI Kit components.
-
-```javascript
-const { CometChat } = await import("@cometchat/chat-sdk-javascript");
-const group = await CometChat.getGroup("YOUR_GROUP_ID");
-// Then render header, list, composer with group prop instead of user
+      ) : (
+        <div className="empty-conversation">
+          Set a user or group UID in OneToOneChat.tsx to start chatting
+        </div>
+      )}
+    </>
+  );
+}
 ```
 
-<Info>
-When switching between user and group, keep only one of `user` or `group` props set at a time.
-</Info>
+</Tab>
+<Tab title="CSS">
 
-***
+```css title="OneToOneChat.css" lines
+.messages-wrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
 
-## Troubleshooting
+.empty-conversation {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--cometchat-background-color-03, #F5F5F5);
+  color: var(--cometchat-text-color-secondary, #727272);
+  font: var(--cometchat-font-body-regular, 400 14px Roboto);
+}
 
-<AccordionGroup>
-<Accordion title="Blank screen or hydration error">
-Ensure the component is rendered as a React island (`client:only=\"react\"`).
-</Accordion>
+.cometchat .cometchat-message-composer {
+  border-radius: 0px;
+}
+```
 
-<Accordion title="Missing credentials">
-Verify `.env` contains `PUBLIC_COMETCHAT_APP_ID`, `PUBLIC_COMETCHAT_REGION`, `PUBLIC_COMETCHAT_AUTH_KEY`, and both `PUBLIC_COMETCHAT_LOGIN_UID` and `PUBLIC_COMETCHAT_TARGET_UID`.
-</Accordion>
+</Tab>
+</Tabs>
 
-<Accordion title="Wrong user appears">
-The island logs out if a different user session is active, then logs in with `PUBLIC_COMETCHAT_LOGIN_UID`.
-</Accordion>
-</AccordionGroup>
+Key points:
+- `CometChat.getUser(UID)` fetches the user object from the SDK — you need a real user object, not a manually constructed one.
+- Pass either `user` or `group` to the message components, never both.
+- The highlighted lines show where to set your credentials and target UID.
 
-***
+---
+
+## Switching Between User and Group Chat
+
+To load a group chat instead of one-to-one, replace the `getUser` call with `getGroup`:
+
+```tsx lines highlight={1}
+const GUID = "GUID"; // Replace with your actual Group ID
+
+CometChat.getGroup(GUID)
+  .then((group) => setSelectedGroup(group))
+  .catch((error) => console.error("Failed to fetch group:", error));
+```
+
+---
+
+## Step 2 — Render the Astro Page
+
+Import the island and hydrate it client-side using `client:only="react"`.
+
+```astro title="src/pages/index.astro" lines
+---
+import OneToOneChat from "../components/OneToOneChat.tsx";
+import "../styles/globals.css";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>One-to-One Chat</title>
+  </head>
+  <body>
+    <OneToOneChat client:only="react" />
+  </body>
+</html>
+```
+
+The `client:only="react"` directive ensures the component skips SSR entirely and only renders in the browser.
+
+---
+
+## Step 3 — Run the Project
+
+<Tabs>
+<Tab title="npm">
+```bash lines
+npm run dev
+```
+</Tab>
+<Tab title="pnpm">
+```bash lines
+pnpm dev
+```
+</Tab>
+<Tab title="yarn">
+```bash lines
+yarn dev
+```
+</Tab>
+</Tabs>
+
+You should see the chat window load with the conversation for the UID you set.
+
+---
 
 ## Next Steps
 
-- Add typing indicators and read receipts
-- Apply theming and component overrides
-- Extend to conversations list + messages or tabbed layout
-
-<Tip>
-You can reuse `src/lib/cometchat-init.js` across different chat experiences and swap the island component.
-</Tip>
-
-
+<CardGroup cols={2}>
+  <Card title="Theming" icon="paintbrush" href="/ui-kit/react/theme">
+    Customize colors, fonts, and styles to match your brand
+  </Card>
+  <Card title="Components Overview" icon="grid-2" href="/ui-kit/react/components-overview">
+    Browse all prebuilt UI components
+  </Card>
+  <Card title="Astro Integration" icon={<img src="/images/icons/astro.svg" alt="Astro" />} href="/ui-kit/react/astro-integration">
+    Back to the main setup guide
+  </Card>
+  <Card title="Core Features" icon="comments" href="/ui-kit/react/core-features">
+    Chat features included out of the box
+  </Card>
+</CardGroup>

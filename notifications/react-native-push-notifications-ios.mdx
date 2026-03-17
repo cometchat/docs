@@ -558,18 +558,251 @@ To handle notification taps and navigate to the appropriate chat screen, you nee
 {/* :TODO: Add code snippets and explanation for setting up Notifee handlers and navigation logic. */}
 
 
-## 7. Testing checklist
+## 7. Badge Count Implementation
 
-1. Install on device, log in, and verify APNs token registration success.
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field that represents the total number of unread messages across all conversations for the logged-in user. You can use this value to update the app icon badge, providing users with a visual indicator of unread messages.
+
+### 7.1 Enable Unread Badge Count on the CometChat Dashboard
+
+<Steps>
+  <Step title="Navigate to Push Notification Preferences">
+    Go to **CometChat Dashboard → Notifications Engine → Settings → Preferences → Push Notification Preferences**.
+  </Step>
+  <Step title="Enable the Toggle">
+    Scroll down and enable the **Unread Badge Count** toggle.
+  </Step>
+</Steps>
+
+Once enabled, CometChat automatically includes the `unreadMessageCount` field in every push payload sent to your app.
+
+### 7.2 Expected Payload Format
+
+CometChat sends APNs payloads with the following structure:
+
+```json
+{
+  "aps": {
+    "alert": {
+      "title": "New Message",
+      "body": "John: Hello!"
+    },
+    "badge": 5,
+    "sound": "default"
+  },
+  "unreadMessageCount": "5",
+  "conversationId": "user_abc123"
+}
+```
+
+<Note>
+The `aps.badge` field is set server-side by CometChat. iOS automatically updates the app icon badge when the push notification is delivered.
+</Note>
+
+### 7.3 Handle Badge Count from Notifications
+
+Update your iOS notification handler to set the badge count programmatically:
+
+```typescript
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+
+export async function onRemoteNotificationIOS(notification: any) {
+  // Extract badge count from push payload
+  const data = notification.getData();
+  const unreadCount = data?.unreadMessageCount;
+
+  if (unreadCount !== undefined && unreadCount !== null) {
+    const count = parseInt(unreadCount, 10);
+    if (!isNaN(count) && count >= 0) {
+      PushNotificationIOS.setApplicationIconBadgeNumber(count);
+      console.log("Badge count updated (iOS):", count);
+    }
+  }
+
+  // Handle notification tap
+  const isClicked = data?.userInteraction === 1;
+  if (isClicked && data?.type === "chat") {
+    // Navigate to conversation...
+  }
+
+  // Required: Notify iOS that processing is complete
+  notification.finish(PushNotificationIOS.FetchResult.NoData);
+}
+```
+
+### 7.4 Register Notification Listener
+
+In your `App.tsx`, set up the notification listener:
+
+```typescript
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+
+useEffect(() => {
+  if (Platform.OS === "ios") {
+    const onNotification = async (notification: any) => {
+      try {
+        await onRemoteNotificationIOS(notification);
+      } catch (error) {
+        console.log("Error in onRemoteNotificationIOS:", error);
+      }
+    };
+
+    PushNotificationIOS.addEventListener("notification", onNotification);
+
+    return () => {
+      PushNotificationIOS.removeEventListener("notification");
+    };
+  }
+}, []);
+```
+
+### 7.5 Clear Badge When App Becomes Active
+
+Clear the badge count when the app launches or returns to the foreground:
+
+```typescript
+import { AppState, AppStateStatus, Platform } from "react-native";
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+
+useEffect(() => {
+  const handleAppStateChange = async (nextState: AppStateStatus) => {
+    if (nextState === "active" && Platform.OS === "ios") {
+      PushNotificationIOS.setApplicationIconBadgeNumber(0);
+      console.log("Badge cleared (iOS)");
+    }
+  };
+
+  const subscription = AppState.addEventListener("change", handleAppStateChange);
+  return () => subscription.remove();
+}, []);
+```
+
+### 7.6 Clear Badge on Logout
+
+When a user logs out, clear the badge so it doesn't show a stale count on the login screen or for the next user:
+
+```typescript
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import { CometChat, CometChatNotifications } from "@cometchat/chat-sdk-react-native";
+
+const handleLogout = async () => {
+  // Unregister push token first
+  await CometChatNotifications.unregisterPushToken();
+
+  // Clear badge before logout
+  PushNotificationIOS.setApplicationIconBadgeNumber(0);
+
+  // Logout from CometChat
+  await CometChat.logout();
+  console.log("User logged out, badge cleared");
+};
+```
+
+### 7.7 Clear Badge on Fresh Install / No Logged-In User
+
+On iOS, the badge count may persist after app uninstall and reinstall in certain scenarios. Clear the badge during app initialization when no user is logged in:
+
+```typescript
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+// During app initialization, after CometChat.init()
+const initializeApp = async () => {
+  // Initialize CometChat first
+  await CometChatUIKit.init(uiKitSettings);
+
+  // Check if user is logged in
+  const loggedInUser = await CometChat.getLoggedinUser();
+
+  if (!loggedInUser) {
+    // No user logged in - clear any stale badge
+    PushNotificationIOS.setApplicationIconBadgeNumber(0);
+    console.log("No logged-in user, badge cleared");
+  }
+};
+```
+
+### 7.8 Clear Badge in Login Listener (Safety Net)
+
+Register a login listener to clear the badge on logout as a backup mechanism:
+
+```typescript
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+useEffect(() => {
+  const listenerID = "BADGE_LOGOUT_LISTENER";
+
+  CometChat.addLoginListener(
+    listenerID,
+    new CometChat.LoginListener({
+      logoutOnSuccess: () => {
+        // Safety net: clear badge when logout succeeds
+        PushNotificationIOS.setApplicationIconBadgeNumber(0);
+        console.log("Logout listener: badge cleared");
+      },
+    })
+  );
+
+  return () => {
+    CometChat.removeLoginListener(listenerID);
+  };
+}, []);
+```
+
+### 7.9 Key Implementation Notes
+
+| Consideration | Details |
+| --- | --- |
+| **Backend-driven badge count** | The `unreadMessageCount` value comes directly from CometChat's backend via the push payload, ensuring consistency across all devices. |
+| **iOS server-side badge** | For iOS using APNs, the `aps.badge` field is set server-side by CometChat, so the badge updates automatically even without client-side code. However, you still need to clear it when the app opens. |
+| **Clear on app active** | Always clear the badge when the app becomes active. New notifications will update the badge with the fresh `unreadMessageCount` from the backend. |
+| **Clear on logout** | Always clear the badge when a user logs out to prevent stale counts for the next user. |
+| **Clear on fresh install** | On iOS, the badge count may persist after app reinstall in certain scenarios. Clear the badge during app initialization when no user is logged in. |
+| **Login listener safety net** | Use CometChat's login listener as a backup to ensure badge is cleared on logout. |
+| **Title enhancement** | Optionally display the unread count in the notification title (e.g., "John (5 unread)") for additional visibility. |
+
+### 7.10 Cross-Platform App State Handler
+
+If you're building a cross-platform app, use this combined handler for both iOS and Android:
+
+```typescript
+import { AppState, AppStateStatus, Platform } from "react-native";
+import PushNotificationIOS from "@react-native-community/push-notification-ios";
+import notifee from "@notifee/react-native";
+
+useEffect(() => {
+  const handleAppStateChange = async (nextState: AppStateStatus) => {
+    if (nextState === "active") {
+      // Clear badge for iOS
+      if (Platform.OS === "ios") {
+        PushNotificationIOS.setApplicationIconBadgeNumber(0);
+        console.log("Badge cleared (iOS)");
+      }
+      // Clear all notifications for Android (also resets badge)
+      else if (Platform.OS === "android") {
+        await notifee.cancelAllNotifications();
+        console.log("Notifications cleared (Android)");
+      }
+    }
+  };
+
+  const subscription = AppState.addEventListener("change", handleAppStateChange);
+  return () => subscription.remove();
+}, []);
+```
+
+## 8. Testing Checklist
+
+1. Install on a physical iOS device, log in, and verify APNs token registration succeeds.
 2. Send a message from another user:
-   - Foreground: banner shows unless that chat is open.
-   - Background/terminated: tap opens the correct conversation; handler runs.
-3. VoIP: send PushKit VoIP push (payload above); expect CallKit incoming UI; answer and confirm CometChat call connects; end clears dialer.
-4. Rotate tokens (reinstall or revoke) and confirm `onTokenRefresh` re-registers.
+   - **Foreground:** Banner appears unless that chat is already open.
+   - **Background/terminated:** Tap opens the correct conversation; handler runs.
+3. **VoIP:** Send a PushKit VoIP push (payload above); expect CallKit incoming UI; answer and confirm CometChat call connects; end clears the dialer.
+4. Rotate tokens (reinstall or revoke) and confirm `onTokenRefresh` re-registers the new token.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
-| Symptom | Quick checks |
+| Symptom | Quick Checks |
 | --- | --- |
 | No pushes | Confirm APNs key uploaded, bundle ID matches, Push extension enabled with correct provider IDs, permissions granted. |
 | Token registration fails | Ensure registration runs **after login**, provider IDs are set, and `registerForRemoteNotifications()` is called. |

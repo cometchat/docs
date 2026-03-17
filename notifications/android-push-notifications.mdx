@@ -18,6 +18,7 @@ description: "Setup FCM and CometChat for message and call push notifications on
 - Handling message pushes with grouped notifications and inline reply.
 - Handling call pushes with `ConnectionService` for native telecom UI.
 - Deep links/navigation from notifications and payload customization.
+- App icon badge count and grouped notifications using `unreadMessageCount` from the CometChat push payload.
 
 {/* ## What you need first
 
@@ -550,7 +551,92 @@ CometChatNotifications.unregisterPushToken(object : CometChat.CallbackListener<S
 // Then call CometChatUIKit.logout()
 ```
 
-{/* ## 8. What arrives in the push payload
+## 8. Badge count
+
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field (a string) representing the total unread messages across all conversations for the logged-in user. You can use this to set the app icon badge and enrich local notifications.
+
+### 8.1 Enable unread badge count on the CometChat Dashboard
+
+1. Go to **CometChat Dashboard → Notification Engine → Settings → Preferences → Push Notification Preferences**.
+2. Scroll to the bottom and enable the **Unread Badge Count** toggle.
+
+This ensures CometChat includes the `unreadMessageCount` field in every push payload sent to your app.
+
+### 8.2 Add the ShortcutBadger dependency
+
+Add the ShortcutBadger library to your app-level `build.gradle`:
+
+```gradle lines
+dependencies {
+    implementation 'me.leolin:ShortcutBadger:1.1.22@aar'
+}
+```
+
+### 8.3 Expected payload format
+
+CometChat sends FCM data messages with this structure (relevant fields):
+
+```json
+{
+  "data": {
+    "unreadMessageCount": "5",
+    "title": "New Message",
+    "alert": "John: Hello!",
+    "conversationId": "user_abc123",
+    "conversationType": "user"
+  }
+}
+```
+
+`unreadMessageCount` is a string representing the total unread messages across all conversations for the logged-in user.
+
+### 8.4 Update the app badge from the push payload
+
+Inside your notification service (for example `FCMService.onMessageReceived`), parse `unreadMessageCount` and update the badge:
+
+```kotlin lines
+import me.leolin.shortcutbadger.ShortcutBadger
+
+// Inside onMessageReceived, after receiving the message:
+val unreadCountStr: String? = message.data["unreadMessageCount"]
+unreadCountStr?.toIntOrNull()?.let { count ->
+    if (count >= 0) {
+        ShortcutBadger.applyCount(applicationContext, count)
+    } else {
+        Log.w(TAG, "Invalid badge count: $count")
+    }
+} ?: Log.d(TAG, "No unreadMessageCount in payload")
+```
+
+`ShortcutBadger` uses launcher-specific APIs (Samsung, Huawei, Xiaomi, etc.) to display a badge number on the app icon. Passing `0` clears the badge.
+
+### 8.5 Show unread count in the notification
+
+Update your notification builder to display the unread count in the notification itself:
+
+```kotlin lines
+// Inside your notification building logic
+mNotificationBuilder.setNumber(count)
+mNotificationBuilder.setSubText("$count unread messages")
+```
+
+- `setNumber(count)` displays a count badge on the notification icon.
+- `setSubText()` shows the unread count below the notification title.
+
+### 8.6 Clear badge when the app opens
+
+Clear the badge count when the app launches and every time it resumes from the background. Override `onResume()` in your main activity:
+
+```kotlin lines
+override fun onResume() {
+    super.onResume()
+    ShortcutBadger.removeCount(this)
+}
+```
+
+This ensures the badge is cleared when the user opens the app, keeping the badge count in sync with the actual unread state.
+
+{/* ## 9. What arrives in the push payload
 
 Payload keys delivered to `onMessageReceived` (adapted from the shared push integration):
 
@@ -579,14 +665,14 @@ Payload keys delivered to `onMessageReceived` (adapted from the shared push inte
 
 Use `message` for deep links (`CometChatHelper.processMessage`) and `type/callAction` to branch chat vs call flows. */}
 
-## 8. Handle message pushes
+## 9. Handle message pushes
   
 - [`FCMService.onMessageReceived`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/fcm/FCMService.kt) checks `message.data["type"]`.
 - For `type == "chat"`: mark delivered (`CometChat.markAsDelivered`), skip notifying if the chat is already open (`MyApplication.currentOpenChatId`), and build grouped notifications (avatars + BigText) via [`FCMMessageNotificationUtils`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/fcm/FCMMessageNotificationUtils.kt) with inline reply actions.
 - [`FCMMessageBroadcastReceiver`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/fcm/FCMMessageBroadcastReceiver.kt) handles inline replies, initializes the SDK headlessly, sends the reply, and refreshes the notification.
 - In your messaging service (e.g., `FCMService`), set the notification tap intent to your splash/entry activity (e.g., `SplashActivity`), and keep the `currentOpenChatId` check to suppress notifications for the open chat.
 
-## 9. Handle call pushes (ConnectionService)
+## 10. Handle call pushes (ConnectionService)
 
 - For `type == "call"`, `FCMService.handleCallFlow` parses [`FCMCallDto`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/fcm/FCMCallDto.kt) and routes to the `voip` package.
 - [`CometChatVoIP`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/voip/CometChatVoIP.kt) registers a `PhoneAccount` and triggers `TelecomManager.addNewIncomingCall` for native full-screen UI with Accept/Decline.
@@ -595,7 +681,7 @@ Use `message` for deep links (`CometChatHelper.processMessage`) and `type/callAc
 - Foreground suppression: the sample ignores VoIP banners if `MyApplication.isAppInForeground()` is true; keep or remove based on your UX.
 - Cancel/unanswered handling: on `callAction` of `cancelled`/`unanswered`, end the active telecom call if the session IDs match.
 
-## 10. Customize notification text or parse payloads
+## 11. Customize notification text or parse payloads
 
 Parse the push into a `BaseMessage` for deep links:
 
@@ -618,9 +704,9 @@ CometChat.sendCustomMessage(customMessage, object : CallbackListener<CustomMessa
 ```
 
 Adds a `pushNotification` field in metadata so CometChat uses your custom text as the push body for that message.
-## 11. Navigation from notifications
+## 12. Navigation from notifications
 Notification taps launch [`SplashActivity`](https://github.com/cometchat/cometchat-uikit-android/blob/v5/sample-app-kotlin%2Bpush-notification/src/main/java/com/cometchat/sampleapp/kotlin/fcm/ui/activity/SplashActivity.kt); it reads `NOTIFICATION_PAYLOAD` extras and opens the correct user or group in `MessagesActivity`. Keep `launchMode` settings that allow the intent extras to arrive.
-## 12. Testing checklist
+## 13. Testing checklist
 
 1. Install on a physical device and grant notification + mic permissions (Android 13+ needs `POST_NOTIFICATIONS`).
 2. Log in and ensure token registration succeeds (check Logcat).
@@ -642,3 +728,4 @@ Notification taps launch [`SplashActivity`](https://github.com/cometchat/cometch
 | Notification tap does nothing | Ensure `SplashActivity` reads `NOTIFICATION_PAYLOAD` and activity launch modes do not drop extras. |
 | Call UI never shows | All telecom permissions declared + granted; `CometChatVoIPConnectionService` in manifest; device supports `MANAGE_OWN_CALLS`. |
 | Inline reply crashes | Keep `FCMMessageBroadcastReceiver` registered; do not strip FCM or `RemoteInput` classes in ProGuard/R8. |
+| Badge count not showing | Verify **Unread Badge Count** is enabled in CometChat Dashboard, ShortcutBadger dependency is added, and the launcher supports badges (Samsung, Huawei, Xiaomi). |
