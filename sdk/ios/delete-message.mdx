@@ -1,8 +1,18 @@
 ---
 title: "Delete A Message"
+description: "Guide to deleting messages using the CometChat iOS SDK with soft delete behavior and real-time deletion events."
 ---
 
+{/* TL;DR for Agents and Quick Reference */}
+<Info>
+**Quick Reference for AI Agents & Developers**
 
+- **Delete message:** `CometChat.delete(messageId:onSuccess:onError:)`
+- **Behavior:** Soft delete — message marked as deleted, not removed from server
+- **Listen for deletions:** `onMessageDeleted(_:)` in message listener delegate
+- **Missed deletions:** Use `MessagesRequest` with appropriate filters
+- **Related:** [Edit Message](/sdk/ios/edit-message) · [Send Message](/sdk/ios/send-message) · [Messaging Overview](/sdk/ios/messaging-overview)
+</Info>
 
 While [deleting a Message](/sdk/ios/delete-message#delete-a-message) is straightforward, receiving events for deleted messages with CometChat has two parts:
 
@@ -18,68 +28,287 @@ In case you have to delete a message, you can use the `deleteMessage()` method. 
 <Tabs>
 <Tab title="Swift">
 ```swift
-CometChat.delete(messageId: 12345, onSuccess: { (baseMessage) in
-
-   print("message deleted successfully. \(baseMessage)")
-
-}) { (error) in
-
-   print("delete message failed with error: \(error.errorDescription)")
-}
+CometChat.delete(messageId: 12345, onSuccess: { (message) in
+    print("Message deleted: \(message)")
+}, onError: { (error) in
+    print("Error: \(error.errorDescription)")
+})
 ```
-
 </Tab>
-
 </Tabs>
 
-Once the message is deleted, In the `onSuccess()` callback, you get an object of the `BaseMessage` class, with the `deletedAt` fieldset with the timestamp of the time the message was deleted. Also, the `deletedBy` field is set. These two fields can be used to identify if the message is deleted while iterating through a list of messages.
+Once the message is deleted, In the `onSuccess()` callback, you get an object of the `BaseMessage` class, with the `deletedAt` field set with the timestamp of the time the message was deleted. Also, the `deletedBy` field is set. These two fields can be used to identify if the message is deleted while iterating through a list of messages.
+
+<Note>
+This is a SOFT DELETE - message content is still available. Check `deletedAt > 0` to identify deleted messages.
+</Note>
+
+<Accordion title="Sample Payloads">
+<Tabs>
+<Tab title="Request">
+
+**Method:** `CometChat.delete(messageId:)`
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| messageId | `Int` | `12345` |
+
+</Tab>
+<Tab title="Success Response">
+
+**Object Type:** BaseMessage
+
+**Base Message Properties:**
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| id | `Int` | `12345` |
+| muid | `String` | `"1640000000000-abc123"` |
+| conversationId | `String` | `"cometchat-uid-1_user_cometchat-uid-2"` |
+| senderUid | `String` | `"cometchat-uid-1"` |
+| receiverUid | `String` | `"cometchat-uid-2"` |
+| receiverType | `CometChat.ReceiverType` | `0` (`.user`) |
+| messageCategory | `CometChat.MessageCategory` | `0` (`.message`) |
+| sentAt | `Int` | `1640000000` |
+
+**Delete-Specific Properties:**
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| deletedAt | `Double` | `1640001000` |
+| deletedBy | `String` | `"cometchat-uid-1"` |
+| updatedAt | `Double` | `1640001000` |
+
+**Original Message (still available - soft delete):**
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| text | `String` | `"Original message text"` |
+| tags | `[String]` | `[]` |
+
+</Tab>
+<Tab title="Error Response">
+
+**Object Type:** CometChatException
+
+| Parameter | Type | Value |
+|-----------|------|-------|
+| errorCode | `String` | `"ERR_PERMISSION_DENIED"` |
+| errorDescription | `String` | `"You do not have permission to delete this message"` |
+
+</Tab>
+</Tabs>
+</Accordion>
 
 By default, CometChat allows certain roles to delete a message.
 
-| User Role       | Conversation Type       | Deletion Capabilities     |
-| --------------- | ----------------------- | ------------------------- |
-| Message Sender  | One-on-one Conversation | Messages they've sent     |
-| Message Sender  | Group Conversation      | Messages they've sent     |
-| Group Admin     | Group Conversation      | All messages in the group |
-| Group Moderator | Group Conversation      | All messages in the group |
+| User Role | Conversation Type | Deletion Capabilities |
+|-----------|-------------------|----------------------|
+| Message Sender | One-on-one | Own messages only |
+| Message Sender | Group | Own messages only |
+| Group Admin | Group | All messages |
+| Group Moderator | Group | All messages |
+
+---
 
 ## Real-time Message Delete Events
 
 *In other words, as a recipient, how do I know when someone deletes a message when my app is running?*
 
-In order to receive real-time events for the message being edited, you must add protocol conformance `CometChatMessageDelegate` as Shown Below :
+To receive real-time delete events, implement `CometChatMessageDelegate`:
 
 <Tabs>
 <Tab title="Swift">
 ```swift
-extension ViewController: CometChatMessageDelegate {
-
-		func onMessageDeleted(message: BaseMessage) {
-
-        print("received deleted message successfully.")
+extension YourViewController: CometChatMessageDelegate {
+    
+    func onMessageDeleted(message: BaseMessage) {
+        print("Message deleted: \(message.id)")
+        print("Deleted at: \(message.deletedAt)")
+        print("Deleted by: \(message.deletedBy ?? "")")
+        
+        // Original content is still available (soft delete)
+        if let textMessage = message as? TextMessage {
+            print("Original text: \(textMessage.text)")
+        }
     }
 }
+
+// Register the delegate:
+CometChat.messagedelegate = self
 ```
+</Tab>
+</Tabs>
+
+<Accordion title="Sample Payloads - onMessageDeleted">
+<Tabs>
+<Tab title="Callback Payload">
+
+**Method:** `onMessageDeleted(message:)`
+
+**Object Type:** BaseMessage
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `BaseMessage` | The deleted message object |
+| message.id | `Int` | Message ID |
+| message.deletedAt | `Double` | Unix timestamp when deleted |
+| message.deletedBy | `String?` | UID of user who deleted |
+| message.text | `String` | Original text (still available) |
 
 </Tab>
-
 </Tabs>
+</Accordion>
+
+---
 
 ## Missed Message Delete Events
 
 *In other words, as a recipient, how do I know if someone deleted a message when my app was not running?*
 
-When you retrieve the list of previous messages, for the messages that were deleted, the `deletedAt` and the `deletedBy` fields will be set. Also, for example, the total number of messages for a conversation are 100, and the message with message ID 50 was deleted. Now the message with id 50 will have the `deletedAt` and the `deletedBy` fields set whenever it is pulled from the history. Also, the 101st message will be and `Action` message informing you that the message with id 50 has been deleted.
+When you retrieve the list of previous messages, for the messages that were deleted, the `deletedAt` and the `deletedBy` fields will be set. Also, for example, the total number of messages for a conversation are 100, and the message with message ID 50 was deleted. Now the message with id 50 will have the `deletedAt` and the `deletedBy` fields set whenever it is pulled from the history. Also, the 101st message will be an `Action` message informing you that the message with id 50 has been deleted.
 
-For the message deleted event, in the `Action` object received, the following fields can help you get the relevant information-
+When your app was not running, deleted messages appear in two ways:
 
-1. `action` - `deleted`
-2. `actionOn` - Updated message object which was deleted.
-3. `actionBy` - User object containing the details of the user who has deleted the message.
-4. `actionFor` - User/group object having the details of the receiver to which the message was sent.
+1. **Deleted Message in History:** The message object has `deletedAt` and `deletedBy` fields set. Original content is still available (soft delete).
+2. **Action Message:** An `ActionMessage` is added to history indicating the deletion.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+// Detect deleted messages in history
+for message in messages {
+    // Method 1: Check deletedAt field
+    if message.deletedAt > 0 {
+        print("Message \(message.id) was deleted at \(message.deletedAt)")
+        print("Deleted by: \(message.deletedBy ?? "unknown")")
+        
+        // Original content still available
+        if let textMsg = message as? TextMessage {
+            print("Original text: \(textMsg.text)")
+        }
+    }
+    
+    // Method 2: Check for ActionMessage
+    if let actionMessage = message as? ActionMessage {
+        if actionMessage.action == .messageDeleted {
+            print("Delete action detected")
+            if let deletedMsg = actionMessage.actionOn as? BaseMessage {
+                print("Deleted message ID: \(deletedMsg.id)")
+            }
+        }
+    }
+}
+```
+</Tab>
+</Tabs>
+
+<Accordion title="Sample Payloads - Action Message for Delete">
+<Tabs>
+<Tab title="Action Message Payload">
+
+**Object Type:** ActionMessage
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| action | `String` | `"deleted"` |
+| actionOn | `BaseMessage` | The deleted message object |
+| actionBy | `User` | User who deleted the message |
+| actionFor | `AppEntity` | Receiver (User or Group) |
+
+</Tab>
+</Tabs>
+</Accordion>
 
 <Note>
-
 In order to edit or delete a message, you need to be either the sender of the message or the admin/moderator of the group in which the message was sent.
-
 </Note>
+
+---
+
+## Success & Failure Responses
+
+### Delete Message Success Response
+
+When `delete()` is successful, the `onSuccess` callback returns the deleted `BaseMessage` object:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.delete(messageId: messageId, onSuccess: { (message) in
+    // message: BaseMessage - The deleted message object
+    print("Message ID: \(message.id)")                 // Int - Message ID
+    print("Deleted At: \(message.deletedAt)")          // Double - Deletion timestamp
+    print("Deleted By: \(message.deletedBy ?? "")")    // String? - UID of user who deleted
+    print("Sender UID: \(message.senderUid)")          // String - Original sender
+    print("Receiver UID: \(message.receiverUid)")      // String - Receiver UID/GUID
+    print("Sent At: \(message.sentAt)")                // Int - Original send timestamp
+    
+    // Check message type - original content still available
+    if let textMessage = message as? TextMessage {
+        print("Original Text: \(textMessage.text)")    // Text is still available
+    }
+}, onError: { (error) in
+    // Handle error
+})
+```
+</Tab>
+</Tabs>
+
+### Delete Message Failure Response
+
+When `delete()` fails, the `onError` callback returns a `CometChatException`:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.delete(messageId: messageId, onSuccess: { (message) in
+    // Success
+}, onError: { (error) in
+    print("Error Code: \(error.errorCode)")
+    print("Error Description: \(error.errorDescription)")
+    
+    // Handle specific errors
+    switch error.errorCode {
+    case "ERR_NOT_LOGGED_IN":
+        // User is not logged in
+        break
+    case "ERR_MESSAGE_NOT_FOUND":
+        // Message with specified ID does not exist
+        break
+    case "ERR_PERMISSION_DENIED":
+        // User doesn't have permission to delete this message
+        break
+    case "ERR_MESSAGE_ALREADY_DELETED":
+        // Message has already been deleted
+        break
+    default:
+        break
+    }
+})
+```
+</Tab>
+</Tabs>
+
+---
+
+## Deleted Message Properties
+
+When a message is deleted, these properties are set:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `deletedAt` | `Double` | Unix timestamp when message was deleted |
+| `deletedBy` | `String?` | UID of user who deleted the message |
+| `updatedAt` | `Double` | Same as deletedAt for deleted messages |
+
+---
+
+## Common Error Codes
+
+| Error Code | Description | Resolution |
+|------------|-------------|------------|
+| `ERR_NOT_LOGGED_IN` | User is not logged in | Login first using `CometChat.login()` |
+| `ERR_MESSAGE_NOT_FOUND` | Message does not exist | Verify the message ID is correct |
+| `ERR_PERMISSION_DENIED` | No permission to delete | Only sender or group admin/moderator can delete |
+| `ERR_MESSAGE_ALREADY_DELETED` | Message already deleted | No action needed |
