@@ -1,0 +1,360 @@
+---
+title: "Share Invite"
+sidebarTitle: "Share Invite"
+---
+
+Allow users to share call invite links with others. When the share invite button is clicked, you can generate and share a link that others can use to join the call.
+
+## Listen for Share Invite Button Click
+
+Handle when the user clicks the share invite button:
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+CometChatCalls.addEventListener('onShareInviteButtonClicked', () => {
+  console.log('Share invite button clicked');
+  // Generate and share invite link
+});
+```
+
+## Generate Invite Link
+
+Create an invite link that others can use to join the call:
+
+```tsx
+function generateInviteLink(sessionId: string): string {
+  // Use your app's deep link scheme
+  const baseUrl = 'https://yourapp.com/call';
+  return `${baseUrl}?sessionId=${encodeURIComponent(sessionId)}`;
+}
+```
+
+## Share Using React Native Share
+
+Use the built-in Share API to share the invite:
+
+```tsx
+import { Share } from 'react-native';
+
+async function shareInvite(sessionId: string) {
+  const inviteLink = generateInviteLink(sessionId);
+  
+  try {
+    const result = await Share.share({
+      message: `Join my call: ${inviteLink}`,
+      title: 'Join Call',
+      url: inviteLink, // iOS only
+    });
+
+    if (result.action === Share.sharedAction) {
+      if (result.activityType) {
+        console.log('Shared with activity type:', result.activityType);
+      } else {
+        console.log('Shared successfully');
+      }
+    } else if (result.action === Share.dismissedAction) {
+      console.log('Share dismissed');
+    }
+  } catch (error) {
+    console.error('Error sharing:', error);
+  }
+}
+```
+
+## Handle Deep Links
+
+Configure your app to handle incoming deep links:
+
+### iOS Configuration
+
+Add URL scheme to `ios/YourApp/Info.plist`:
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>yourapp</string>
+        </array>
+    </dict>
+</array>
+```
+
+### Android Configuration
+
+Add intent filter to `android/app/src/main/AndroidManifest.xml`:
+
+```xml
+<activity
+    android:name=".MainActivity"
+    android:launchMode="singleTask">
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="yourapp" />
+        <data android:scheme="https" android:host="yourapp.com" />
+    </intent-filter>
+</activity>
+```
+
+### Handle Incoming Links
+
+```tsx
+import { useEffect } from 'react';
+import { Linking } from 'react-native';
+
+function useDeepLinks(onJoinCall: (sessionId: string) => void) {
+  useEffect(() => {
+    // Handle initial URL (app opened via link)
+    Linking.getInitialURL().then((url) => {
+      if (url) {
+        handleDeepLink(url);
+      }
+    });
+
+    // Handle URL when app is already open
+    const subscription = Linking.addEventListener('url', (event) => {
+      handleDeepLink(event.url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  const handleDeepLink = (url: string) => {
+    try {
+      const parsedUrl = new URL(url);
+      const sessionId = parsedUrl.searchParams.get('sessionId');
+      
+      if (sessionId) {
+        onJoinCall(sessionId);
+      }
+    } catch (error) {
+      console.error('Error parsing deep link:', error);
+    }
+  };
+}
+
+export default useDeepLinks;
+```
+
+## Complete Example
+
+```tsx
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, TouchableOpacity, Text, StyleSheet, Share, Alert } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface ShareInviteProps {
+  sessionId: string;
+}
+
+function ShareInvite({ sessionId }: ShareInviteProps) {
+  const [showOptions, setShowOptions] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = CometChatCalls.addEventListener(
+      'onShareInviteButtonClicked',
+      () => {
+        setShowOptions(true);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const generateInviteLink = useCallback(() => {
+    return `https://yourapp.com/call?sessionId=${encodeURIComponent(sessionId)}`;
+  }, [sessionId]);
+
+  const handleShare = async () => {
+    const inviteLink = generateInviteLink();
+    
+    try {
+      await Share.share({
+        message: `Join my video call!\n\n${inviteLink}`,
+        title: 'Join Call',
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
+    
+    setShowOptions(false);
+  };
+
+  const handleCopyLink = () => {
+    const inviteLink = generateInviteLink();
+    Clipboard.setString(inviteLink);
+    
+    Alert.alert('Link Copied', 'The invite link has been copied to your clipboard.');
+    setShowOptions(false);
+  };
+
+  if (!showOptions) {
+    return (
+      <TouchableOpacity
+        style={styles.shareButton}
+        onPress={() => setShowOptions(true)}
+      >
+        <Text style={styles.shareButtonText}>🔗 Share</Text>
+      </TouchableOpacity>
+    );
+  }
+
+  return (
+    <View style={styles.optionsContainer}>
+      <View style={styles.optionsCard}>
+        <Text style={styles.optionsTitle}>Share Invite</Text>
+        
+        <TouchableOpacity style={styles.optionButton} onPress={handleShare}>
+          <Text style={styles.optionIcon}>📤</Text>
+          <Text style={styles.optionText}>Share via...</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.optionButton} onPress={handleCopyLink}>
+          <Text style={styles.optionIcon}>📋</Text>
+          <Text style={styles.optionText}>Copy Link</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.cancelButton}
+          onPress={() => setShowOptions(false)}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  shareButton: {
+    backgroundColor: '#333',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  optionsContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  optionsCard: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 20,
+    width: '80%',
+    maxWidth: 300,
+  },
+  optionsTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  optionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#333',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  optionIcon: {
+    fontSize: 20,
+    marginRight: 12,
+  },
+  optionText: {
+    color: '#fff',
+    fontSize: 16,
+  },
+  cancelButton: {
+    padding: 16,
+    alignItems: 'center',
+  },
+  cancelText: {
+    color: '#6851D6',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});
+
+export default ShareInvite;
+```
+
+## Universal Links (iOS)
+
+For a better user experience, configure Universal Links:
+
+1. Create an `apple-app-site-association` file on your server:
+
+```json
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAM_ID.com.yourcompany.yourapp",
+        "paths": ["/call/*"]
+      }
+    ]
+  }
+}
+```
+
+2. Host it at `https://yourapp.com/.well-known/apple-app-site-association`
+
+3. Add Associated Domains capability in Xcode:
+   - `applinks:yourapp.com`
+
+## App Links (Android)
+
+Configure App Links for Android:
+
+1. Create a `assetlinks.json` file:
+
+```json
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.yourcompany.yourapp",
+    "sha256_cert_fingerprints": ["YOUR_SHA256_FINGERPRINT"]
+  }
+}]
+```
+
+2. Host it at `https://yourapp.com/.well-known/assetlinks.json`
+
+3. Update your intent filter with `autoVerify`:
+
+```xml
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="https" android:host="yourapp.com" android:pathPrefix="/call" />
+</intent-filter>
+```
+
+## Related Documentation
+
+- [Join Session](/calls/react-native/join-session) - Join calls via invite links
+- [Events](/calls/react-native/events) - Share invite button events
+- [Ringing](/calls/react-native/ringing) - Call notifications

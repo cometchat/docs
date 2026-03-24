@@ -1,0 +1,579 @@
+---
+title: "Vue Integration"
+sidebarTitle: "Vue"
+---
+
+This guide walks you through integrating the CometChat Calls SDK into a Vue.js application. By the end, you'll have a working video call implementation with proper state management and lifecycle handling.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+- A CometChat account with an app created ([Sign up](https://app.cometchat.com/signup))
+- Your App ID, Region, and API Key from the CometChat Dashboard
+- A Vue 3 project (Vite, Vue CLI, or Nuxt)
+- Node.js 16+ installed
+
+## Step 1: Install the SDK
+
+Install the CometChat Calls SDK package:
+
+```bash
+npm install @cometchat/calls-sdk-javascript
+```
+
+## Step 2: Create a Composable for SDK Management
+
+Create a composable that handles initialization, login, and provides reactive state:
+
+```javascript
+// src/composables/useCometChatCalls.js
+import { ref, readonly } from "vue";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+const APP_ID = "YOUR_APP_ID";       // Replace with your App ID
+const REGION = "YOUR_REGION";       // Replace with your Region (us, eu, in)
+const API_KEY = "YOUR_API_KEY";     // Replace with your API Key
+
+// Shared state across all components
+const isReady = ref(false);
+const user = ref(null);
+const error = ref(null);
+const isInitializing = ref(false);
+
+export function useCometChatCalls() {
+  /**
+   * Initialize the SDK and login the user.
+   * Call this once when your app starts or when the user authenticates.
+   */
+  async function initAndLogin(uid) {
+    if (isInitializing.value || isReady.value) return;
+    
+    isInitializing.value = true;
+    error.value = null;
+
+    try {
+      // Step 1: Initialize the SDK
+      const initResult = await CometChatCalls.init({
+        appId: APP_ID,
+        region: REGION,
+      });
+
+      if (!initResult.success) {
+        throw new Error("SDK initialization failed");
+      }
+
+      // Step 2: Check if already logged in
+      let loggedInUser = CometChatCalls.getLoggedInUser();
+
+      // Step 3: Login if not already logged in
+      if (!loggedInUser) {
+        loggedInUser = await CometChatCalls.login(uid, API_KEY);
+      }
+
+      user.value = loggedInUser;
+      isReady.value = true;
+    } catch (err) {
+      console.error("CometChat Calls setup failed:", err);
+      error.value = err.message || "Setup failed";
+    } finally {
+      isInitializing.value = false;
+    }
+  }
+
+  /**
+   * Logout the current user and reset state.
+   */
+  async function logout() {
+    try {
+      await CometChatCalls.logout();
+      user.value = null;
+      isReady.value = false;
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  }
+
+  return {
+    // State (readonly to prevent external mutations)
+    isReady: readonly(isReady),
+    user: readonly(user),
+    error: readonly(error),
+    isInitializing: readonly(isInitializing),
+    
+    // Methods
+    initAndLogin,
+    logout,
+  };
+}
+```
+
+## Step 3: Initialize in App.vue
+
+Initialize the SDK when your app mounts:
+
+```vue
+<!-- src/App.vue -->
+<template>
+  <div id="app">
+    <div v-if="error" class="error">
+      Error: {{ error }}
+    </div>
+    <div v-else-if="!isReady" class="loading">
+      Loading...
+    </div>
+    <router-view v-else />
+  </div>
+</template>
+
+<script setup>
+import { onMounted } from "vue";
+import { useCometChatCalls } from "./composables/useCometChatCalls";
+
+const { isReady, error, initAndLogin } = useCometChatCalls();
+
+onMounted(() => {
+  // In a real app, get this from your authentication system
+  const currentUserId = "cometchat-uid-1";
+  initAndLogin(currentUserId);
+});
+</script>
+```
+
+## Step 4: Create the Call Component
+
+Build a call component with proper lifecycle management:
+
+```vue
+<!-- src/components/CallScreen.vue -->
+<template>
+  <div class="call-screen">
+    <!-- Video container - SDK renders the call UI here -->
+    <div 
+      ref="callContainer" 
+      class="call-container"
+    />
+
+    <!-- Loading overlay -->
+    <div v-if="isJoining" class="call-joining">
+      Joining call...
+    </div>
+
+    <!-- Error message -->
+    <div v-if="callError" class="call-error">
+      <p>Error: {{ callError }}</p>
+      <button @click="$emit('callEnd')">Go Back</button>
+    </div>
+
+    <!-- Call controls -->
+    <div v-if="isJoined" class="call-controls">
+      <button 
+        @click="toggleAudio" 
+        :class="{ active: !isMuted, muted: isMuted }"
+      >
+        {{ isMuted ? "Unmute" : "Mute" }}
+      </button>
+      <button 
+        @click="toggleVideo" 
+        :class="{ active: !isVideoOff, muted: isVideoOff }"
+      >
+        {{ isVideoOff ? "Start Video" : "Stop Video" }}
+      </button>
+      <button @click="leaveCall" class="leave-btn">
+        Leave Call
+      </button>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted, onUnmounted } from "vue";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+// Props
+const props = defineProps({
+  sessionId: {
+    type: String,
+    required: true,
+  },
+});
+
+// Emits
+const emit = defineEmits(["callEnd"]);
+
+// Refs
+const callContainer = ref(null);
+const isJoined = ref(false);
+const isJoining = ref(false);
+const isMuted = ref(false);
+const isVideoOff = ref(false);
+const callError = ref(null);
+const unsubscribers = ref([]);
+
+/**
+ * Join the call session.
+ * This generates a token and connects to the call.
+ */
+async function joinCall() {
+  if (!callContainer.value) return;
+  
+  isJoining.value = true;
+  callError.value = null;
+
+  try {
+    // Register event listeners before joining
+    unsubscribers.value = [
+      CometChatCalls.addEventListener("onSessionJoined", () => {
+        isJoined.value = true;
+        isJoining.value = false;
+      }),
+      CometChatCalls.addEventListener("onSessionLeft", () => {
+        isJoined.value = false;
+        emit("callEnd");
+      }),
+      CometChatCalls.addEventListener("onAudioMuted", () => {
+        isMuted.value = true;
+      }),
+      CometChatCalls.addEventListener("onAudioUnMuted", () => {
+        isMuted.value = false;
+      }),
+      CometChatCalls.addEventListener("onVideoPaused", () => {
+        isVideoOff.value = true;
+      }),
+      CometChatCalls.addEventListener("onVideoResumed", () => {
+        isVideoOff.value = false;
+      }),
+    ];
+
+    // Generate a call token for this session
+    const tokenResult = await CometChatCalls.generateToken(props.sessionId);
+
+    // Join the call session
+    const joinResult = await CometChatCalls.joinSession(
+      tokenResult.token,
+      {
+        sessionType: "VIDEO",
+        layout: "TILE",
+        startAudioMuted: false,
+        startVideoPaused: false,
+      },
+      callContainer.value
+    );
+
+    if (joinResult.error) {
+      throw new Error(joinResult.error.message);
+    }
+  } catch (err) {
+    console.error("Failed to join call:", err);
+    callError.value = err.message || "Failed to join call";
+    isJoining.value = false;
+  }
+}
+
+/**
+ * Toggle microphone mute state.
+ */
+function toggleAudio() {
+  if (isMuted.value) {
+    CometChatCalls.unMuteAudio();
+  } else {
+    CometChatCalls.muteAudio();
+  }
+}
+
+/**
+ * Toggle camera on/off state.
+ */
+function toggleVideo() {
+  if (isVideoOff.value) {
+    CometChatCalls.resumeVideo();
+  } else {
+    CometChatCalls.pauseVideo();
+  }
+}
+
+/**
+ * Leave the current call session.
+ */
+function leaveCall() {
+  CometChatCalls.leaveSession();
+}
+
+/**
+ * Cleanup event listeners and leave call.
+ */
+function cleanup() {
+  unsubscribers.value.forEach((unsub) => unsub());
+  unsubscribers.value = [];
+  CometChatCalls.leaveSession();
+}
+
+// Lifecycle hooks
+onMounted(() => {
+  joinCall();
+});
+
+onUnmounted(() => {
+  cleanup();
+});
+</script>
+
+<style scoped>
+.call-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.call-container {
+  flex: 1;
+  background-color: #1a1a1a;
+  min-height: 400px;
+}
+
+.call-controls {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  background-color: #2a2a2a;
+}
+
+.call-controls button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.call-controls button.active {
+  background-color: #28a745;
+  color: white;
+}
+
+.call-controls button.muted {
+  background-color: #dc3545;
+  color: white;
+}
+
+.call-controls .leave-btn {
+  background-color: #dc3545;
+  color: white;
+}
+
+.call-joining,
+.call-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 20px;
+  border-radius: 8px;
+  text-align: center;
+}
+</style>
+```
+
+## Step 5: Create the Call Page
+
+Create a page that manages the call flow:
+
+```vue
+<!-- src/views/CallPage.vue -->
+<template>
+  <div class="call-page">
+    <!-- Pre-call screen -->
+    <div v-if="!isInCall" class="pre-call">
+      <h1>CometChat Video Calls</h1>
+      <p>Logged in as: {{ user?.name || user?.uid }}</p>
+
+      <div class="join-form">
+        <input
+          v-model="sessionId"
+          type="text"
+          placeholder="Enter Session ID"
+          @keyup.enter="startCall"
+        />
+        <button 
+          @click="startCall" 
+          :disabled="!sessionId"
+        >
+          Join Call
+        </button>
+      </div>
+
+      <p class="hint">
+        Share the same Session ID with others to join the same call.
+      </p>
+    </div>
+
+    <!-- In-call screen -->
+    <CallScreen
+      v-else
+      :session-id="sessionId"
+      @call-end="endCall"
+    />
+  </div>
+</template>
+
+<script setup>
+import { ref } from "vue";
+import { useCometChatCalls } from "../composables/useCometChatCalls";
+import CallScreen from "../components/CallScreen.vue";
+
+const { user } = useCometChatCalls();
+
+const sessionId = ref("");
+const isInCall = ref(false);
+
+function startCall() {
+  if (sessionId.value) {
+    isInCall.value = true;
+  }
+}
+
+function endCall() {
+  isInCall.value = false;
+}
+</script>
+
+<style scoped>
+.call-page {
+  min-height: 100vh;
+}
+
+.pre-call {
+  max-width: 400px;
+  margin: 0 auto;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.join-form {
+  margin-top: 30px;
+}
+
+.join-form input {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+.join-form button {
+  width: 100%;
+  padding: 12px;
+  background-color: #6851D6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.join-form button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.hint {
+  margin-top: 20px;
+  color: #666;
+  font-size: 14px;
+}
+</style>
+```
+
+## Call Composable (Optional)
+
+For reusable call logic across multiple components:
+
+```javascript
+// src/composables/useCall.js
+import { ref, onUnmounted } from "vue";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+export function useCall() {
+  const isInCall = ref(false);
+  const isMuted = ref(false);
+  const isVideoOff = ref(false);
+  const participants = ref([]);
+  const unsubscribers = ref([]);
+
+  async function joinCall(sessionId, container, settings = {}) {
+    unsubscribers.value = [
+      CometChatCalls.addEventListener("onAudioMuted", () => { isMuted.value = true; }),
+      CometChatCalls.addEventListener("onAudioUnMuted", () => { isMuted.value = false; }),
+      CometChatCalls.addEventListener("onVideoPaused", () => { isVideoOff.value = true; }),
+      CometChatCalls.addEventListener("onVideoResumed", () => { isVideoOff.value = false; }),
+      CometChatCalls.addEventListener("onParticipantListChanged", (list) => { participants.value = list; }),
+      CometChatCalls.addEventListener("onSessionLeft", () => { isInCall.value = false; }),
+    ];
+
+    const tokenResult = await CometChatCalls.generateToken(sessionId);
+    await CometChatCalls.joinSession(
+      tokenResult.token,
+      { sessionType: "VIDEO", layout: "TILE", ...settings },
+      container
+    );
+    isInCall.value = true;
+  }
+
+  function leaveCall() {
+    CometChatCalls.leaveSession();
+    cleanup();
+  }
+
+  function toggleAudio() {
+    isMuted.value ? CometChatCalls.unMuteAudio() : CometChatCalls.muteAudio();
+  }
+
+  function toggleVideo() {
+    isVideoOff.value ? CometChatCalls.resumeVideo() : CometChatCalls.pauseVideo();
+  }
+
+  function cleanup() {
+    unsubscribers.value.forEach((unsub) => unsub());
+    unsubscribers.value = [];
+    isInCall.value = false;
+  }
+
+  onUnmounted(() => {
+    cleanup();
+  });
+
+  return {
+    isInCall,
+    isMuted,
+    isVideoOff,
+    participants,
+    joinCall,
+    leaveCall,
+    toggleAudio,
+    toggleVideo,
+  };
+}
+```
+
+## Vue 2 Support
+
+For Vue 2 projects using the Options API, see the [Vue 2 migration guide](https://v3-migration.vuejs.org/) or use the `@vue/composition-api` package to use the Composition API in Vue 2.
+
+## Related Documentation
+
+For more detailed information on specific topics covered in this guide, refer to the main documentation:
+
+- [Setup](/calls/javascript/setup) - Detailed SDK installation and initialization
+- [Authentication](/calls/javascript/authentication) - Login methods and user management
+- [Session Settings](/calls/javascript/session-settings) - All available call configuration options
+- [Join Session](/calls/javascript/join-session) - Session joining and token generation
+- [Events](/calls/javascript/events) - Complete list of event listeners
+- [Actions](/calls/javascript/actions) - All available call control methods
+- [Call Layouts](/calls/javascript/call-layouts) - Layout options and customization
+- [Participant Management](/calls/javascript/participant-management) - Managing call participants
+

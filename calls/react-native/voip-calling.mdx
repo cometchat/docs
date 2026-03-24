@@ -1,0 +1,291 @@
+---
+title: "VoIP Calling"
+sidebarTitle: "VoIP Calling"
+---
+
+Implement VoIP push notifications to receive incoming calls even when your app is in the background or terminated. This requires platform-specific configuration for iOS CallKit and Android ConnectionService.
+
+## iOS VoIP Configuration
+
+### Enable VoIP Push Notifications
+
+1. In Xcode, select your target
+2. Go to **Signing & Capabilities**
+3. Add **Push Notifications** capability
+4. Add **Background Modes** capability
+5. Enable **Voice over IP**
+
+### Create VoIP Certificate
+
+1. Go to [Apple Developer Portal](https://developer.apple.com)
+2. Navigate to **Certificates, Identifiers & Profiles**
+3. Create a new **VoIP Services Certificate**
+4. Download and install the certificate
+5. Export the `.p12` file for your server
+
+### Configure CometChat Dashboard
+
+1. Go to your CometChat Dashboard
+2. Navigate to **Notifications > Push Notifications**
+3. Upload your VoIP certificate (`.p12` file)
+4. Configure the certificate password
+
+### Implement CallKit
+
+Create a native module to handle CallKit:
+
+```swift
+// ios/CallKitManager.swift
+import CallKit
+import PushKit
+
+@objc(CallKitManager)
+class CallKitManager: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
+    
+    static let shared = CallKitManager()
+    
+    private let provider: CXProvider
+    private let callController = CXCallController()
+    private var voipRegistry: PKPushRegistry?
+    
+    override init() {
+        let config = CXProviderConfiguration()
+        config.supportsVideo = true
+        config.maximumCallsPerCallGroup = 1
+        config.supportedHandleTypes = [.generic]
+        
+        provider = CXProvider(configuration: config)
+        super.init()
+        provider.setDelegate(self, queue: nil)
+    }
+    
+    @objc func registerForVoIPPushes() {
+        voipRegistry = PKPushRegistry(queue: .main)
+        voipRegistry?.delegate = self
+        voipRegistry?.desiredPushTypes = [.voIP]
+    }
+    
+    // PKPushRegistryDelegate
+    func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
+        let token = pushCredentials.token.map { String(format: "%02x", $0) }.joined()
+        // Send token to CometChat
+        NotificationCenter.default.post(
+            name: NSNotification.Name("VoIPTokenReceived"),
+            object: nil,
+            userInfo: ["token": token]
+        )
+    }
+    
+    func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+        guard type == .voIP else { return }
+        
+        let callerId = payload.dictionaryPayload["callerId"] as? String ?? "Unknown"
+        let callerName = payload.dictionaryPayload["callerName"] as? String ?? "Unknown"
+        let sessionId = payload.dictionaryPayload["sessionId"] as? String ?? ""
+        let hasVideo = payload.dictionaryPayload["hasVideo"] as? Bool ?? false
+        
+        reportIncomingCall(
+            uuid: UUID(),
+            handle: callerId,
+            callerName: callerName,
+            hasVideo: hasVideo
+        ) { error in
+            completion()
+        }
+    }
+    
+    func reportIncomingCall(uuid: UUID, handle: String, callerName: String, hasVideo: Bool, completion: @escaping (Error?) -> Void) {
+        let update = CXCallUpdate()
+        update.remoteHandle = CXHandle(type: .generic, value: handle)
+        update.localizedCallerName = callerName
+        update.hasVideo = hasVideo
+        
+        provider.reportNewIncomingCall(with: uuid, update: update) { error in
+            completion(error)
+        }
+    }
+    
+    // CXProviderDelegate
+    func providerDidReset(_ provider: CXProvider) {}
+    
+    func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        // Notify React Native to accept the call
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CallKitAnswerCall"),
+            object: nil,
+            userInfo: ["callUUID": action.callUUID.uuidString]
+        )
+        action.fulfill()
+    }
+    
+    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        // Notify React Native to end the call
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CallKitEndCall"),
+            object: nil,
+            userInfo: ["callUUID": action.callUUID.uuidString]
+        )
+        action.fulfill()
+    }
+}
+```
+
+## Android VoIP Configuration
+
+### Add Firebase Cloud Messaging
+
+1. Add Firebase to your Android project
+2. Add the FCM dependency to `android/app/build.gradle`:
+
+```groovy
+dependencies {
+    implementation 'com.google.firebase:firebase-messaging:23.0.0'
+}
+```
+
+### Configure CometChat Dashboard
+
+1. Go to your CometChat Dashboard
+2. Navigate to **Notifications > Push Notifications**
+3. Upload your Firebase Server Key
+
+### Implement ConnectionService
+
+Create a ConnectionService for incoming calls:
+
+```java
+// android/app/src/main/java/com/yourapp/CallConnectionService.java
+package com.yourapp;
+
+import android.telecom.Connection;
+import android.telecom.ConnectionRequest;
+import android.telecom.ConnectionService;
+import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
+
+public class CallConnectionService extends ConnectionService {
+    
+    @Override
+    public Connection onCreateIncomingConnection(
+            PhoneAccountHandle connectionManagerPhoneAccount,
+            ConnectionRequest request) {
+        
+        CallConnection connection = new CallConnection();
+        connection.setConnectionProperties(Connection.PROPERTY_SELF_MANAGED);
+        connection.setCallerDisplayName(
+            request.getExtras().getString("callerName"),
+            TelecomManager.PRESENTATION_ALLOWED
+        );
+        connection.setRinging();
+        
+        return connection;
+    }
+    
+    @Override
+    public Connection onCreateOutgoingConnection(
+            PhoneAccountHandle connectionManagerPhoneAccount,
+            ConnectionRequest request) {
+        
+        CallConnection connection = new CallConnection();
+        connection.setConnectionProperties(Connection.PROPERTY_SELF_MANAGED);
+        connection.setDialing();
+        
+        return connection;
+    }
+}
+```
+
+### Register ConnectionService
+
+Add to `AndroidManifest.xml`:
+
+```xml
+<service
+    android:name=".CallConnectionService"
+    android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+    </intent-filter>
+</service>
+```
+
+### Add Permissions
+
+```xml
+<uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+<uses-permission android:name="android.permission.READ_PHONE_STATE" />
+```
+
+## Register Push Token
+
+Register the VoIP/FCM token with CometChat:
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+async function registerPushToken(token: string, platform: 'ios' | 'android') {
+  try {
+    if (platform === 'ios') {
+      await CometChat.registerTokenForPushNotification(token, {
+        voip: true,
+      });
+    } else {
+      await CometChat.registerTokenForPushNotification(token);
+    }
+    console.log('Push token registered');
+  } catch (error) {
+    console.error('Error registering push token:', error);
+  }
+}
+```
+
+## Handle Incoming VoIP Push
+
+```tsx
+import { useEffect } from 'react';
+import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+function useVoIPPush() {
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      const eventEmitter = new NativeEventEmitter(NativeModules.CallKitManager);
+      
+      const answerSubscription = eventEmitter.addListener(
+        'CallKitAnswerCall',
+        async (data) => {
+          // Accept the call via Chat SDK
+          const sessionId = data.sessionId;
+          await CometChat.acceptCall(sessionId);
+          
+          // Start the call session
+          const { token } = await CometChatCalls.generateToken(sessionId);
+          // Navigate to call screen with token
+        }
+      );
+      
+      const endSubscription = eventEmitter.addListener(
+        'CallKitEndCall',
+        async (data) => {
+          CometChatCalls.leaveSession();
+        }
+      );
+      
+      return () => {
+        answerSubscription.remove();
+        endSubscription.remove();
+      };
+    }
+  }, []);
+}
+
+export default useVoIPPush;
+```
+
+## Related Documentation
+
+- [Ringing](/calls/react-native/ringing) - Implement call notifications
+- [Background Handling](/calls/react-native/background-handling) - Keep calls active in background
+- [Setup](/calls/react-native/setup) - Initial SDK setup

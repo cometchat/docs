@@ -1,0 +1,435 @@
+---
+title: "Custom Participant List"
+sidebarTitle: "Custom Participant List"
+---
+
+Build a custom participant list UI that displays real-time participant information with full control over layout and interactions. This guide demonstrates how to hide the default participant list and create your own using participant events and actions.
+
+## Overview
+
+The SDK provides participant data through events, allowing you to build custom UIs for:
+- Participant roster with search and filtering
+- Custom participant cards with role badges or metadata
+- Moderation dashboards with quick access to controls
+- Attendance tracking and engagement monitoring
+
+## Prerequisites
+
+- CometChat Calls SDK installed and initialized
+- Active call session (see [Join Session](/calls/flutter/join-session))
+- Familiarity with [Actions](/calls/flutter/actions) and [Events](/calls/flutter/events)
+
+---
+
+## Step 1: Hide Default Participant List
+
+Configure session settings to hide the default participant list button:
+
+```dart
+final sessionSettings = CometChatCalls.SessionSettingsBuilder()
+    ..hideParticipantListButton(true);
+```
+
+---
+
+## Step 2: Create Participant List Widget
+
+Build a Flutter widget for displaying participants. Instead of Android's RecyclerView and XML layouts, Flutter uses `ListView` and widget composition:
+
+```dart
+class ParticipantListPanel extends StatelessWidget {
+  final List<Participant> participants;
+  final String searchQuery;
+  final ValueChanged<String> onSearchChanged;
+  final ValueChanged<Participant> onMute;
+  final ValueChanged<Participant> onPauseVideo;
+  final ValueChanged<Participant> onPin;
+  final VoidCallback onClose;
+
+  const ParticipantListPanel({
+    super.key,
+    required this.participants,
+    required this.searchQuery,
+    required this.onSearchChanged,
+    required this.onMute,
+    required this.onPauseVideo,
+    required this.onPin,
+    required this.onClose,
+  });
+
+  List<Participant> get filteredParticipants {
+    if (searchQuery.isEmpty) return participants;
+    return participants
+        .where((p) => p.name.toLowerCase().contains(searchQuery.toLowerCase()))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = filteredParticipants;
+
+    return Container(
+      width: 300,
+      color: const Color(0xFFF5F5F5),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          // Header
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  "Participants (${filtered.length})",
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Search Bar
+          TextField(
+            onChanged: onSearchChanged,
+            decoration: const InputDecoration(
+              hintText: "Search participants...",
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Participant List
+          Expanded(
+            child: ListView.builder(
+              itemCount: filtered.length,
+              itemBuilder: (context, index) {
+                final participant = filtered[index];
+                return _ParticipantTile(
+                  participant: participant,
+                  onMute: () => onMute(participant),
+                  onPauseVideo: () => onPauseVideo(participant),
+                  onPin: () => onPin(participant),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ParticipantTile extends StatelessWidget {
+  final Participant participant;
+  final VoidCallback onMute;
+  final VoidCallback onPauseVideo;
+  final VoidCallback onPin;
+
+  const _ParticipantTile({
+    required this.participant,
+    required this.onMute,
+    required this.onPauseVideo,
+    required this.onPin,
+  });
+
+  String get statusText {
+    final parts = <String>[];
+    if (participant.isAudioMuted) parts.add("🔇 Muted");
+    if (participant.isVideoPaused) parts.add("📹 Video Off");
+    if (participant.isPresenting) parts.add("🖥️ Presenting");
+    if (participant.raisedHandTimestamp > 0) parts.add("✋ Hand Raised");
+    if (participant.isPinned) parts.add("📌 Pinned");
+    return parts.isEmpty ? "Active" : parts.join(" • ");
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundImage: participant.avatar != null
+            ? NetworkImage(participant.avatar!)
+            : null,
+        child: participant.avatar == null
+            ? Text(participant.name[0].toUpperCase())
+            : null,
+      ),
+      title: Text(
+        participant.name,
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+      subtitle: Text(statusText, style: const TextStyle(fontSize: 12)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.mic_off, size: 20),
+            onPressed: onMute,
+            color: participant.isAudioMuted ? Colors.grey : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.videocam_off, size: 20),
+            onPressed: onPauseVideo,
+            color: participant.isVideoPaused ? Colors.grey : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.push_pin, size: 20),
+            onPressed: onPin,
+            color: participant.isPinned ? Colors.blue : Colors.grey,
+          ),
+        ],
+      ),
+    );
+  }
+}
+```
+
+---
+
+## Step 3: Implement Participant Events
+
+Listen for participant updates and handle actions in your call screen:
+
+```dart
+class _CallScreenState extends State<CallScreen> {
+  List<Participant> participants = [];
+  String searchQuery = "";
+  bool isParticipantPanelVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupParticipantListener();
+  }
+
+  void _setupParticipantListener() {
+    CallSession.getInstance()?.addParticipantEventListener(
+      ParticipantEventListener(
+        onParticipantListChanged: (List<Participant> updatedParticipants) {
+          setState(() => participants = updatedParticipants);
+        },
+        onParticipantJoined: (Participant participant) {
+          debugPrint("${participant.name} joined");
+        },
+        onParticipantLeft: (Participant participant) {
+          debugPrint("${participant.name} left");
+        },
+      ),
+    );
+  }
+
+  void _onMuteParticipant(Participant participant) async {
+    await CallSession.getInstance()?.muteParticipant(participant.uid);
+  }
+
+  void _onPauseParticipantVideo(Participant participant) async {
+    await CallSession.getInstance()?.pauseParticipantVideo(participant.uid);
+  }
+
+  void _onPinParticipant(Participant participant) async {
+    if (participant.isPinned) {
+      await CallSession.getInstance()?.unPinParticipant();
+    } else {
+      await CallSession.getInstance()?.pinParticipant(participant.uid);
+    }
+  }
+
+  @override
+  void dispose() {
+    CallSession.getInstance()?.removeParticipantEventListener();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          // Call view
+          if (callWidget != null) callWidget!,
+
+          // Participant panel (slides in from right)
+          if (isParticipantPanelVisible)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: ParticipantListPanel(
+                participants: participants,
+                searchQuery: searchQuery,
+                onSearchChanged: (query) {
+                  setState(() => searchQuery = query);
+                },
+                onMute: _onMuteParticipant,
+                onPauseVideo: _onPauseParticipantVideo,
+                onPin: _onPinParticipant,
+                onClose: () {
+                  setState(() => isParticipantPanelVisible = false);
+                },
+              ),
+            ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          setState(() => isParticipantPanelVisible = !isParticipantPanelVisible);
+        },
+        child: const Icon(Icons.people),
+      ),
+    );
+  }
+}
+```
+
+<Note>
+Flutter listeners are not lifecycle-aware. You must manually remove listeners in `dispose()` to prevent memory leaks.
+</Note>
+
+---
+
+## Complete Example
+
+Here's the full implementation with all components:
+
+```dart
+import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
+import 'package:flutter/material.dart';
+
+class CallScreen extends StatefulWidget {
+  final String sessionId;
+
+  const CallScreen({super.key, required this.sessionId});
+
+  @override
+  State<CallScreen> createState() => _CallScreenState();
+}
+
+class _CallScreenState extends State<CallScreen> {
+  Widget? callWidget;
+  List<Participant> participants = [];
+  String searchQuery = "";
+  bool isParticipantPanelVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _setupParticipantListener();
+    _joinCall();
+  }
+
+  void _joinCall() {
+    final sessionSettings = CometChatCalls.SessionSettingsBuilder()
+        ..hideParticipantListButton(true)
+        ..setTitle("Team Meeting");
+
+    CometChatCalls.joinSession(
+      sessionId: widget.sessionId,
+      sessionSettings: sessionSettings.build(),
+      onSuccess: (Widget? widget) {
+        setState(() => callWidget = widget);
+      },
+      onError: (CometChatCallsException e) {
+        debugPrint("Failed to join: ${e.message}");
+      },
+    );
+  }
+
+  void _setupParticipantListener() {
+    CallSession.getInstance()?.addParticipantEventListener(
+      ParticipantEventListener(
+        onParticipantListChanged: (List<Participant> updatedParticipants) {
+          setState(() => participants = updatedParticipants);
+        },
+        onParticipantJoined: (Participant participant) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("${participant.name} joined")),
+          );
+        },
+        onParticipantLeft: (Participant participant) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("${participant.name} left")),
+          );
+        },
+      ),
+    );
+  }
+
+  void _onMuteParticipant(Participant participant) async {
+    await CallSession.getInstance()?.muteParticipant(participant.uid);
+  }
+
+  void _onPauseParticipantVideo(Participant participant) async {
+    await CallSession.getInstance()?.pauseParticipantVideo(participant.uid);
+  }
+
+  void _onPinParticipant(Participant participant) async {
+    if (participant.isPinned) {
+      await CallSession.getInstance()?.unPinParticipant();
+    } else {
+      await CallSession.getInstance()?.pinParticipant(participant.uid);
+    }
+  }
+
+  @override
+  void dispose() {
+    CallSession.getInstance()?.removeParticipantEventListener();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          if (callWidget != null) callWidget!,
+          if (isParticipantPanelVisible)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: ParticipantListPanel(
+                participants: participants,
+                searchQuery: searchQuery,
+                onSearchChanged: (query) {
+                  setState(() => searchQuery = query);
+                },
+                onMute: _onMuteParticipant,
+                onPauseVideo: _onPauseParticipantVideo,
+                onPin: _onPinParticipant,
+                onClose: () {
+                  setState(() => isParticipantPanelVisible = false);
+                },
+              ),
+            ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          setState(() => isParticipantPanelVisible = !isParticipantPanelVisible);
+        },
+        child: const Icon(Icons.people),
+      ),
+    );
+  }
+}
+```
+
+<Accordion title="Participant Object Reference">
+| Property | Type | Description |
+|----------|------|-------------|
+| `uid` | String | Unique identifier (CometChat user ID) |
+| `name` | String | Display name |
+| `avatar` | String? | URL of avatar image |
+| `pid` | String | Participant ID for this call session |
+| `role` | String | Role in the call |
+| `isAudioMuted` | bool | Whether audio is muted |
+| `isVideoPaused` | bool | Whether video is paused |
+| `isPinned` | bool | Whether pinned in layout |
+| `isPresenting` | bool | Whether screen sharing |
+| `raisedHandTimestamp` | int | Timestamp when hand was raised (0 if not raised) |
+</Accordion>

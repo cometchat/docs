@@ -1,0 +1,1329 @@
+---
+title: "Ionic Integration"
+sidebarTitle: "Ionic"
+---
+
+This guide walks you through integrating the CometChat Calls SDK into an Ionic application. By the end, you'll have a working video call implementation with proper authentication and lifecycle handling. This guide covers Ionic with Angular, React, and Vue.
+
+<Note>
+For native mobile features like CallKit, VoIP push notifications, and background handling, consider using the native [iOS](/calls/ios/overview) or [Android](/calls/android/overview) SDKs.
+</Note>
+
+## Prerequisites
+
+Before you begin, ensure you have:
+- A CometChat account with an app created ([Sign up](https://app.cometchat.com/signup))
+- Your App ID, Region, and API Key from the CometChat Dashboard
+- An Ionic project (Angular, React, or Vue)
+- Node.js 16+ installed
+- Ionic CLI installed (`npm install -g @ionic/cli`)
+
+## Step 1: Install the SDK
+
+Install the CometChat Calls SDK package:
+
+```bash
+npm install @cometchat/calls-sdk-javascript
+```
+
+## Ionic Angular
+
+### Step 2: Create the Service
+
+Create a service that handles SDK initialization, authentication, and call operations. The service waits for the Ionic platform to be ready before initializing:
+
+```typescript
+// src/app/services/cometchat-calls.service.ts
+import { Injectable } from "@angular/core";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { Platform } from "@ionic/angular";
+import { BehaviorSubject } from "rxjs";
+
+interface User {
+  uid: string;
+  name: string;
+  avatar?: string;
+}
+
+@Injectable({
+  providedIn: "root",
+})
+export class CometChatCallsService {
+  private initialized = false;
+  private _isReady$ = new BehaviorSubject<boolean>(false);
+  private _user$ = new BehaviorSubject<User | null>(null);
+  private _error$ = new BehaviorSubject<string | null>(null);
+
+  isReady$ = this._isReady$.asObservable();
+  user$ = this._user$.asObservable();
+  error$ = this._error$.asObservable();
+
+  // Replace with your CometChat credentials
+  private readonly APP_ID = "YOUR_APP_ID";
+  private readonly REGION = "YOUR_REGION";
+  private readonly API_KEY = "YOUR_API_KEY";
+
+  constructor(private platform: Platform) {}
+
+  async initAndLogin(uid: string): Promise<boolean> {
+    try {
+      // Wait for Ionic platform to be ready
+      await this.platform.ready();
+
+      if (this.initialized) {
+        return true;
+      }
+
+      // Step 1: Initialize the SDK
+      const initResult = await CometChatCalls.init({
+        appId: this.APP_ID,
+        region: this.REGION,
+      });
+
+      if (!initResult.success) {
+        throw new Error("SDK initialization failed");
+      }
+
+      // Step 2: Check if already logged in
+      let loggedInUser = CometChatCalls.getLoggedInUser();
+
+      // Step 3: Login if not already logged in
+      if (!loggedInUser) {
+        loggedInUser = await CometChatCalls.login(uid, this.API_KEY);
+      }
+
+      this.initialized = true;
+      this._user$.next(loggedInUser);
+      this._isReady$.next(true);
+      return true;
+    } catch (err: any) {
+      console.error("CometChat Calls setup failed:", err);
+      this._error$.next(err.message || "Setup failed");
+      return false;
+    }
+  }
+
+  getLoggedInUser(): User | null {
+    return this._user$.value;
+  }
+
+  async generateToken(sessionId: string) {
+    return CometChatCalls.generateToken(sessionId);
+  }
+
+  async joinSession(token: string, settings: any, container: HTMLElement) {
+    return CometChatCalls.joinSession(token, settings, container);
+  }
+
+  leaveSession() {
+    CometChatCalls.leaveSession();
+  }
+
+  muteAudio() {
+    CometChatCalls.muteAudio();
+  }
+
+  unMuteAudio() {
+    CometChatCalls.unMuteAudio();
+  }
+
+  pauseVideo() {
+    CometChatCalls.pauseVideo();
+  }
+
+  resumeVideo() {
+    CometChatCalls.resumeVideo();
+  }
+
+  addEventListener(event: string, callback: Function) {
+    return CometChatCalls.addEventListener(event as any, callback as any);
+  }
+}
+```
+
+
+### Step 3: Initialize in App Component
+
+Initialize the SDK and login when the app starts:
+
+```typescript
+// src/app/app.component.ts
+import { Component, OnInit } from "@angular/core";
+import { CometChatCallsService } from "./services/cometchat-calls.service";
+
+@Component({
+  selector: "app-root",
+  templateUrl: "app.component.html",
+})
+export class AppComponent implements OnInit {
+  constructor(private callsService: CometChatCallsService) {}
+
+  ngOnInit() {
+    // In a real app, get this from your authentication system
+    const currentUserId = "cometchat-uid-1";
+    this.callsService.initAndLogin(currentUserId);
+  }
+}
+```
+
+### Step 4: Create the Call Page
+
+Create a call page component that handles joining sessions, media controls, and cleanup:
+
+```typescript
+// src/app/pages/call/call.page.ts
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from "@angular/core";
+import { ActivatedRoute } from "@angular/router";
+import { NavController } from "@ionic/angular";
+import { CometChatCallsService } from "../../services/cometchat-calls.service";
+import { Subscription } from "rxjs";
+
+@Component({
+  selector: "app-call",
+  templateUrl: "./call.page.html",
+  styleUrls: ["./call.page.scss"],
+})
+export class CallPage implements OnInit, OnDestroy {
+  @ViewChild("callContainer", { static: true }) callContainer!: ElementRef;
+
+  sessionId: string = "";
+  isReady = false;
+  isJoined = false;
+  isJoining = false;
+  isMuted = false;
+  isVideoOff = false;
+  error: string | null = null;
+  
+  private unsubscribers: Function[] = [];
+  private subscriptions: Subscription[] = [];
+
+  constructor(
+    private route: ActivatedRoute,
+    private navCtrl: NavController,
+    private callsService: CometChatCallsService
+  ) {}
+
+  ngOnInit() {
+    this.sessionId = this.route.snapshot.paramMap.get("sessionId") || "";
+    
+    // Subscribe to ready state
+    this.subscriptions.push(
+      this.callsService.isReady$.subscribe((ready) => {
+        this.isReady = ready;
+        if (ready && this.sessionId) {
+          this.joinCall();
+        }
+      }),
+      this.callsService.error$.subscribe((err) => {
+        this.error = err;
+      })
+    );
+  }
+
+  ngOnDestroy() {
+    this.cleanup();
+    this.subscriptions.forEach((sub) => sub.unsubscribe());
+  }
+
+  private async joinCall() {
+    if (!this.callContainer?.nativeElement) return;
+    
+    this.isJoining = true;
+    this.error = null;
+
+    try {
+      // Register event listeners before joining
+      this.unsubscribers = [
+        this.callsService.addEventListener("onSessionJoined", () => {
+          this.isJoined = true;
+          this.isJoining = false;
+        }),
+        this.callsService.addEventListener("onSessionLeft", () => {
+          this.isJoined = false;
+          this.navCtrl.back();
+        }),
+        this.callsService.addEventListener("onAudioMuted", () => {
+          this.isMuted = true;
+        }),
+        this.callsService.addEventListener("onAudioUnMuted", () => {
+          this.isMuted = false;
+        }),
+        this.callsService.addEventListener("onVideoPaused", () => {
+          this.isVideoOff = true;
+        }),
+        this.callsService.addEventListener("onVideoResumed", () => {
+          this.isVideoOff = false;
+        }),
+      ];
+
+      // Generate a call token for this session
+      const tokenResult = await this.callsService.generateToken(this.sessionId);
+
+      // Join the call session
+      await this.callsService.joinSession(
+        tokenResult.token,
+        {
+          sessionType: "VIDEO",
+          layout: "TILE",
+          startAudioMuted: false,
+          startVideoPaused: false,
+        },
+        this.callContainer.nativeElement
+      );
+    } catch (err: any) {
+      console.error("Failed to join call:", err);
+      this.error = err.message || "Failed to join call";
+      this.isJoining = false;
+    }
+  }
+
+  toggleAudio() {
+    this.isMuted ? this.callsService.unMuteAudio() : this.callsService.muteAudio();
+  }
+
+  toggleVideo() {
+    this.isVideoOff ? this.callsService.resumeVideo() : this.callsService.pauseVideo();
+  }
+
+  leaveCall() {
+    this.callsService.leaveSession();
+  }
+
+  private cleanup() {
+    this.unsubscribers.forEach((unsub) => unsub());
+    this.unsubscribers = [];
+    this.callsService.leaveSession();
+  }
+}
+```
+
+
+### Step 5: Create the Call Page Template
+
+Create the HTML template for the call page with video container and controls:
+
+```html
+<!-- src/app/pages/call/call.page.html -->
+<ion-content>
+  <!-- Loading state -->
+  <div *ngIf="!isReady" class="loading-container">
+    <ion-spinner></ion-spinner>
+    <p>Initializing...</p>
+  </div>
+
+  <!-- Error state -->
+  <div *ngIf="error" class="error-container">
+    <ion-icon name="alert-circle" color="danger"></ion-icon>
+    <p>{{ error }}</p>
+    <ion-button (click)="joinCall()">Retry</ion-button>
+  </div>
+
+  <!-- Video container - SDK renders the call UI here -->
+  <div #callContainer class="call-container" *ngIf="isReady && !error"></div>
+
+  <!-- Joining overlay -->
+  <div *ngIf="isJoining" class="joining-overlay">
+    <ion-spinner></ion-spinner>
+    <p>Joining call...</p>
+  </div>
+
+  <!-- Call controls -->
+  <div class="call-controls" *ngIf="isJoined">
+    <ion-button 
+      (click)="toggleAudio()" 
+      [color]="isMuted ? 'danger' : 'primary'"
+      shape="round"
+    >
+      <ion-icon slot="icon-only" [name]="isMuted ? 'mic-off' : 'mic'"></ion-icon>
+    </ion-button>
+    
+    <ion-button 
+      (click)="toggleVideo()" 
+      [color]="isVideoOff ? 'danger' : 'primary'"
+      shape="round"
+    >
+      <ion-icon slot="icon-only" [name]="isVideoOff ? 'videocam-off' : 'videocam'"></ion-icon>
+    </ion-button>
+    
+    <ion-button 
+      (click)="leaveCall()" 
+      color="danger"
+      shape="round"
+    >
+      <ion-icon slot="icon-only" name="call"></ion-icon>
+    </ion-button>
+  </div>
+</ion-content>
+```
+
+```scss
+/* src/app/pages/call/call.page.scss */
+.call-container {
+  width: 100%;
+  height: calc(100% - 80px);
+  background-color: #1a1a1a;
+}
+
+.call-controls {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+  background-color: #f5f5f5;
+}
+
+.loading-container,
+.error-container,
+.joining-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+}
+
+.joining-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  z-index: 100;
+}
+```
+
+### Step 6: Create the Home Page
+
+Create a home page where users can enter a session ID and join a call:
+
+```typescript
+// src/app/pages/home/home.page.ts
+import { Component } from "@angular/core";
+import { Router } from "@angular/router";
+import { CometChatCallsService } from "../../services/cometchat-calls.service";
+
+@Component({
+  selector: "app-home",
+  templateUrl: "./home.page.html",
+})
+export class HomePage {
+  sessionId = "";
+  isReady$ = this.callsService.isReady$;
+  user$ = this.callsService.user$;
+  error$ = this.callsService.error$;
+
+  constructor(
+    private router: Router,
+    private callsService: CometChatCallsService
+  ) {}
+
+  joinCall() {
+    if (this.sessionId) {
+      this.router.navigate(["/call", this.sessionId]);
+    }
+  }
+}
+```
+
+```html
+<!-- src/app/pages/home/home.page.html -->
+<ion-header>
+  <ion-toolbar>
+    <ion-title>CometChat Calls</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding">
+  <div *ngIf="error$ | async as error" class="error-message">
+    <ion-text color="danger">{{ error }}</ion-text>
+  </div>
+
+  <div *ngIf="!(isReady$ | async)" class="loading">
+    <ion-spinner></ion-spinner>
+    <p>Loading...</p>
+  </div>
+
+  <div *ngIf="isReady$ | async">
+    <p *ngIf="user$ | async as user">
+      Logged in as: {{ user.name || user.uid }}
+    </p>
+
+    <ion-item>
+      <ion-label position="floating">Session ID</ion-label>
+      <ion-input [(ngModel)]="sessionId" placeholder="Enter Session ID"></ion-input>
+    </ion-item>
+
+    <ion-button 
+      expand="block" 
+      (click)="joinCall()" 
+      [disabled]="!sessionId"
+      class="ion-margin-top"
+    >
+      Join Call
+    </ion-button>
+  </div>
+</ion-content>
+```
+
+
+## Ionic React
+
+### Step 2: Create the Provider
+
+Create a context provider that handles SDK initialization and authentication:
+
+```tsx
+// src/providers/CometChatCallsProvider.tsx
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { isPlatform } from "@ionic/react";
+
+interface User {
+  uid: string;
+  name: string;
+  avatar?: string;
+}
+
+interface CometChatCallsContextType {
+  isReady: boolean;
+  user: User | null;
+  error: string | null;
+}
+
+const CometChatCallsContext = createContext<CometChatCallsContextType>({
+  isReady: false,
+  user: null,
+  error: null,
+});
+
+// Replace with your CometChat credentials
+const APP_ID = "YOUR_APP_ID";
+const REGION = "YOUR_REGION";
+const API_KEY = "YOUR_API_KEY";
+
+interface ProviderProps {
+  children: ReactNode;
+  uid: string;
+}
+
+export function CometChatCallsProvider({ children, uid }: ProviderProps) {
+  const [isReady, setIsReady] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function initAndLogin() {
+      try {
+        // Step 1: Initialize the SDK
+        const initResult = await CometChatCalls.init({
+          appId: APP_ID,
+          region: REGION,
+        });
+
+        if (!initResult.success) {
+          throw new Error("SDK initialization failed");
+        }
+
+        // Step 2: Check if already logged in
+        let loggedInUser = CometChatCalls.getLoggedInUser();
+
+        // Step 3: Login if not already logged in
+        if (!loggedInUser) {
+          loggedInUser = await CometChatCalls.login(uid, API_KEY);
+        }
+
+        setUser(loggedInUser);
+        setIsReady(true);
+      } catch (err: any) {
+        console.error("CometChat Calls setup failed:", err);
+        setError(err.message || "Setup failed");
+      }
+    }
+
+    if (uid) {
+      initAndLogin();
+    }
+  }, [uid]);
+
+  return (
+    <CometChatCallsContext.Provider value={{ isReady, user, error }}>
+      {children}
+    </CometChatCallsContext.Provider>
+  );
+}
+
+export function useCometChatCalls(): CometChatCallsContextType {
+  return useContext(CometChatCallsContext);
+}
+```
+
+### Step 3: Wrap Your App
+
+Add the provider to your app's root component:
+
+```tsx
+// src/App.tsx
+import { IonApp, IonRouterOutlet, setupIonicReact } from "@ionic/react";
+import { IonReactRouter } from "@ionic/react-router";
+import { Route } from "react-router-dom";
+import { CometChatCallsProvider } from "./providers/CometChatCallsProvider";
+import HomePage from "./pages/Home";
+import CallPage from "./pages/Call";
+
+setupIonicReact();
+
+const App: React.FC = () => {
+  // In a real app, get this from your authentication system
+  const currentUserId = "cometchat-uid-1";
+
+  return (
+    <IonApp>
+      <CometChatCallsProvider uid={currentUserId}>
+        <IonReactRouter>
+          <IonRouterOutlet>
+            <Route exact path="/" component={HomePage} />
+            <Route exact path="/call/:sessionId" component={CallPage} />
+          </IonRouterOutlet>
+        </IonReactRouter>
+      </CometChatCallsProvider>
+    </IonApp>
+  );
+};
+
+export default App;
+```
+
+### Step 4: Create the Call Page
+
+Create a call page that handles joining sessions, media controls, and cleanup:
+
+```tsx
+// src/pages/Call.tsx
+import { useEffect, useRef, useState } from "react";
+import { 
+  IonContent, 
+  IonPage, 
+  IonButton, 
+  IonIcon, 
+  IonSpinner,
+  useIonRouter 
+} from "@ionic/react";
+import { mic, micOff, videocam, videocamOff, call } from "ionicons/icons";
+import { useParams } from "react-router-dom";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { useCometChatCalls } from "../providers/CometChatCallsProvider";
+
+const CallPage: React.FC = () => {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  const { isReady, error: initError } = useCometChatCalls();
+  const router = useIonRouter();
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Call state
+  const [isJoined, setIsJoined] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  const unsubscribersRef = useRef<Function[]>([]);
+
+  useEffect(() => {
+    if (!isReady || !containerRef.current || !sessionId) return;
+
+    async function joinCall() {
+      setIsJoining(true);
+      setError(null);
+
+      try {
+        // Register event listeners before joining
+        unsubscribersRef.current = [
+          CometChatCalls.addEventListener("onSessionJoined", () => {
+            setIsJoined(true);
+            setIsJoining(false);
+          }),
+          CometChatCalls.addEventListener("onSessionLeft", () => {
+            setIsJoined(false);
+            router.goBack();
+          }),
+          CometChatCalls.addEventListener("onAudioMuted", () => setIsMuted(true)),
+          CometChatCalls.addEventListener("onAudioUnMuted", () => setIsMuted(false)),
+          CometChatCalls.addEventListener("onVideoPaused", () => setIsVideoOff(true)),
+          CometChatCalls.addEventListener("onVideoResumed", () => setIsVideoOff(false)),
+        ];
+
+        // Generate a call token for this session
+        const tokenResult = await CometChatCalls.generateToken(sessionId);
+
+        // Join the call session
+        await CometChatCalls.joinSession(
+          tokenResult.token,
+          {
+            sessionType: "VIDEO",
+            layout: "TILE",
+            startAudioMuted: false,
+            startVideoPaused: false,
+          },
+          containerRef.current!
+        );
+      } catch (err: any) {
+        console.error("Failed to join call:", err);
+        setError(err.message || "Failed to join call");
+        setIsJoining(false);
+      }
+    }
+
+    joinCall();
+
+    return () => {
+      unsubscribersRef.current.forEach((unsub) => unsub());
+      unsubscribersRef.current = [];
+      CometChatCalls.leaveSession();
+    };
+  }, [isReady, sessionId, router]);
+
+  // Control handlers
+  const toggleAudio = () => {
+    isMuted ? CometChatCalls.unMuteAudio() : CometChatCalls.muteAudio();
+  };
+
+  const toggleVideo = () => {
+    isVideoOff ? CometChatCalls.resumeVideo() : CometChatCalls.pauseVideo();
+  };
+
+  const leaveCall = () => {
+    CometChatCalls.leaveSession();
+  };
+
+  // Loading state
+  if (!isReady) {
+    return (
+      <IonPage>
+        <IonContent className="ion-padding ion-text-center">
+          <IonSpinner />
+          <p>Initializing...</p>
+        </IonContent>
+      </IonPage>
+    );
+  }
+
+  // Error state
+  if (error || initError) {
+    return (
+      <IonPage>
+        <IonContent className="ion-padding ion-text-center">
+          <p style={{ color: "var(--ion-color-danger)" }}>
+            Error: {error || initError}
+          </p>
+          <IonButton onClick={() => window.location.reload()}>Retry</IonButton>
+        </IonContent>
+      </IonPage>
+    );
+  }
+
+  return (
+    <IonPage>
+      <IonContent>
+        {/* Video container - SDK renders the call UI here */}
+        <div 
+          ref={containerRef} 
+          style={{ 
+            width: "100%", 
+            height: "calc(100% - 80px)", 
+            backgroundColor: "#1a1a1a" 
+          }} 
+        />
+
+        {/* Joining overlay */}
+        {isJoining && (
+          <div style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(0, 0, 0, 0.7)",
+            color: "white",
+            zIndex: 100,
+          }}>
+            <IonSpinner color="light" />
+            <p>Joining call...</p>
+          </div>
+        )}
+
+        {/* Call controls */}
+        {isJoined && (
+          <div style={{ 
+            display: "flex", 
+            justifyContent: "center", 
+            gap: "16px", 
+            padding: "16px" 
+          }}>
+            <IonButton 
+              onClick={toggleAudio}
+              color={isMuted ? "danger" : "primary"}
+              shape="round"
+            >
+              <IonIcon slot="icon-only" icon={isMuted ? micOff : mic} />
+            </IonButton>
+            <IonButton 
+              onClick={toggleVideo}
+              color={isVideoOff ? "danger" : "primary"}
+              shape="round"
+            >
+              <IonIcon slot="icon-only" icon={isVideoOff ? videocamOff : videocam} />
+            </IonButton>
+            <IonButton 
+              onClick={leaveCall}
+              color="danger"
+              shape="round"
+            >
+              <IonIcon slot="icon-only" icon={call} />
+            </IonButton>
+          </div>
+        )}
+      </IonContent>
+    </IonPage>
+  );
+};
+
+export default CallPage;
+```
+
+
+### Step 5: Create the Home Page
+
+Create a home page where users can enter a session ID and join a call:
+
+```tsx
+// src/pages/Home.tsx
+import { useState } from "react";
+import { 
+  IonContent, 
+  IonPage, 
+  IonHeader, 
+  IonToolbar, 
+  IonTitle,
+  IonItem,
+  IonLabel,
+  IonInput,
+  IonButton,
+  IonSpinner,
+  IonText,
+  useIonRouter
+} from "@ionic/react";
+import { useCometChatCalls } from "../providers/CometChatCallsProvider";
+
+const HomePage: React.FC = () => {
+  const { isReady, user, error } = useCometChatCalls();
+  const router = useIonRouter();
+  const [sessionId, setSessionId] = useState("");
+
+  const joinCall = () => {
+    if (sessionId) {
+      router.push(`/call/${sessionId}`);
+    }
+  };
+
+  return (
+    <IonPage>
+      <IonHeader>
+        <IonToolbar>
+          <IonTitle>CometChat Calls</IonTitle>
+        </IonToolbar>
+      </IonHeader>
+      <IonContent className="ion-padding">
+        {error && (
+          <IonText color="danger">
+            <p>{error}</p>
+          </IonText>
+        )}
+
+        {!isReady ? (
+          <div className="ion-text-center">
+            <IonSpinner />
+            <p>Loading...</p>
+          </div>
+        ) : (
+          <>
+            <p>Logged in as: {user?.name || user?.uid}</p>
+
+            <IonItem>
+              <IonLabel position="floating">Session ID</IonLabel>
+              <IonInput
+                value={sessionId}
+                onIonChange={(e) => setSessionId(e.detail.value || "")}
+                placeholder="Enter Session ID"
+              />
+            </IonItem>
+
+            <IonButton
+              expand="block"
+              onClick={joinCall}
+              disabled={!sessionId}
+              className="ion-margin-top"
+            >
+              Join Call
+            </IonButton>
+          </>
+        )}
+      </IonContent>
+    </IonPage>
+  );
+};
+
+export default HomePage;
+```
+
+## Ionic Vue
+
+### Step 2: Create the Composable
+
+Create a composable that handles SDK initialization and authentication:
+
+```typescript
+// src/composables/useCometChatCalls.ts
+import { ref, readonly } from "vue";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+interface User {
+  uid: string;
+  name: string;
+  avatar?: string;
+}
+
+// Replace with your CometChat credentials
+const APP_ID = "YOUR_APP_ID";
+const REGION = "YOUR_REGION";
+const API_KEY = "YOUR_API_KEY";
+
+// Shared state across all components
+const isReady = ref(false);
+const user = ref<User | null>(null);
+const error = ref<string | null>(null);
+const initialized = ref(false);
+
+export function useCometChatCalls() {
+  async function initAndLogin(uid: string): Promise<boolean> {
+    if (initialized.value) {
+      return isReady.value;
+    }
+
+    try {
+      // Step 1: Initialize the SDK
+      const initResult = await CometChatCalls.init({
+        appId: APP_ID,
+        region: REGION,
+      });
+
+      if (!initResult.success) {
+        throw new Error("SDK initialization failed");
+      }
+
+      // Step 2: Check if already logged in
+      let loggedInUser = CometChatCalls.getLoggedInUser();
+
+      // Step 3: Login if not already logged in
+      if (!loggedInUser) {
+        loggedInUser = await CometChatCalls.login(uid, API_KEY);
+      }
+
+      user.value = loggedInUser;
+      isReady.value = true;
+      initialized.value = true;
+      return true;
+    } catch (err: any) {
+      console.error("CometChat Calls setup failed:", err);
+      error.value = err.message || "Setup failed";
+      return false;
+    }
+  }
+
+  return {
+    isReady: readonly(isReady),
+    user: readonly(user),
+    error: readonly(error),
+    initAndLogin,
+  };
+}
+```
+
+### Step 3: Initialize in App Component
+
+Initialize the SDK and login when the app starts:
+
+```vue
+<!-- src/App.vue -->
+<template>
+  <ion-app>
+    <ion-router-outlet />
+  </ion-app>
+</template>
+
+<script setup lang="ts">
+import { IonApp, IonRouterOutlet } from "@ionic/vue";
+import { onMounted } from "vue";
+import { useCometChatCalls } from "./composables/useCometChatCalls";
+
+const { initAndLogin } = useCometChatCalls();
+
+onMounted(() => {
+  // In a real app, get this from your authentication system
+  const currentUserId = "cometchat-uid-1";
+  initAndLogin(currentUserId);
+});
+</script>
+```
+
+### Step 4: Create the Call Page
+
+Create a call page that handles joining sessions, media controls, and cleanup:
+
+```vue
+<!-- src/views/CallPage.vue -->
+<template>
+  <ion-page>
+    <ion-content>
+      <!-- Loading state -->
+      <div v-if="!isReady" class="loading-container">
+        <ion-spinner></ion-spinner>
+        <p>Initializing...</p>
+      </div>
+
+      <!-- Error state -->
+      <div v-else-if="callError" class="error-container">
+        <ion-text color="danger">{{ callError }}</ion-text>
+        <ion-button @click="joinCall">Retry</ion-button>
+      </div>
+
+      <!-- Video container - SDK renders the call UI here -->
+      <div v-else ref="callContainer" class="call-container"></div>
+
+      <!-- Joining overlay -->
+      <div v-if="isJoining" class="joining-overlay">
+        <ion-spinner color="light"></ion-spinner>
+        <p>Joining call...</p>
+      </div>
+
+      <!-- Call controls -->
+      <div v-if="isJoined" class="call-controls">
+        <ion-button 
+          @click="toggleAudio" 
+          :color="isMuted ? 'danger' : 'primary'"
+          shape="round"
+        >
+          <ion-icon slot="icon-only" :icon="isMuted ? micOff : mic"></ion-icon>
+        </ion-button>
+        
+        <ion-button 
+          @click="toggleVideo" 
+          :color="isVideoOff ? 'danger' : 'primary'"
+          shape="round"
+        >
+          <ion-icon slot="icon-only" :icon="isVideoOff ? videocamOff : videocam"></ion-icon>
+        </ion-button>
+        
+        <ion-button 
+          @click="leaveCall" 
+          color="danger"
+          shape="round"
+        >
+          <ion-icon slot="icon-only" :icon="call"></ion-icon>
+        </ion-button>
+      </div>
+    </ion-content>
+  </ion-page>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { 
+  IonPage, 
+  IonContent, 
+  IonButton, 
+  IonIcon, 
+  IonSpinner,
+  IonText
+} from "@ionic/vue";
+import { mic, micOff, videocam, videocamOff, call } from "ionicons/icons";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { useCometChatCalls } from "../composables/useCometChatCalls";
+
+const route = useRoute();
+const router = useRouter();
+const sessionId = route.params.sessionId as string;
+
+const { isReady } = useCometChatCalls();
+
+// Template refs
+const callContainer = ref<HTMLDivElement | null>(null);
+
+// Call state
+const isJoined = ref(false);
+const isJoining = ref(false);
+const isMuted = ref(false);
+const isVideoOff = ref(false);
+const callError = ref<string | null>(null);
+
+// Store unsubscribe functions for cleanup
+const unsubscribers = ref<Function[]>([]);
+
+async function joinCall() {
+  if (!callContainer.value || !sessionId) return;
+
+  isJoining.value = true;
+  callError.value = null;
+
+  try {
+    // Register event listeners before joining
+    unsubscribers.value = [
+      CometChatCalls.addEventListener("onSessionJoined", () => {
+        isJoined.value = true;
+        isJoining.value = false;
+      }),
+      CometChatCalls.addEventListener("onSessionLeft", () => {
+        isJoined.value = false;
+        router.back();
+      }),
+      CometChatCalls.addEventListener("onAudioMuted", () => {
+        isMuted.value = true;
+      }),
+      CometChatCalls.addEventListener("onAudioUnMuted", () => {
+        isMuted.value = false;
+      }),
+      CometChatCalls.addEventListener("onVideoPaused", () => {
+        isVideoOff.value = true;
+      }),
+      CometChatCalls.addEventListener("onVideoResumed", () => {
+        isVideoOff.value = false;
+      }),
+    ];
+
+    // Generate a call token for this session
+    const tokenResult = await CometChatCalls.generateToken(sessionId);
+
+    // Join the call session
+    await CometChatCalls.joinSession(
+      tokenResult.token,
+      {
+        sessionType: "VIDEO",
+        layout: "TILE",
+        startAudioMuted: false,
+        startVideoPaused: false,
+      },
+      callContainer.value
+    );
+  } catch (err: any) {
+    console.error("Failed to join call:", err);
+    callError.value = err.message || "Failed to join call";
+    isJoining.value = false;
+  }
+}
+
+function toggleAudio() {
+  isMuted.value ? CometChatCalls.unMuteAudio() : CometChatCalls.muteAudio();
+}
+
+function toggleVideo() {
+  isVideoOff.value ? CometChatCalls.resumeVideo() : CometChatCalls.pauseVideo();
+}
+
+function leaveCall() {
+  CometChatCalls.leaveSession();
+}
+
+function cleanup() {
+  unsubscribers.value.forEach((unsub) => unsub());
+  unsubscribers.value = [];
+  CometChatCalls.leaveSession();
+}
+
+// Watch for SDK ready state and join when ready
+watch(isReady, (ready) => {
+  if (ready && callContainer.value) {
+    joinCall();
+  }
+});
+
+onMounted(() => {
+  if (isReady.value && callContainer.value) {
+    joinCall();
+  }
+});
+
+onUnmounted(() => {
+  cleanup();
+});
+</script>
+
+<style scoped>
+.call-container {
+  width: 100%;
+  height: calc(100% - 80px);
+  background-color: #1a1a1a;
+}
+
+.call-controls {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+.loading-container,
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+}
+
+.joining-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  z-index: 100;
+}
+</style>
+```
+
+
+### Step 5: Create the Home Page
+
+Create a home page where users can enter a session ID and join a call:
+
+```vue
+<!-- src/views/HomePage.vue -->
+<template>
+  <ion-page>
+    <ion-header>
+      <ion-toolbar>
+        <ion-title>CometChat Calls</ion-title>
+      </ion-toolbar>
+    </ion-header>
+    
+    <ion-content class="ion-padding">
+      <ion-text v-if="error" color="danger">
+        <p>{{ error }}</p>
+      </ion-text>
+
+      <div v-if="!isReady" class="ion-text-center">
+        <ion-spinner></ion-spinner>
+        <p>Loading...</p>
+      </div>
+
+      <template v-else>
+        <p>Logged in as: {{ user?.name || user?.uid }}</p>
+
+        <ion-item>
+          <ion-label position="floating">Session ID</ion-label>
+          <ion-input 
+            v-model="sessionId" 
+            placeholder="Enter Session ID"
+          ></ion-input>
+        </ion-item>
+
+        <ion-button 
+          expand="block" 
+          @click="joinCall" 
+          :disabled="!sessionId"
+          class="ion-margin-top"
+        >
+          Join Call
+        </ion-button>
+      </template>
+    </ion-content>
+  </ion-page>
+</template>
+
+<script setup lang="ts">
+import { ref } from "vue";
+import { useRouter } from "vue-router";
+import { 
+  IonPage, 
+  IonHeader, 
+  IonToolbar, 
+  IonTitle, 
+  IonContent,
+  IonItem,
+  IonLabel,
+  IonInput,
+  IonButton,
+  IonSpinner,
+  IonText
+} from "@ionic/vue";
+import { useCometChatCalls } from "../composables/useCometChatCalls";
+
+const router = useRouter();
+const { isReady, user, error } = useCometChatCalls();
+
+const sessionId = ref("");
+
+function joinCall() {
+  if (sessionId.value) {
+    router.push(`/call/${sessionId.value}`);
+  }
+}
+</script>
+```
+
+### Step 6: Configure Routes
+
+Set up the router with the home and call pages:
+
+```typescript
+// src/router/index.ts
+import { createRouter, createWebHistory } from "@ionic/vue-router";
+import { RouteRecordRaw } from "vue-router";
+import HomePage from "../views/HomePage.vue";
+import CallPage from "../views/CallPage.vue";
+
+const routes: Array<RouteRecordRaw> = [
+  {
+    path: "/",
+    component: HomePage,
+  },
+  {
+    path: "/call/:sessionId",
+    component: CallPage,
+  },
+];
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes,
+});
+
+export default router;
+```
+
+## Related Documentation
+
+For more detailed information on specific topics covered in this guide, refer to the main documentation:
+
+- [Setup](/calls/javascript/setup) - Detailed SDK installation and initialization
+- [Authentication](/calls/javascript/authentication) - Login methods and user management
+- [Session Settings](/calls/javascript/session-settings) - All available call configuration options
+- [Join Session](/calls/javascript/join-session) - Session joining and token generation
+- [Events](/calls/javascript/events) - Complete list of event listeners
+- [Actions](/calls/javascript/actions) - All available call control methods
+- [Call Layouts](/calls/javascript/call-layouts) - Layout options and customization
+- [Participant Management](/calls/javascript/participant-management) - Managing call participants

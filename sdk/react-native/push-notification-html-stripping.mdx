@@ -1,0 +1,258 @@
+---
+title: "Push Notification Content Customization"
+description: "Learn how to intercept and modify push notification content before display in React Native."
+---
+
+
+## Overview
+
+This guide demonstrates how to intercept push notification content before rendering and clean up the notification body or title. The example below shows how to strip HTML tags from the notification body, but the same approach can be used to apply any regex-based transformation to the notification title or body before triggering the push notification.
+
+<Note>
+This solution is specific to React Native. On some Android devices, the OS handles HTML tag stripping by default. Consider this example as a reference for modifying any content in the notification body or title before display.
+</Note>
+
+The approach strips HTML tags at the notification display layer only, without modifying:
+- The message payload
+- SDK logic
+- Chat UI rendering
+
+This means rich text remains unchanged inside the chat UI while push notifications display clean, readable text across foreground, background, and killed states.
+
+## Android Implementation
+
+On Android, use FCM (`@react-native-firebase/messaging`) to receive push notifications and route all notification flows through a single handler (e.g., `displayLocalNotification`) for both `messaging().onMessage()` (foreground) and `messaging().setBackgroundMessageHandler()` (background/killed). This lets you clean the content before displaying it.
+
+### Add the Utility Function
+
+Create or update your helper file with the `stripHtmlTags` function:
+
+```typescript
+// src/utils/helper.ts
+export function stripHtmlTags(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+```
+
+### Display Notifications with Cleaned Content
+
+```typescript
+import { stripHtmlTags } from '../utils/helper';
+
+export async function displayLocalNotification(remoteMessage: any) {
+  try {
+    const { title, body } = remoteMessage.data || {};
+    const cleanedBody = stripHtmlTags(body);
+    // You can also intercept and modify the title the same way
+
+    await notifee.displayNotification({
+      title: title || 'New Message',
+      body: cleanedBody || 'You received a new message',
+      android: {
+        channelId: 'default',
+        pressAction: {
+          id: 'default',
+        },
+      },
+    });
+  } catch (error) {
+    console.error('displayLocalNotification error', error);
+  }
+}
+```
+
+### How It Works on Android
+
+| State | Flow |
+|-------|------|
+| Foreground | `App.tsx` → `messaging().onMessage()` → `displayLocalNotification()` |
+| Background/Killed | `index.js` → `messaging().setBackgroundMessageHandler()` → `displayLocalNotification()` |
+
+Since both paths call `displayLocalNotification()`, HTML stripping happens automatically for all notification states.
+
+## iOS Implementation
+
+On iOS, push notifications are delivered via APNs (Apple Push Notification service). To modify notification content before display, use a Notification Service Extension — a native iOS mechanism that intercepts APNs payloads before they are shown to the user.
+
+A [Notification Service Extension](https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension) intercepts push notifications before they are displayed, allowing you to modify the content.
+
+### Create the Notification Service Extension
+
+<Steps>
+<Step title="Add a new target in Xcode">
+In Xcode, go to **File → New → Target → Notification Service Extension**. Name it `NotificationService` and click **Finish**.
+
+Once added, you should see `NotificationService` listed under TARGETS in your project:
+
+<Frame>
+  <img src="/images/xcode-notificaion-service-maintarget-screenshot.png" alt="Xcode showing NotificationService listed under TARGETS in the main app" />
+</Frame>
+</Step>
+
+<Step title="Activate the new scheme">
+When prompted to activate the new scheme, click **Activate**.
+</Step>
+
+<Step title="Update NotificationService.swift">
+Replace the contents of `NotificationService.swift` with the following:
+
+```swift
+import UserNotifications
+
+class NotificationService: UNNotificationServiceExtension {
+
+    var contentHandler: ((UNNotificationContent) -> Void)?
+    var bestAttemptContent: UNMutableNotificationContent?
+
+    override func didReceive(
+        _ request: UNNotificationRequest,
+        withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
+    ) {
+        self.contentHandler = contentHandler
+        bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
+
+        if let bestAttemptContent = bestAttemptContent {
+            // Strip HTML tags from the notification body
+            if let body = bestAttemptContent.body as String? {
+                bestAttemptContent.body = stripHtmlTags(body)
+            }
+
+            // Strip HTML tags from the notification title if needed
+            if let title = bestAttemptContent.title as String? {
+                bestAttemptContent.title = stripHtmlTags(title)
+            }
+
+            contentHandler(bestAttemptContent)
+        }
+    }
+
+    override func serviceExtensionTimeWillExpire() {
+        if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
+            contentHandler(bestAttemptContent)
+        }
+    }
+
+    private func stripHtmlTags(_ text: String) -> String {
+        guard !text.isEmpty else { return text }
+        var result = text
+        // Remove HTML tags
+        result = result.replacingOccurrences(
+            of: "<[^>]+>",
+            with: "",
+            options: .regularExpression
+        )
+        // Decode common HTML entities
+        let entities: [String: String] = [
+            "&nbsp;": " ",
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+            "&quot;": "\"",
+            "&#39;": "'"
+        ]
+        for (entity, replacement) in entities {
+            result = result.replacingOccurrences(of: entity, with: replacement)
+        }
+        // Collapse whitespace
+        result = result.replacingOccurrences(
+            of: "\\s+",
+            with: " ",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return result
+    }
+}
+```
+</Step>
+</Steps>
+
+### Required iOS Configuration
+
+| Setting | Details |
+|---------|---------|
+| Team & Signing | The extension target must have the same team and signing configuration as your main app target |
+| Bundle Identifier | Must be a child of your main app's bundle ID (e.g., `com.yourapp.NotificationService`) |
+| Bridging Header | If you see a bridging header error, clear the **Objective-C Bridging Header** field in the extension's Build Settings |
+| Push Payload | Your APNs payload must include `"mutable-content": 1` for the extension to intercept notifications |
+| Deployment Target | The extension's deployment target must match or be lower than your main app's deployment target |
+
+Select the `NotificationService` target and verify the bundle identifier is a child of your main app's bundle ID:
+
+<Frame>
+  <img src="/images/xcode-notificaion-service-screenshot.png" alt="Xcode NotificationService target General tab showing bundle identifier" />
+</Frame>
+
+<Warning>
+The Notification Service Extension's **Minimum Deployment** target must match your main app's minimum deployment target. The extension runs as a separate process alongside your main app — if the deployment targets don't match, iOS will silently skip the extension and notifications will display unmodified.
+</Warning>
+
+If you encounter a bridging header error, select the `NotificationService` target → **Build Settings**, search for "bridging", and clear the **Objective-C Bridging Header** value:
+
+<Frame>
+  <img src="/images/xcode-objectiveC.png" alt="Xcode Build Settings showing Objective-C Bridging Header field for NotificationService target" />
+</Frame>
+
+Verify your main app target's **Build Phases** includes `NotificationService.appex` after a successful build under **Embed Foundation Extensions**:
+
+<Frame>
+  <img src="/images/xcode-embedd-extensions-debug.png" alt="Xcode Build Phases showing Embed Foundation Extensions with NotificationService.appex" />
+</Frame>
+
+<Note>
+If your project uses React Native Firebase (e.g., for FCM on Android), you may also see `[CP-User] [RNFB] Core Configuration` in Build Phases. This is a CocoaPods build phase and does not affect the Notification Service Extension itself.
+</Note>
+
+## Testing
+
+### Android (FCM)
+1. Send a message containing HTML tags (e.g., `<b>Hello</b> <i>World</i>`) from another user
+2. Verify the push notification displays clean text (`Hello World`) instead of raw HTML
+3. Test across all app states:
+   - Foreground (`messaging().onMessage()` → `displayLocalNotification()`)
+   - Background/Killed (`messaging().setBackgroundMessageHandler()` → `displayLocalNotification()`)
+
+### iOS (APNs)
+1. Test on a physical device — Notification Service Extensions do not run on the iOS Simulator
+2. Send a message containing HTML tags from another user
+3. Verify the push notification displays clean text in both background and killed states
+4. Confirm that the chat UI still renders the rich text with formatting intact in both platforms
+
+<AccordionGroup>
+<Accordion title="Troubleshooting">
+- **Bridging Header Error**: If you get a build error related to the Objective-C Bridging Header in the NotificationService target, go to the extension's **Build Settings → Objective-C Bridging Header** and clear the value.
+- **Build Cycle Error**: If you see a build cycle error after adding the extension (common in projects using CocoaPods), go to your main app target's **Build Phases**, find **Embed Foundation Extensions**, and ensure `NotificationService.appex` is listed correctly.
+- **Extension Not Working on Simulator**: Notification Service Extensions do not run on the iOS Simulator. Test on a physical device.
+- **Extension Not Intercepting Notifications**: Ensure your APNs payload includes `"mutable-content": 1`. Without this flag, iOS will not route the notification through your extension.
+- **Build Fails After Adding Extension**: Verify the extension's deployment target matches your main app. Also ensure the extension's bundle ID is a child of the main app's bundle ID (e.g., `com.yourapp.NotificationService`).
+</Accordion>
+
+<Accordion title="Best Practices">
+- **Android**: Route all FCM notification flows through a single handler function to ensure consistent content transformation
+- **iOS**: The Notification Service Extension handles all APNs notifications automatically — no additional routing needed
+- Keep the `stripHtmlTags` function in a shared utility file so it can be reused across your app
+- Handle `serviceExtensionTimeWillExpire()` gracefully on iOS — deliver the best available content if processing takes too long
+- Test on physical iOS devices since Notification Service Extensions do not run on the simulator
+- Consider logging stripped content during development to verify the regex handles all edge cases in your notification payloads
+</Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Send Messages" icon="paper-plane" href="/sdk/react-native/send-message">
+Learn how to send different types of messages
+</Card>
+<Card title="Receive Messages" icon="inbox" href="/sdk/react-native/receive-messages">
+Handle incoming messages in real time
+</Card>
+</CardGroup>

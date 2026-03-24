@@ -1,0 +1,394 @@
+---
+title: "Ringing"
+sidebarTitle: "Ringing"
+---
+
+Implement incoming and outgoing call notifications using the CometChat Chat SDK's calling features. The Calls SDK handles the actual call session, while the Chat SDK manages call signaling.
+
+<Note>
+Ringing functionality requires the CometChat Chat SDK (`@cometchat/chat-sdk-react-native`) for call signaling. The Calls SDK is used for the actual call session.
+</Note>
+
+## Prerequisites
+
+1. CometChat Chat SDK integrated
+2. CometChat Calls SDK integrated
+3. Push notifications configured (for background calls)
+
+## Initiate a Call
+
+Use the Chat SDK to initiate a call:
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+async function initiateCall(receiverId: string, callType: string, receiverType: string) {
+  const call = new CometChat.Call(receiverId, callType, receiverType);
+
+  try {
+    const outgoingCall = await CometChat.initiateCall(call);
+    console.log('Call initiated:', outgoingCall);
+    return outgoingCall;
+  } catch (error) {
+    console.error('Error initiating call:', error);
+    throw error;
+  }
+}
+
+// Initiate a video call to a user
+initiateCall('user_uid', CometChat.CALL_TYPE.VIDEO, CometChat.RECEIVER_TYPE.USER);
+
+// Initiate an audio call to a group
+initiateCall('group_guid', CometChat.CALL_TYPE.AUDIO, CometChat.RECEIVER_TYPE.GROUP);
+```
+
+## Listen for Incoming Calls
+
+Register a call listener to receive incoming calls:
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+const listenerId = 'unique_listener_id';
+
+CometChat.addCallListener(
+  listenerId,
+  new CometChat.CallListener({
+    onIncomingCallReceived: (call) => {
+      console.log('Incoming call:', call);
+      // Show incoming call UI
+    },
+    onOutgoingCallAccepted: (call) => {
+      console.log('Call accepted:', call);
+      // Start the call session
+    },
+    onOutgoingCallRejected: (call) => {
+      console.log('Call rejected:', call);
+      // Handle rejection
+    },
+    onIncomingCallCancelled: (call) => {
+      console.log('Call cancelled:', call);
+      // Dismiss incoming call UI
+    },
+    onCallEndedMessageReceived: (call) => {
+      console.log('Call ended:', call);
+      // Handle call end
+    },
+  })
+);
+
+// Remove listener when done
+CometChat.removeCallListener(listenerId);
+```
+
+## Accept a Call
+
+Accept an incoming call:
+
+```tsx
+async function acceptCall(sessionId: string) {
+  try {
+    const call = await CometChat.acceptCall(sessionId);
+    console.log('Call accepted:', call);
+    // Start the call session with Calls SDK
+    return call;
+  } catch (error) {
+    console.error('Error accepting call:', error);
+    throw error;
+  }
+}
+```
+
+## Reject a Call
+
+Reject an incoming call:
+
+```tsx
+async function rejectCall(sessionId: string, status: string) {
+  try {
+    const call = await CometChat.rejectCall(sessionId, status);
+    console.log('Call rejected:', call);
+    return call;
+  } catch (error) {
+    console.error('Error rejecting call:', error);
+    throw error;
+  }
+}
+
+// Reject with status
+rejectCall(sessionId, CometChat.CALL_STATUS.REJECTED);
+
+// Mark as busy
+rejectCall(sessionId, CometChat.CALL_STATUS.BUSY);
+```
+
+## End a Call
+
+End an ongoing call:
+
+```tsx
+async function endCall(sessionId: string) {
+  try {
+    // End the call session
+    CometChatCalls.leaveSession();
+    
+    // Notify other participants via Chat SDK
+    const call = await CometChat.endCall(sessionId);
+    console.log('Call ended:', call);
+    return call;
+  } catch (error) {
+    console.error('Error ending call:', error);
+    throw error;
+  }
+}
+```
+
+## Start Call Session After Accept
+
+After accepting a call, start the Calls SDK session:
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+async function startCallSession(call: any) {
+  const sessionId = call.getSessionId();
+  
+  try {
+    // Generate token for the session
+    const { token } = await CometChatCalls.generateToken(sessionId);
+    
+    // Create call settings
+    const isAudioOnly = call.getType() === CometChat.CALL_TYPE.AUDIO;
+    
+    const callSettings = new CometChatCalls.CallSettingsBuilder()
+      .setIsAudioOnlyCall(isAudioOnly)
+      .setCallEventListener(new CometChatCalls.OngoingCallListener({
+        onCallEnded: () => {
+          console.log('Call ended');
+        },
+      }))
+      .build();
+    
+    return { token, callSettings };
+  } catch (error) {
+    console.error('Error starting call session:', error);
+    throw error;
+  }
+}
+```
+
+## Complete Example
+
+```tsx
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Modal } from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface Call {
+  getSessionId: () => string;
+  getType: () => string;
+  getSender: () => { getName: () => string };
+}
+
+function CallManager({ children }: { children: React.ReactNode }) {
+  const [incomingCall, setIncomingCall] = useState<Call | null>(null);
+  const [activeCall, setActiveCall] = useState<{
+    token: string;
+    settings: any;
+  } | null>(null);
+
+  useEffect(() => {
+    const listenerId = 'call_manager_listener';
+
+    CometChat.addCallListener(
+      listenerId,
+      new CometChat.CallListener({
+        onIncomingCallReceived: (call: Call) => {
+          setIncomingCall(call);
+        },
+        onOutgoingCallAccepted: async (call: Call) => {
+          await startSession(call);
+        },
+        onOutgoingCallRejected: () => {
+          setActiveCall(null);
+        },
+        onIncomingCallCancelled: () => {
+          setIncomingCall(null);
+        },
+        onCallEndedMessageReceived: () => {
+          setActiveCall(null);
+          setIncomingCall(null);
+        },
+      })
+    );
+
+    return () => {
+      CometChat.removeCallListener(listenerId);
+    };
+  }, []);
+
+  const startSession = async (call: Call) => {
+    try {
+      const sessionId = call.getSessionId();
+      const { token } = await CometChatCalls.generateToken(sessionId);
+      
+      const isAudioOnly = call.getType() === CometChat.CALL_TYPE.AUDIO;
+      
+      const settings = new CometChatCalls.CallSettingsBuilder()
+        .setIsAudioOnlyCall(isAudioOnly)
+        .setCallEventListener(new CometChatCalls.OngoingCallListener({
+          onCallEnded: () => {
+            setActiveCall(null);
+          },
+        }))
+        .build();
+
+      setActiveCall({ token, settings });
+      setIncomingCall(null);
+    } catch (error) {
+      console.error('Error starting session:', error);
+    }
+  };
+
+  const handleAccept = async () => {
+    if (!incomingCall) return;
+    
+    try {
+      const call = await CometChat.acceptCall(incomingCall.getSessionId());
+      await startSession(call);
+    } catch (error) {
+      console.error('Error accepting call:', error);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!incomingCall) return;
+    
+    try {
+      await CometChat.rejectCall(
+        incomingCall.getSessionId(),
+        CometChat.CALL_STATUS.REJECTED
+      );
+      setIncomingCall(null);
+    } catch (error) {
+      console.error('Error rejecting call:', error);
+    }
+  };
+
+  const handleEndCall = async () => {
+    if (!activeCall) return;
+    
+    CometChatCalls.leaveSession();
+    setActiveCall(null);
+  };
+
+  return (
+    <View style={styles.container}>
+      {children}
+
+      {/* Incoming Call Modal */}
+      <Modal visible={!!incomingCall} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.incomingCallCard}>
+            <Text style={styles.callerName}>
+              {incomingCall?.getSender().getName()}
+            </Text>
+            <Text style={styles.callType}>
+              Incoming {incomingCall?.getType()} call
+            </Text>
+            <View style={styles.callActions}>
+              <TouchableOpacity
+                style={[styles.callButton, styles.rejectButton]}
+                onPress={handleReject}
+              >
+                <Text style={styles.buttonText}>Decline</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.callButton, styles.acceptButton]}
+                onPress={handleAccept}
+              >
+                <Text style={styles.buttonText}>Accept</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Active Call */}
+      {activeCall && (
+        <Modal visible={true} animationType="slide">
+          <View style={styles.callContainer}>
+            <CometChatCalls.Component
+              callToken={activeCall.token}
+              callSettings={activeCall.settings}
+            />
+          </View>
+        </Modal>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  incomingCallCard: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    width: '80%',
+  },
+  callerName: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  callType: {
+    color: '#999',
+    fontSize: 16,
+    marginBottom: 30,
+  },
+  callActions: {
+    flexDirection: 'row',
+    gap: 20,
+  },
+  callButton: {
+    paddingHorizontal: 30,
+    paddingVertical: 15,
+    borderRadius: 30,
+  },
+  rejectButton: {
+    backgroundColor: '#ff4444',
+  },
+  acceptButton: {
+    backgroundColor: '#22c55e',
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  callContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+});
+
+export default CallManager;
+```
+
+## Related Documentation
+
+- [VoIP Calling](/calls/react-native/voip-calling) - Push notifications for calls
+- [Join Session](/calls/react-native/join-session) - Start call sessions
+- [Background Handling](/calls/react-native/background-handling) - Handle background calls

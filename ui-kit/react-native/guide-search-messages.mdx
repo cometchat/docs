@@ -1,0 +1,310 @@
+---
+title: "Search Messages"
+sidebarTitle: "Search Messages"
+description: "Add full-text message search across conversations with result routing in CometChat React Native UI Kit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react-native` |
+| Key components | `CometChatSearch`, `CometChatMessageList` |
+| Init | `CometChatUIKit.init(UIKitSettings)` then `CometChatUIKit.login("UID")` |
+| Purpose | Full-text message search across conversations with result routing and navigation |
+| Sample app | [GitHub](https://github.com/cometchat/cometchat-uikit-react-native/tree/v5/examples/SampleApp) |
+| Related | [Message List](/ui-kit/react-native/message-list) · [All Guides](/ui-kit/react-native/guide-overview) |
+
+</Accordion>
+
+Search Messages lets users locate specific messages across conversations and groups using keyword search, then navigate directly to the result.
+
+Before starting, complete the [Getting Started](/ui-kit/react-native/react-native-cli-integration) guide.
+
+---
+
+## Components
+
+| Component / Class | Role |
+|:---|:---|
+| `CometChatSearch` | Main search interface with conversation and message results |
+| `CometChatMessageList` | Displays messages with search highlighting via `searchKeyword` prop |
+
+---
+
+## Integration Steps
+
+### 1. Search Messages Screen
+
+Create a dedicated search screen using `CometChatSearch` component.
+
+```tsx
+import React, { useCallback } from 'react';
+import { View, StyleSheet, BackHandler, Platform } from 'react-native';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import {
+  CometChatSearch,
+  useTheme,
+} from '@cometchat/chat-uikit-react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+const SearchMessagesScreen = () => {
+  const route = useRoute();
+  const navigation = useNavigation();
+  const theme = useTheme();
+  const { user, group } = route.params || {};
+
+  // Handle back button
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  // Handle conversation click from search results
+  const handleConversationClicked = useCallback(
+    (conversation: CometChat.Conversation, searchKeyword?: string) => {
+      const conversationWith = conversation.getConversationWith();
+
+      if (conversationWith instanceof CometChat.User) {
+        navigation.navigate('Messages', {
+          user: conversationWith,
+          searchKeyword,
+        });
+      } else if (conversationWith instanceof CometChat.Group) {
+        navigation.navigate('Messages', {
+          group: conversationWith,
+          searchKeyword,
+        });
+      }
+    },
+    [navigation]
+  );
+
+  // Handle message click from search results
+  const handleMessageClicked = useCallback(
+    async (message: CometChat.BaseMessage, searchKeyword?: string) => {
+      const messageReceiver = message.getReceiver();
+      const parentMessageId = message.getParentMessageId();
+
+      let targetUser: CometChat.User | undefined;
+      let targetGroup: CometChat.Group | undefined;
+
+      if (messageReceiver instanceof CometChat.User) {
+        const sender = message.getSender();
+        const loggedInUser = await CometChat.getLoggedinUser();
+
+        if (sender.getUid() === loggedInUser?.getUid()) {
+          targetUser = messageReceiver;
+        } else {
+          targetUser = sender;
+        }
+      } else if (messageReceiver instanceof CometChat.Group) {
+        targetGroup = messageReceiver;
+      }
+
+      // If message is in a thread, navigate to thread view
+      if (parentMessageId) {
+        try {
+          const parentMessage = await CometChat.getMessageDetails(parentMessageId);
+          if (parentMessage) {
+            navigation.navigate('ThreadView', {
+              message: parentMessage,
+              user: targetUser,
+              group: targetGroup,
+              highlightMessageId: String(message.getId()),
+            });
+            return;
+          }
+        } catch (e) {
+          console.error('Failed to fetch parent message', e);
+        }
+      }
+
+      // Navigate to messages screen with highlight
+      if (targetUser) {
+        navigation.navigate('Messages', {
+          user: targetUser,
+          messageId: String(message.getId()),
+          searchKeyword,
+        });
+      } else if (targetGroup) {
+        navigation.navigate('Messages', {
+          group: targetGroup,
+          messageId: String(message.getId()),
+          searchKeyword,
+        });
+      }
+    },
+    [navigation]
+  );
+
+  // Determine placeholder text
+  let searchPlaceholder = 'Search';
+  if (user?.getName()) {
+    searchPlaceholder = `Search in ${user.getName()}`;
+  } else if (group?.getName()) {
+    searchPlaceholder = `Search in ${group.getName()}`;
+  }
+
+  return (
+    <View style={styles.container}>
+      <CometChatSearch
+        onBack={handleBack}
+        hideBackButton={false}
+        onConversationClicked={handleConversationClicked}
+        onMessageClicked={handleMessageClicked}
+        uid={user?.getUid()}
+        guid={group?.getGuid()}
+        searchPlaceholder={searchPlaceholder}
+        messagesRequestBuilder={
+          new CometChat.MessagesRequestBuilder().setLimit(30)
+        }
+        conversationsRequestBuilder={
+          new CometChat.ConversationsRequestBuilder().setLimit(30)
+        }
+      />
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
+
+export default SearchMessagesScreen;
+```
+
+---
+
+### 2. Trigger Search from Messages Screen
+
+Add a search button to your messages header that navigates to the search screen.
+
+```tsx
+import React from 'react';
+import { View, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import {
+  CometChatMessageHeader,
+  CometChatMessageList,
+  CometChatMessageComposer,
+  Icon,
+} from '@cometchat/chat-uikit-react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+interface MessagesScreenProps {
+  user?: CometChat.User;
+  group?: CometChat.Group;
+  messageId?: string;
+  searchKeyword?: string;
+}
+
+const MessagesScreen: React.FC<MessagesScreenProps> = ({
+  user,
+  group,
+  messageId,
+  searchKeyword,
+}) => {
+  const navigation = useNavigation();
+
+  const handleSearchPress = () => {
+    navigation.navigate('SearchMessages', { user, group });
+  };
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatMessageHeader
+        user={user}
+        group={group}
+        AppBarOptions={() => (
+          <TouchableOpacity onPress={handleSearchPress}>
+            {/* Search icon */}
+          </TouchableOpacity>
+        )}
+      />
+      
+      <CometChatMessageList
+        user={user}
+        group={group}
+        goToMessageId={messageId}
+        searchKeyword={searchKeyword}
+      />
+      
+      <CometChatMessageComposer user={user} group={group} />
+    </View>
+  );
+};
+```
+
+---
+
+### 3. Highlight Search Results
+
+When navigating from search results, pass `searchKeyword` to highlight matching text in messages.
+
+```tsx
+<CometChatMessageList
+  user={user}
+  group={group}
+  goToMessageId={messageId}      // Scroll to specific message
+  searchKeyword={searchKeyword}  // Highlight matching text
+/>
+```
+
+---
+
+### 4. Navigation Setup
+
+Add the search screen to your navigation stack.
+
+```tsx
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import MessagesScreen from './screens/MessagesScreen';
+import SearchMessagesScreen from './screens/SearchMessagesScreen';
+import ThreadView from './screens/ThreadView';
+
+const Stack = createNativeStackNavigator();
+
+const AppNavigator = () => {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Messages" component={MessagesScreen} />
+      <Stack.Screen name="SearchMessages" component={SearchMessagesScreen} />
+      <Stack.Screen name="ThreadView" component={ThreadView} />
+    </Stack.Navigator>
+  );
+};
+```
+
+---
+
+## Feature Matrix
+
+| Feature | Component / Prop |
+|:---|:---|
+| Search interface | `CometChatSearch` |
+| Conversation results | `onConversationClicked` callback |
+| Message results | `onMessageClicked` callback |
+| Scoped search | `uid` or `guid` props to limit search scope |
+| Keyword highlighting | `searchKeyword` prop on `CometChatMessageList` |
+| Navigate to message | `goToMessageId` prop on `CometChatMessageList` |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Message List" href="/ui-kit/react-native/message-list">
+    Render real-time message threads.
+  </Card>
+  <Card title="Threaded Messages" href="/ui-kit/react-native/guide-threaded-messages">
+    Implement threaded message replies.
+  </Card>
+  <Card title="All Guides" href="/ui-kit/react-native/guide-overview">
+    Browse all feature and formatter guides.
+  </Card>
+  <Card title="Sample App" href="https://github.com/cometchat/cometchat-uikit-react-native/tree/v5/examples/SampleApp">
+    Full working sample application on GitHub.
+  </Card>
+</CardGroup>

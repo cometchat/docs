@@ -1,0 +1,282 @@
+---
+title: "Ringing"
+sidebarTitle: "Ringing"
+---
+
+Implement incoming and outgoing call notifications by integrating the Calls SDK with the CometChat Chat SDK for call signaling.
+
+<Note>
+The Calls SDK handles the actual call session. For call signaling (ringing, accept, reject), use the CometChat Chat SDK's calling features.
+</Note>
+
+## Overview
+
+Call flow with ringing:
+
+1. **Initiator** sends a call request via Chat SDK
+2. **Receiver** gets notified of incoming call
+3. **Receiver** accepts or rejects the call
+4. **Both parties** join the call session using Calls SDK
+
+## Prerequisites
+
+Install both SDKs:
+
+```bash
+npm install @cometchat/chat-sdk-javascript @cometchat/calls-sdk-javascript
+```
+
+## Initialize Both SDKs
+
+```javascript
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+const appId = "APP_ID";
+const region = "REGION";
+
+// Initialize Chat SDK
+await CometChat.init(appId, new CometChat.AppSettingsBuilder()
+  .subscribePresenceForAllUsers()
+  .setRegion(region)
+  .build()
+);
+
+// Initialize Calls SDK
+await CometChatCalls.init({ appId, region });
+
+// Login to both
+await CometChat.login(uid, apiKey);
+await CometChatCalls.login(uid, apiKey);
+```
+
+## Initiate a Call
+
+Start an outgoing call:
+
+```javascript
+async function initiateCall(receiverUid, callType = "video") {
+  const call = new CometChat.Call(
+    receiverUid,
+    callType === "video" ? CometChat.CALL_TYPE.VIDEO : CometChat.CALL_TYPE.AUDIO,
+    CometChat.RECEIVER_TYPE.USER
+  );
+
+  try {
+    const outgoingCall = await CometChat.initiateCall(call);
+    console.log("Call initiated:", outgoingCall);
+    
+    // Show outgoing call UI
+    showOutgoingCallScreen(outgoingCall);
+    
+    return outgoingCall;
+  } catch (error) {
+    console.error("Call initiation failed:", error);
+    throw error;
+  }
+}
+```
+
+## Listen for Incoming Calls
+
+Register a call listener to receive incoming calls:
+
+```javascript
+const callListenerId = "CALL_LISTENER_ID";
+
+CometChat.addCallListener(
+  callListenerId,
+  new CometChat.CallListener({
+    onIncomingCallReceived: (incomingCall) => {
+      console.log("Incoming call:", incomingCall);
+      showIncomingCallScreen(incomingCall);
+    },
+    onOutgoingCallAccepted: (acceptedCall) => {
+      console.log("Call accepted:", acceptedCall);
+      startCallSession(acceptedCall.getSessionId());
+    },
+    onOutgoingCallRejected: (rejectedCall) => {
+      console.log("Call rejected:", rejectedCall);
+      hideOutgoingCallScreen();
+    },
+    onIncomingCallCancelled: (cancelledCall) => {
+      console.log("Call cancelled:", cancelledCall);
+      hideIncomingCallScreen();
+    },
+    onCallEndedMessageReceived: (endedCall) => {
+      console.log("Call ended:", endedCall);
+    },
+  })
+);
+```
+
+## Accept an Incoming Call
+
+```javascript
+async function acceptCall(incomingCall) {
+  try {
+    const acceptedCall = await CometChat.acceptCall(incomingCall.getSessionId());
+    console.log("Call accepted:", acceptedCall);
+    
+    // Start the call session
+    startCallSession(acceptedCall.getSessionId());
+  } catch (error) {
+    console.error("Accept call failed:", error);
+  }
+}
+```
+
+## Reject an Incoming Call
+
+```javascript
+async function rejectCall(incomingCall, reason = CometChat.CALL_STATUS.REJECTED) {
+  try {
+    await CometChat.rejectCall(incomingCall.getSessionId(), reason);
+    console.log("Call rejected");
+    hideIncomingCallScreen();
+  } catch (error) {
+    console.error("Reject call failed:", error);
+  }
+}
+```
+
+## Cancel an Outgoing Call
+
+```javascript
+async function cancelCall(outgoingCall) {
+  try {
+    await CometChat.rejectCall(outgoingCall.getSessionId(), CometChat.CALL_STATUS.CANCELLED);
+    console.log("Call cancelled");
+    hideOutgoingCallScreen();
+  } catch (error) {
+    console.error("Cancel call failed:", error);
+  }
+}
+```
+
+## Start the Call Session
+
+Once the call is accepted, join the session using the Calls SDK:
+
+```javascript
+async function startCallSession(sessionId) {
+  const container = document.getElementById("call-container");
+  
+  try {
+    // Generate token
+    const tokenResult = await CometChatCalls.generateToken(sessionId);
+    
+    // Join session
+    await CometChatCalls.joinSession(
+      tokenResult.token,
+      {
+        sessionType: "VIDEO",
+        layout: "TILE",
+      },
+      container
+    );
+    
+    // Listen for session end
+    CometChatCalls.addEventListener("onSessionLeft", () => {
+      endCall(sessionId);
+    });
+  } catch (error) {
+    console.error("Failed to start call session:", error);
+  }
+}
+```
+
+## End the Call
+
+```javascript
+async function endCall(sessionId) {
+  try {
+    // Leave the Calls SDK session
+    CometChatCalls.leaveSession();
+    
+    // End the call in Chat SDK
+    await CometChat.endCall(sessionId);
+    
+    console.log("Call ended");
+  } catch (error) {
+    console.error("End call failed:", error);
+  }
+}
+```
+
+## Incoming Call UI Example
+
+```javascript
+function showIncomingCallScreen(call) {
+  const caller = call.getCallInitiator();
+  
+  const html = `
+    <div id="incoming-call" class="incoming-call-overlay">
+      <div class="incoming-call-card">
+        <img src="${caller.getAvatar()}" alt="${caller.getName()}" />
+        <h3>${caller.getName()}</h3>
+        <p>Incoming ${call.getType()} call...</p>
+        <div class="call-actions">
+          <button onclick="rejectCall(currentCall)" class="reject-btn">Decline</button>
+          <button onclick="acceptCall(currentCall)" class="accept-btn">Accept</button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML("beforeend", html);
+  window.currentCall = call;
+  
+  // Play ringtone
+  playRingtone();
+}
+
+function hideIncomingCallScreen() {
+  document.getElementById("incoming-call")?.remove();
+  stopRingtone();
+}
+```
+
+## Outgoing Call UI Example
+
+```javascript
+function showOutgoingCallScreen(call) {
+  const receiver = call.getCallReceiver();
+  
+  const html = `
+    <div id="outgoing-call" class="outgoing-call-overlay">
+      <div class="outgoing-call-card">
+        <img src="${receiver.getAvatar()}" alt="${receiver.getName()}" />
+        <h3>${receiver.getName()}</h3>
+        <p>Calling...</p>
+        <button onclick="cancelCall(currentCall)" class="cancel-btn">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML("beforeend", html);
+  window.currentCall = call;
+  
+  // Play ringback tone
+  playRingbackTone();
+}
+
+function hideOutgoingCallScreen() {
+  document.getElementById("outgoing-call")?.remove();
+  stopRingbackTone();
+}
+```
+
+## Cleanup
+
+Remove the call listener when no longer needed:
+
+```javascript
+CometChat.removeCallListener(callListenerId);
+```
+
+## Related Documentation
+
+- [CometChat Chat SDK - Calling](/sdk/javascript/calling-overview)
+- [Join Session](/calls/javascript/join-session)
+

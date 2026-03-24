@@ -1,0 +1,485 @@
+---
+title: "In-Call Chat"
+sidebarTitle: "In-Call Chat"
+---
+
+Enable messaging during calls by integrating the CometChat Chat SDK. Users can send and receive text messages while on a call.
+
+<Note>
+In-call chat requires the CometChat Chat SDK (`@cometchat/chat-sdk-react-native`) for messaging functionality.
+</Note>
+
+## Prerequisites
+
+1. CometChat Chat SDK integrated
+2. User authenticated with the Chat SDK
+3. Active call session
+
+## Update Chat Button Badge
+
+Update the unread message count on the chat button:
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+// Set unread count
+CometChatCalls.setChatButtonUnreadCount(5);
+
+// Clear unread count
+CometChatCalls.setChatButtonUnreadCount(0);
+```
+
+## Listen for Chat Button Click
+
+Handle when the user clicks the chat button:
+
+```tsx
+CometChatCalls.addEventListener('onChatButtonClicked', () => {
+  console.log('Chat button clicked');
+  // Open chat interface
+});
+```
+
+## Send Messages
+
+Use the Chat SDK to send messages during a call:
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+async function sendMessage(receiverId: string, text: string, receiverType: string) {
+  const message = new CometChat.TextMessage(
+    receiverId,
+    text,
+    receiverType
+  );
+
+  try {
+    const sentMessage = await CometChat.sendMessage(message);
+    console.log('Message sent:', sentMessage);
+    return sentMessage;
+  } catch (error) {
+    console.error('Error sending message:', error);
+    throw error;
+  }
+}
+
+// Send to user
+sendMessage('user_uid', 'Hello!', CometChat.RECEIVER_TYPE.USER);
+
+// Send to group
+sendMessage('group_guid', 'Hello everyone!', CometChat.RECEIVER_TYPE.GROUP);
+```
+
+## Receive Messages
+
+Listen for incoming messages:
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+const listenerId = 'in_call_chat_listener';
+
+CometChat.addMessageListener(
+  listenerId,
+  new CometChat.MessageListener({
+    onTextMessageReceived: (message) => {
+      console.log('Text message received:', message);
+      // Update UI and badge count
+    },
+    onMediaMessageReceived: (message) => {
+      console.log('Media message received:', message);
+    },
+  })
+);
+
+// Remove listener when done
+CometChat.removeMessageListener(listenerId);
+```
+
+## Complete Example
+
+```tsx
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  FlatList,
+  TextInput,
+  TouchableOpacity,
+  Text,
+  StyleSheet,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface Message {
+  id: string;
+  text: string;
+  sender: {
+    uid: string;
+    name: string;
+  };
+  sentAt: number;
+  isOwn: boolean;
+}
+
+interface InCallChatProps {
+  receiverId: string;
+  receiverType: string;
+}
+
+function InCallChat({ receiverId, receiverType }: InCallChatProps) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [unreadCount, setUnreadCount] = useState(0);
+  const flatListRef = useRef<FlatList>(null);
+  const currentUserId = useRef<string>('');
+
+  useEffect(() => {
+    // Get current user
+    const user = CometChat.getLoggedinUser();
+    if (user) {
+      currentUserId.current = user.getUid();
+    }
+
+    // Listen for chat button click
+    const unsubscribeChatButton = CometChatCalls.addEventListener(
+      'onChatButtonClicked',
+      () => {
+        setIsVisible(true);
+        setUnreadCount(0);
+        CometChatCalls.setChatButtonUnreadCount(0);
+      }
+    );
+
+    // Listen for messages
+    const listenerId = 'in_call_chat';
+    CometChat.addMessageListener(
+      listenerId,
+      new CometChat.MessageListener({
+        onTextMessageReceived: (message: any) => {
+          const newMessage: Message = {
+            id: message.getId().toString(),
+            text: message.getText(),
+            sender: {
+              uid: message.getSender().getUid(),
+              name: message.getSender().getName(),
+            },
+            sentAt: message.getSentAt(),
+            isOwn: message.getSender().getUid() === currentUserId.current,
+          };
+          
+          setMessages((prev) => [...prev, newMessage]);
+          
+          if (!isVisible) {
+            setUnreadCount((prev) => {
+              const newCount = prev + 1;
+              CometChatCalls.setChatButtonUnreadCount(newCount);
+              return newCount;
+            });
+          }
+        },
+      })
+    );
+
+    // Fetch previous messages
+    fetchMessages();
+
+    return () => {
+      unsubscribeChatButton();
+      CometChat.removeMessageListener(listenerId);
+    };
+  }, []);
+
+  const fetchMessages = async () => {
+    try {
+      const messagesRequest = new CometChat.MessagesRequestBuilder()
+        .setUID(receiverId)
+        .setLimit(50)
+        .build();
+
+      const fetchedMessages = await messagesRequest.fetchPrevious();
+      
+      const formattedMessages: Message[] = fetchedMessages
+        .filter((msg: any) => msg.getType() === 'text')
+        .map((msg: any) => ({
+          id: msg.getId().toString(),
+          text: msg.getText(),
+          sender: {
+            uid: msg.getSender().getUid(),
+            name: msg.getSender().getName(),
+          },
+          sentAt: msg.getSentAt(),
+          isOwn: msg.getSender().getUid() === currentUserId.current,
+        }));
+
+      setMessages(formattedMessages);
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!inputText.trim()) return;
+
+    const text = inputText.trim();
+    setInputText('');
+
+    try {
+      const message = new CometChat.TextMessage(
+        receiverId,
+        text,
+        receiverType
+      );
+
+      const sentMessage: any = await CometChat.sendMessage(message);
+      
+      const newMessage: Message = {
+        id: sentMessage.getId().toString(),
+        text: sentMessage.getText(),
+        sender: {
+          uid: sentMessage.getSender().getUid(),
+          name: sentMessage.getSender().getName(),
+        },
+        sentAt: sentMessage.getSentAt(),
+        isOwn: true,
+      };
+
+      setMessages((prev) => [...prev, newMessage]);
+      
+      // Scroll to bottom
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd();
+      }, 100);
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
+  };
+
+  const renderMessage = ({ item }: { item: Message }) => (
+    <View
+      style={[
+        styles.messageContainer,
+        item.isOwn ? styles.ownMessage : styles.otherMessage,
+      ]}
+    >
+      {!item.isOwn && (
+        <Text style={styles.senderName}>{item.sender.name}</Text>
+      )}
+      <Text style={styles.messageText}>{item.text}</Text>
+      <Text style={styles.messageTime}>
+        {new Date(item.sentAt * 1000).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}
+      </Text>
+    </View>
+  );
+
+  return (
+    <>
+      {/* Chat toggle button with badge */}
+      <TouchableOpacity
+        style={styles.chatButton}
+        onPress={() => {
+          setIsVisible(true);
+          setUnreadCount(0);
+          CometChatCalls.setChatButtonUnreadCount(0);
+        }}
+      >
+        <Text style={styles.chatButtonText}>💬</Text>
+        {unreadCount > 0 && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </Text>
+          </View>
+        )}
+      </TouchableOpacity>
+
+      {/* Chat modal */}
+      <Modal
+        visible={isVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.chatContainer}>
+            <View style={styles.header}>
+              <Text style={styles.headerTitle}>Chat</Text>
+              <TouchableOpacity onPress={() => setIsVisible(false)}>
+                <Text style={styles.closeButton}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              keyExtractor={(item) => item.id}
+              renderItem={renderMessage}
+              contentContainerStyle={styles.messagesList}
+              onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+            />
+
+            <View style={styles.inputContainer}>
+              <TextInput
+                style={styles.input}
+                value={inputText}
+                onChangeText={setInputText}
+                placeholder="Type a message..."
+                placeholderTextColor="#666"
+                multiline
+              />
+              <TouchableOpacity
+                style={styles.sendButton}
+                onPress={sendMessage}
+                disabled={!inputText.trim()}
+              >
+                <Text style={styles.sendButtonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  chatButton: {
+    position: 'absolute',
+    top: 60,
+    left: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatButtonText: {
+    fontSize: 24,
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#ef4444',
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  chatContainer: {
+    backgroundColor: '#1a1a1a',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    height: '60%',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  headerTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  closeButton: {
+    color: '#fff',
+    fontSize: 20,
+    padding: 4,
+  },
+  messagesList: {
+    padding: 16,
+  },
+  messageContainer: {
+    maxWidth: '80%',
+    padding: 12,
+    borderRadius: 16,
+    marginBottom: 8,
+  },
+  ownMessage: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#6851D6',
+  },
+  otherMessage: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#333',
+  },
+  senderName: {
+    color: '#999',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  messageText: {
+    color: '#fff',
+    fontSize: 16,
+  },
+  messageTime: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 10,
+    marginTop: 4,
+    alignSelf: 'flex-end',
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+    alignItems: 'flex-end',
+  },
+  input: {
+    flex: 1,
+    backgroundColor: '#333',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    color: '#fff',
+    maxHeight: 100,
+  },
+  sendButton: {
+    marginLeft: 8,
+    backgroundColor: '#6851D6',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  sendButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+});
+
+export default InCallChat;
+```
+
+## Related Documentation
+
+- [Events](/calls/react-native/events) - Chat button events
+- [Custom Control Panel](/calls/react-native/custom-control-panel) - Build custom controls
+- [Ringing](/calls/react-native/ringing) - Call signaling with Chat SDK

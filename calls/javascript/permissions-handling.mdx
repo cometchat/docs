@@ -1,0 +1,319 @@
+---
+title: "Permissions Handling"
+sidebarTitle: "Permissions Handling"
+---
+
+Handle camera and microphone permissions gracefully to provide a good user experience when joining calls.
+
+## Permission Requirements
+
+The Calls SDK requires:
+- **Microphone**: Required for audio calls
+- **Camera**: Required for video calls (optional for audio-only)
+
+## Check Permissions Before Joining
+
+Check if permissions are granted before attempting to join a call:
+
+```javascript
+async function checkMediaPermissions() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      video: true, 
+      audio: true 
+    });
+    
+    // Stop the tracks immediately - we just needed to check permissions
+    stream.getTracks().forEach(track => track.stop());
+    
+    return { video: true, audio: true };
+  } catch (error) {
+    if (error.name === "NotAllowedError") {
+      return { video: false, audio: false, denied: true };
+    }
+    if (error.name === "NotFoundError") {
+      return { video: false, audio: false, notFound: true };
+    }
+    throw error;
+  }
+}
+```
+
+## Query Permission Status
+
+Use the Permissions API to check status without prompting:
+
+```javascript
+async function getPermissionStatus() {
+  const permissions = {};
+  
+  try {
+    const camera = await navigator.permissions.query({ name: "camera" });
+    permissions.camera = camera.state; // "granted", "denied", or "prompt"
+    
+    const microphone = await navigator.permissions.query({ name: "microphone" });
+    permissions.microphone = microphone.state;
+  } catch (error) {
+    // Permissions API not supported
+    permissions.supported = false;
+  }
+  
+  return permissions;
+}
+
+// Usage
+const status = await getPermissionStatus();
+if (status.camera === "denied" || status.microphone === "denied") {
+  showPermissionDeniedMessage();
+}
+```
+
+## Handle Permission Denial
+
+Show helpful messages when permissions are denied:
+
+```javascript
+async function joinCallWithPermissionCheck(sessionId, container) {
+  const permissions = await checkMediaPermissions();
+  
+  if (permissions.denied) {
+    showError(
+      "Camera and microphone access denied. " +
+      "Please enable permissions in your browser settings and refresh the page."
+    );
+    return;
+  }
+  
+  if (permissions.notFound) {
+    showError(
+      "No camera or microphone found. " +
+      "Please connect a device and try again."
+    );
+    return;
+  }
+  
+  // Permissions granted, proceed with joining
+  const tokenResult = await CometChatCalls.generateToken(sessionId);
+  await CometChatCalls.joinSession(tokenResult.token, { sessionType: "VIDEO" }, container);
+}
+```
+
+## Permission Request UI
+
+Create a pre-call permission check screen:
+
+```javascript
+function PermissionCheck({ onPermissionsGranted, onPermissionsDenied }) {
+  const [status, setStatus] = useState("checking");
+  
+  useEffect(() => {
+    checkPermissions();
+  }, []);
+  
+  async function checkPermissions() {
+    const result = await checkMediaPermissions();
+    
+    if (result.video && result.audio) {
+      setStatus("granted");
+      onPermissionsGranted();
+    } else if (result.denied) {
+      setStatus("denied");
+      onPermissionsDenied();
+    } else {
+      setStatus("prompt");
+    }
+  }
+  
+  async function requestPermissions() {
+    setStatus("requesting");
+    const result = await checkMediaPermissions();
+    
+    if (result.video && result.audio) {
+      setStatus("granted");
+      onPermissionsGranted();
+    } else {
+      setStatus("denied");
+      onPermissionsDenied();
+    }
+  }
+  
+  if (status === "checking") {
+    return <div>Checking permissions...</div>;
+  }
+  
+  if (status === "prompt") {
+    return (
+      <div>
+        <p>We need access to your camera and microphone for the call.</p>
+        <button onClick={requestPermissions}>Allow Access</button>
+      </div>
+    );
+  }
+  
+  if (status === "denied") {
+    return (
+      <div>
+        <p>Camera and microphone access was denied.</p>
+        <p>To join the call, please:</p>
+        <ol>
+          <li>Click the camera icon in your browser's address bar</li>
+          <li>Select "Allow" for camera and microphone</li>
+          <li>Refresh this page</li>
+        </ol>
+      </div>
+    );
+  }
+  
+  return null;
+}
+```
+
+## Listen for Permission Changes
+
+Monitor permission changes in real-time:
+
+```javascript
+async function watchPermissions(onChange) {
+  try {
+    const camera = await navigator.permissions.query({ name: "camera" });
+    const microphone = await navigator.permissions.query({ name: "microphone" });
+    
+    camera.addEventListener("change", () => {
+      onChange({ camera: camera.state, microphone: microphone.state });
+    });
+    
+    microphone.addEventListener("change", () => {
+      onChange({ camera: camera.state, microphone: microphone.state });
+    });
+  } catch (error) {
+    console.log("Permission watching not supported");
+  }
+}
+
+// Usage
+watchPermissions((status) => {
+  if (status.camera === "denied" || status.microphone === "denied") {
+    // Handle permission revocation during call
+    showWarning("Permissions were revoked. Some features may not work.");
+  }
+});
+```
+
+## HTTPS Requirement
+
+Camera and microphone access requires a secure context:
+
+```javascript
+function isSecureContext() {
+  // Localhost is considered secure for development
+  if (window.location.hostname === "localhost" || 
+      window.location.hostname === "127.0.0.1") {
+    return true;
+  }
+  
+  return window.location.protocol === "https:";
+}
+
+if (!isSecureContext()) {
+  showError("Video calls require HTTPS. Please access this page via HTTPS.");
+}
+```
+
+## Browser-Specific Instructions
+
+Provide browser-specific help for enabling permissions:
+
+```javascript
+function getBrowserPermissionInstructions() {
+  const ua = navigator.userAgent;
+  
+  if (ua.includes("Chrome")) {
+    return {
+      browser: "Chrome",
+      steps: [
+        "Click the lock/camera icon in the address bar",
+        "Set Camera and Microphone to 'Allow'",
+        "Refresh the page"
+      ]
+    };
+  }
+  
+  if (ua.includes("Firefox")) {
+    return {
+      browser: "Firefox",
+      steps: [
+        "Click the permissions icon (camera/lock) in the address bar",
+        "Remove the block for camera and microphone",
+        "Refresh the page"
+      ]
+    };
+  }
+  
+  if (ua.includes("Safari")) {
+    return {
+      browser: "Safari",
+      steps: [
+        "Go to Safari > Settings > Websites",
+        "Select Camera and Microphone",
+        "Set this website to 'Allow'",
+        "Refresh the page"
+      ]
+    };
+  }
+  
+  return {
+    browser: "your browser",
+    steps: [
+      "Check your browser settings for camera and microphone permissions",
+      "Allow access for this website",
+      "Refresh the page"
+    ]
+  };
+}
+```
+
+## Audio-Only Fallback
+
+If camera permission is denied but microphone is available, offer audio-only mode:
+
+```javascript
+async function joinWithFallback(sessionId, container) {
+  let hasVideo = false;
+  let hasAudio = false;
+  
+  // Check audio
+  try {
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioStream.getTracks().forEach(track => track.stop());
+    hasAudio = true;
+  } catch (e) {
+    console.log("No audio permission");
+  }
+  
+  // Check video
+  try {
+    const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    videoStream.getTracks().forEach(track => track.stop());
+    hasVideo = true;
+  } catch (e) {
+    console.log("No video permission");
+  }
+  
+  if (!hasAudio) {
+    showError("Microphone access is required to join the call.");
+    return;
+  }
+  
+  const tokenResult = await CometChatCalls.generateToken(sessionId);
+  
+  await CometChatCalls.joinSession(tokenResult.token, {
+    sessionType: hasVideo ? "VIDEO" : "VOICE",
+    startVideoPaused: !hasVideo,
+  }, container);
+  
+  if (!hasVideo) {
+    showInfo("Joined in audio-only mode. Enable camera permission for video.");
+  }
+}
+```
+

@@ -1,0 +1,292 @@
+---
+title: "Background Handling"
+sidebarTitle: "Background Handling"
+---
+
+Keep calls active when your app goes to the background. This requires platform-specific configuration to maintain audio/video streams and handle system interruptions.
+
+## iOS Configuration
+
+### Enable Background Modes
+
+1. Open your project in Xcode
+2. Select your target and go to **Signing & Capabilities**
+3. Add **Background Modes** capability
+4. Enable:
+   - **Audio, AirPlay, and Picture in Picture**
+   - **Voice over IP** (for VoIP push notifications)
+
+### Configure Audio Session
+
+The SDK automatically configures the audio session, but you can customize it in your native code:
+
+```swift
+// ios/AppDelegate.swift
+import AVFoundation
+
+func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+    // Configure audio session for calls
+    do {
+        try AVAudioSession.sharedInstance().setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+        )
+        try AVAudioSession.sharedInstance().setActive(true)
+    } catch {
+        print("Failed to configure audio session: \(error)")
+    }
+    
+    return true
+}
+```
+
+## Android Configuration
+
+### Add Permissions
+
+Add to your `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+```
+
+### Configure Foreground Service
+
+For Android 10+, calls require a foreground service to continue in the background:
+
+```xml
+<service
+    android:name="com.cometchat.calls.CallForegroundService"
+    android:foregroundServiceType="phoneCall"
+    android:exported="false" />
+```
+
+### Keep Screen Awake
+
+The SDK automatically manages wake locks during calls. No additional configuration is needed.
+
+## Handle App State Changes
+
+Monitor app state to handle background transitions:
+
+```tsx
+import { useEffect, useRef } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+function useBackgroundHandling() {
+  const appState = useRef(AppState.currentState);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      'change',
+      (nextAppState: AppStateStatus) => {
+        if (
+          appState.current.match(/active/) &&
+          nextAppState === 'background'
+        ) {
+          console.log('App going to background');
+          // Optionally enable PiP
+          CometChatCalls.enablePictureInPictureLayout();
+        } else if (
+          appState.current === 'background' &&
+          nextAppState === 'active'
+        ) {
+          console.log('App coming to foreground');
+          // Optionally disable PiP
+          CometChatCalls.disablePictureInPictureLayout();
+        }
+        appState.current = nextAppState;
+      }
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+}
+
+export default useBackgroundHandling;
+```
+
+## Handle Audio Interruptions
+
+Handle system audio interruptions (phone calls, alarms, etc.):
+
+```tsx
+import { useEffect } from 'react';
+import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+
+function useAudioInterruptions() {
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      // iOS handles audio interruptions automatically
+      // The SDK will pause/resume as needed
+      return;
+    }
+
+    // Android: Listen for audio focus changes
+    // This is typically handled by the SDK automatically
+  }, []);
+}
+
+export default useAudioInterruptions;
+```
+
+## Connection Events
+
+Listen for connection state changes:
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+// Connection lost (e.g., network issues)
+CometChatCalls.addEventListener('onConnectionLost', () => {
+  console.log('Connection lost - attempting to reconnect');
+});
+
+// Connection restored
+CometChatCalls.addEventListener('onConnectionRestored', () => {
+  console.log('Connection restored');
+});
+
+// Connection closed
+CometChatCalls.addEventListener('onConnectionClosed', () => {
+  console.log('Connection closed');
+});
+```
+
+## Complete Example
+
+```tsx
+import React, { useEffect, useRef, useCallback } from 'react';
+import { View, StyleSheet, AppState, AppStateStatus } from 'react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface CallScreenProps {
+  callToken: string;
+  callSettings: any;
+  onCallEnd: () => void;
+}
+
+function CallScreen({ callToken, callSettings, onCallEnd }: CallScreenProps) {
+  const appState = useRef(AppState.currentState);
+  const isInCall = useRef(true);
+
+  // Handle app state changes
+  useEffect(() => {
+    const subscription = AppState.addEventListener(
+      'change',
+      (nextAppState: AppStateStatus) => {
+        if (!isInCall.current) return;
+
+        if (
+          appState.current.match(/active/) &&
+          nextAppState === 'background'
+        ) {
+          // Going to background - enable PiP for video calls
+          CometChatCalls.enablePictureInPictureLayout();
+        } else if (
+          appState.current === 'background' &&
+          nextAppState === 'active'
+        ) {
+          // Coming to foreground - disable PiP
+          CometChatCalls.disablePictureInPictureLayout();
+        }
+        appState.current = nextAppState;
+      }
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  // Handle connection events
+  useEffect(() => {
+    const unsubscribeLost = CometChatCalls.addEventListener(
+      'onConnectionLost',
+      () => {
+        console.log('Connection lost');
+        // Show reconnecting UI
+      }
+    );
+
+    const unsubscribeRestored = CometChatCalls.addEventListener(
+      'onConnectionRestored',
+      () => {
+        console.log('Connection restored');
+        // Hide reconnecting UI
+      }
+    );
+
+    const unsubscribeClosed = CometChatCalls.addEventListener(
+      'onConnectionClosed',
+      () => {
+        console.log('Connection closed');
+        isInCall.current = false;
+        onCallEnd();
+      }
+    );
+
+    return () => {
+      unsubscribeLost();
+      unsubscribeRestored();
+      unsubscribeClosed();
+    };
+  }, [onCallEnd]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isInCall.current = false;
+    };
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <CometChatCalls.Component
+        callToken={callToken}
+        callSettings={callSettings}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+});
+
+export default CallScreen;
+```
+
+## Platform Behavior
+
+### iOS
+
+| Scenario | Behavior |
+|----------|----------|
+| App backgrounded | Audio continues, video pauses |
+| Phone call received | Call audio is interrupted |
+| Phone call ended | Call audio resumes |
+| Screen locked | Audio continues |
+
+### Android
+
+| Scenario | Behavior |
+|----------|----------|
+| App backgrounded | Audio continues with foreground service |
+| Phone call received | Call audio may be interrupted |
+| Screen off | Audio continues with wake lock |
+
+## Related Documentation
+
+- [Picture-in-Picture](/calls/react-native/picture-in-picture) - Continue calls in floating window
+- [VoIP Calling](/calls/react-native/voip-calling) - Receive calls when app is closed
+- [Events](/calls/react-native/events) - Connection events

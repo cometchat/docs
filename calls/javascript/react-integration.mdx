@@ -1,0 +1,453 @@
+---
+title: "React Integration"
+sidebarTitle: "React"
+---
+
+This guide walks you through integrating the CometChat Calls SDK into a React application. By the end, you'll have a working video call implementation with proper state management and lifecycle handling.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+- A CometChat account with an app created ([Sign up](https://app.cometchat.com/signup))
+- Your App ID, Region, and API Key from the CometChat Dashboard
+- A React project (Create React App, Vite, or similar)
+- Node.js 16+ installed
+
+## Step 1: Install the SDK
+
+Install the CometChat Calls SDK package:
+
+```bash
+npm install @cometchat/calls-sdk-javascript
+```
+
+## Step 2: Initialize and Login
+
+Create a provider component to handle SDK initialization and authentication. This ensures the SDK is ready before any call components render.
+
+```jsx
+// src/providers/CometChatCallsProvider.jsx
+import { createContext, useContext, useEffect, useState } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+const CometChatCallsContext = createContext({
+  isReady: false,
+  user: null,
+  error: null,
+});
+
+const APP_ID = "YOUR_APP_ID";       // Replace with your App ID
+const REGION = "YOUR_REGION";       // Replace with your Region (us, eu, in)
+const API_KEY = "YOUR_API_KEY";     // Replace with your API Key
+
+export function CometChatCallsProvider({ children, uid }) {
+  const [isReady, setIsReady] = useState(false);
+  const [user, setUser] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    async function initAndLogin() {
+      try {
+        // Step 1: Initialize the SDK
+        const initResult = await CometChatCalls.init({
+          appId: APP_ID,
+          region: REGION,
+        });
+
+        if (!initResult.success) {
+          throw new Error("SDK initialization failed");
+        }
+
+        // Step 2: Check if already logged in
+        let loggedInUser = CometChatCalls.getLoggedInUser();
+
+        // Step 3: Login if not already logged in
+        if (!loggedInUser) {
+          loggedInUser = await CometChatCalls.login(uid, API_KEY);
+        }
+
+        setUser(loggedInUser);
+        setIsReady(true);
+      } catch (err) {
+        console.error("CometChat Calls setup failed:", err);
+        setError(err.message || "Setup failed");
+      }
+    }
+
+    if (uid) {
+      initAndLogin();
+    }
+  }, [uid]);
+
+  return (
+    <CometChatCallsContext.Provider value={{ isReady, user, error }}>
+      {children}
+    </CometChatCallsContext.Provider>
+  );
+}
+
+export function useCometChatCalls() {
+  return useContext(CometChatCallsContext);
+}
+```
+
+## Step 3: Wrap Your App
+
+Add the provider to your app's root component:
+
+```jsx
+// src/App.jsx
+import { CometChatCallsProvider } from "./providers/CometChatCallsProvider";
+import CallPage from "./pages/CallPage";
+
+function App() {
+  // In a real app, get this from your authentication system
+  const currentUserId = "cometchat-uid-1";
+
+  return (
+    <CometChatCallsProvider uid={currentUserId}>
+      <CallPage />
+    </CometChatCallsProvider>
+  );
+}
+
+export default App;
+```
+
+## Step 4: Create the Call Component
+
+Build a call component that handles joining, controls, and cleanup:
+
+```jsx
+// src/components/CallScreen.jsx
+import { useEffect, useRef, useState } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { useCometChatCalls } from "../providers/CometChatCallsProvider";
+
+export default function CallScreen({ sessionId, onCallEnd }) {
+  const { isReady } = useCometChatCalls();
+  const containerRef = useRef(null);
+  
+  // Call state
+  const [isJoined, setIsJoined] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // Store unsubscribe functions for cleanup
+  const unsubscribersRef = useRef([]);
+
+  useEffect(() => {
+    // Don't proceed if SDK isn't ready or container isn't mounted
+    if (!isReady || !containerRef.current || !sessionId) return;
+
+    async function joinCall() {
+      setIsJoining(true);
+      setError(null);
+
+      try {
+        // Register event listeners before joining
+        unsubscribersRef.current = [
+          CometChatCalls.addEventListener("onSessionJoined", () => {
+            setIsJoined(true);
+            setIsJoining(false);
+          }),
+          CometChatCalls.addEventListener("onSessionLeft", () => {
+            setIsJoined(false);
+            onCallEnd?.();
+          }),
+          CometChatCalls.addEventListener("onAudioMuted", () => setIsMuted(true)),
+          CometChatCalls.addEventListener("onAudioUnMuted", () => setIsMuted(false)),
+          CometChatCalls.addEventListener("onVideoPaused", () => setIsVideoOff(true)),
+          CometChatCalls.addEventListener("onVideoResumed", () => setIsVideoOff(false)),
+        ];
+
+        // Generate a call token for this session
+        const tokenResult = await CometChatCalls.generateToken(sessionId);
+
+        // Join the call session
+        const joinResult = await CometChatCalls.joinSession(
+          tokenResult.token,
+          {
+            sessionType: "VIDEO",
+            layout: "TILE",
+            startAudioMuted: false,
+            startVideoPaused: false,
+          },
+          containerRef.current
+        );
+
+        if (joinResult.error) {
+          throw new Error(joinResult.error.message);
+        }
+      } catch (err) {
+        console.error("Failed to join call:", err);
+        setError(err.message || "Failed to join call");
+        setIsJoining(false);
+      }
+    }
+
+    joinCall();
+
+    // Cleanup when component unmounts
+    return () => {
+      unsubscribersRef.current.forEach((unsub) => unsub());
+      unsubscribersRef.current = [];
+      CometChatCalls.leaveSession();
+    };
+  }, [isReady, sessionId, onCallEnd]);
+
+  // Control handlers
+  const toggleAudio = () => {
+    isMuted ? CometChatCalls.unMuteAudio() : CometChatCalls.muteAudio();
+  };
+
+  const toggleVideo = () => {
+    isVideoOff ? CometChatCalls.resumeVideo() : CometChatCalls.pauseVideo();
+  };
+
+  const leaveCall = () => {
+    CometChatCalls.leaveSession();
+  };
+
+  // Loading state
+  if (!isReady) {
+    return <div className="call-loading">Initializing...</div>;
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="call-error">
+        <p>Error: {error}</p>
+        <button onClick={() => window.location.reload()}>Retry</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="call-screen">
+      {/* Video container - SDK renders the call UI here */}
+      <div 
+        ref={containerRef} 
+        className="call-container"
+        style={{ width: "100%", height: "500px", backgroundColor: "#1a1a1a" }}
+      />
+
+      {/* Loading overlay */}
+      {isJoining && (
+        <div className="call-joining">Joining call...</div>
+      )}
+
+      {/* Call controls */}
+      {isJoined && (
+        <div className="call-controls" style={{ display: "flex", gap: "10px", padding: "16px", justifyContent: "center" }}>
+          <button 
+            onClick={toggleAudio}
+            style={{ padding: "12px 24px", backgroundColor: isMuted ? "#dc3545" : "#28a745", color: "white", border: "none", borderRadius: "8px" }}
+          >
+            {isMuted ? "Unmute" : "Mute"}
+          </button>
+          <button 
+            onClick={toggleVideo}
+            style={{ padding: "12px 24px", backgroundColor: isVideoOff ? "#dc3545" : "#28a745", color: "white", border: "none", borderRadius: "8px" }}
+          >
+            {isVideoOff ? "Start Video" : "Stop Video"}
+          </button>
+          <button 
+            onClick={leaveCall}
+            style={{ padding: "12px 24px", backgroundColor: "#dc3545", color: "white", border: "none", borderRadius: "8px" }}
+          >
+            Leave Call
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## Step 5: Use the Call Component
+
+Create a page that uses the call component:
+
+```jsx
+// src/pages/CallPage.jsx
+import { useState } from "react";
+import { useCometChatCalls } from "../providers/CometChatCallsProvider";
+import CallScreen from "../components/CallScreen";
+
+export default function CallPage() {
+  const { isReady, user, error } = useCometChatCalls();
+  const [sessionId, setSessionId] = useState("");
+  const [isInCall, setIsInCall] = useState(false);
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!isReady) {
+    return <div>Loading...</div>;
+  }
+
+  if (isInCall) {
+    return (
+      <CallScreen 
+        sessionId={sessionId} 
+        onCallEnd={() => setIsInCall(false)} 
+      />
+    );
+  }
+
+  return (
+    <div style={{ padding: "20px", maxWidth: "400px", margin: "0 auto" }}>
+      <h1>CometChat Calls</h1>
+      <p>Logged in as: {user?.name || user?.uid}</p>
+      
+      <div style={{ marginTop: "20px" }}>
+        <input
+          type="text"
+          placeholder="Enter Session ID"
+          value={sessionId}
+          onChange={(e) => setSessionId(e.target.value)}
+          style={{ width: "100%", padding: "12px", marginBottom: "10px" }}
+        />
+        <button
+          onClick={() => setIsInCall(true)}
+          disabled={!sessionId}
+          style={{ width: "100%", padding: "12px", backgroundColor: "#6851D6", color: "white", border: "none", borderRadius: "8px" }}
+        >
+          Join Call
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+## Custom Hook (Optional)
+
+For more complex applications, extract call logic into a reusable hook:
+
+```jsx
+// src/hooks/useCall.js
+import { useState, useCallback, useRef, useEffect } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+export function useCall() {
+  const [isInCall, setIsInCall] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [participants, setParticipants] = useState([]);
+  const unsubscribersRef = useRef([]);
+
+  const joinCall = useCallback(async (sessionId, container, settings = {}) => {
+    // Setup listeners
+    unsubscribersRef.current = [
+      CometChatCalls.addEventListener("onAudioMuted", () => setIsMuted(true)),
+      CometChatCalls.addEventListener("onAudioUnMuted", () => setIsMuted(false)),
+      CometChatCalls.addEventListener("onVideoPaused", () => setIsVideoOff(true)),
+      CometChatCalls.addEventListener("onVideoResumed", () => setIsVideoOff(false)),
+      CometChatCalls.addEventListener("onParticipantListChanged", setParticipants),
+      CometChatCalls.addEventListener("onSessionLeft", () => setIsInCall(false)),
+    ];
+
+    const tokenResult = await CometChatCalls.generateToken(sessionId);
+    await CometChatCalls.joinSession(
+      tokenResult.token,
+      { sessionType: "VIDEO", layout: "TILE", ...settings },
+      container
+    );
+    setIsInCall(true);
+  }, []);
+
+  const leaveCall = useCallback(() => {
+    CometChatCalls.leaveSession();
+    unsubscribersRef.current.forEach((unsub) => unsub());
+    unsubscribersRef.current = [];
+    setIsInCall(false);
+  }, []);
+
+  const toggleAudio = useCallback(() => {
+    isMuted ? CometChatCalls.unMuteAudio() : CometChatCalls.muteAudio();
+  }, [isMuted]);
+
+  const toggleVideo = useCallback(() => {
+    isVideoOff ? CometChatCalls.resumeVideo() : CometChatCalls.pauseVideo();
+  }, [isVideoOff]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      unsubscribersRef.current.forEach((unsub) => unsub());
+    };
+  }, []);
+
+  return {
+    isInCall,
+    isMuted,
+    isVideoOff,
+    participants,
+    joinCall,
+    leaveCall,
+    toggleAudio,
+    toggleVideo,
+  };
+}
+```
+
+## TypeScript Support
+
+The SDK includes TypeScript definitions. Here's a typed version of the provider:
+
+```tsx
+// src/providers/CometChatCallsProvider.tsx
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+interface User {
+  uid: string;
+  name: string;
+  avatar?: string;
+}
+
+interface CometChatCallsContextType {
+  isReady: boolean;
+  user: User | null;
+  error: string | null;
+}
+
+const CometChatCallsContext = createContext<CometChatCallsContextType>({
+  isReady: false,
+  user: null,
+  error: null,
+});
+
+interface ProviderProps {
+  children: ReactNode;
+  uid: string;
+}
+
+export function CometChatCallsProvider({ children, uid }: ProviderProps) {
+  // ... same implementation as above
+}
+
+export function useCometChatCalls(): CometChatCallsContextType {
+  return useContext(CometChatCallsContext);
+}
+```
+
+## Related Documentation
+
+For more detailed information on specific topics covered in this guide, refer to the main documentation:
+
+- [Setup](/calls/javascript/setup) - Detailed SDK installation and initialization
+- [Authentication](/calls/javascript/authentication) - Login methods and user management
+- [Session Settings](/calls/javascript/session-settings) - All available call configuration options
+- [Join Session](/calls/javascript/join-session) - Session joining and token generation
+- [Events](/calls/javascript/events) - Complete list of event listeners
+- [Actions](/calls/javascript/actions) - All available call control methods
+- [Call Layouts](/calls/javascript/call-layouts) - Layout options and customization
+- [Participant Management](/calls/javascript/participant-management) - Managing call participants
+

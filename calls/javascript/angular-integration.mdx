@@ -1,0 +1,602 @@
+---
+title: "Angular Integration"
+sidebarTitle: "Angular"
+---
+
+This guide walks you through integrating the CometChat Calls SDK into an Angular application. By the end, you'll have a working video call implementation with proper service architecture and lifecycle management.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+- A CometChat account with an app created ([Sign up](https://app.cometchat.com/signup))
+- Your App ID, Region, and API Key from the CometChat Dashboard
+- An Angular 14+ project
+- Node.js 16+ installed
+
+## Step 1: Install the SDK
+
+Install the CometChat Calls SDK package:
+
+```bash
+npm install @cometchat/calls-sdk-javascript
+```
+
+## Step 2: Create the Calls Service
+
+Create a service to manage SDK initialization, authentication, and call operations:
+
+```typescript
+// src/app/services/cometchat-calls.service.ts
+import { Injectable } from "@angular/core";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import { BehaviorSubject, Observable } from "rxjs";
+
+interface User {
+  uid: string;
+  name: string;
+  avatar?: string;
+}
+
+@Injectable({
+  providedIn: "root",
+})
+export class CometChatCallsService {
+  private readonly APP_ID = "YOUR_APP_ID";       // Replace with your App ID
+  private readonly REGION = "YOUR_REGION";       // Replace with your Region
+  private readonly API_KEY = "YOUR_API_KEY";     // Replace with your API Key
+
+  // Observable state
+  private isReadySubject = new BehaviorSubject<boolean>(false);
+  private userSubject = new BehaviorSubject<User | null>(null);
+  private errorSubject = new BehaviorSubject<string | null>(null);
+
+  isReady$: Observable<boolean> = this.isReadySubject.asObservable();
+  user$: Observable<User | null> = this.userSubject.asObservable();
+  error$: Observable<string | null> = this.errorSubject.asObservable();
+
+  /**
+   * Initialize the SDK and login the user.
+   * Call this once when your app starts.
+   */
+  async initAndLogin(uid: string): Promise<void> {
+    if (this.isReadySubject.value) return;
+
+    try {
+      // Step 1: Initialize the SDK
+      const initResult = await CometChatCalls.init({
+        appId: this.APP_ID,
+        region: this.REGION,
+      });
+
+      if (!initResult.success) {
+        throw new Error("SDK initialization failed");
+      }
+
+      // Step 2: Check if already logged in
+      let loggedInUser = CometChatCalls.getLoggedInUser();
+
+      // Step 3: Login if not already logged in
+      if (!loggedInUser) {
+        loggedInUser = await CometChatCalls.login(uid, this.API_KEY);
+      }
+
+      this.userSubject.next(loggedInUser as User);
+      this.isReadySubject.next(true);
+      this.errorSubject.next(null);
+    } catch (err: any) {
+      console.error("CometChat Calls setup failed:", err);
+      this.errorSubject.next(err.message || "Setup failed");
+    }
+  }
+
+  /**
+   * Logout the current user.
+   */
+  async logout(): Promise<void> {
+    try {
+      await CometChatCalls.logout();
+      this.userSubject.next(null);
+      this.isReadySubject.next(false);
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  }
+
+  /**
+   * Generate a call token for a session.
+   */
+  async generateToken(sessionId: string): Promise<{ token: string }> {
+    return CometChatCalls.generateToken(sessionId);
+  }
+
+  /**
+   * Join a call session.
+   */
+  async joinSession(
+    token: string,
+    settings: any,
+    container: HTMLElement
+  ): Promise<any> {
+    return CometChatCalls.joinSession(token, settings, container);
+  }
+
+  /**
+   * Leave the current call session.
+   */
+  leaveSession(): void {
+    CometChatCalls.leaveSession();
+  }
+
+  /**
+   * Add an event listener.
+   * Returns an unsubscribe function.
+   */
+  addEventListener(event: string, callback: Function): () => void {
+    return CometChatCalls.addEventListener(event as any, callback as any);
+  }
+
+  // Audio controls
+  muteAudio(): void {
+    CometChatCalls.muteAudio();
+  }
+
+  unMuteAudio(): void {
+    CometChatCalls.unMuteAudio();
+  }
+
+  // Video controls
+  pauseVideo(): void {
+    CometChatCalls.pauseVideo();
+  }
+
+  resumeVideo(): void {
+    CometChatCalls.resumeVideo();
+  }
+}
+```
+
+## Step 3: Initialize in App Component
+
+Initialize the SDK when your app starts:
+
+```typescript
+// src/app/app.component.ts
+import { Component, OnInit } from "@angular/core";
+import { CometChatCallsService } from "./services/cometchat-calls.service";
+import { Observable } from "rxjs";
+
+@Component({
+  selector: "app-root",
+  template: `
+    <div *ngIf="error$ | async as error" class="error">
+      Error: {{ error }}
+    </div>
+    <div *ngIf="!(isReady$ | async) && !(error$ | async)" class="loading">
+      Loading...
+    </div>
+    <router-outlet *ngIf="isReady$ | async"></router-outlet>
+  `,
+})
+export class AppComponent implements OnInit {
+  isReady$: Observable<boolean>;
+  error$: Observable<string | null>;
+
+  constructor(private callsService: CometChatCallsService) {
+    this.isReady$ = this.callsService.isReady$;
+    this.error$ = this.callsService.error$;
+  }
+
+  ngOnInit(): void {
+    // In a real app, get this from your authentication system
+    const currentUserId = "cometchat-uid-1";
+    this.callsService.initAndLogin(currentUserId);
+  }
+}
+```
+
+## Step 4: Create the Call Component
+
+Build a call component with proper lifecycle management:
+
+```typescript
+// src/app/components/call-screen/call-screen.component.ts
+import {
+  Component,
+  Input,
+  Output,
+  EventEmitter,
+  OnInit,
+  OnDestroy,
+  ViewChild,
+  ElementRef,
+} from "@angular/core";
+import { CometChatCallsService } from "../../services/cometchat-calls.service";
+
+@Component({
+  selector: "app-call-screen",
+  template: `
+    <div class="call-screen">
+      <!-- Video container - SDK renders the call UI here -->
+      <div #callContainer class="call-container"></div>
+
+      <!-- Loading overlay -->
+      <div *ngIf="isJoining" class="call-overlay">
+        Joining call...
+      </div>
+
+      <!-- Error message -->
+      <div *ngIf="callError" class="call-overlay error">
+        <p>Error: {{ callError }}</p>
+        <button (click)="callEnded.emit()">Go Back</button>
+      </div>
+
+      <!-- Call controls -->
+      <div *ngIf="isJoined" class="call-controls">
+        <button
+          (click)="toggleAudio()"
+          [class.muted]="isMuted"
+          [class.active]="!isMuted"
+        >
+          {{ isMuted ? "Unmute" : "Mute" }}
+        </button>
+        <button
+          (click)="toggleVideo()"
+          [class.muted]="isVideoOff"
+          [class.active]="!isVideoOff"
+        >
+          {{ isVideoOff ? "Start Video" : "Stop Video" }}
+        </button>
+        <button (click)="leaveCall()" class="leave-btn">
+          Leave Call
+        </button>
+      </div>
+    </div>
+  `,
+  styles: [
+    `
+      .call-screen {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        position: relative;
+      }
+      .call-container {
+        flex: 1;
+        background-color: #1a1a1a;
+        min-height: 400px;
+      }
+      .call-controls {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+        padding: 16px;
+        background-color: #2a2a2a;
+      }
+      .call-controls button {
+        padding: 12px 24px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .call-controls button.active {
+        background-color: #28a745;
+        color: white;
+      }
+      .call-controls button.muted {
+        background-color: #dc3545;
+        color: white;
+      }
+      .call-controls .leave-btn {
+        background-color: #dc3545;
+        color: white;
+      }
+      .call-overlay {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+      }
+    `,
+  ],
+})
+export class CallScreenComponent implements OnInit, OnDestroy {
+  @Input() sessionId!: string;
+  @Output() callEnded = new EventEmitter<void>();
+  @ViewChild("callContainer", { static: true }) callContainer!: ElementRef;
+
+  isJoined = false;
+  isJoining = false;
+  isMuted = false;
+  isVideoOff = false;
+  callError: string | null = null;
+
+  private unsubscribers: (() => void)[] = [];
+
+  constructor(private callsService: CometChatCallsService) {}
+
+  ngOnInit(): void {
+    this.joinCall();
+  }
+
+  ngOnDestroy(): void {
+    this.cleanup();
+  }
+
+  /**
+   * Join the call session.
+   */
+  private async joinCall(): Promise<void> {
+    this.isJoining = true;
+    this.callError = null;
+
+    try {
+      // Register event listeners before joining
+      this.unsubscribers = [
+        this.callsService.addEventListener("onSessionJoined", () => {
+          this.isJoined = true;
+          this.isJoining = false;
+        }),
+        this.callsService.addEventListener("onSessionLeft", () => {
+          this.isJoined = false;
+          this.callEnded.emit();
+        }),
+        this.callsService.addEventListener("onAudioMuted", () => {
+          this.isMuted = true;
+        }),
+        this.callsService.addEventListener("onAudioUnMuted", () => {
+          this.isMuted = false;
+        }),
+        this.callsService.addEventListener("onVideoPaused", () => {
+          this.isVideoOff = true;
+        }),
+        this.callsService.addEventListener("onVideoResumed", () => {
+          this.isVideoOff = false;
+        }),
+      ];
+
+      // Generate a call token for this session
+      const tokenResult = await this.callsService.generateToken(this.sessionId);
+
+      // Join the call session
+      const joinResult = await this.callsService.joinSession(
+        tokenResult.token,
+        {
+          sessionType: "VIDEO",
+          layout: "TILE",
+          startAudioMuted: false,
+          startVideoPaused: false,
+        },
+        this.callContainer.nativeElement
+      );
+
+      if (joinResult.error) {
+        throw new Error(joinResult.error.message);
+      }
+    } catch (err: any) {
+      console.error("Failed to join call:", err);
+      this.callError = err.message || "Failed to join call";
+      this.isJoining = false;
+    }
+  }
+
+  /**
+   * Toggle microphone mute state.
+   */
+  toggleAudio(): void {
+    if (this.isMuted) {
+      this.callsService.unMuteAudio();
+    } else {
+      this.callsService.muteAudio();
+    }
+  }
+
+  /**
+   * Toggle camera on/off state.
+   */
+  toggleVideo(): void {
+    if (this.isVideoOff) {
+      this.callsService.resumeVideo();
+    } else {
+      this.callsService.pauseVideo();
+    }
+  }
+
+  /**
+   * Leave the current call session.
+   */
+  leaveCall(): void {
+    this.callsService.leaveSession();
+  }
+
+  /**
+   * Cleanup event listeners.
+   */
+  private cleanup(): void {
+    this.unsubscribers.forEach((unsub) => unsub());
+    this.unsubscribers = [];
+    this.callsService.leaveSession();
+  }
+}
+```
+
+## Step 5: Create the Call Page
+
+Create a page component that manages the call flow:
+
+```typescript
+// src/app/pages/call-page/call-page.component.ts
+import { Component } from "@angular/core";
+import { CometChatCallsService } from "../../services/cometchat-calls.service";
+import { Observable } from "rxjs";
+
+@Component({
+  selector: "app-call-page",
+  template: `
+    <div class="call-page">
+      <!-- Pre-call screen -->
+      <div *ngIf="!isInCall" class="pre-call">
+        <h1>CometChat Video Calls</h1>
+        <p>Logged in as: {{ (user$ | async)?.name || (user$ | async)?.uid }}</p>
+
+        <div class="join-form">
+          <input
+            [(ngModel)]="sessionId"
+            type="text"
+            placeholder="Enter Session ID"
+            (keyup.enter)="startCall()"
+          />
+          <button (click)="startCall()" [disabled]="!sessionId">
+            Join Call
+          </button>
+        </div>
+
+        <p class="hint">
+          Share the same Session ID with others to join the same call.
+        </p>
+      </div>
+
+      <!-- In-call screen -->
+      <app-call-screen
+        *ngIf="isInCall"
+        [sessionId]="sessionId"
+        (callEnded)="endCall()"
+      ></app-call-screen>
+    </div>
+  `,
+  styles: [
+    `
+      .call-page {
+        min-height: 100vh;
+      }
+      .pre-call {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 40px 20px;
+        text-align: center;
+      }
+      .join-form {
+        margin-top: 30px;
+      }
+      .join-form input {
+        width: 100%;
+        padding: 12px;
+        margin-bottom: 12px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        font-size: 16px;
+        box-sizing: border-box;
+      }
+      .join-form button {
+        width: 100%;
+        padding: 12px;
+        background-color: #6851d6;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      .join-form button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .hint {
+        margin-top: 20px;
+        color: #666;
+        font-size: 14px;
+      }
+    `,
+  ],
+})
+export class CallPageComponent {
+  user$: Observable<any>;
+  sessionId = "";
+  isInCall = false;
+
+  constructor(private callsService: CometChatCallsService) {
+    this.user$ = this.callsService.user$;
+  }
+
+  startCall(): void {
+    if (this.sessionId) {
+      this.isInCall = true;
+    }
+  }
+
+  endCall(): void {
+    this.isInCall = false;
+  }
+}
+```
+
+## Step 6: Module Configuration
+
+Add the components to your module:
+
+```typescript
+// src/app/app.module.ts
+import { NgModule } from "@angular/core";
+import { BrowserModule } from "@angular/platform-browser";
+import { FormsModule } from "@angular/forms";
+import { RouterModule } from "@angular/router";
+
+import { AppComponent } from "./app.component";
+import { CallScreenComponent } from "./components/call-screen/call-screen.component";
+import { CallPageComponent } from "./pages/call-page/call-page.component";
+
+@NgModule({
+  declarations: [AppComponent, CallScreenComponent, CallPageComponent],
+  imports: [
+    BrowserModule,
+    FormsModule,
+    RouterModule.forRoot([
+      { path: "", component: CallPageComponent },
+    ]),
+  ],
+  providers: [],
+  bootstrap: [AppComponent],
+})
+export class AppModule {}
+```
+
+## Standalone Components (Angular 14+)
+
+For standalone components without NgModules:
+
+```typescript
+// src/app/components/call-screen/call-screen.component.ts
+import { Component, Input, Output, EventEmitter, OnInit, OnDestroy, ViewChild, ElementRef } from "@angular/core";
+import { CommonModule } from "@angular/common";
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+
+@Component({
+  selector: "app-call-screen",
+  standalone: true,
+  imports: [CommonModule],
+  template: `...`, // Same template as above
+})
+export class CallScreenComponent implements OnInit, OnDestroy {
+  // Same implementation, but import CometChatCalls directly
+  // instead of using the service
+}
+```
+
+## Related Documentation
+
+For more detailed information on specific topics covered in this guide, refer to the main documentation:
+
+- [Setup](/calls/javascript/setup) - Detailed SDK installation and initialization
+- [Authentication](/calls/javascript/authentication) - Login methods and user management
+- [Session Settings](/calls/javascript/session-settings) - All available call configuration options
+- [Join Session](/calls/javascript/join-session) - Session joining and token generation
+- [Events](/calls/javascript/events) - Complete list of event listeners
+- [Actions](/calls/javascript/actions) - All available call control methods
+- [Call Layouts](/calls/javascript/call-layouts) - Layout options and customization
+- [Participant Management](/calls/javascript/participant-management) - Managing call participants
+

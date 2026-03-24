@@ -1,0 +1,408 @@
+---
+title: "Group Chat"
+sidebarTitle: "Group Chat"
+description: "Implement group management including create, join, members, roles, and ownership transfer in CometChat React Native UI Kit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react-native` |
+| Key components | `CometChatGroups`, `CometChatGroupMembers`, `CometChatUsers`, `CometChatConfirmDialog` |
+| Init | `CometChatUIKit.init(UIKitSettings)` then `CometChatUIKit.login("UID")` |
+| Features | Create public/private/password-protected groups, manage members, roles, ownership transfer |
+| Sample app | [GitHub](https://github.com/cometchat/cometchat-uikit-react-native/tree/v5/examples/SampleApp) |
+| Related | [Groups](/ui-kit/react-native/groups) · [Group Members](/ui-kit/react-native/group-members) · [All Guides](/ui-kit/react-native/guide-overview) |
+
+</Accordion>
+
+This guide covers the full group lifecycle: creating groups, joining them, managing members, changing roles, and transferring ownership.
+
+Before starting, complete the [Getting Started](/ui-kit/react-native/react-native-cli-integration) guide.
+
+---
+
+## Components
+
+| Component / Class | Role |
+|:---|:---|
+| `CometChatGroups` | Displays list of groups with join/create options |
+| `CometChatGroupMembers` | Displays and manages group member lists |
+| `CometChatUsers` | User selection for adding members |
+| `CometChatConfirmDialog` | Confirmation dialogs for destructive actions |
+| `CometChatGroupsEvents` | Events for group-related actions |
+
+---
+
+## Integration Steps
+
+### 1. Display Groups List
+
+Render `CometChatGroups` with custom app bar options for creating new groups. Handle item press to either open chat (if joined) or trigger join flow.
+
+```tsx
+import React, { useState } from 'react';
+import { View, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import {
+  CometChatGroups,
+  CometChatUIEventHandler,
+  CometChatUIEvents,
+  CometChatUIKit,
+} from '@cometchat/chat-uikit-react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+const GroupsScreen = () => {
+  const navigation = useNavigation();
+  const [isCreateGroupVisible, setCreateGroupVisible] = useState(false);
+
+  const handleGroupItemPress = (group: CometChat.Group) => {
+    if (group.getHasJoined()) {
+      // Navigate to messages
+      navigation.navigate('Messages', { group });
+      return;
+    }
+
+    if (group.getType() === CometChat.GROUP_TYPE.PUBLIC) {
+      joinPublicGroup(group);
+    } else if (group.getType() === CometChat.GROUP_TYPE.PASSWORD) {
+      // Show password input modal
+      setGroupToJoin(group);
+      setJoinGroupVisible(true);
+    }
+  };
+
+  const joinPublicGroup = async (group: CometChat.Group) => {
+    try {
+      const joinedGroup = await CometChat.joinGroup(
+        group.getGuid(),
+        group.getType() as CometChat.GroupType,
+        ''
+      );
+      
+      navigation.navigate('Messages', { group: joinedGroup });
+      
+      CometChatUIEventHandler.emitGroupEvent(
+        CometChatUIEvents.ccGroupMemberJoined,
+        {
+          joinedUser: CometChatUIKit.loggedInUser,
+          joinedGroup: joinedGroup,
+        }
+      );
+    } catch (error) {
+      console.log('Error joining public group:', error);
+    }
+  };
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatGroups
+        onItemPress={handleGroupItemPress}
+        AppBarOptions={() => (
+          <TouchableOpacity onPress={() => setCreateGroupVisible(true)}>
+            {/* Add icon */}
+          </TouchableOpacity>
+        )}
+      />
+    </View>
+  );
+};
+```
+
+---
+
+### 2. Create Group
+
+Build a form that collects group name, type, and optional password. Call `CometChat.createGroup()` and emit `ccGroupCreated`.
+
+```tsx
+import React, { useState } from 'react';
+import { View, TextInput, TouchableOpacity, Text } from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import {
+  CometChatUIEventHandler,
+  CometChatGroupsEvents,
+} from '@cometchat/chat-uikit-react-native';
+
+interface CreateGroupProps {
+  onGroupCreated: (group: CometChat.Group) => void;
+  onClose: () => void;
+}
+
+const CreateGroupForm: React.FC<CreateGroupProps> = ({ onGroupCreated, onClose }) => {
+  const [groupName, setGroupName] = useState('');
+  const [groupType, setGroupType] = useState<string>(CometChat.GROUP_TYPE.PUBLIC);
+  const [password, setPassword] = useState('');
+
+  const handleCreateGroup = async () => {
+    const GUID = `group_${new Date().getTime()}`;
+    const group = new CometChat.Group(GUID, groupName, groupType, password);
+
+    try {
+      const createdGroup = await CometChat.createGroup(group);
+      
+      CometChatUIEventHandler.emitGroupEvent(
+        CometChatGroupsEvents.ccGroupCreated,
+        { group: createdGroup }
+      );
+      
+      onGroupCreated(createdGroup);
+      onClose();
+    } catch (error) {
+      console.error('Group creation failed:', error);
+    }
+  };
+
+  return (
+    <View style={{ padding: 20 }}>
+      <TextInput
+        placeholder="Group Name"
+        value={groupName}
+        onChangeText={setGroupName}
+      />
+      
+      {/* Group type selector */}
+      <View style={{ flexDirection: 'row', marginVertical: 10 }}>
+        <TouchableOpacity onPress={() => setGroupType(CometChat.GROUP_TYPE.PUBLIC)}>
+          <Text>Public</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setGroupType(CometChat.GROUP_TYPE.PRIVATE)}>
+          <Text>Private</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setGroupType(CometChat.GROUP_TYPE.PASSWORD)}>
+          <Text>Password</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {groupType === CometChat.GROUP_TYPE.PASSWORD && (
+        <TextInput
+          placeholder="Password"
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+        />
+      )}
+      
+      <TouchableOpacity onPress={handleCreateGroup}>
+        <Text>Create Group</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+```
+
+---
+
+### 3. Add Members to Group
+
+Use `CometChatUsers` with `selectionMode="multiple"` to select users, then call `CometChat.addMembersToGroup()`.
+
+```tsx
+import React, { useState, useCallback } from 'react';
+import { View, TouchableOpacity, Text } from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import {
+  CometChatUsers,
+  CometChatUIEventHandler,
+  CometChatGroupsEvents,
+  CometChatUIKit,
+  CometChatUiKitConstants,
+} from '@cometchat/chat-uikit-react-native';
+
+interface AddMemberProps {
+  group: CometChat.Group;
+  onBack: () => void;
+}
+
+const AddMemberScreen: React.FC<AddMemberProps> = ({ group, onBack }) => {
+  const [selectedUsers, setSelectedUsers] = useState<CometChat.User[]>([]);
+
+  const addMembersToGroup = useCallback(async () => {
+    try {
+      const membersList = selectedUsers.map((user) => {
+        const groupMember = new CometChat.GroupMember(
+          user.getUid(),
+          CometChat.GROUP_MEMBER_SCOPE.PARTICIPANT
+        );
+        groupMember.setName(user.getName());
+        return groupMember;
+      });
+
+      const guid = group.getGuid();
+      const response = await CometChat.addMembersToGroup(guid, membersList, []);
+
+      const addedUIDs = Object.entries(response)
+        .filter(([_, status]) => status === 'success')
+        .map(([uid]) => uid);
+
+      if (addedUIDs.length > 0) {
+        // Emit event for each added member
+        membersList
+          .filter((member) => addedUIDs.includes(member.getUid()))
+          .forEach((member) => {
+            CometChatUIEventHandler.emitGroupEvent(
+              CometChatGroupsEvents.ccGroupMemberAdded,
+              {
+                addedBy: CometChatUIKit.loggedInUser,
+                usersAdded: [member],
+                userAddedIn: group,
+              }
+            );
+          });
+        
+        onBack();
+      }
+    } catch (error) {
+      console.error('Failed to add members:', error);
+    }
+  }, [group, selectedUsers, onBack]);
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatUsers
+        hideHeader={true}
+        selectionMode="multiple"
+        onSelection={setSelectedUsers}
+      />
+      
+      <TouchableOpacity onPress={addMembersToGroup}>
+        <Text>Add Members</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+```
+
+---
+
+### 4. View and Manage Group Members
+
+Use `CometChatGroupMembers` to display members with options for scope changes and removal.
+
+```tsx
+import React from 'react';
+import { View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { CometChatGroupMembers } from '@cometchat/chat-uikit-react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+interface ViewMembersProps {
+  group: CometChat.Group;
+}
+
+const ViewMembersScreen: React.FC<ViewMembersProps> = ({ group }) => {
+  const navigation = useNavigation();
+
+  const handleMemberPress = (member: CometChat.GroupMember) => {
+    // Navigate to member profile or show options
+    console.log('Member pressed:', member.getName());
+  };
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatGroupMembers
+        group={group}
+        onItemPress={handleMemberPress}
+        onBack={() => navigation.goBack()}
+      />
+    </View>
+  );
+};
+```
+
+---
+
+### 5. Transfer Ownership
+
+Let the current owner select a member and transfer ownership via `CometChat.transferGroupOwnership()`.
+
+```tsx
+import React, { useState } from 'react';
+import { View, TouchableOpacity, Text } from 'react-native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import {
+  CometChatGroupMembers,
+  CometChatUIEventHandler,
+  CometChatGroupsEvents,
+} from '@cometchat/chat-uikit-react-native';
+
+interface TransferOwnershipProps {
+  group: CometChat.Group;
+  onClose: () => void;
+}
+
+const TransferOwnershipScreen: React.FC<TransferOwnershipProps> = ({ group, onClose }) => {
+  const [selectedMember, setSelectedMember] = useState<CometChat.GroupMember | null>(null);
+
+  const transferOwnership = async () => {
+    if (!selectedMember) return;
+
+    try {
+      await CometChat.transferGroupOwnership(group.getGuid(), selectedMember.getUid());
+      
+      CometChatUIEventHandler.emitGroupEvent(
+        CometChatGroupsEvents.ccOwnershipChanged,
+        {
+          group: group,
+          newOwner: selectedMember,
+        }
+      );
+      
+      onClose();
+    } catch (error) {
+      console.error('Ownership transfer failed:', error);
+    }
+  };
+
+  return (
+    <View style={{ flex: 1 }}>
+      <CometChatGroupMembers
+        group={group}
+        selectionMode="single"
+        onSelection={(members) => setSelectedMember(members[0] || null)}
+      />
+      
+      <TouchableOpacity onPress={transferOwnership} disabled={!selectedMember}>
+        <Text>Transfer Ownership</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+```
+
+---
+
+## Feature Matrix
+
+| Feature | Component / Method |
+|:---|:---|
+| Display groups | `CometChatGroups` |
+| Create group | `CometChat.createGroup()` |
+| Join group | `CometChat.joinGroup()` |
+| View members | `CometChatGroupMembers` |
+| Add members | `CometChat.addMembersToGroup()` |
+| Remove member | `CometChat.kickGroupMember()` |
+| Ban member | `CometChat.banGroupMember()` |
+| Change scope | `CometChat.updateGroupMemberScope()` |
+| Transfer ownership | `CometChat.transferGroupOwnership()` |
+| Group events | `CometChatGroupsEvents` |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Groups" href="/ui-kit/react-native/groups">
+    Display and manage group lists.
+  </Card>
+  <Card title="Group Members" href="/ui-kit/react-native/group-members">
+    Display and manage group member lists.
+  </Card>
+  <Card title="All Guides" href="/ui-kit/react-native/guide-overview">
+    Browse all feature and formatter guides.
+  </Card>
+  <Card title="Sample App" href="https://github.com/cometchat/cometchat-uikit-react-native/tree/v5/examples/SampleApp">
+    Full working sample application on GitHub.
+  </Card>
+</CardGroup>

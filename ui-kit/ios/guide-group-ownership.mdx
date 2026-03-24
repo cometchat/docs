@@ -1,185 +1,410 @@
 ---
 title: "Transfer Group Ownership"
 sidebarTitle: "Transfer Group Ownership"
+description: "Enable group owners to transfer ownership to another member"
 ---
 
-Enable the current group owner to delegate ownership to another member using CometChat’s UIKit for iOS.
+Enable the current group owner to delegate ownership to another member using CometChat's UIKit for iOS.
 
 ## Overview
 
-The **Transfer Group Ownership** feature provides a modal interface where the group owner can:
+The Transfer Group Ownership feature provides a modal interface where the group owner can:
 
-- See a list of current group members (excluding themselves).  
-- Select exactly one member to become the new owner.  
-- Trigger the ownership transfer API call.  
-- Automatically exit the group after successful transfer.
+- See a list of current group members (excluding themselves)
+- Select exactly one member to become the new owner
+- Trigger the ownership transfer API call
+- Automatically exit the group after successful transfer
 
 ## Prerequisites
 
-- A UIKit-based iOS project.  
-- CometChat UIKit for iOS v5 installed via CocoaPods or Swift Package Manager.  
-- CometChat SDKs (`CometChatSDK`, `CometChatUIKitSwift`) integrated.  
-- Logged-in user with `CometChat.login()`.  
-- `UINavigationController` or modal presentation flow set up.  
-- Group context (GUID) available when invoking the transfer screen.
+Before implementing ownership transfer, ensure you have:
+
+- Completed [Getting Started](/ui-kit/ios/getting-started) setup
+- CometChat UIKit v5+ installed via CocoaPods or Swift Package Manager
+- CometChatSDK and CometChatUIKitSwift integrated
+- User logged in with `CometChatUIKit.login()`
+- `UINavigationController` or modal presentation flow set up
+- Group context (GUID) available when invoking the transfer screen
 
 ## Components
 
-| Component                           | Responsibility                                                      |
-|:------------------------------------|:--------------------------------------------------------------------|
-| `TransferOwnership`                 | Subclass of `CometChatGroupMembers` enabling single selection mode. |
-| `viewModel.groupMembers`           | Data source array of `GroupMember` objects.                         |
-| `onSelectedItemProceed`            | Closure invoked when user confirms selection.                       |
-| `CometChat.transferGroupOwnership` | API call to delegate group ownership.                                |
-| `spinnerView`                       | `UIActivityIndicatorView` showing loading state.                    |
-| `leaveGroupCallback`               | Callback to perform group exit after transfer.                      |
+| Component | Description |
+|-----------|-------------|
+| `TransferOwnership` | Subclass of `CometChatGroupMembers` enabling single selection mode |
+| `viewModel.groupMembers` | Data source array of `GroupMember` objects |
+| `onSelectedItemProceed` | Closure invoked when user confirms selection |
+| `CometChat.transferGroupOwnership` | API call to delegate group ownership |
+| `spinnerView` | `UIActivityIndicatorView` showing loading state |
+| `leaveGroupCallback` | Callback to perform group exit after transfer |
 
 ## Integration Steps
 
-### 1. Present Transfer Ownership Screen
+### Step 1: Present Transfer Ownership Screen
 
-Show the ownership transfer UI modally.
+Show the ownership transfer UI modally:
 
-```swift
-func showTransferOwnership(for group: Group) {
-  let transferVC = TransferOwnership()
-  transferVC.set(group: group)
-  let nav = UINavigationController(rootViewController: transferVC)
-  present(nav, animated: true)
-}
-```
+```swift lines
+import UIKit
+import CometChatSDK
+import CometChatUIKitSwift
 
-**File reference:**  
-[`GroupDetailsViewController.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/DetailsPage/GroupDetailsViewController.swift)
-
-### 2. Configure Single Selection Mode
-
-Restrict selection to one member and capture selection.
-
-```swift
-override func viewDidLoad() {
-  selectionMode = .single
-  super.viewDidLoad()
-  title = "OWNERSHIP_TRANSFER".localize()
-  onSelectedItemProceed = { [weak self] users in
-    if let newOwner = users.first {
-      self?.transferOwnership(to: newOwner)
+class GroupDetailsViewController: UIViewController {
+    
+    var group: Group?
+    
+    func showTransferOwnership(for group: Group) {
+        // Initialize transfer ownership view controller
+        let transferVC = TransferOwnership()
+        transferVC.set(group: group)
+        
+        // Set callback for after transfer completes
+        transferVC.leaveGroupCallback = { [weak self] in
+            self?.leaveGroup()
+        }
+        
+        // Present modally with navigation
+        let nav = UINavigationController(rootViewController: transferVC)
+        present(nav, animated: true)
     }
-  }
+    
+    private func leaveGroup() {
+        // Handle leaving group after ownership transfer
+        navigationController?.popToRootViewController(animated: true)
+    }
 }
 ```
 
-**File reference:**  
-[`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L1-L30)
+**File reference:** [`GroupDetailsViewController.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/DetailsPage/GroupDetailsViewController.swift)
 
-### 3. Load & Filter Member List
+### Step 2: Configure Single Selection Mode
 
-Exclude the current owner from the selectable list.
+Restrict selection to one member and capture selection:
 
-```swift
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+class TransferOwnership: CometChatGroupMembers {
+    
+    var leaveGroupCallback: (() -> Void)?
+    
+    private let spinnerView: UIActivityIndicatorView = {
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.hidesWhenStopped = true
+        return spinner
+    }()
+    
+    override func viewDidLoad() {
+        // Enable single selection mode
+        selectionMode = .single
+        
+        super.viewDidLoad()
+        
+        // Set navigation title
+        title = "OWNERSHIP_TRANSFER".localize()
+        
+        // Handle member selection
+        onSelectedItemProceed = { [weak self] users in
+            if let newOwner = users.first as? GroupMember {
+                self?.transferOwnership(to: newOwner)
+            }
+        }
+    }
+}
+```
+
+**File reference:** [`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L1-L30)
+
+### Step 3: Load and Filter Member List
+
+Exclude the current owner from the selectable list:
+
+```swift lines
 override func reloadData() {
-  super.reloadData()
-  viewModel.reload = { [weak self] in
-    guard let self = self else { return }
-    let currentUID = CometChat.getLoggedInUser()?.uid
-    self.viewModel.groupMembers.removeAll { $0.uid == currentUID }
-    DispatchQueue.main.async {
-      self.removeLoadingView()
-      self.removeErrorView()
-      self.reload()
-      if self.viewModel.groupMembers.isEmpty { self.showEmptyView() }
+    super.reloadData()
+    
+    viewModel.reload = { [weak self] in
+        guard let self = self else { return }
+        
+        // Get current user's UID
+        let currentUID = CometChat.getLoggedInUser()?.uid
+        
+        // Remove current owner from the list
+        self.viewModel.groupMembers.removeAll { $0.uid == currentUID }
+        
+        DispatchQueue.main.async {
+            // Update UI state
+            self.removeLoadingView()
+            self.removeErrorView()
+            self.reload()
+            
+            // Show empty state if no eligible members
+            if self.viewModel.groupMembers.isEmpty {
+                self.showEmptyView()
+            }
+        }
     }
-  }
 }
 ```
 
-**File reference:**  
-[`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L31-L60)
+**File reference:** [`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L31-L60)
 
-### 4. Perform Ownership Transfer
+### Step 4: Perform Ownership Transfer
 
-Call the API, emit event, and exit the group.
+Call the API, emit event, and exit the group:
 
-```swift
+```swift lines
 func transferOwnership(to member: GroupMember) {
-  addSpinnerView()
-  let uid = member.uid ?? ""
-  let guid = viewModel.group.guid
-
-  CometChat.transferGroupOwnership(UID: uid, GUID: guid) { [weak self] _ in
-    DispatchQueue.main.async {
-      // Update local state
-      self?.viewModel.group.owner = uid
-      CometChatGroupEvents.ccOwnershipChanged(group: self!.viewModel.group, newOwner: member)
-      self?.leaveGroupCallback?()
-      self?.removeSpinnerView()
-      self?.dismiss(animated: true)
+    // Show loading indicator
+    addSpinnerView()
+    
+    let uid = member.uid ?? ""
+    let guid = viewModel.group.guid
+    
+    CometChat.transferGroupOwnership(UID: uid, GUID: guid) { [weak self] successMessage in
+        DispatchQueue.main.async {
+            guard let self = self else { return }
+            
+            // Update local group state
+            self.viewModel.group.owner = uid
+            
+            // Emit ownership changed event for other components
+            CometChatGroupEvents.ccOwnershipChanged(
+                group: self.viewModel.group,
+                newOwner: member
+            )
+            
+            // Execute leave group callback
+            self.leaveGroupCallback?()
+            
+            // Hide loading and dismiss
+            self.removeSpinnerView()
+            self.dismiss(animated: true)
+        }
+    } onError: { [weak self] error in
+        DispatchQueue.main.async {
+            self?.removeSpinnerView()
+            
+            // Show error alert
+            let alert = UIAlertController(
+                title: "Transfer Failed",
+                message: error?.errorDescription ?? "Unable to transfer ownership",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(alert, animated: true)
+        }
     }
-  } onError: { [weak self] error in
-    DispatchQueue.main.async {
-      self?.removeSpinnerView()
-      // TODO: Show error alert
-    }
-  }
 }
 ```
 
-**File reference:**  
-[`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L61-L100)
+**File reference:** [`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L61-L100)
 
-### 5. Manage Loading State
+### Step 5: Manage Loading State
 
-Provide visual feedback during network calls.
+Provide visual feedback during network calls:
 
-```swift
+```swift lines
 func addSpinnerView() {
-  spinnerView.startAnimating()
-  navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinnerView)
+    // Start spinner animation
+    spinnerView.startAnimating()
+    
+    // Replace right bar button with spinner
+    navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinnerView)
 }
 
 func removeSpinnerView() {
-  spinnerView.stopAnimating()
-  navigationItem.rightBarButtonItem = nil
+    // Stop spinner animation
+    spinnerView.stopAnimating()
+    
+    // Remove spinner from navigation bar
+    navigationItem.rightBarButtonItem = nil
 }
 ```
 
-**File reference:**  
-[`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L101-L130)
+**File reference:** [`TransferOwnership.swift`](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift#L101-L130)
+
+## Complete Implementation
+
+Here's the complete `TransferOwnership` class:
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+class TransferOwnership: CometChatGroupMembers {
+    
+    // MARK: - Properties
+    var leaveGroupCallback: (() -> Void)?
+    
+    private let spinnerView: UIActivityIndicatorView = {
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.hidesWhenStopped = true
+        return spinner
+    }()
+    
+    // MARK: - Lifecycle
+    override func viewDidLoad() {
+        selectionMode = .single
+        super.viewDidLoad()
+        
+        title = "Transfer Ownership"
+        
+        onSelectedItemProceed = { [weak self] users in
+            if let newOwner = users.first as? GroupMember {
+                self?.transferOwnership(to: newOwner)
+            }
+        }
+    }
+    
+    // MARK: - Data Loading
+    override func reloadData() {
+        super.reloadData()
+        
+        viewModel.reload = { [weak self] in
+            guard let self = self else { return }
+            
+            let currentUID = CometChat.getLoggedInUser()?.uid
+            self.viewModel.groupMembers.removeAll { $0.uid == currentUID }
+            
+            DispatchQueue.main.async {
+                self.removeLoadingView()
+                self.removeErrorView()
+                self.reload()
+                
+                if self.viewModel.groupMembers.isEmpty {
+                    self.showEmptyView()
+                }
+            }
+        }
+    }
+    
+    // MARK: - Transfer Ownership
+    func transferOwnership(to member: GroupMember) {
+        addSpinnerView()
+        
+        let uid = member.uid ?? ""
+        let guid = viewModel.group.guid
+        
+        CometChat.transferGroupOwnership(UID: uid, GUID: guid) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                self.viewModel.group.owner = uid
+                CometChatGroupEvents.ccOwnershipChanged(
+                    group: self.viewModel.group,
+                    newOwner: member
+                )
+                
+                self.leaveGroupCallback?()
+                self.removeSpinnerView()
+                self.dismiss(animated: true)
+            }
+        } onError: { [weak self] error in
+            DispatchQueue.main.async {
+                self?.removeSpinnerView()
+                self?.showError(error)
+            }
+        }
+    }
+    
+    // MARK: - Loading State
+    func addSpinnerView() {
+        spinnerView.startAnimating()
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinnerView)
+    }
+    
+    func removeSpinnerView() {
+        spinnerView.stopAnimating()
+        navigationItem.rightBarButtonItem = nil
+    }
+    
+    // MARK: - Error Handling
+    private func showError(_ error: CometChatException?) {
+        let alert = UIAlertController(
+            title: "Transfer Failed",
+            message: error?.errorDescription ?? "Unable to transfer ownership",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+}
+```
 
 ## Customization Options
 
-- **Title Text:** Replace localization key with custom string.  
-- **Spinner Style:** Adjust `spinnerView.style` and color using `CometChatTheme`.  
-- **Error Handling:** Customize error alerts in the `onError` closure.
+### Title Text
 
-## Filtering & Edge Cases
+Replace localization key with custom string:
 
-- **Empty Member List:** Show an informative empty state when no eligible members exist.  
-- **Network Failures:** Disable proceed button until connection restores.  
-- **Blocked Members:** Exclude or disable blocked users from selection.
+```swift lines
+title = "Select New Owner"
+```
+
+### Spinner Style
+
+Adjust `spinnerView.style` and color using `CometChatTheme`:
+
+```swift lines
+spinnerView.style = .large
+spinnerView.color = CometChatTheme.palette.primary
+```
+
+### Error Handling
+
+Customize error alerts in the `onError` closure:
+
+```swift lines
+let alert = UIAlertController(
+    title: "Oops!",
+    message: "Could not transfer ownership. Please try again.",
+    preferredStyle: .alert
+)
+alert.addAction(UIAlertAction(title: "Retry", style: .default) { [weak self] _ in
+    self?.transferOwnership(to: member)
+})
+alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+present(alert, animated: true)
+```
+
+## Edge Cases
+
+| Scenario | Handling |
+|----------|----------|
+| Empty member list | Show an informative empty state when no eligible members exist |
+| Network failures | Disable proceed button until connection restores |
+| Blocked members | Exclude or disable blocked users from selection |
 
 ## Error Handling
 
-- **Transfer Failures:** Present `UIAlertController` with retry option.  
-- **Unexpected States:** Ensure `removeSpinnerView()` always executes in `defer`.
+| Error Type | Solution |
+|------------|----------|
+| Transfer failures | Present `UIAlertController` with retry option |
+| Unexpected states | Ensure `removeSpinnerView()` always executes in `defer` |
 
 ## Feature Matrix
 
-| Feature                        | Method / Component                     | File(s)                                                                                   |
-|:-------------------------------|:---------------------------------------|:------------------------------------------------------------------------------------------|
-| Launch transfer flow           | `showTransferOwnership(for:)`          | `GroupDetailsViewController.swift`                                                        |
-| Single-member selection        | `selectionMode = .single`              | `TransferOwnership.swift`                                                                 |
-| Filter out current owner       | `reloadData()` override                | `TransferOwnership.swift`                                                                 |
-| Execute API transfer           | `CometChat.transferGroupOwnership()`   | `TransferOwnership.swift`                                                                 |
-| Show/hide loading indicator    | `addSpinnerView()`, `removeSpinnerView()` | `TransferOwnership.swift`                                                                 |
+| Feature | Method / Component | File(s) |
+|---------|-------------------|---------|
+| Launch transfer flow | `showTransferOwnership(for:)` | `GroupDetailsViewController.swift` |
+| Single-member selection | `selectionMode = .single` | `TransferOwnership.swift` |
+| Filter out current owner | `reloadData()` override | `TransferOwnership.swift` |
+| Execute API transfer | `CometChat.transferGroupOwnership()` | `TransferOwnership.swift` |
+| Show/hide loading indicator | `addSpinnerView()`, `removeSpinnerView()` | `TransferOwnership.swift` |
 
-<CardGroup>
-  <Card title="Full Sample App">
-    Explore the transfer ownership feature in context:
-    [GitHub → SampleApp](https://github.com/cometchat/cometchat-uikit-ios/tree/v5/SampleApp)
+## Related Guides
+
+<CardGroup cols={2}>
+  <Card title="Groups" icon="users" href="/ui-kit/ios/groups">
+    Display and manage groups
   </Card>
-  <Card title="UIKit Source Code">
-    Review the implementation:
-    [TransferOwnership.swift](https://github.com/cometchat/cometchat-uikit-ios/blob/v5/SampleApp/View%20Controllers/CometChat%20Components/Transfer%20ownership%20/TransferOwnership.swift)
+  <Card title="Group Members" icon="user-group" href="/ui-kit/ios/group-members">
+    View and manage group membership
+  </Card>
+  <Card title="Group Chat Guide" icon="comments" href="/ui-kit/ios/guide-group-chat">
+    Complete group management guide
   </Card>
 </CardGroup>

@@ -1,0 +1,342 @@
+---
+title: "Session Status Listener"
+sidebarTitle: "Session Status Listener"
+---
+
+Monitor the call session lifecycle with `SessionStatusListeners`. This listener provides callbacks for session join/leave events, connection status changes, and session timeouts.
+
+## Prerequisites
+
+- An active [call session](/calls/flutter/join-session)
+- Access to the `CallSession` instance
+
+## Register Listener
+
+Register a `SessionStatusListeners` to receive session status callbacks:
+
+```dart
+final callSession = CallSession.getInstance();
+
+callSession?.addSessionStatusListener(SessionStatusListeners(
+  onSessionJoined: () {
+    debugPrint("Successfully joined the session");
+  },
+  onSessionLeft: () {
+    debugPrint("Left the session");
+  },
+  onSessionTimedOut: () {
+    debugPrint("Session timed out");
+  },
+  onConnectionLost: () {
+    debugPrint("Connection lost");
+  },
+  onConnectionRestored: () {
+    debugPrint("Connection restored");
+  },
+  onConnectionClosed: () {
+    debugPrint("Connection closed");
+  },
+));
+```
+
+<Warning>
+Flutter listeners are **not** lifecycle-aware. You must manually remove listeners in your widget's `dispose()` method to prevent memory leaks.
+</Warning>
+
+---
+
+## Callbacks
+
+### onSessionJoined
+
+Triggered when you successfully join a call session.
+
+```dart
+onSessionJoined: () {
+  debugPrint("Successfully joined the session");
+  // Update UI to show call screen
+  setState(() {
+    _isInCall = true;
+  });
+}
+```
+
+**Use Cases:**
+- Update UI to display the call interface
+- Start foreground service for ongoing call notification
+- Initialize call-related features
+
+---
+
+### onSessionLeft
+
+Triggered when you leave the call session (either by calling `leaveSession()` or being removed).
+
+```dart
+onSessionLeft: () {
+  debugPrint("Left the session");
+  // Clean up resources
+  // Navigate back to previous screen
+  Navigator.of(context).pop();
+}
+```
+
+**Use Cases:**
+- Clean up call-related resources
+- Stop foreground service
+- Navigate away from call screen
+
+---
+
+### onSessionTimedOut
+
+Triggered when the session times out due to inactivity (e.g., being alone in the call for too long).
+
+```dart
+onSessionTimedOut: () {
+  debugPrint("Session timed out due to inactivity");
+  // Show timeout message to user
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text("Call ended due to inactivity")),
+  );
+  Navigator.of(context).pop();
+}
+```
+
+<Note>
+Configure the timeout period using `setIdleTimeoutPeriod()` in [SessionSettings](/calls/flutter/session-settings). Default is 300 seconds (5 minutes).
+</Note>
+
+**Use Cases:**
+- Display timeout notification to user
+- Clean up resources and navigate away
+- Log analytics event
+
+---
+
+### onConnectionLost
+
+Triggered when the connection to the call server is lost (e.g., network issues).
+
+```dart
+onConnectionLost: () {
+  debugPrint("Connection lost - attempting to reconnect");
+  // Show reconnecting indicator
+  setState(() {
+    _isReconnecting = true;
+  });
+}
+```
+
+**Use Cases:**
+- Display "Reconnecting..." indicator
+- Disable call controls temporarily
+- Log connection issue for debugging
+
+---
+
+### onConnectionRestored
+
+Triggered when the connection is restored after being lost.
+
+```dart
+onConnectionRestored: () {
+  debugPrint("Connection restored");
+  // Hide reconnecting indicator
+  setState(() {
+    _isReconnecting = false;
+  });
+}
+```
+
+**Use Cases:**
+- Hide reconnecting indicator
+- Re-enable call controls
+- Show success notification
+
+---
+
+### onConnectionClosed
+
+Triggered when the connection is permanently closed (cannot be restored).
+
+```dart
+onConnectionClosed: () {
+  debugPrint("Connection closed permanently");
+  // Show error message
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text("Call connection lost")),
+  );
+  // Clean up and exit
+  Navigator.of(context).pop();
+}
+```
+
+**Use Cases:**
+- Display error message to user
+- Clean up resources
+- Navigate away from call screen
+
+---
+
+## Complete Example
+
+Here's a complete example handling all session status events:
+
+```dart
+import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
+import 'package:flutter/material.dart';
+
+class CallScreen extends StatefulWidget {
+  const CallScreen({super.key});
+
+  @override
+  State<CallScreen> createState() => _CallScreenState();
+}
+
+class _CallScreenState extends State<CallScreen> {
+  CallSession? _callSession;
+  SessionStatusListeners? _sessionStatusListener;
+  bool _isReconnecting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _callSession = CallSession.getInstance();
+    _setupSessionStatusListener();
+  }
+
+  void _setupSessionStatusListener() {
+    _sessionStatusListener = SessionStatusListeners(
+      onSessionJoined: () {
+        debugPrint("Session joined");
+        // Start ongoing call service (Android only)
+        CometChatOngoingCallService.launch();
+      },
+      onSessionLeft: () {
+        debugPrint("Session left");
+        CometChatOngoingCallService.abort();
+        if (mounted) Navigator.of(context).pop();
+      },
+      onSessionTimedOut: () {
+        debugPrint("Session timed out");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Call ended due to inactivity"),
+            ),
+          );
+          CometChatOngoingCallService.abort();
+          Navigator.of(context).pop();
+        }
+      },
+      onConnectionLost: () {
+        debugPrint("Connection lost");
+        if (mounted) {
+          setState(() {
+            _isReconnecting = true;
+          });
+        }
+      },
+      onConnectionRestored: () {
+        debugPrint("Connection restored");
+        if (mounted) {
+          setState(() {
+            _isReconnecting = false;
+          });
+        }
+      },
+      onConnectionClosed: () {
+        debugPrint("Connection closed");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Connection lost. Please try again."),
+            ),
+          );
+          CometChatOngoingCallService.abort();
+          Navigator.of(context).pop();
+        }
+      },
+    );
+
+    _callSession?.addSessionStatusListener(_sessionStatusListener!);
+  }
+
+  @override
+  void dispose() {
+    // Must manually remove listener to prevent memory leaks
+    if (_sessionStatusListener != null) {
+      _callSession?.removeSessionStatusListener(_sessionStatusListener!);
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          // Call UI content here
+          if (_isReconnecting)
+            const Center(
+              child: Card(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(width: 16),
+                      Text("Reconnecting..."),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+```
+
+---
+
+## Remove Listener
+
+Remove the listener in your widget's `dispose()` method to prevent memory leaks:
+
+```dart
+@override
+void dispose() {
+  if (_sessionStatusListener != null) {
+    _callSession?.removeSessionStatusListener(_sessionStatusListener!);
+  }
+  super.dispose();
+}
+```
+
+---
+
+## Callbacks Summary
+
+| Callback | Description |
+|----------|-------------|
+| `onSessionJoined` | Successfully joined the call session |
+| `onSessionLeft` | Left the call session |
+| `onSessionTimedOut` | Session ended due to inactivity timeout |
+| `onConnectionLost` | Connection to server lost (reconnecting) |
+| `onConnectionRestored` | Connection restored after being lost |
+| `onConnectionClosed` | Connection permanently closed |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Participant Event Listener" icon="users" href="/calls/flutter/participant-event-listener">
+    Handle participant join/leave and state changes
+  </Card>
+  <Card title="Media Events Listener" icon="video" href="/calls/flutter/media-events-listener">
+    Handle recording, screen share, and media state changes
+  </Card>
+</CardGroup>

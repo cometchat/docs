@@ -1,0 +1,647 @@
+---
+title: "Custom Participant List"
+sidebarTitle: "Custom Participant List"
+---
+
+Build a custom participant list UI that displays real-time participant information with full control over layout and interactions. This guide demonstrates how to hide the default participant list and create your own using participant events and actions.
+
+## Overview
+
+The SDK provides participant data through events, allowing you to build custom UIs for:
+- Participant roster with search and filtering
+- Custom participant cards with role badges or metadata
+- Moderation dashboards with quick access to controls
+- Attendance tracking and engagement monitoring
+
+## Prerequisites
+
+- CometChat Calls SDK installed and initialized
+- Active call session (see [Join Session](/calls/ios/join-session))
+- Basic understanding of UITableView or UICollectionView
+
+---
+
+## Step 1: Hide Default Participant List
+
+Configure session settings to hide the default participant list button:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let sessionSettings = CometChatCalls.sessionSettingsBuilder
+    .hideParticipantListButton(true)
+    .build()
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+SessionSettings *sessionSettings = [[[CometChatCalls sessionSettingsBuilder]
+    hideParticipantListButton:YES]
+    build];
+```
+</Tab>
+</Tabs>
+
+---
+
+## Step 2: Create Participant List Layout
+
+Create a custom view controller for displaying participants:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+class ParticipantListViewController: UIViewController {
+    
+    private let tableView = UITableView()
+    private let searchBar = UISearchBar()
+    private var participants: [Participant] = []
+    private var filteredParticipants: [Participant] = []
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupUI()
+        setupParticipantListener()
+    }
+    
+    private func setupUI() {
+        title = "Participants"
+        view.backgroundColor = .systemBackground
+        
+        // Setup search bar
+        searchBar.placeholder = "Search participants..."
+        searchBar.delegate = self
+        searchBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(searchBar)
+        
+        // Setup table view
+        tableView.delegate = self
+        tableView.dataSource = self
+        tableView.register(ParticipantCell.self, forCellReuseIdentifier: "ParticipantCell")
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tableView)
+        
+        // Layout constraints
+        NSLayoutConstraint.activate([
+            searchBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            searchBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            searchBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            
+            tableView.topAnchor.constraint(equalTo: searchBar.bottomAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        
+        // Add close button
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .close,
+            target: self,
+            action: #selector(dismissView)
+        )
+    }
+    
+    @objc private func dismissView() {
+        dismiss(animated: true)
+    }
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+@interface ParticipantListViewController () <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate>
+@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, strong) NSArray<Participant *> *participants;
+@property (nonatomic, strong) NSArray<Participant *> *filteredParticipants;
+@end
+
+@implementation ParticipantListViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self setupUI];
+    [self setupParticipantListener];
+}
+
+- (void)setupUI {
+    self.title = @"Participants";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    
+    // Setup search bar
+    self.searchBar = [[UISearchBar alloc] init];
+    self.searchBar.placeholder = @"Search participants...";
+    self.searchBar.delegate = self;
+    self.searchBar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.searchBar];
+    
+    // Setup table view
+    self.tableView = [[UITableView alloc] init];
+    self.tableView.delegate = self;
+    self.tableView.dataSource = self;
+    [self.tableView registerClass:[ParticipantCell class] forCellReuseIdentifier:@"ParticipantCell"];
+    self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.tableView];
+    
+    // Layout constraints
+    [NSLayoutConstraint activateConstraints:@[
+        [self.searchBar.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.searchBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.searchBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        
+        [self.tableView.topAnchor constraintEqualToAnchor:self.searchBar.bottomAnchor],
+        [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+    ]];
+    
+    // Add close button
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+        target:self
+        action:@selector(dismissView)];
+}
+
+- (void)dismissView {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+```
+</Tab>
+</Tabs>
+
+---
+
+## Step 3: Create Participant Cell
+
+Build a custom table view cell to display participant information:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+class ParticipantCell: UITableViewCell {
+    
+    private let avatarImageView = UIImageView()
+    private let nameLabel = UILabel()
+    private let statusLabel = UILabel()
+    private let muteButton = UIButton(type: .system)
+    private let pinButton = UIButton(type: .system)
+    
+    var participant: Participant?
+    var onMuteAction: ((Participant) -> Void)?
+    var onPinAction: ((Participant) -> Void)?
+    
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        setupUI()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupUI() {
+        // Avatar
+        avatarImageView.layer.cornerRadius = 20
+        avatarImageView.clipsToBounds = true
+        avatarImageView.backgroundColor = .systemGray4
+        avatarImageView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(avatarImageView)
+        
+        // Name label
+        nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(nameLabel)
+        
+        // Status label
+        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(statusLabel)
+        
+        // Action buttons
+        muteButton.setImage(UIImage(systemName: "mic.slash"), for: .normal)
+        muteButton.addTarget(self, action: #selector(muteButtonTapped), for: .touchUpInside)
+        muteButton.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(muteButton)
+        
+        pinButton.setImage(UIImage(systemName: "pin"), for: .normal)
+        pinButton.addTarget(self, action: #selector(pinButtonTapped), for: .touchUpInside)
+        pinButton.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(pinButton)
+        
+        // Layout
+        NSLayoutConstraint.activate([
+            avatarImageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            avatarImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            avatarImageView.widthAnchor.constraint(equalToConstant: 40),
+            avatarImageView.heightAnchor.constraint(equalToConstant: 40),
+            
+            nameLabel.leadingAnchor.constraint(equalTo: avatarImageView.trailingAnchor, constant: 12),
+            nameLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            
+            statusLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            statusLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 4),
+            statusLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            
+            pinButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            pinButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            pinButton.widthAnchor.constraint(equalToConstant: 32),
+            
+            muteButton.trailingAnchor.constraint(equalTo: pinButton.leadingAnchor, constant: -8),
+            muteButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            muteButton.widthAnchor.constraint(equalToConstant: 32)
+        ])
+    }
+    
+    func configure(with participant: Participant) {
+        self.participant = participant
+        nameLabel.text = participant.name
+        
+        // Build status text
+        var statusParts: [String] = []
+        if participant.isAudioMuted { statusParts.append("🔇 Muted") }
+        if participant.isVideoPaused { statusParts.append("📹 Video Off") }
+        if participant.isPresenting { statusParts.append("🖥️ Presenting") }
+        if participant.raisedHandTimestamp > 0 { statusParts.append("✋ Hand Raised") }
+        if participant.isPinned { statusParts.append("📌 Pinned") }
+        
+        statusLabel.text = statusParts.isEmpty ? "Active" : statusParts.joined(separator: " • ")
+        
+        // Update button states
+        muteButton.alpha = participant.isAudioMuted ? 0.5 : 1.0
+        pinButton.tintColor = participant.isPinned ? .systemBlue : .systemGray
+    }
+    
+    @objc private func muteButtonTapped() {
+        guard let participant = participant else { return }
+        onMuteAction?(participant)
+    }
+    
+    @objc private func pinButtonTapped() {
+        guard let participant = participant else { return }
+        onPinAction?(participant)
+    }
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+@interface ParticipantCell : UITableViewCell
+@property (nonatomic, strong) Participant *participant;
+@property (nonatomic, copy) void (^onMuteAction)(Participant *);
+@property (nonatomic, copy) void (^onPinAction)(Participant *);
+- (void)configureWithParticipant:(Participant *)participant;
+@end
+
+@implementation ParticipantCell {
+    UIImageView *_avatarImageView;
+    UILabel *_nameLabel;
+    UILabel *_statusLabel;
+    UIButton *_muteButton;
+    UIButton *_pinButton;
+}
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        [self setupUI];
+    }
+    return self;
+}
+
+- (void)setupUI {
+    // Avatar
+    _avatarImageView = [[UIImageView alloc] init];
+    _avatarImageView.layer.cornerRadius = 20;
+    _avatarImageView.clipsToBounds = YES;
+    _avatarImageView.backgroundColor = [UIColor systemGray4Color];
+    _avatarImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_avatarImageView];
+    
+    // Name label
+    _nameLabel = [[UILabel alloc] init];
+    _nameLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    _nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_nameLabel];
+    
+    // Status label
+    _statusLabel = [[UILabel alloc] init];
+    _statusLabel.font = [UIFont systemFontOfSize:12];
+    _statusLabel.textColor = [UIColor secondaryLabelColor];
+    _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_statusLabel];
+    
+    // Action buttons
+    _muteButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_muteButton setImage:[UIImage systemImageNamed:@"mic.slash"] forState:UIControlStateNormal];
+    [_muteButton addTarget:self action:@selector(muteButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    _muteButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_muteButton];
+    
+    _pinButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_pinButton setImage:[UIImage systemImageNamed:@"pin"] forState:UIControlStateNormal];
+    [_pinButton addTarget:self action:@selector(pinButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    _pinButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_pinButton];
+    
+    // Layout constraints
+    [NSLayoutConstraint activateConstraints:@[
+        [_avatarImageView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [_avatarImageView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [_avatarImageView.widthAnchor constraintEqualToConstant:40],
+        [_avatarImageView.heightAnchor constraintEqualToConstant:40],
+        
+        [_nameLabel.leadingAnchor constraintEqualToAnchor:_avatarImageView.trailingAnchor constant:12],
+        [_nameLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:12],
+        
+        [_statusLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+        [_statusLabel.topAnchor constraintEqualToAnchor:_nameLabel.bottomAnchor constant:4],
+        [_statusLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12],
+        
+        [_pinButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [_pinButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [_pinButton.widthAnchor constraintEqualToConstant:32],
+        
+        [_muteButton.trailingAnchor constraintEqualToAnchor:_pinButton.leadingAnchor constant:-8],
+        [_muteButton.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [_muteButton.widthAnchor constraintEqualToConstant:32]
+    ]];
+}
+
+- (void)configureWithParticipant:(Participant *)participant {
+    self.participant = participant;
+    _nameLabel.text = participant.name;
+    
+    // Build status text
+    NSMutableArray *statusParts = [NSMutableArray array];
+    if (participant.isAudioMuted) [statusParts addObject:@"🔇 Muted"];
+    if (participant.isVideoPaused) [statusParts addObject:@"📹 Video Off"];
+    if (participant.isPresenting) [statusParts addObject:@"🖥️ Presenting"];
+    if (participant.raisedHandTimestamp > 0) [statusParts addObject:@"✋ Hand Raised"];
+    if (participant.isPinned) [statusParts addObject:@"📌 Pinned"];
+    
+    _statusLabel.text = statusParts.count == 0 ? @"Active" : [statusParts componentsJoinedByString:@" • "];
+    
+    // Update button states
+    _muteButton.alpha = participant.isAudioMuted ? 0.5 : 1.0;
+    _pinButton.tintColor = participant.isPinned ? [UIColor systemBlueColor] : [UIColor systemGrayColor];
+}
+
+- (void)muteButtonTapped {
+    if (self.onMuteAction && self.participant) {
+        self.onMuteAction(self.participant);
+    }
+}
+
+- (void)pinButtonTapped {
+    if (self.onPinAction && self.participant) {
+        self.onPinAction(self.participant);
+    }
+}
+
+@end
+```
+</Tab>
+</Tabs>
+
+---
+
+## Step 4: Implement Participant Events
+
+Listen for participant updates and handle actions:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+extension ParticipantListViewController: ParticipantEventListener {
+    
+    private func setupParticipantListener() {
+        CallSession.shared.addParticipantEventListener(self)
+    }
+    
+    deinit {
+        CallSession.shared.removeParticipantEventListener(self)
+    }
+    
+    func onParticipantListChanged(participants: [Participant]) {
+        DispatchQueue.main.async {
+            self.participants = participants
+            self.filteredParticipants = participants
+            self.title = "Participants (\(participants.count))"
+            self.tableView.reloadData()
+        }
+    }
+    
+    func onParticipantJoined(participant: Participant) {
+        print("\(participant.name) joined")
+    }
+    
+    func onParticipantLeft(participant: Participant) {
+        print("\(participant.name) left")
+    }
+    
+    func onParticipantAudioMuted(participant: Participant) {
+        // Table will update via onParticipantListChanged
+    }
+    
+    func onParticipantAudioUnmuted(participant: Participant) {}
+    func onParticipantVideoPaused(participant: Participant) {}
+    func onParticipantVideoResumed(participant: Participant) {}
+    func onParticipantHandRaised(participant: Participant) {}
+    func onParticipantHandLowered(participant: Participant) {}
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+@interface ParticipantListViewController () <ParticipantEventListener>
+@end
+
+- (void)setupParticipantListener {
+    [[CallSession shared] addParticipantEventListener:self];
+}
+
+- (void)dealloc {
+    [[CallSession shared] removeParticipantEventListener:self];
+}
+
+- (void)onParticipantListChangedWithParticipants:(NSArray<Participant *> *)participants {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.participants = participants;
+        self.filteredParticipants = participants;
+        self.title = [NSString stringWithFormat:@"Participants (%lu)", (unsigned long)participants.count];
+        [self.tableView reloadData];
+    });
+}
+
+- (void)onParticipantJoinedWithParticipant:(Participant *)participant {
+    NSLog(@"%@ joined", participant.name);
+}
+
+- (void)onParticipantLeftWithParticipant:(Participant *)participant {
+    NSLog(@"%@ left", participant.name);
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Step 5: Implement Table View Data Source
+
+<Tabs>
+<Tab title="Swift">
+```swift
+extension ParticipantListViewController: UITableViewDelegate, UITableViewDataSource {
+    
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return filteredParticipants.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "ParticipantCell", for: indexPath) as! ParticipantCell
+        let participant = filteredParticipants[indexPath.row]
+        
+        cell.configure(with: participant)
+        
+        cell.onMuteAction = { [weak self] participant in
+            CallSession.shared.muteParticipant(participant.uid)
+        }
+        
+        cell.onPinAction = { [weak self] participant in
+            if participant.isPinned {
+                CallSession.shared.unPinParticipant()
+            } else {
+                CallSession.shared.pinParticipant(participant.uid)
+            }
+        }
+        
+        return cell
+    }
+}
+
+extension ParticipantListViewController: UISearchBarDelegate {
+    
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        if searchText.isEmpty {
+            filteredParticipants = participants
+        } else {
+            filteredParticipants = participants.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+        tableView.reloadData()
+    }
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.filteredParticipants.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    ParticipantCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ParticipantCell" forIndexPath:indexPath];
+    Participant *participant = self.filteredParticipants[indexPath.row];
+    
+    [cell configureWithParticipant:participant];
+    
+    __weak typeof(self) weakSelf = self;
+    cell.onMuteAction = ^(Participant *p) {
+        [[CallSession shared] muteParticipant:p.uid];
+    };
+    
+    cell.onPinAction = ^(Participant *p) {
+        if (p.isPinned) {
+            [[CallSession shared] unPinParticipant];
+        } else {
+            [[CallSession shared] pinParticipant:p.uid];
+        }
+    };
+    
+    return cell;
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if (searchText.length == 0) {
+        self.filteredParticipants = self.participants;
+    } else {
+        NSPredicate *predicate = [NSPredicate predicateWithFormat:@"name CONTAINS[cd] %@", searchText];
+        self.filteredParticipants = [self.participants filteredArrayUsingPredicate:predicate];
+    }
+    [self.tableView reloadData];
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Step 6: Present Participant List
+
+Show the participant list from your call view controller:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+class CallViewController: UIViewController {
+    
+    private let participantListButton = UIButton(type: .system)
+    
+    private func setupParticipantListButton() {
+        participantListButton.setImage(UIImage(systemName: "person.3"), for: .normal)
+        participantListButton.addTarget(self, action: #selector(showParticipantList), for: .touchUpInside)
+        // Add to your view hierarchy
+    }
+    
+    @objc private func showParticipantList() {
+        let participantListVC = ParticipantListViewController()
+        let navController = UINavigationController(rootViewController: participantListVC)
+        navController.modalPresentationStyle = .pageSheet
+        
+        if let sheet = navController.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        
+        present(navController, animated: true)
+    }
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+- (void)setupParticipantListButton {
+    self.participantListButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.participantListButton setImage:[UIImage systemImageNamed:@"person.3"] forState:UIControlStateNormal];
+    [self.participantListButton addTarget:self action:@selector(showParticipantList) forControlEvents:UIControlEventTouchUpInside];
+    // Add to your view hierarchy
+}
+
+- (void)showParticipantList {
+    ParticipantListViewController *participantListVC = [[ParticipantListViewController alloc] init];
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:participantListVC];
+    navController.modalPresentationStyle = UIModalPresentationPageSheet;
+    
+    UISheetPresentationController *sheet = navController.sheetPresentationController;
+    if (sheet) {
+        sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
+        sheet.prefersGrabberVisible = YES;
+    }
+    
+    [self presentViewController:navController animated:YES completion:nil];
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Related Documentation
+
+- [Participant Management](/calls/ios/participant-management) - Participant actions and events
+- [Events](/calls/ios/events) - All available event listeners
+- [Actions](/calls/ios/actions) - Available call actions
