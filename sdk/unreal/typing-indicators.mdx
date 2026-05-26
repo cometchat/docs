@@ -1,22 +1,66 @@
 ---
 title: "Typing Indicators"
-description: "Show CometChat typing indicators in Unreal Engine when users start or stop composing messages."
+description: "Show real-time typing indicators when users are composing messages."
 ---
 
-Typing indicators let you show a "user is typing..." animation in your chat UI. The CometChat Unreal SDK delivers these as real-time events through the `OnTypingChanged` delegate.
+Typing indicators let you show a "user is typing..." animation in your chat UI. The CometChat Unreal SDK provides two separate delegates — `OnTypingStarted` and `OnTypingEnded` — plus methods to send typing state from the local user.
+
+---
+
+## Send Typing Indicators
+
+Use `StartTyping` and `EndTyping` on the Subsystem to notify other users that the local user is composing a message.
+
+<Tabs>
+<Tab title="Blueprint">
+1. Get a reference to the **CometChat Subsystem**
+2. Create an `FCometChatTypingIndicator` struct with the receiver info
+3. Call **Start Typing** when the user begins typing
+4. Call **End Typing** when the user stops (or after a timeout)
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::NotifyTypingStarted(const FString& ReceiverId, const FString& ReceiverType)
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+
+    FCometChatTypingIndicator Indicator;
+    Indicator.ReceiverId = ReceiverId;
+    Indicator.ReceiverType = ReceiverType; // "user" or "group"
+
+    Chat->StartTyping(Indicator);
+}
+
+void AMyActor::NotifyTypingEnded(const FString& ReceiverId, const FString& ReceiverType)
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+
+    FCometChatTypingIndicator Indicator;
+    Indicator.ReceiverId = ReceiverId;
+    Indicator.ReceiverType = ReceiverType;
+
+    Chat->EndTyping(Indicator);
+}
+```
+</Tab>
+</Tabs>
+
+<Tip>
+**Auto-end pattern**: Start a 5-second timer when the user begins typing. Reset it on each keystroke. When the timer fires without a reset, call `EndTyping`. This prevents stale typing indicators if the user walks away mid-message.
+</Tip>
 
 ---
 
 ## Listen for Typing Events
 
-Bind to the `OnTypingChanged` delegate on the Subsystem to receive typing start/stop notifications.
+Bind to `OnTypingStarted` and `OnTypingEnded` delegates on the Subsystem to receive typing notifications from other users.
 
 <Tabs>
 <Tab title="Blueprint">
 1. Get a reference to the **CometChat Subsystem**
-2. Drag off and search for **On Typing Changed**
-3. Use **Bind Event** to connect it to a custom event
-4. The custom event receives an `FCometChatTypingEvent` parameter
+2. Drag off and search for **On Typing Started** / **On Typing Ended**
+3. Use **Bind Event** to connect each to a custom event
+4. The custom event receives an `FCometChatTypingIndicator` parameter
 </Tab>
 <Tab title="C++">
 ```cpp
@@ -25,21 +69,20 @@ void AMyActor::BeginPlay()
     Super::BeginPlay();
 
     UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
-    Chat->OnTypingChanged.AddDynamic(this, &AMyActor::HandleTyping);
+    Chat->OnTypingStarted.AddDynamic(this, &AMyActor::HandleTypingStarted);
+    Chat->OnTypingEnded.AddDynamic(this, &AMyActor::HandleTypingEnded);
 }
 
-void AMyActor::HandleTyping(const FCometChatTypingEvent& Event)
+void AMyActor::HandleTypingStarted(const FCometChatTypingIndicator& Indicator)
 {
-    if (Event.bIsTyping)
-    {
-        // Show typing indicator for this user/conversation
-        ShowTypingBubble(Event.Uid, Event.ConversationId);
-    }
-    else
-    {
-        // Hide typing indicator
-        HideTypingBubble(Event.Uid, Event.ConversationId);
-    }
+    // Show typing indicator for this user in the conversation
+    ShowTypingBubble(Indicator.Sender.Uid, Indicator.ReceiverId);
+}
+
+void AMyActor::HandleTypingEnded(const FCometChatTypingIndicator& Indicator)
+{
+    // Hide typing indicator
+    HideTypingBubble(Indicator.Sender.Uid, Indicator.ReceiverId);
 }
 ```
 </Tab>
@@ -47,17 +90,40 @@ void AMyActor::HandleTyping(const FCometChatTypingEvent& Event)
 
 ---
 
-## FCometChatTypingEvent
+## FCometChatTypingIndicator
 
 | Property | Type | Description |
 | -------- | ---- | ----------- |
-| `Uid` | `FString` | The user who started or stopped typing |
-| `ConversationId` | `FString` | The conversation where typing is happening |
-| `bIsTyping` | `bool` | `true` when the user starts typing, `false` when they stop |
+| `ReceiverId` | `FString` | The user UID or group GUID where typing is happening |
+| `ReceiverType` | `FString` | `"user"` for 1:1 or `"group"` for group conversations |
+| `Metadata` | `FString` | Optional metadata JSON string |
+| `Sender` | `FCometChatUser` | The user who started or stopped typing |
 
 <Tip>
-**UI pattern**: When `bIsTyping` is `true`, show a typing animation (e.g., three bouncing dots). When `false`, hide it. Consider adding a timeout (e.g., 5 seconds) to auto-hide the indicator in case the stop event is missed.
+**UI pattern**: When `OnTypingStarted` fires, show a typing animation (e.g., three bouncing dots). When `OnTypingEnded` fires, hide it. Consider adding a local timeout (e.g., 5 seconds) to auto-hide the indicator in case the end event is missed due to network issues.
 </Tip>
+
+---
+
+## Event Flow
+
+```mermaid
+sequenceDiagram
+    participant A as User A (Sender)
+    participant S as CometChat Cloud
+    participant B as User B (Receiver)
+
+    A->>S: StartTyping(Indicator)
+    S->>B: OnTypingStarted fires
+    Note over B: Show "User A is typing..."
+    A->>S: EndTyping(Indicator)
+    S->>B: OnTypingEnded fires
+    Note over B: Hide typing indicator
+
+    style A fill:#333,stroke:#666,color:#fff
+    style S fill:#555,stroke:#999,color:#ccc
+    style B fill:#333,stroke:#666,color:#fff
+```
 
 ---
 
@@ -67,7 +133,7 @@ void AMyActor::HandleTyping(const FCometChatTypingEvent& Event)
   <Card title="Delivery & Read Receipts" icon="check-double" href="/sdk/unreal/delivery-read-receipts">
     Track when messages are delivered and read.
   </Card>
-  <Card title="Connection Status" icon="wifi" href="/sdk/unreal/connection-status">
-    Monitor the WebSocket connection state.
+  <Card title="Real-Time Events" icon="bolt" href="/sdk/unreal/real-time-events">
+    See all 40+ real-time delegates available.
   </Card>
 </CardGroup>
