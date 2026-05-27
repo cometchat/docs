@@ -1,0 +1,187 @@
+---
+title: "Campaigns"
+description: "Deliver targeted, rich notifications to users via an in-app notification feed powered by the CometChat Cards renderer."
+---
+
+CometChat Campaigns enables you to send rich, interactive notifications to users through an in-app notification feed. Each notification is rendered as a native card using the CometChat Cards library — supporting images, text, buttons, layouts, and interactive actions.
+
+---
+
+## Overview
+
+Campaigns delivers notifications as Card Schema JSON — a structured format that defines the visual layout of each notification card. The system consists of three layers:
+
+- **CometChat Chat SDK** — Fetches feed items, manages read/delivered state, provides real-time listeners, handles push notification tracking
+- **CometChat Cards Library** — Renders Card Schema JSON into native UIKit views
+- **CometChat UI Kit** — Provides the ready-to-use `CometChatNotificationFeed` component that wires everything together
+
+---
+
+## Architecture Flow
+
+```
+Dashboard / API → Campaign Created → Push + WebSocket Delivery
+                                          ↓
+              SDK: NotificationFeedRequest.fetchNext()
+                                          ↓
+          NotificationFeedItem.content → Card Schema JSON
+                                          ↓
+            Cards Library: CometChatCardView
+                                          ↓
+     Native Rendered Card (images, text, buttons, layouts)
+                                          ↓
+      User taps button → actionCallback → Your code handles it
+```
+
+---
+
+## How Cards Work
+
+Each `NotificationFeedItem` from the SDK contains a `content` field — a `[String: Any]` dictionary holding the Card Schema JSON. This JSON is passed directly to the CometChat Cards renderer which produces a native UIKit view.
+
+The Cards library is a pure renderer:
+
+- **Input:** Card Schema JSON string + theme mode + optional action callback
+- **Output:** Native UIKit view hierarchy
+
+It does not execute actions, manage message state, or call any SDK methods. When users tap interactive elements (buttons, links), the library emits the action to your callback. You decide what happens — open a URL, navigate to a chat, make an API call, etc.
+
+---
+
+## Card Schema JSON Example
+
+```json
+{
+  "version": "1.0",
+  "body": [
+    { "type": "image", "id": "img_1", "url": "https://cdn.example.com/sale.jpg", "height": 180, "fit": "cover", "borderRadius": 8 },
+    { "type": "text", "id": "txt_1", "content": "🎉 Flash Sale — 40% Off!", "variant": "heading2" },
+    { "type": "text", "id": "txt_2", "content": "Limited time offer on all premium plans.", "variant": "body" },
+    { "type": "button", "id": "btn_1", "label": "Claim Offer", "action": { "type": "openUrl", "url": "https://example.com/offer" }, "fullWidth": true }
+  ],
+  "style": { "background": {"light": "#FFFFFF", "dark": "#1E1E1E"}, "borderRadius": 12, "padding": 16 },
+  "fallbackText": "Flash Sale — 40% Off! Claim your offer: https://example.com/offer"
+}
+```
+
+The schema supports 20 element types (text, image, icon, avatar, badge, divider, spacer, chip, progressBar, codeBlock, markdown, row, column, grid, accordion, tabs, button, iconButton, link, table) and 9 action types (openUrl, chatWithUser, chatWithGroup, sendMessage, copyToClipboard, downloadFile, initiateCall, apiCall, customCallback).
+
+---
+
+## Notification Feed Component
+
+The `CometChatNotificationFeed` component renders campaign notifications as a full-screen scrollable feed. It handles fetching, card rendering, pagination, filtering, real-time updates, and engagement reporting automatically.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let notificationFeed = CometChatNotificationFeed()
+let navController = UINavigationController(rootViewController: notificationFeed)
+self.present(navController, animated: true)
+```
+</Tab>
+</Tabs>
+
+See the full [CometChatNotificationFeed](/ui-kit/ios/notification-feed) documentation for all configuration options, actions, filtering, and customization.
+
+---
+
+## Setting Up Notification Service Extension
+
+To track push notification delivery for campaigns, you need a Notification Service Extension. This runs when a push arrives on the device (even if the app is in the background).
+
+### Step 1: Create the Extension
+
+1. In Xcode, go to **File → New → Target**.
+2. Select **Notification Service Extension**.
+3. Name it (e.g., `NotificationService`).
+4. Click **Finish**.
+
+### Step 2: Configure App Groups
+
+Both your main app and the extension need to share data via an App Group:
+
+1. Select your **main app target** → Signing & Capabilities → **+ Capability** → **App Groups**.
+2. Add a group (e.g., `group.com.yourapp.cometchat`).
+3. Select your **extension target** → repeat the same steps with the same group ID.
+
+### Step 3: Add CometChatSDK to the Extension
+
+Add `CometChatSDK` as a dependency to the extension target (via SPM or CocoaPods).
+
+### Step 4: Implement the Extension
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import UserNotifications
+import CometChatSDK
+
+class NotificationService: UNNotificationServiceExtension {
+    override func didReceive(_ request: UNNotificationRequest,
+                             withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
+        let bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)!
+
+        // Share auth state via App Group
+        CometChat.setExtensionGroupID(id: "group.com.yourapp.cometchat")
+
+        let userInfo = bestAttemptContent.userInfo
+        if let cometchat = userInfo["cometchat"] as? [String: Any],
+           let type = cometchat["type"] as? String,
+           type == "business_messaging" {
+            let push = PushNotification.fromPayload(cometchat)
+            CometChat.markPushNotificationDelivered(push, onSuccess: {}, onError: { _ in })
+        }
+
+        contentHandler(bestAttemptContent)
+    }
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Handling Push Notification Clicks
+
+When the user taps a campaign push notification, report the click and navigate to the feed:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                            didReceive response: UNNotificationResponse,
+                            withCompletionHandler completionHandler: @escaping () -> Void) {
+    let userInfo = response.notification.request.content.userInfo
+
+    if let cometchat = userInfo["cometchat"] as? [String: Any],
+       let type = cometchat["type"] as? String,
+       type == "business_messaging" {
+        let push = PushNotification.fromPayload(cometchat)
+        CometChat.markPushNotificationClicked(push, onSuccess: {}, onError: { _ in })
+
+        // Navigate to notification feed
+        let notificationFeed = CometChatNotificationFeed()
+        let navController = UINavigationController(rootViewController: notificationFeed)
+        window?.rootViewController?.present(navController, animated: true)
+
+        completionHandler()
+        return
+    }
+
+    completionHandler()
+}
+```
+</Tab>
+</Tabs>
+
+See the [SDK Campaigns documentation](/sdk/ios/campaigns) for the complete push notification tracking API.
+
+---
+
+## Sending Campaigns
+
+Campaigns are created and managed from the CometChat Dashboard or via the REST API. The SDK and UI Kit are consumer-side — they display and interact with campaigns, not create them.
+
+- **Dashboard:** Navigate to Campaigns → Create Campaign → Define audience, content (Card Schema), and delivery channel.
+- **REST API:** Use the Campaigns API to programmatically create and schedule campaigns.
