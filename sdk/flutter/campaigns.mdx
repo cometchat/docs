@@ -1,0 +1,428 @@
+---
+title: "Campaigns"
+description: "Fetch notification feed items, listen for real-time delivery, mark items as read/delivered, report engagement, and retrieve unread counts in Flutter."
+---
+
+CometChat Campaigns lets you deliver targeted, rich notifications to users via an in-app notification feed. Each notification is a **Card Schema JSON** — a structured layout rendered natively by the CometChat Cards library.
+
+The SDK provides APIs to fetch feed items, listen for real-time delivery, mark items as read/delivered, report engagement, and retrieve unread counts.
+
+---
+
+## Key Concepts
+
+| Concept | Description |
+| --- | --- |
+| **NotificationFeedItem** | A single notification in the feed. Contains Card Schema JSON in its `content` field, a `category` for filtering, timestamps, and metadata. |
+| **NotificationCategory** | A category label used for filter chips (e.g., "Promotions", "Updates"). |
+| **Card Schema JSON** | The fully rendered card layout (images, text, buttons) inside `NotificationFeedItem.content`. Passed directly to the CometChat Cards renderer. |
+| **PushNotification** | Represents a campaign push notification payload received via FCM/APNs. |
+
+---
+
+## How Cards Render in the Notification Feed
+
+Each `NotificationFeedItem` has a `content` field containing a `Map<String, dynamic>` — this is the **Card Schema JSON**. This JSON is passed directly to the **CometChat Cards** renderer package (`cometchat_cards`).
+
+The rendering flow:
+
+1. Fetch feed items via `NotificationFeedRequest`
+2. For each item, extract `item.content` — this is the Card Schema JSON
+3. Convert to string: `jsonEncode(item.content)`
+4. Pass to the Cards renderer (`CometChatCardView`)
+5. The renderer produces a native Flutter widget from the JSON
+
+### Card Schema JSON Structure
+
+```json
+{
+  "version": "1.0",
+  "body": [
+    { "type": "image", "id": "img_1", "url": "https://...", "height": 200 },
+    { "type": "text", "id": "txt_1", "content": "Flash Sale!", "variant": "heading2" },
+    { "type": "button", "id": "btn_1", "label": "Shop Now", "action": { "type": "openUrl", "url": "https://..." } }
+  ],
+  "style": { "background": {"light": "#FFFFFF", "dark": "#1E1E1E"}, "borderRadius": 12, "padding": 16 },
+  "fallbackText": "Flash Sale! Shop Now: https://..."
+}
+```
+
+The `body` array contains elements (text, image, button, row, column, etc.) rendered top-to-bottom. Interactive elements like buttons emit actions via a callback — the consumer handles navigation, deep links, or API calls.
+
+---
+
+## Retrieve Notification Feed Items
+
+Use `NotificationFeedRequest` to fetch a paginated list of feed items. Uses cursor-based pagination internally.
+
+### Build the Request
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request = (NotificationFeedRequestBuilder()
+  ..setLimit(20))
+  .build();
+```
+</Tab>
+</Tabs>
+
+### Builder Parameters
+
+| Method | Type | Default | Description |
+| --- | --- | --- | --- |
+| `setLimit(int)` | int | 20 | Items per page (max 100) |
+| `setReadState(FeedReadState)` | enum | `FeedReadState.all` | Filter by `read`, `unread`, or `all` |
+| `setCategory(String)` | String | null | Filter by category ID |
+| `setChannelId(String)` | String | null | Filter by channel |
+| `setTags(List<String>)` | List | null | Filter by tags |
+| `setDateFrom(String)` | String | null | ISO 8601 date — items sent on or after |
+| `setDateTo(String)` | String | null | ISO 8601 date — items sent on or before |
+
+### Fetch Items
+
+<Tabs>
+<Tab title="Dart">
+```dart
+request.fetchNext(
+  onSuccess: (List<NotificationFeedItem> items) {
+    for (final item in items) {
+      final cardJson = jsonEncode(item.content);
+      // Pass cardJson to CometChatCardView
+    }
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+Call `fetchNext()` repeatedly for pagination. When the server has no more items, subsequent calls return an empty list.
+
+### NotificationFeedItem Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Unique item identifier |
+| `category` | String | Notification category (e.g., "promotions") |
+| `categoryId` | String? | Category ID for programmatic filtering |
+| `content` | Map\<String, dynamic\> | Card Schema JSON — pass to CometChat Cards renderer |
+| `readAt` | int? | Unix timestamp when read, or null if unread |
+| `deliveredAt` | int? | Unix timestamp when delivered, or null |
+| `sentAt` | int | Unix timestamp when sent |
+| `metadata` | Map\<String, dynamic\> | Custom key-value metadata |
+| `tags` | List\<String\> | Tags for filtering |
+| `sender` | String | Sender identifier |
+| `receiver` | String | Receiver identifier |
+| `receiverType` | String | Receiver type |
+| `isRead` | bool | Computed property — `true` if `readAt != null` |
+
+---
+
+## Retrieve Notification Categories
+
+Use `NotificationCategoriesRequest` to fetch available categories for filter chips.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final categoriesRequest = (NotificationCategoriesRequestBuilder()
+  ..setLimit(50))
+  .build();
+
+categoriesRequest.fetchNext(
+  onSuccess: (List<NotificationCategory> categories) {
+    for (final category in categories) {
+      debugPrint("Category: ${category.name}");
+    }
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+### NotificationCategory Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Category identifier |
+| `name` | String | Display name for filter UI |
+| `description` | String | Category description |
+| `appId` | String | Associated app ID |
+
+---
+
+## Real-Time Notification Feed Listener
+
+Listen for new feed items arriving via WebSocket. This listener is independent from `MessageListener`, `GroupListener`, and `CallListener`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class MyNotificationFeedListener with NotificationFeedListener {
+  @override
+  void onFeedItemReceived(NotificationFeedItem feedItem) {
+    debugPrint("New item: ${feedItem.id}");
+    final cardJson = jsonEncode(feedItem.content);
+    // Insert at top of feed and render
+  }
+}
+
+CometChat.addNotificationFeedListener(
+  "feedListener",
+  MyNotificationFeedListener(),
+);
+```
+</Tab>
+</Tabs>
+
+Remove the listener when no longer needed:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.removeNotificationFeedListener("feedListener");
+```
+</Tab>
+</Tabs>
+
+---
+
+## Mark Feed Item as Read
+
+Mark a single item as read. Idempotent — safe to call multiple times.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.markFeedItemAsRead(
+  feedItem,
+  onSuccess: (result) {
+    debugPrint("Marked as read");
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Mark Feed Item as Delivered
+
+Mark a single item as delivered. Idempotent.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.markFeedItemAsDelivered(
+  feedItem,
+  onSuccess: (result) {
+    // Success
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Report Engagement
+
+Report that a user engaged with a feed item (e.g., viewed, clicked, interacted). Idempotent.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.reportFeedEngagement(
+  feedItem,
+  "clicked",
+  onSuccess: (result) {},
+  onError: (CometChatException e) {},
+);
+```
+</Tab>
+</Tabs>
+
+The `interactionString` parameter is a free-form string describing the engagement (e.g., `"viewed"`, `"clicked"`, `"interacted"`).
+
+---
+
+## Get Unread Count
+
+Fetch the total number of unread notification feed items.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.getNotificationFeedUnreadCount(
+  onSuccess: (int count) {
+    debugPrint("Unread: $count");
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Fetch Single Feed Item
+
+Fetch a specific item by ID — useful for deep linking from push notifications.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.getNotificationFeedItem(
+  "item-id-123",
+  onSuccess: (NotificationFeedItem item) {
+    final cardJson = jsonEncode(item.content);
+    // Render the card
+  },
+  onError: (CometChatException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Push Notification Tracking
+
+When a campaign push notification arrives via FCM/APNs, use these methods to report delivery and click engagement.
+
+### Mark Push Notification as Delivered
+
+Call this when you receive the push notification payload:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final pushNotification = PushNotification(
+  id: pushPayload['announcementId'],
+  announcementId: pushPayload['announcementId'],
+  campaignId: pushPayload['campaignId'],
+  source: "campaign",
+);
+
+CometChat.markPushNotificationDelivered(
+  pushNotification,
+  onSuccess: (result) {},
+  onError: (CometChatException e) {},
+);
+```
+</Tab>
+</Tabs>
+
+### Mark Push Notification as Clicked
+
+Call this when the user taps the push notification:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.markPushNotificationClicked(
+  pushNotification,
+  onSuccess: (result) {},
+  onError: (CometChatException e) {},
+);
+```
+</Tab>
+</Tabs>
+
+### PushNotification Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Announcement ID from the push payload |
+| `announcementId` | String | Same as id (for clarity) |
+| `campaignId` | String? | Campaign ID if from a campaign |
+| `source` | String | Always `"campaign"` for notification feed pushes |
+
+---
+
+## FeedReadState Enum
+
+| Value | Description |
+| --- | --- |
+| `FeedReadState.read` | Only read items |
+| `FeedReadState.unread` | Only unread items |
+| `FeedReadState.all` | All items (default) |
+
+---
+
+## Rendering Cards
+
+The `content` field of each `NotificationFeedItem` is a Card Schema JSON map. To render it natively, use the CometChat Cards library.
+
+### Add the Cards Dependency
+
+Add the cards package to your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  cometchat_cards: ^1.0.0
+```
+
+### Render a Card from a Feed Item
+
+<Tabs>
+<Tab title="Dart">
+```dart
+import 'package:cometchat_cards/cometchat_cards.dart';
+import 'dart:convert';
+
+Widget buildNotificationCard(NotificationFeedItem item) {
+  return CometChatCardView(
+    cardJson: jsonEncode(item.content),
+    themeMode: CometChatCardThemeMode.auto,
+    onAction: (CometChatCardActionEvent event) {
+      // Handle action: event.action, event.elementId
+      if (event.action is CometChatCardOpenUrlAction) {
+        // Open URL in browser
+      } else if (event.action is CometChatCardChatWithUserAction) {
+        // Navigate to chat
+      }
+    },
+  );
+}
+```
+</Tab>
+</Tabs>
+
+<Note>
+The Cards library is a pure renderer — it does not execute actions. Your code must handle action callbacks (opening URLs, navigating to chats, making API calls, etc.).
+</Note>
+
+---
+
+## Supported Card Actions
+
+When a user taps a button or link inside a card, the action callback receives one of these action types:
+
+| Action Type | Parameters | Description |
+| --- | --- | --- |
+| `openUrl` | url, openIn | Open a URL in browser or webview |
+| `chatWithUser` | uid | Navigate to 1:1 chat |
+| `chatWithGroup` | guid | Navigate to group chat |
+| `sendMessage` | text, receiverUid, receiverGuid | Send a text message |
+| `copyToClipboard` | value | Copy text to clipboard |
+| `downloadFile` | url, filename | Download a file |
+| `initiateCall` | callType (audio/video), uid, guid | Start a call |
+| `apiCall` | url, method, headers, body | Make an HTTP request |
+| `customCallback` | callbackId, payload | App-specific logic |
