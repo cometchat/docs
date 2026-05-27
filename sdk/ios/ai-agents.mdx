@@ -1,43 +1,93 @@
 ---
 title: "AI Agents"
+sidebarTitle: "AI Agents"
+description: "Integrate AI Agents for intelligent automated interactions using the CometChat iOS SDK with real-time streaming events."
 ---
 
-# AI Agents Overview
+<Accordion title="AI Integration Quick Reference">
 
-AI Agents enable intelligent, automated interactions within your application. They can process user messages, trigger tools, and respond with contextually relevant information. For a broader introduction, see the [AI Agents section](/ai-agents).
+| Feature | Description |
+| --- | --- |
+| [AI Agents](#agent-run-lifecycle-and-message-flow) | Intelligent automated conversations with real-time streaming |
+| [AI Moderation](/sdk/ios/ai-moderation) | Automatic content moderation with pending/approved/disapproved flow |
+| [AI User Copilot](/fundamentals/ai-user-copilot/overview) | Smart Replies, Conversation Starter, Conversation Summary (Dashboard-enabled) |
 
-> **Note:**
-> Currently, an Agent only responds to **Text Messages**.
+```swift
+// Listen for real-time AI Agent events (streaming)
+CometChat.addAIAssistantListener("LISTENER_ID", self)
+
+// Listen for persisted agentic messages
+// Conform to CometChatMessageDelegate
+func onAIAssistantMessageReceived(_ msg: AIAssistantMessage) { }
+func onAIToolResultMessageReceived(_ msg: AIToolResultMessage) { }
+func onAIToolArgumentsMessageReceived(_ msg: AIToolArgumentMessage) { }
+
+// Cleanup
+CometChat.removeAIAssistantListener("LISTENER_ID")
+CometChat.removeMessageListener("LISTENER_ID")
+```
+
+**Prerequisites:** `CometChat.init()` + `CometChat.login()` completed, AI features enabled in [Dashboard](https://app.cometchat.com)
+**Event flow:** Run Start -> Tool Call(s) -> Text Message Stream -> Run Finished
+</Accordion>
+
+AI Agents enable intelligent, automated interactions within your application. They process user messages, trigger tools, and respond with contextually relevant information. For a broader introduction, see the [AI Agents section](/ai-agents).
+
+<Note>
+Agents only respond to text messages.
+</Note>
+
+## Sending a Message to an AI Agent
+
+Send a text message to an agent's UID like any other user:
+
+<Tabs>
+  <Tab title="Swift">
+    ```swift
+    let agentUID = "ai-agent-uid"
+    let textMessage = TextMessage(
+        receiverUid: agentUID,
+        text: "What's the weather today?",
+        receiverType: .user
+    )
+
+    CometChat.sendTextMessage(message: textMessage) { sentMessage in
+        print("Message sent to agent")
+    } onError: { error in
+        print("Error: \(error?.errorDescription)")
+    }
+    ```
+  </Tab>
+</Tabs>
 
 ## Agent Run Lifecycle and Message Flow
 
-This section explains how a user's text message to an Agent becomes a structured "run" which emits real-time events and then produces agentic messages for historical retrieval.
-
-- A user sends a text message to an Agent.
-- The platform starts a run and streams real-time events via the **`AIAssistantEventsDelegate`**.
-- After the run completes, persisted Agentic Messages arrive via the **`CometChatMessageDelegate`**.
+When a user sends a text message to an Agent:
+1. The platform starts a run and streams real-time events via `AIAssistantEventsDelegate`
+2. After the run completes, persisted Agentic Messages arrive via `CometChatMessageDelegate`
 
 ### Real-time Events
 
-Events are received via the **`onAIAssistantEventReceived`** method of the **`AIAssistantEventsDelegate`** protocol in this general order:
+Events are received via `onAIAssistantEventReceived` as [`AIAssistantBaseEvent`](/sdk/reference/messages#aiassistantbaseevent) objects, in this order:
 
-1. Run Start
-2. Zero or more tool call cycles (repeats for each tool invocation):
-    - Tool Call Start
-    - Tool Call Arguments
-    - Tool Call End
-    - Tool Call Result
-3. One or more assistant reply streams:
-    - Text Message Start
-    - Text Message Content (multiple times; token/char streaming)
-    - Text Message End
-4. Run Finished
+| Order | Event | Description |
+|-------|-------|-------------|
+| 1 | Run Start | A new run has begun |
+| 2 | Tool Call Start | Agent decided to invoke a tool |
+| 3 | Tool Call Arguments | Arguments being passed to the tool |
+| 4 | Tool Call End | Tool execution completed |
+| 5 | Tool Call Result | Tool's output is available |
+| 6 | Text Message Start | Agent started composing a reply |
+| 7 | Text Message Content | Streaming content chunks (multiple) |
+| 8 | Text Message End | Agent reply is complete |
+| 9 | Run Finished | Run finalized; persisted messages follow |
 
-Notes:
-- `Run Start` and `Run Finished` are always emitted.
-- `Tool Call` events appear only when a backend or frontend tool is invoked. There can be multiple tool calls in a single run.
-- `Text Message` events are always emitted and carry the assistant's reply incrementally.
+<Note>
+`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked. Text Message events are always emitted and carry the assistant's reply incrementally.
+</Note>
 
+<Tabs>
+<Tab title="Swift">
 ```swift
 import CometChatSDK
 
@@ -45,16 +95,12 @@ class AIAssistantEventHandler: AIAssistantEventsDelegate {
     
     private let sdkStreamListenerId = "unique_listener_id"
     
-    /// Call this to start listening to AI Assistant events
     func addListener() {
         CometChat.addAIAssistantListener(sdkStreamListenerId, self)
-        print("AIAssistantListener added successfully.")
     }
     
-    /// Call this to remove the AI Assistant listener
     func removeListener() {
         CometChat.removeAIAssistantListener(sdkStreamListenerId)
-        print("AIAssistantListener removed successfully.")
     }
     
     func onAIAssistantEventReceived(_ event: AIAssistantBaseEvent) {
@@ -62,27 +108,21 @@ class AIAssistantEventHandler: AIAssistantEventsDelegate {
     }
 }
 ```
-
-#### Event descriptions
-
-- Run Start: A new run has begun for the user's message.
-- Tool Call Start: The agent decided to invoke a tool.
-- Tool Call Arguments: Arguments being passed to the tool.
-- Tool Call End: Tool execution completed.
-- Tool Call Result: Tool's output is available.
-- Text Message Start: The agent started composing a reply.
-- Text Message Content: Streaming content chunks for progressive rendering.
-- Text Message End: The agent reply is complete.
-- Run Finished: The run is finalized; persisted messages will follow.
+</Tab>
+</Tabs>
 
 ### Agentic Messages
 
-These events are received via the **`CometChatMessageDelegate`** after the run completes.
+After the run completes, these messages arrive via `CometChatMessageDelegate`:
 
-- `AIAssistantMessage`: The full assistant reply.
-- `AIToolResultMessage`: The final output of a tool call.
-- `AIToolArgumentMessage`: The arguments that were passed to a tool.
+| Message Type | Description |
+|--------------|-------------|
+| `AIAssistantMessage` | The full assistant reply |
+| `AIToolResultMessage` | The final output of a tool call |
+| `AIToolArgumentMessage` | The arguments passed to a tool |
 
+<Tabs>
+<Tab title="Swift">
 ```swift
 import CometChatSDK
 
@@ -90,7 +130,6 @@ let listenerId = "unique_listener_id"
 
 class MessageHandler: CometChatMessageDelegate {
     
-    // Adding the MessageListener
     // CometChat.addMessageListener(listenerId, self)
     
     func onAIAssistantMessageReceived(_ aiAssistantMessage: AIAssistantMessage) {
@@ -106,3 +145,28 @@ class MessageHandler: CometChatMessageDelegate {
     }
 }
 ```
+</Tab>
+</Tabs>
+
+<Warning>
+Always remove listeners when they're no longer needed (e.g., on view dismissal). Failing to remove listeners can cause memory leaks and duplicate event handling.
+</Warning>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AI Chatbots" icon="robot" href="/ai-chatbots/overview">
+    Set up AI-powered chatbots for automated conversations
+  </Card>
+  <Card title="AI Moderation" icon="shield-check" href="/sdk/ios/ai-moderation">
+    Automatically moderate messages with AI
+  </Card>
+  <Card title="AI User Copilot" icon="wand-magic-sparkles" href="/sdk/ios/ai-user-copilot-overview">
+    AI-powered features like smart replies and conversation summaries
+  </Card>
+  <Card title="Send Messages" icon="paper-plane" href="/sdk/ios/send-message">
+    Send text messages that trigger AI Agent responses
+  </Card>
+</CardGroup>
