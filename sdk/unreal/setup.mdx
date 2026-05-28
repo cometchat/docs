@@ -26,8 +26,8 @@ description: "Install the CometChat plugin in your Unreal Engine project."
 
 | Engine Version | Platforms |
 | -------------- | --------- |
-| UE 5.5.4 | Mac, Windows |
-| UE 5.7.2 | Mac |
+| UE 5.5.4 | Mac, Windows, iOS, Android |
+| UE 5.7.2+ | Mac, Windows, iOS, Android |
 
 ---
 
@@ -44,14 +44,14 @@ Copy `Plugins/CometChatSdk/` from the [SDK repository](https://github.com/cometc
 Download the precompiled binaries for your engine version:
 
 <Tabs>
-<Tab title="UE 5.5.4 (Mac + Windows)">
+<Tab title="UE 5.5 (Mac + Windows)">
 ```bash
-curl -1sLf -O 'https://dl.cloudsmith.io/public/cometchat/cometchat/raw/versions/v1.0.0-beta.1/CometChat-UE5.5.4-precompiled.zip'
+curl -1sLf -O 'https://dl.cloudsmith.io/public/cometchat/cometchat/raw/versions/1.0.0-beta.2/CometChat-UE5.5-precompiled.zip'
 ```
 </Tab>
-<Tab title="UE 5.7.2 (Mac)">
+<Tab title="UE 5.7 (Mac)">
 ```bash
-curl -1sLf -O 'https://dl.cloudsmith.io/public/cometchat/cometchat/raw/versions/v1.0.0-beta.1/CometChat-UE5.7.2-precompiled.zip'
+curl -1sLf -O 'https://dl.cloudsmith.io/public/cometchat/cometchat/raw/versions/1.0.0-beta.2/CometChat-UE5.7-precompiled.zip'
 ```
 </Tab>
 </Tabs>
@@ -146,28 +146,61 @@ The plugin loads at the **PreDefault** phase, so it's available before your game
 
 ## Initialize CometChat
 
-The `CometChatSubsystem` is a `UGameInstanceSubsystem` — it's created automatically when your game starts. You just need to call **Configure** with your App ID and Region before using any other SDK methods.
+The `CometChatSubsystem` is a `UGameInstanceSubsystem` — it's created automatically when your game starts. You need to call the **Configure Async** node with your App ID and Region before using any other SDK methods. This is a latent async node with **On Success** and **On Failure** pins.
 
 <Tabs>
 <Tab title="Blueprint">
-1. In any Blueprint, get a reference to the **CometChat Subsystem** via `Get Game Instance` → `Get Subsystem` → select `CometChatSubsystem`
-2. Call the **Configure** node with your **App ID** and **Region**
+1. In any Blueprint, search for the **CometChat Configure Async** node
+2. Pass your **App ID** and **Region**
+3. Wire the **On Success** and **On Failure** pins
 
 | Parameter | Type | Description |
 | --------- | ---- | ----------- |
 | App Id | `FString` | Your CometChat App ID |
 | Region | `FString` | Your app region (`us` or `eu`) |
+
+**On Success** returns an `FCometChatUser`:
+- If a saved session was restored, the user details are populated (auto-login)
+- If no saved session exists, `Uid` will be empty — you need to call Login next
+
+**On Failure** returns an `FCometChatError` with error details.
 </Tab>
 <Tab title="C++">
 ```cpp
 #include "CometChatSubsystem.h"
+#include "AsyncActions/CometChatConfigureAction.h"
 
 void AMyActor::BeginPlay()
 {
     Super::BeginPlay();
 
-    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
-    Chat->Configure(TEXT("YOUR_APP_ID"), TEXT("us"));
+    auto* Action = UCometChatConfigureAction::CometChatConfigureAsync(
+        this,
+        TEXT("YOUR_APP_ID"),
+        TEXT("us")
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnConfigureSuccess);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnConfigureFailed);
+    Action->Activate();
+}
+
+void AMyActor::OnConfigureSuccess(const FCometChatUser& LoggedInUser)
+{
+    if (LoggedInUser.Uid.IsEmpty())
+    {
+        UE_LOG(LogTemp, Log, TEXT("SDK configured — no saved session, need to login"));
+        // Proceed to Login
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("SDK configured — session restored for %s"), *LoggedInUser.Name);
+        // User is already logged in, ready to use SDK
+    }
+}
+
+void AMyActor::OnConfigureFailed(const FCometChatError& Error)
+{
+    UE_LOG(LogTemp, Error, TEXT("Configure failed: %s"), *Error.Message);
 }
 ```
 </Tab>
@@ -176,6 +209,10 @@ void AMyActor::BeginPlay()
 <Warning>
 **Configure must be called before Login.** Calling Login without configuring first will result in a failure callback.
 </Warning>
+
+<Tip>
+**Session restoration**: If the user was previously logged in, Configure will automatically restore the session — you don't need to call Login again. Check if the returned `FCometChatUser.Uid` is non-empty to determine if a session was restored.
+</Tip>
 
 Make sure you replace `YOUR_APP_ID` with your actual CometChat **App ID**.
 
@@ -186,9 +223,10 @@ Make sure you replace `YOUR_APP_ID` with your actual CometChat **App ID**.
 The plugin provides:
 
 - **`UCometChatSubsystem`** — Game instance subsystem for CometChat operations
-- **Async Blueprint actions** — for login, logout, send message, fetch messages, groups
-- **`CometChatEventBridge`** — Real-time event callbacks
-- **`CometChatGroupChatBox`** — Ready-to-use group chat UI widget
+- **Async Blueprint actions** — for login, logout, send/fetch messages, groups, conversations, moderation, and more
+- **`CometChatEventBridge`** — Real-time event callbacks (40+ delegates organized by listener type)
+- **`UCometChatPanel`** — Ready-to-use tabbed chat panel widget (My Groups, Personal, Browse Groups)
+- **`UCometChatButton`** — Floating button widget that toggles the chat panel
 - **Native C++ chat SDK** via `ThirdParty/chatsdk/` (prebuilt static libraries)
 
 ---
