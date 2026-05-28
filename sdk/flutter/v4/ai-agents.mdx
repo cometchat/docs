@@ -1,0 +1,216 @@
+---
+title: "AI Agents"
+sidebarTitle: "AI Agents"
+description: "Learn how to integrate AI Agents in your Flutter app to enable intelligent, automated interactions that process user messages, trigger tools, and respond with contextually relevant information."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Feature | Description |
+| --- | --- |
+| [AI Agents](#agent-run-lifecycle-and-message-flow) | Intelligent automated conversations with real-time streaming |
+| [AI Moderation](/sdk/flutter/ai-moderation) | Automatic content moderation with `PENDING` → `APPROVED` / `DISAPPROVED` flow |
+| [AI User Copilot](/fundamentals/ai-user-copilot/overview) | Smart Replies, Conversation Starter, Conversation Summary (Dashboard-enabled) |
+
+```dart
+// Add AI Assistant listener for real-time events
+CometChat.addAIAssistantListener("LISTENER_ID", AIAssistantListener(
+  onAIAssistantEventReceived: (AIAssistantBaseEvent event) {
+    debugPrint("AI Event: ${event.type}");
+  },
+));
+
+// Add Message listener for agentic messages
+CometChat.addMessageListener("LISTENER_ID", MessageListener(
+  onAIAssistantMessageReceived: (AIAssistantMessage msg) {
+    debugPrint("AI Reply: ${msg.text}");
+  },
+  onAIToolResultReceived: (AIToolResultMessage result) {
+    debugPrint("Tool Result: $result");
+  },
+));
+
+// Remove listeners when done
+CometChat.removeAIAssistantListener("LISTENER_ID");
+CometChat.removeMessageListener("LISTENER_ID");
+```
+
+**Prerequisites:** `CometChat.init()` + `CometChat.login()` completed, AI features enabled in [Dashboard](https://app.cometchat.com)
+**Event flow:** Run Start → Tool Call(s) → Text Message Stream → Run Finished
+</Accordion>
+
+AI Agents enable intelligent, automated interactions within your application. They process user messages, trigger tools, and respond with contextually relevant information. For a broader introduction, see the [AI Agents section](/ai-agents).
+
+<Note>
+Agents only respond to text messages.
+</Note>
+
+## Agent Run Lifecycle and Message Flow
+
+When a user sends a text message to an Agent:
+1. The platform starts a run and streams real-time events via `AIAssistantListener`
+2. After the run completes, persisted Agentic Messages arrive via `MessageListener`
+
+### Real-time Events
+
+Events arrive via `onAIAssistantEventReceived` in this order:
+
+| Order | Event | Description |
+|-------|-------|-------------|
+| 1 | Run Start | A new run has begun |
+| 2 | Tool Call Start | Agent decided to invoke a tool |
+| 3 | Tool Call Arguments | Arguments being passed to the tool |
+| 4 | Tool Call End | Tool execution completed |
+| 5 | Tool Call Result | Tool's output is available |
+| 6 | Text Message Start | Agent started composing a reply |
+| 7 | Text Message Content | Streaming content chunks (multiple) |
+| 8 | Text Message End | Agent reply is complete |
+| 9 | Run Finished | Run finalized; persisted messages follow |
+
+<Note>
+`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked — there can be multiple tool call cycles in a single run. Text Message events are always emitted and carry the assistant's reply incrementally.
+</Note>
+
+### Event Object Properties
+
+Every event is an [`AIAssistantBaseEvent`](/sdk/reference/messages#aiassistantbaseevent) with these common properties:
+
+| Getter | Return Type | Description |
+|--------|-------------|-------------|
+| `type` | `String` | Event type (e.g., `run_started`, `text_message_content`) |
+| `conversationId` | `String` | The conversation this event belongs to |
+| `messageId` | `String` | The message ID associated with the event |
+| `parentMessageId` | `String` | Parent message ID (for threaded messages) |
+| `runId` | `String` | The run ID for this agent execution |
+| `threadId` | `String` | The thread ID for this agent execution |
+| `timestamp` | `int` | Timestamp of the event |
+| `data` | `Map` | Full event data payload |
+
+Some events carry additional data:
+
+| Event | Extra Property | Description |
+|-------|---------------|-------------|
+| Text Message Content | `delta` | The streaming text chunk for progressive rendering |
+| Tool Call Arguments | `toolCallId`, `delta` | Tool call ID and argument chunk |
+| Tool Call Result | `toolCallId`, `content`, `role` | Tool call ID, result content, and role |
+
+<Tabs>
+    <Tab title="Dart">
+        ```dart
+import 'package:flutter/foundation.dart';
+import 'package:cometchat_sdk/cometchat_sdk.dart';
+
+class AIAssistantEventHandler with AIAssistantListener {
+  final String _sdkStreamListenerId = "unique_listener_id";
+
+  /// Call this to start listening to AI Assistant events
+  void addListener() {
+    CometChat.addAIAssistantListener(_sdkStreamListenerId, this);
+    debugPrint("AIAssistantListener added successfully.");
+  }
+
+  /// Call this to remove the AI Assistant listener
+  void removeListener() {
+    CometChat.removeAIAssistantListener(_sdkStreamListenerId);
+    debugPrint("AIAssistantListener removed successfully.");
+  }
+
+  @override
+  void onAIAssistantEventReceived(AIAssistantBaseEvent aiAssistantBaseEvent) {
+    debugPrint(
+      "Received AI Event: ${aiAssistantBaseEvent.type} for Run ID: ${aiAssistantBaseEvent.id}",
+    );
+  }
+}
+        ```
+	</Tab>
+</Tabs>
+
+<Warning>
+Always remove AI Assistant listeners when they're no longer needed (e.g., on widget dispose or page navigation). Failing to remove listeners can cause memory leaks and duplicate event handling.
+</Warning>
+
+#### Event descriptions
+- Run Start: A new run has begun for the user's message.
+- Tool Call Start: The agent decided to invoke a tool.
+- Tool Call Arguments: Arguments being passed to the tool.
+- Tool Call End: Tool execution completed.
+- Tool Call Result: Tool's output is available.
+- Text Message Start: The agent started composing a reply.
+- Text Message Content: Streaming content chunks for progressive rendering.
+- Text Message End: The agent reply is complete.
+- Run Finished: The run is finalized; persisted messages will follow.
+
+### Agentic Messages
+
+After the run completes, these messages arrive via `MessageListener`:
+
+| Message Type | Description |
+|--------------|-------------|
+| `AIAssistantMessage` | The full assistant reply |
+| `AIToolResultMessage` | The final output of a tool call |
+| `AIToolArgumentMessage` | The arguments passed to a tool |
+
+Each message type extends `BaseMessage` and has a typed data accessor:
+
+| Message Type | Data Getter | Data Properties |
+|--------------|-------------|-----------------|
+| `AIAssistantMessage` | `getAssistantMessageData()` | `runId`, `threadId`, `text` |
+| `AIToolResultMessage` | `getToolResultMessageData()` | `runId`, `threadId`, `text`, `toolCallId` |
+| `AIToolArgumentMessage` | `getToolArgumentMessageData()` | `runId`, `threadId`, `toolCalls` |
+
+The `toolCalls` on `AIToolArgumentMessage` returns a list of `AIToolCall` objects, each with:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `String` | Unique tool call ID |
+| `type` | `String` | Tool call type |
+| `function` | `AIToolCallFunction` | Function object with `name` and `arguments` |
+| `displayName` | `String` | Display name of the tool |
+| `executionText` | `String` | Execution description text |
+
+<Tabs>
+    <Tab title="Dart">
+        ```dart
+        const listenerId = "unique_listener_id";
+
+            class Class_Name with MessageListener {
+            // Adding the MessageListener
+            // CometChat.addMessageListener(listenerId, this);
+              @override
+              void onAIAssistantMessageReceived(AIAssistantMessage aiAssistantMessage) {
+                debugPrint("AI Assistant Message Received: ${aiAssistantMessage.toString()}");
+              }
+
+              @override
+              void onAIToolResultReceived(AIToolResultMessage aiToolArgumentMessage) {
+                debugPrint("AI Assistant Message Received: ${aiToolArgumentMessage.toString()}");
+              }
+
+              @override
+              void onAIToolArgumentsReceived(AIToolArgumentMessage aiToolArgumentMessage) {
+                debugPrint("AI Assistant Message Received: ${aiToolArgumentMessage.toString()}");
+              }
+            }
+        ```
+    </Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AI Chatbots" icon="robot" href="/sdk/flutter/ai-chatbots-overview">
+    Configure and deploy AI chatbots for automated conversations
+  </Card>
+  <Card title="AI Moderation" icon="shield-check" href="/sdk/flutter/ai-moderation">
+    Implement AI-powered content moderation for your chat
+  </Card>
+  <Card title="AI User Copilot" icon="wand-magic-sparkles" href="/sdk/flutter/ai-user-copilot-overview">
+    AI-powered features like smart replies and conversation summaries
+  </Card>
+  <Card title="Send Messages" icon="paper-plane" href="/sdk/flutter/send-message">
+    Send text messages that trigger AI Agent responses
+  </Card>
+</CardGroup>
