@@ -1,0 +1,663 @@
+---
+title: "Campaigns"
+---
+
+CometChat Campaigns lets you deliver targeted, rich notifications to users via an in-app notification feed. Each notification is a **Card Schema JSON** — a structured layout rendered natively by the CometChat Cards library.
+
+The SDK provides APIs to fetch feed items, listen for real-time delivery, mark items as read/delivered, report engagement, and retrieve unread counts.
+
+<Note>
+Before using the SDK, set up your channels, categories, templates, and campaigns in the CometChat Dashboard. See the [Dashboard Setup Guide](/campaigns#setup-flow) for step-by-step instructions.
+</Note>
+
+---
+
+## Key Concepts
+
+| Concept | Description |
+| --- | --- |
+| **NotificationFeedItem** | A single notification in the feed. Contains Card Schema JSON in its `content` field, a `category` for filtering, timestamps, and metadata. |
+| **NotificationCategory** | A category label used for filter chips (e.g., "Promotions", "Updates"). |
+| **Card Schema JSON** | The fully rendered card layout (images, text, buttons) inside `NotificationFeedItem.getContent()`. Passed directly to the CometChat Cards renderer. |
+| **PushNotification** | Represents a campaign push notification payload received via FCM. |
+
+---
+
+## How Cards Render in the Notification Feed
+
+Each `NotificationFeedItem` has a `content` field containing a `JSONObject` — this is the **Card Schema JSON**. This JSON is passed directly to the **CometChat Cards** renderer library (`com.cometchat:cards-android`).
+
+The rendering flow:
+
+1. Fetch feed items via `NotificationFeedRequest`
+2. For each item, extract `item.getContent()` — this is the Card Schema JSON
+3. Convert to string: `item.getContent().toString()`
+4. Pass to the Cards renderer (`CometChatCardView` or `CometChatCardComposable`)
+5. The renderer produces a native Android view from the JSON
+
+### Card Schema JSON Structure
+
+```json
+{
+  "version": "1.0",
+  "body": [
+    {
+      "type": "column",
+      "backgroundColor": {
+        "light": "transparent",
+        "dark": "transparent"
+      },
+      "gap": 5,
+      "items": [
+        {
+          "type": "text",
+          "content": "📢 Announcement",
+          "variant": "heading2",
+          "id": "txt_99323141-2459-4e33-88d3-ca39c5fd2f50"
+        },
+        {
+          "type": "text",
+          "content": "Your announcement message here.",
+          "variant": "body",
+          "id": "txt_61a417bc-5e4a-4ba2-bfe7-b7bc64dbaf35"
+        },
+        {
+          "type": "divider",
+          "id": "div_80f5c7fb-fd10-41d1-8c2f-51498f0f62d0"
+        },
+        {
+          "type": "button",
+          "label": "Learn More",
+          "backgroundColor": {
+            "light": "transparent",
+            "dark": "transparent"
+          },
+          "textColor": {
+            "light": "#6C5CE7",
+            "dark": "#6C5CE7"
+          },
+          "size": 40,
+          "fontSize": 13,
+          "borderRadius": 6,
+          "padding": {
+            "top": 0,
+            "right": 16,
+            "bottom": 0,
+            "left": 16
+          },
+          "action": {
+            "type": "openUrl",
+            "url": ""
+          },
+          "id": "btn_9b87a3f1-b0c6-45b9-a4c2-e22ea590f17f"
+        }
+      ],
+      "id": "col_98fed9bd-1a95-4cee-aa81-84a9016e41f2"
+    }
+  ],
+  "fallbackText": "",
+  "style": {
+    "background": {
+      "light": "#E8E8E8",
+      "dark": "#E8E8E8"
+    },
+    "borderRadius": 16,
+    "borderColor": {
+      "light": "#DFE6E9",
+      "dark": "#DFE6E9"
+    },
+    "padding": 12
+  }
+}
+```
+
+The `body` array contains elements (text, image, button, row, column, etc.) rendered top-to-bottom. Interactive elements like buttons emit actions via a callback — the consumer handles navigation, deep links, or API calls.
+
+---
+
+## Retrieve Notification Feed Items
+
+Use `NotificationFeedRequest` to fetch a paginated list of feed items. Uses cursor-based pagination internally.
+
+### Build the Request
+
+<Tabs>
+<Tab title="Java">
+```java
+NotificationFeedRequest request = new NotificationFeedRequest.NotificationFeedRequestBuilder()
+    .setLimit(20)
+    .build();
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+val request = NotificationFeedRequest.NotificationFeedRequestBuilder()
+    .setLimit(20)
+    .build()
+```
+</Tab>
+</Tabs>
+
+### Builder Parameters
+
+| Method | Type | Default | Description |
+| --- | --- | --- | --- |
+| `setLimit(int)` | int | 20 | Items per page (max 100) |
+| `setReadState(FeedReadState)` | enum | `ALL` | Filter by `READ`, `UNREAD`, or `ALL` |
+| `setCategory(String)` | String | null | Filter by category ID |
+| `setChannelId(String)` | String | null | Filter by channel |
+| `setTags(List<String>)` | List | null | Filter by tags |
+| `setDateFrom(String)` | String | null | ISO 8601 date — items sent on or after |
+| `setDateTo(String)` | String | null | ISO 8601 date — items sent on or before |
+
+### Fetch Items
+
+<Tabs>
+<Tab title="Java">
+```java
+request.fetchNext(new CometChat.CallbackListener<List<NotificationFeedItem>>() {
+    @Override
+    public void onSuccess(List<NotificationFeedItem> items) {
+        for (NotificationFeedItem item : items) {
+            String cardJson = item.getContent().toString();
+            // Pass cardJson to CometChatCardView or CometChatCardComposable
+        }
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+request.fetchNext(object : CometChat.CallbackListener<List<NotificationFeedItem>>() {
+    override fun onSuccess(items: List<NotificationFeedItem>) {
+        items.forEach { item ->
+            val cardJson = item.content.toString()
+            // Pass cardJson to CometChatCardView or CometChatCardComposable
+        }
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+Call `fetchNext()` repeatedly for pagination. When the server has no more items, subsequent calls return an empty list.
+
+### NotificationFeedItem Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Unique item identifier |
+| `category` | String | Notification category (e.g., "promotions") |
+| `content` | JSONObject | Card Schema JSON — pass to CometChat Cards renderer |
+| `readAt` | Long? | Unix timestamp when read, or null if unread |
+| `deliveredAt` | Long? | Unix timestamp when delivered, or null |
+| `sentAt` | long | Unix timestamp when sent |
+| `metadata` | HashMap | Custom key-value metadata |
+| `tags` | List\<String\> | Tags for filtering |
+| `receiver` | String | Receiver identifier |
+
+---
+
+## Retrieve Notification Categories
+
+Use `NotificationCategoriesRequest` to fetch available categories for filter chips.
+
+<Tabs>
+<Tab title="Java">
+```java
+NotificationCategoriesRequest categoriesRequest = new NotificationCategoriesRequest
+    .NotificationCategoriesRequestBuilder()
+    .setLimit(50)
+    .build();
+
+categoriesRequest.fetchNext(new CometChat.CallbackListener<List<NotificationCategory>>() {
+    @Override
+    public void onSuccess(List<NotificationCategory> categories) {
+        for (NotificationCategory category : categories) {
+            Log.d("Feed", "Category: " + category.getName());
+        }
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+val categoriesRequest = NotificationCategoriesRequest.NotificationCategoriesRequestBuilder()
+    .setLimit(50)
+    .build()
+
+categoriesRequest.fetchNext(object : CometChat.CallbackListener<List<NotificationCategory>>() {
+    override fun onSuccess(categories: List<NotificationCategory>) {
+        categories.forEach { category ->
+            Log.d("Feed", "Category: ${category.name}")
+        }
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+### NotificationCategory Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Category identifier |
+| `name` | String | Display name for filter UI |
+| `description` | String | Category description |
+| `appId` | String | Associated app ID |
+
+---
+
+## Real-Time Notification Feed Listener
+
+Listen for new feed items arriving via WebSocket. This listener is independent from `MessageListener`, `GroupListener`, and `CallListener`.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.addNotificationFeedListener("feedListener", new NotificationFeedListener() {
+    @Override
+    public void onFeedItemReceived(NotificationFeedItem feedItem) {
+        Log.d("Feed", "New item: " + feedItem.getId());
+        String cardJson = feedItem.getContent().toString();
+        // Insert at top of feed and render
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.addNotificationFeedListener("feedListener", object : NotificationFeedListener() {
+    override fun onFeedItemReceived(feedItem: NotificationFeedItem) {
+        Log.d("Feed", "New item: ${feedItem.id}")
+        val cardJson = feedItem.content.toString()
+        // Insert at top of feed and render
+    }
+})
+```
+</Tab>
+</Tabs>
+
+Remove the listener when no longer needed:
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.removeNotificationFeedListener("feedListener");
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.removeNotificationFeedListener("feedListener")
+```
+</Tab>
+</Tabs>
+
+---
+
+## Mark Feed Item as Read
+
+Mark a single item as read. Idempotent — safe to call multiple times.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.markFeedItemAsRead(feedItem, new CometChat.CallbackListener<Void>() {
+    @Override
+    public void onSuccess(Void unused) {
+        Log.d("Feed", "Marked as read");
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.markFeedItemAsRead(feedItem, object : CometChat.CallbackListener<Void?>() {
+    override fun onSuccess(result: Void?) {
+        Log.d("Feed", "Marked as read")
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+---
+
+## Mark Feed Item as Delivered
+
+Mark a single item as delivered. Idempotent.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.markFeedItemAsDelivered(feedItem, new CometChat.CallbackListener<Void>() {
+    @Override
+    public void onSuccess(Void unused) {
+        // Success
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.markFeedItemAsDelivered(feedItem, object : CometChat.CallbackListener<Void?>() {
+    override fun onSuccess(result: Void?) { /* Success */ }
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+---
+
+## Report Engagement
+
+Report that a user engaged with a feed item (e.g., viewed, clicked, interacted). Idempotent.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.reportFeedEngagement(feedItem, "clicked", new CometChat.CallbackListener<Void>() {
+    @Override
+    public void onSuccess(Void unused) { }
+
+    @Override
+    public void onError(CometChatException e) { }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.reportFeedEngagement(feedItem, "clicked", object : CometChat.CallbackListener<Void?>() {
+    override fun onSuccess(result: Void?) { }
+    override fun onError(e: CometChatException) { }
+})
+```
+</Tab>
+</Tabs>
+
+The `interactionString` parameter is a free-form string describing the engagement (e.g., `"viewed"`, `"clicked"`, `"interacted"`).
+
+---
+
+## Get Unread Count
+
+Fetch the total number of unread notification feed items.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.getNotificationFeedUnreadCount(new CometChat.CallbackListener<Integer>() {
+    @Override
+    public void onSuccess(Integer count) {
+        Log.d("Feed", "Unread: " + count);
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.getNotificationFeedUnreadCount(object : CometChat.CallbackListener<Int>() {
+    override fun onSuccess(count: Int) {
+        Log.d("Feed", "Unread: $count")
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+---
+
+## Fetch Single Feed Item
+
+Fetch a specific item by ID — useful for deep linking from push notifications.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.getNotificationFeedItem("item-id-123", new CometChat.CallbackListener<NotificationFeedItem>() {
+    @Override
+    public void onSuccess(NotificationFeedItem item) {
+        String cardJson = item.getContent().toString();
+        // Render the card
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e("Feed", "Error: " + e.getMessage());
+    }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.getNotificationFeedItem("item-id-123", object : CometChat.CallbackListener<NotificationFeedItem>() {
+    override fun onSuccess(item: NotificationFeedItem) {
+        val cardJson = item.content.toString()
+        // Render the card
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e("Feed", "Error: ${e.message}")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+---
+
+## Push Notification Tracking
+
+When a campaign push notification arrives via FCM, use these methods to report delivery and click engagement.
+
+### Mark Push Notification as Delivered
+
+Call this in your `FirebaseMessagingService.onMessageReceived()`:
+
+<Tabs>
+<Tab title="Java">
+```java
+PushNotification pushNotification = PushNotification.fromJson(pushPayloadJson);
+
+CometChat.markPushNotificationDelivered(pushNotification, new CometChat.CallbackListener<Void>() {
+    @Override
+    public void onSuccess(Void unused) { }
+
+    @Override
+    public void onError(CometChatException e) { }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+val pushNotification = PushNotification.fromJson(pushPayloadJson)
+
+CometChat.markPushNotificationDelivered(pushNotification, object : CometChat.CallbackListener<Void?>() {
+    override fun onSuccess(result: Void?) { }
+    override fun onError(e: CometChatException) { }
+})
+```
+</Tab>
+</Tabs>
+
+### Mark Push Notification as Clicked
+
+Call this when the user taps the push notification:
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.markPushNotificationClicked(pushNotification, new CometChat.CallbackListener<Void>() {
+    @Override
+    public void onSuccess(Void unused) { }
+
+    @Override
+    public void onError(CometChatException e) { }
+});
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+CometChat.markPushNotificationClicked(pushNotification, object : CometChat.CallbackListener<Void?>() {
+    override fun onSuccess(result: Void?) { }
+    override fun onError(e: CometChatException) { }
+})
+```
+</Tab>
+</Tabs>
+
+### PushNotification Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | String | Announcement ID from the push payload |
+| `announcementId` | String | Same as id (for clarity) |
+| `campaignId` | String? | Campaign ID if from a campaign |
+| `source` | String | Always `"campaign"` for notification feed pushes |
+
+---
+
+## FeedReadState Enum
+
+| Value | Description |
+| --- | --- |
+| `READ` | Only read items |
+| `UNREAD` | Only unread items |
+| `ALL` | All items (default) |
+
+---
+
+## Rendering Cards
+
+The `content` field of each `NotificationFeedItem` is a Card Schema JSON object. To render it natively, use the CometChat Cards library.
+
+### Add the Cards Dependency
+
+Add the Cloudsmith repository and the cards library to your project:
+
+```groovy
+// settings.gradle or project-level build.gradle
+repositories {
+    maven { url "https://dl.cloudsmith.io/public/cometchat/cometchat/maven/" }
+}
+```
+
+```groovy
+// app/build.gradle
+dependencies {
+    implementation "com.cometchat:cards-android:1.0.0"
+}
+```
+
+<Note>
+Requires `minSdk 24`, Kotlin, and internet permission in your AndroidManifest.xml.
+</Note>
+
+### Render a Card from a Feed Item
+
+<Tabs>
+<Tab title="Jetpack Compose">
+```kotlin
+import com.cometchat.cards.CometChatCardComposable
+import com.cometchat.cards.core.CometChatCardThemeMode
+
+@Composable
+fun NotificationCard(item: NotificationFeedItem) {
+    CometChatCardComposable(
+        cardJson = item.content.toString(),
+        themeMode = CometChatCardThemeMode.AUTO,
+        onAction = { event ->
+            when (event.action) {
+                is CometChatCardOpenUrlAction -> {
+                    // Open URL in browser
+                }
+                is CometChatCardChatWithUserAction -> {
+                    // Navigate to chat
+                }
+            }
+        }
+    )
+}
+```
+</Tab>
+<Tab title="Traditional View">
+```kotlin
+import com.cometchat.cards.CometChatCardView
+import com.cometchat.cards.core.CometChatCardThemeMode
+
+val cardView = CometChatCardView(context)
+cardView.setCardSchema(item.content.toString())
+cardView.setThemeMode(CometChatCardThemeMode.AUTO)
+cardView.setActionCallback { event ->
+    // Handle action: event.action, event.elementId
+}
+parentLayout.addView(cardView)
+```
+</Tab>
+</Tabs>
+
+<Note>
+The Cards library is a pure renderer — it does not execute actions. Your code must handle action callbacks (opening URLs, navigating to chats, making API calls, etc.).
+</Note>
+
+---
+
+## Supported Card Actions
+
+When a user taps a button or link inside a card, the action callback receives one of these action types:
+
+| Action Type | Parameters | Description |
+| --- | --- | --- |
+| `openUrl` | url, openIn | Open a URL in browser or webview |
+| `chatWithUser` | uid | Navigate to 1:1 chat |
+| `chatWithGroup` | guid | Navigate to group chat |
+| `sendMessage` | text, receiverUid, receiverGuid | Send a text message |
+| `copyToClipboard` | value | Copy text to clipboard |
+| `downloadFile` | url, filename | Download a file |
+| `initiateCall` | callType (audio/video), uid, guid | Start a call |
+| `apiCall` | url, method, headers, body | Make an HTTP request |
+| `customCallback` | callbackId, payload | App-specific logic |
