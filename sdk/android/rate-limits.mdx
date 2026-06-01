@@ -1,34 +1,130 @@
 ---
 title: "Rate Limits"
+sidebarTitle: "Rate Limits"
+description: "Understand CometChat API rate limits for Android SDK apps and handle rate limit errors, retries, and request throttling."
 ---
 
+<Accordion title="AI Integration Quick Reference">
+
+**Rate Limits:**
+- **Core Operations:** 10,000 requests/minute (login, create/delete user, create/join group)
+- **Standard Operations:** 20,000 requests/minute (all other operations)
+
+**Rate Limit Response:**
+- **Status Code:** 429 (Too Many Requests)
+- **Headers:** `Retry-After`, `X-Rate-Limit-Reset`, `X-Rate-Limit`, `X-Rate-Limit-Remaining`
+
+**Best Practice:** Monitor `X-Rate-Limit-Remaining` header and implement exponential backoff when approaching limits.
+</Accordion>
 
 
-### CometChat REST API Rate Limits
+
+CometChat applies rate limits to REST API requests to ensure fair usage and platform stability. Understanding them helps you build applications that handle high traffic gracefully.
+
+## Rate Limit Tiers
+
+| Operation Type | Limit | Examples |
+| --- | --- | --- |
+| Core Operations | 10,000 requests/min | Login, create/delete user, create/join group |
+| Standard Operations | 20,000 requests/min | All other operations |
 
 <Note>
 
-The rate limits below are for general applications. Rate limits can be adjusted on a per need basis, depending on your use-case and plan. The rate limits are cumulative. For example: If the rate limit for core operations is 100 requests per minute, then you can either login a user, add user to a group, remove a user from a group, etc for total 100 requests per minute.
+Rate limits are cumulative within each tier. For example, if you make 5,000 login requests and 5,000 create user requests in one minute, you've hit the 10,000 core operations limit. Rate limits can be adjusted on a per-need basis depending on your use case and plan.
 
 </Note>
 
-1. **Core Operations:** Core operations are rate limited to `10,000` requests per minute. Core operations include user login, create/delete user, create/join group cumulatively.
-2. **Standard Operations:** Standard operations are rate limited to `20,000` requests per minute. Standard operations include all other operations cumulatively.
+## What Happens When the Rate Limit Is Reached?
 
-## What happens when rate limit is reached ?
-
-The request isn't processed and a response is sent containing a 429 response code. Along with the response code there will be couple of headers sent which specifies the time in seconds that you must wait before you can try request again.
+The request isn't processed and a response is sent containing a 429 response code. Along with the response code, a couple of headers are sent that specify the time in seconds you must wait before you can try the request again.
 
 `Retry-After: 15`
 
 `X-Rate-Limit-Reset: 1625143246`
 
-## Is there any endpoint that returns rate limit of all resources ?
+## Response Headers
 
-No, we don't provide a rate-limit endpoint.
+CometChat includes rate limit information in response headers:
 
-However, we do provide the following response headers that you can use to confirm the app's current rate limit and monitor the number of requests remaining in the current minute:
+| Header | Description |
+| --- | --- |
+| `X-Rate-Limit` | Your current rate limit |
+| `X-Rate-Limit-Remaining` | Requests remaining in current window |
+| `Retry-After` | Seconds to wait before retrying (on 429) |
+| `X-Rate-Limit-Reset` | Unix timestamp when limit resets (on 429) |
+
+## Rate Limit Endpoint
+
+CometChat does not provide a dedicated rate-limit endpoint. Use the response headers below to monitor your current limit and remaining requests:
 
 `X-Rate-Limit: 700`
 
 `X-Rate-Limit-Remaining: 699`
+
+## Handling Rate Limits
+
+When you exceed the rate limit, CometChat returns HTTP `429 Too Many Requests`. Implement exponential backoff to handle this gracefully:
+
+<Tabs>
+<Tab title="Java">
+```java
+private void callWithRetry(Runnable apiCall, int maxRetries, int attempt) {
+    try {
+        apiCall.run();
+    } catch (Exception e) {
+        if (e instanceof CometChatException &&
+            ((CometChatException) e).getCode().equals("TOO_MANY_REQUEST") &&
+            attempt < maxRetries) {
+            long waitTime = (long) Math.pow(2, attempt) * 1000;
+            Log.d(TAG, "Rate limited. Retrying in " + (waitTime / 1000) + "s...");
+            new Handler(Looper.getMainLooper()).postDelayed(
+                () -> callWithRetry(apiCall, maxRetries, attempt + 1),
+                waitTime
+            );
+        } else {
+            Log.e(TAG, "Max retries exceeded or non-rate-limit error: " + e.getMessage());
+        }
+    }
+}
+```
+</Tab>
+<Tab title="Kotlin">
+```kotlin
+fun callWithRetry(apiCall: () -> Unit, maxRetries: Int = 3, attempt: Int = 0) {
+    try {
+        apiCall()
+    } catch (e: CometChatException) {
+        if (e.code == "TOO_MANY_REQUEST" && attempt < maxRetries) {
+            val waitTime = (2.0.pow(attempt) * 1000).toLong()
+            Log.d(TAG, "Rate limited. Retrying in ${waitTime / 1000}s...")
+            Handler(Looper.getMainLooper()).postDelayed(
+                { callWithRetry(apiCall, maxRetries, attempt + 1) },
+                waitTime
+            )
+        } else {
+            Log.e(TAG, "Max retries exceeded or non-rate-limit error: ${e.message}")
+        }
+    }
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup" icon="gear" href="/sdk/android/setup">
+    Configure SDK for optimal API usage
+  </Card>
+  <Card title="Connection Behaviour" icon="wifi" href="/sdk/android/connection-behaviour">
+    Use WebSocket for real-time updates instead of polling
+  </Card>
+  <Card title="Real-Time Listeners" icon="bell" href="/sdk/android/real-time-listeners">
+    Receive updates via WebSocket to reduce API calls
+  </Card>
+  <Card title="REST API Documentation" icon="book" href="/rest-api/chat-apis">
+    Explore REST API endpoints and rate limits
+  </Card>
+</CardGroup>

@@ -1,0 +1,316 @@
+---
+title: "Migration Guide"
+sidebarTitle: "v4 to v5 Migration"
+sdk_version: "5.x"
+description: "Migrate to CometChat Calls SDK v5 on React Native with updated setup, APIs, call sessions, layouts, and feature changes."
+---
+
+This guide covers migrating from Calls SDK v4 to v5 for React Native.
+
+## Drop-in Compatibility
+
+Calls SDK v5 is a **drop-in replacement** for v4. All v4 APIs are preserved as deprecated methods that internally delegate to the new v5 implementations. You can update the package version and your existing code will compile and run without changes.
+
+```bash
+npm install @cometchat/calls-sdk-react-native@5
+```
+
+<Info>
+If you're using CometChat UI Kits, simply updating the Calls SDK version is sufficient. The UI Kit will continue to work with v5 through the deprecated compatibility layer.
+</Info>
+
+## Why Migrate to v5 APIs?
+
+While v4 APIs will continue to work, migrating to v5 APIs gives you:
+
+- **Granular event listeners** — subscribe to specific events like `onParticipantJoined` or `onSessionLeft` instead of one monolithic `OngoingCallListener`
+- **Dedicated `login()` method** — the Calls SDK now handles its own authentication instead of depending on the Chat SDK's auth token or REST APIs
+- **Simplified initialization** — pass plain objects to `init()` and `joinSession()` instead of using builder classes
+- **Strongly-typed enums** — `LayoutType`, `SessionType` instead of raw strings
+
+---
+
+## Initialization
+
+v5 accepts a plain object instead of requiring `CallAppSettingsBuilder`.
+
+<Tabs>
+<Tab title="v4">
+```javascript
+const callAppSettings = new CometChatCalls.CallAppSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("REGION")
+  .build();
+
+CometChatCalls.init(callAppSettings).then(
+  () => { /* initialized */ },
+  (error) => { /* handle error */ }
+);
+```
+</Tab>
+<Tab title="v5">
+```javascript
+const callAppSettings = {
+  appId: "APP_ID",
+  region: "REGION",
+};
+
+CometChatCalls.init(callAppSettings).then(
+  () => { /* initialized */ },
+  (error) => { /* handle error */ }
+);
+```
+</Tab>
+</Tabs>
+
+<Note>
+`CallAppSettingsBuilder` still works in v5 — it's deprecated but functional.
+</Note>
+
+---
+
+## Authentication
+
+In v4, the Calls SDK had no dedicated authentication step. It relied on the Chat SDK's auth token (`CometChat.getUserAuthToken()`) or a REST API to obtain an auth token, which you then passed manually to `generateToken()`.
+
+v5 introduces its own `login()` method. After calling `login()`, the SDK caches the auth token internally.
+
+<Tabs>
+<Tab title="v4">
+```javascript
+// No dedicated Calls SDK login — relied on Chat SDK for auth token
+const authToken = CometChat.getUserAuthToken();
+
+// Had to pass authToken manually
+CometChatCalls.generateToken(sessionId, authToken).then(
+  (token) => { /* use token to start session */ },
+  (error) => { }
+);
+```
+</Tab>
+<Tab title="v5">
+```javascript
+// Login to the Calls SDK once (after your Chat SDK login)
+CometChatCalls.login(authToken).then(
+  (user) => { /* Calls SDK is now authenticated */ },
+  (error) => { }
+);
+
+// generateToken no longer needs the authToken parameter
+CometChatCalls.generateToken(sessionId).then(
+  (token) => { /* use token */ },
+  (error) => { }
+);
+```
+</Tab>
+</Tabs>
+
+<Note>
+Call `CometChatCalls.login()` once after your user authenticates. The SDK stores the auth token internally, so subsequent calls like `generateToken()` and `joinSession()` use it automatically.
+</Note>
+
+---
+
+## Session Settings
+
+`CallSettingsBuilder` is replaced by passing a plain `SessionSettings` object directly.
+
+<Tabs>
+<Tab title="v4">
+```javascript
+const callSettings = new CometChatCalls.CallSettingsBuilder()
+  .enableDefaultLayout(true)
+  .setIsAudioOnlyCall(true)
+  .showEndCallButton(true)
+  .showMuteAudioButton(true)
+  .showPauseVideoButton(true)
+  .showRecordingButton(true)
+  .showSwitchModeButton(true)
+  .startWithAudioMuted(false)
+  .startWithVideoMuted(false)
+  .setMode(CometChatCalls.CALL_MODE.DEFAULT)
+  .setCallListener(new CometChatCalls.OngoingCallListener({
+    onCallEnded: () => { },
+    onCallEndButtonPressed: () => { },
+    onUserJoined: (user) => { },
+    onUserLeft: (user) => { },
+    onUserListUpdated: (userList) => { },
+    onError: (error) => { },
+  }))
+  .build();
+```
+</Tab>
+<Tab title="v5">
+```javascript
+const sessionSettings = {
+  sessionType: "VIDEO",       // or "VOICE"
+  layout: "TILE",             // or "SPOTLIGHT"
+  startAudioMuted: false,
+  startVideoPaused: false,
+  hideLeaveSessionButton: false,
+  hideToggleAudioButton: false,
+  hideToggleVideoButton: false,
+  hideRecordingButton: false,
+  hideScreenSharingButton: false,
+  hideChangeLayoutButton: false,
+  hideControlPanel: false,
+  autoStartRecording: false,
+};
+```
+</Tab>
+</Tabs>
+
+### Settings Property Mapping
+
+| v4 Builder Method | v5 Property | Notes |
+|-----------|-----------|-------|
+| `setIsAudioOnlyCall(true)` | `sessionType: "VOICE"` | Use `"VIDEO"` for video calls |
+| `enableDefaultLayout(bool)` | `hideControlPanel: !bool` | Inverted logic |
+| `showEndCallButton(bool)` | `hideLeaveSessionButton: !bool` | Inverted logic |
+| `showMuteAudioButton(bool)` | `hideToggleAudioButton: !bool` | Inverted logic |
+| `showPauseVideoButton(bool)` | `hideToggleVideoButton: !bool` | Inverted logic |
+| `showRecordingButton(bool)` | `hideRecordingButton: !bool` | Inverted logic |
+| `showSwitchModeButton(bool)` | `hideChangeLayoutButton: !bool` | Inverted logic |
+| `startWithAudioMuted(bool)` | `startAudioMuted: bool` | Same logic |
+| `startWithVideoMuted(bool)` | `startVideoPaused: bool` | Same logic |
+| `setMode(CALL_MODE.DEFAULT)` | `layout: "TILE"` | Enum instead of constant |
+| `startRecordingOnCallStart(bool)` | `autoStartRecording: bool` | Same logic |
+| `setCallListener(listener)` | Use `addEventListener()` | See [Events](#event-listeners) section |
+
+---
+
+## Joining a Session
+
+`startSession()` is replaced by `joinSession()`.
+
+<Tabs>
+<Tab title="v4">
+```javascript
+CometChatCalls.generateToken(sessionId, authToken).then((token) => {
+  CometChatCalls.startSession(token, callSettings);
+});
+```
+</Tab>
+<Tab title="v5">
+```javascript
+// Option A: With token
+CometChatCalls.generateToken(sessionId).then((token) => {
+  CometChatCalls.joinSession(token, sessionSettings);
+});
+
+// Option B: With session ID (recommended)
+CometChatCalls.joinSession(sessionId, sessionSettings);
+```
+</Tab>
+</Tabs>
+
+---
+
+## Session Control (Actions)
+
+Static methods remain on `CometChatCalls` but some have been renamed.
+
+| v4 Method | v5 Method |
+|---|---|
+| `CometChatCalls.endSession()` | `CometChatCalls.leaveSession()` |
+| `CometChatCalls.switchCamera()` | `CometChatCalls.switchCamera()` |
+| `CometChatCalls.muteAudio(true)` | `CometChatCalls.muteAudio()` |
+| `CometChatCalls.muteAudio(false)` | `CometChatCalls.unmuteAudio()` |
+| `CometChatCalls.pauseVideo(true)` | `CometChatCalls.pauseVideo()` |
+| `CometChatCalls.pauseVideo(false)` | `CometChatCalls.resumeVideo()` |
+| `CometChatCalls.setMode(mode)` | `CometChatCalls.setLayout(layout)` |
+| `CometChatCalls.enterPIPMode()` | `CometChatCalls.enablePictureInPictureLayout()` |
+| `CometChatCalls.exitPIPMode()` | `CometChatCalls.disablePictureInPictureLayout()` |
+| `CometChatCalls.startRecording()` | `CometChatCalls.startRecording()` |
+| `CometChatCalls.stopRecording()` | `CometChatCalls.stopRecording()` |
+| `CometChatCalls.switchToVideoCall()` | *Removed* |
+
+---
+
+## Event Listeners
+
+The single `OngoingCallListener` is replaced by `addEventListener()` with specific event types.
+
+### v4: Single Listener Object
+
+```javascript
+const callSettings = new CometChatCalls.CallSettingsBuilder()
+  .setCallListener(new CometChatCalls.OngoingCallListener({
+    onCallEnded: () => { },
+    onCallEndButtonPressed: () => { },
+    onUserJoined: (user) => { },
+    onUserLeft: (user) => { },
+    onUserListUpdated: (userList) => { },
+    onAudioModeChanged: (audioModeList) => { },
+    onUserMuted: (muteInfo) => { },
+    onRecordingToggled: (recordingInfo) => { },
+    onError: (error) => { },
+  }))
+  .build();
+```
+
+### v5: Granular Event Subscriptions
+
+```javascript
+// Session events
+CometChatCalls.addEventListener("onSessionJoined", () => { });
+CometChatCalls.addEventListener("onSessionLeft", () => { });
+CometChatCalls.addEventListener("onSessionTimedOut", () => { });
+CometChatCalls.addEventListener("onConnectionLost", () => { });
+CometChatCalls.addEventListener("onConnectionRestored", () => { });
+
+// Participant events
+CometChatCalls.addEventListener("onParticipantJoined", (participant) => { });
+CometChatCalls.addEventListener("onParticipantLeft", (participant) => { });
+CometChatCalls.addEventListener("onParticipantListChanged", (participants) => { });
+CometChatCalls.addEventListener("onParticipantAudioMuted", (participant) => { });
+CometChatCalls.addEventListener("onParticipantAudioUnmuted", (participant) => { });
+
+// Media events
+CometChatCalls.addEventListener("onAudioMuted", () => { });
+CometChatCalls.addEventListener("onAudioUnMuted", () => { });
+CometChatCalls.addEventListener("onRecordingStarted", () => { });
+CometChatCalls.addEventListener("onRecordingStopped", () => { });
+
+// Button click events
+CometChatCalls.addEventListener("onLeaveSessionButtonClicked", () => { });
+CometChatCalls.addEventListener("onToggleAudioButtonClicked", () => { });
+CometChatCalls.addEventListener("onToggleVideoButtonClicked", () => { });
+
+// Layout events
+CometChatCalls.addEventListener("onCallLayoutChanged", (layoutType) => { });
+CometChatCalls.addEventListener("onPictureInPictureLayoutEnabled", () => { });
+CometChatCalls.addEventListener("onPictureInPictureLayoutDisabled", () => { });
+```
+
+<Note>
+`addEventListener()` returns an unsubscribe function. Call it to remove the listener.
+</Note>
+
+### Event Mapping
+
+| v4 Event | v5 Event |
+|----------|----------|
+| `onCallEnded` | `onSessionLeft` |
+| `onCallEndButtonPressed` | `onLeaveSessionButtonClicked` |
+| `onUserJoined(user)` | `onParticipantJoined(participant)` |
+| `onUserLeft(user)` | `onParticipantLeft(participant)` |
+| `onUserListUpdated(userList)` | `onParticipantListChanged(participants)` |
+| `onAudioModeChanged(list)` | `onAudioModeChanged(audioMode)` |
+| `onUserMuted(info)` | `onParticipantAudioMuted(participant)` |
+| `onRecordingToggled(info)` | `onRecordingStarted` / `onRecordingStopped` |
+| `onError(error)` | Errors returned via Promise rejection |
+
+---
+
+## Deprecated Classes Summary
+
+| Deprecated | Replacement |
+|------------|-------------|
+| `CometChatCalls.CallAppSettingsBuilder` | Pass plain object to `init()` |
+| `CometChatCalls.CallSettingsBuilder` | Pass plain `SessionSettings` object to `joinSession()` |
+| `CometChatCalls.OngoingCallListener` | `CometChatCalls.addEventListener()` |
+| `CometChatCalls.startSession()` | `CometChatCalls.joinSession()` |
+| `CometChatCalls.endSession()` | `CometChatCalls.leaveSession()` |
+| `RTCRecordingInfo` | `onRecordingStarted` / `onRecordingStopped` events |
+| `CallSwitchRequestInfo` | *Removed (no replacement)* |

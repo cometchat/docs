@@ -1,78 +1,97 @@
 ---
 title: "AI Agents"
-description: "Learn how to integrate AI Agents in your React Native app using the CometChat SDK, including real-time event streaming and agentic message handling."
+sidebarTitle: "AI Agents"
+description: "Integrate AI Agents into your React Native app using the CometChat SDK, including real-time event streaming and agentic message handling."
 ---
 
-<Info>
-**Quick Reference**
+<Accordion title="AI Integration Quick Reference">
+
+| Feature | Description |
+| --- | --- |
+| [AI Agents](#agent-run-lifecycle-and-message-flow) | Intelligent automated conversations with real-time streaming |
+| [AI Moderation](/sdk/react-native/ai-moderation) | Automatic content moderation with `PENDING` → `APPROVED` / `DISAPPROVED` flow |
+
 ```javascript
-// Listen for real-time AI Agent events
-CometChat.addAIAssistantListener("listenerId", {
-  onAIAssistantEventReceived: (event) => {}
+// Listen for real-time AI Agent events (streaming)
+CometChat.addAIAssistantListener("LISTENER_ID", {
+  onAIAssistantEventReceived: (event) => console.log("Event:", event)
 });
 
 // Listen for persisted agentic messages
-CometChat.addMessageListener("listenerId", {
-  onAIAssistantMessageReceived: (message) => {},
-  onAIToolResultReceived: (message) => {},
-  onAIToolArgumentsReceived: (message) => {}
-});
+CometChat.addMessageListener("LISTENER_ID", new CometChat.MessageListener({
+  onAIAssistantMessageReceived: (msg) => console.log("Assistant reply:", msg),
+  onAIToolResultReceived: (msg) => console.log("Tool result:", msg),
+  onAIToolArgumentsReceived: (msg) => console.log("Tool args:", msg)
+}));
+
+// Cleanup
+CometChat.removeAIAssistantListener("LISTENER_ID");
+CometChat.removeMessageListener("LISTENER_ID");
 ```
-</Info>
 
-## Overview
+**Prerequisites:** `CometChat.init()` + `CometChat.login()` completed, AI features enabled in [Dashboard](https://app.cometchat.com)
+**Event flow:** Run Start → Tool Call(s) → Text Message Stream → Run Finished
+</Accordion>
 
-AI Agents enable intelligent, automated interactions within your application. They can process user messages, trigger tools, and respond with contextually relevant information. For a broader introduction, see the [AI Agents section](/ai-agents).
+AI Agents enable intelligent, automated interactions within your application. They process user messages, trigger tools, and respond with contextually relevant information. For a broader introduction, see the [AI Agents section](/ai-agents).
 
 <Note>
-Currently, an Agent only responds to **Text Messages**.
+Agents only respond to text messages.
 </Note>
 
 ## Agent Run Lifecycle and Message Flow
 
-This section explains how a user's text message to an Agent becomes a structured "run" which emits real-time events and then produces agentic messages for historical retrieval.
-- A user sends a text message to an Agent.
-- The platform starts a run and streams real-time events via the **`AIAssistantListener`**.
-- After the run completes, persisted Agentic Messages arrive via the **`MessageListener`**.
+When a user sends a text message to an Agent:
+1. The platform starts a run and streams real-time events via `AIAssistantListener`
+2. After the run completes, persisted Agentic Messages arrive via `MessageListener`
 
 ### Real-time Events
-Events are received via the **`onAIAssistantEventReceived`** method of the **`AIAssistantListener`** class in this general order:
+Events are received via the **`onAIAssistantEventReceived`** method of the **`AIAssistantListener`** class as [`AIAssistantBaseEvent`](/sdk/reference/messages#aiassistantbaseevent) objects, in this general order:
 
-1. Run Start
-2. Zero or more tool call cycles (repeats for each tool invocation):
-    - Tool Call Start
-    - Tool Call Arguments
-    - Tool Call End
-    - Tool Call Result
-3. One or more assistant reply streams:
-    - Text Message Start
-    - Text Message Content (multiple times; token/char streaming)
-    - Text Message End
-4. Run Finished
+Events arrive via `onAIAssistantEventReceived` in this order:
 
-Notes:
-- `Run Start` and `Run Finished` are always emitted.
-- `Tool Call` events appear only when a backend or frontend tool is invoked. There can be multiple tool calls in a single run.
-- `Text Message` events are always emitted and carry the assistant's reply incrementally.
+| Order | Event | Description |
+|-------|-------|-------------|
+| 1 | Run Start | A new run has begun |
+| 2 | Tool Call Start | Agent decided to invoke a tool |
+| 3 | Tool Call Arguments | Arguments being passed to the tool |
+| 4 | Tool Call End | Tool execution completed |
+| 5 | Tool Call Result | Tool's output is available |
+| 6 | Text Message Start | Agent started composing a reply |
+| 7 | Text Message Content | Streaming content chunks (multiple) |
+| 8 | Text Message End | Agent reply is complete |
+| 9 | Run Finished | Run finalized; persisted messages follow |
+
+<Note>
+`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked — there can be multiple tool call cycles in a single run. Text Message events are always emitted and carry the assistant's reply incrementally.
+</Note>
+
+### Event Object Properties
+
+Every event is an `AIAssistantBaseEvent` with these common properties:
+
+| Getter | Return Type | Description |
+|--------|-------------|-------------|
+| `getType()` | `string` | Event type (e.g., `run_started`, `text_message_content`) |
+| `getConversationId()` | `string` | The conversation this event belongs to |
+| `getMessageId()` | `string` | The message ID associated with the event |
+| `getParentMessageId()` | `string` | Parent message ID (for threaded messages) |
+| `getRunId()` | `string` | The run ID for this agent execution |
+| `getThreadId()` | `string` | The thread ID for this agent execution |
+| `getTimestamp()` | `number` | Timestamp of the event |
+| `getData()` | `object` | Full event data payload |
+
+Some events carry additional data:
+
+| Event | Extra Getter | Description |
+|-------|-------------|-------------|
+| Text Message Content | `getDelta()` | The streaming text chunk for progressive rendering |
+| Tool Call Arguments | `getToolCallId()`, `getDelta()` | Tool call ID and argument chunk |
+| Tool Call Result | `getToolCallId()`, `getContent()`, `getRole()` | Tool call ID, result content, and role |
 
 <Tabs>
-    <Tab title="JavaScript">
-        ```js
-        const listnerId = "unique_listener_id";
-
-        // Adding the AIAssistantListener
-        CometChat.addAIAssistantListener(listnerId, {
-            onAIAssistantEventReceived: (message) => {
-                console.log("AIAssistant event received successfully", message);
-            }
-        });
-
-        // Removing the AIAssistantListener
-        CometChat.removeAIAssistantListener(listnerId);
-        ```
-    </Tab>
-    <Tab title="TypeScript">
-        ```ts
+<Tab title="TypeScript">
+```ts
         const listnerId: string = "unique_listener_id";
 
         // Adding the AIAssistantListener
@@ -85,7 +104,24 @@ Notes:
         // Removing the AIAssistantListener
         CometChat.removeAIAssistantListener(listnerId);
         ```
-    </Tab>
+</Tab>
+
+<Tab title="JavaScript">
+```js
+        const listnerId = "unique_listener_id";
+
+        // Adding the AIAssistantListener
+        CometChat.addAIAssistantListener(listnerId, {
+            onAIAssistantEventReceived: (message) => {
+                console.log("AIAssistant event received successfully", message);
+            }
+        });
+
+        // Removing the AIAssistantListener
+        CometChat.removeAIAssistantListener(listnerId);
+        ```
+</Tab>
+
 </Tabs>
 
 <Warning>
@@ -95,49 +131,46 @@ CometChat.removeAIAssistantListener("unique_listener_id");
 ```
 </Warning>
 
-#### Event Descriptions
-
-| Event | Description |
-|-------|-------------|
-| Run Start | A new run has begun for the user's message |
-| Tool Call Start | The agent decided to invoke a tool |
-| Tool Call Arguments | Arguments being passed to the tool |
-| Tool Call End | Tool execution completed |
-| Tool Call Result | Tool's output is available |
-| Text Message Start | The agent started composing a reply |
-| Text Message Content | Streaming content chunks for progressive rendering |
-| Text Message End | The agent reply is complete |
-| Run Finished | The run is finalized; persisted messages will follow |
+#### Event descriptions
+- Run Start: A new run has begun for the user's message.
+- Tool Call Start: The agent decided to invoke a tool.
+- Tool Call Arguments: Arguments being passed to the tool.
+- Tool Call End: Tool execution completed.
+- Tool Call Result: Tool's output is available.
+- Text Message Start: The agent started composing a reply.
+- Text Message Content: Streaming content chunks for progressive rendering.
+- Text Message End: The agent reply is complete.
+- Run Finished: The run is finalized; persisted messages will follow.
 
 ### Agentic Messages
 
-These events are received via the **`MessageListener`** after the run completes.
-- `AIAssistantMessage`: The full assistant reply.
-- `AIToolResultMessage`: The final output of a tool call.
-- `AIToolArgumentMessage`: The arguments that were passed to a tool.
+After the run completes, these messages arrive via `MessageListener`:
+
+| Message Type | Description |
+|--------------|-------------|
+| `AIAssistantMessage` | The full assistant reply |
+| `AIToolResultMessage` | The final output of a tool call |
+| `AIToolArgumentMessage` | The arguments passed to a tool |
+
+Each message type extends [`BaseMessage`](/sdk/reference/messages#basemessage) and has a typed data accessor:
+
+| Message Type | Data Getter | Data Properties |
+|--------------|-------------|-----------------|
+| `AIAssistantMessage` | `getAssistantMessageData()` | `getRunId()`, `getThreadId()`, `getText()` |
+| `AIToolResultMessage` | `getToolResultMessageData()` | `getRunId()`, `getThreadId()`, `getText()`, `getToolCallId()` |
+| `AIToolArgumentMessage` | `getToolArgumentMessageData()` | `getRunId()`, `getThreadId()`, `getToolCalls()` |
+
+The `getToolCalls()` method on `AIToolArgumentMessage` returns an array of `AIToolCall` objects, each with:
+
+| Getter | Return Type | Description |
+|--------|-------------|-------------|
+| `getId()` | `string` | Unique tool call ID |
+| `getType()` | `string` | Tool call type |
+| `getFunction()` | `AIToolCallFunction` | Function object with `getName()` and `getArguments()` |
+| `getDisplayName()` | `string` | Display name of the tool |
+| `getExecutionText()` | `string` | Execution description text |
 
 <Tabs>
-    <Tab title="JavaScript">
-        ```js
-        const listnerId = "unique_listener_id";
-
-        // Adding the MessageListener
-        CometChat.addMessageListener(listnerId, {
-            onAIAssistantMessageReceived: (message) => {
-                console.log("AI Assistant message received successfully", message);
-            },
-            onAIToolResultReceived: (message) => {
-                console.log("AI Tool result message received successfully", message);
-            },
-            onAIToolArgumentsReceived: (message) => {
-                console.log("AI Tool argument message received successfully", message);
-            },
-        });
-
-        // Removing the MessageListener
-        CometChat.removeMessageListener(listnerId);
-        ```
-    </Tab>
     <Tab title="TypeScript">
 
         ```ts
@@ -160,39 +193,45 @@ These events are received via the **`MessageListener`** after the run completes.
         CometChat.removeMessageListener(listnerId);
         ```
     </Tab>
+    <Tab title="JavaScript">
+        ```js
+        const listnerId = "unique_listener_id";
+
+        // Adding the MessageListener
+        CometChat.addMessageListener(listnerId, {
+            onAIAssistantMessageReceived: (message) => {
+                console.log("AI Assistant message received successfully", message);
+            },
+            onAIToolResultReceived: (message) => {
+                console.log("AI Tool result message received successfully", message);
+            },
+            onAIToolArgumentsReceived: (message) => {
+                console.log("AI Tool argument message received successfully", message);
+            },
+        });
+
+        // Removing the MessageListener
+        CometChat.removeMessageListener(listnerId);
+        ```
+    </Tab>
 </Tabs>
 
 <Warning>
-Always remove message listeners when the component unmounts to prevent memory leaks.
-```javascript
-CometChat.removeMessageListener("unique_listener_id");
-```
+Always remove listeners when they're no longer needed (e.g., on component unmount or page navigation). Failing to remove listeners can cause memory leaks and duplicate event handling.
 </Warning>
 
-<AccordionGroup>
-<Accordion title="Best Practices">
-- Register both `AIAssistantListener` (for real-time streaming) and `MessageListener` (for persisted messages) to get the complete agent interaction flow
-- Use `Text Message Content` events for progressive rendering of the agent's reply as it streams in
-- Handle `Tool Call` events to show tool execution status in your UI (e.g., loading indicators)
-- Always remove both listeners on component unmount to avoid memory leaks
-- Since agents only respond to text messages, validate the message type before sending to an agent
-</Accordion>
-
-<Accordion title="Troubleshooting">
-- **No events received**: Ensure you registered the `AIAssistantListener` with a unique listener ID before sending a message to the agent.
-- **Missing agentic messages**: Agentic messages arrive via `MessageListener` after the run completes. Make sure you have both listeners registered.
-- **Duplicate events**: Verify you are not registering the same listener ID multiple times without removing the previous one.
-- **Tool call events not appearing**: Tool call events only fire when the agent invokes a tool. Not all runs include tool calls.
-</Accordion>
-</AccordionGroup>
+---
 
 ## Next Steps
 
 <CardGroup cols={2}>
-<Card title="AI Agents Overview" icon="robot" href="/ai-agents">
-Explore the full AI Agents platform documentation
-</Card>
-<Card title="AI Moderation" icon="shield-check" href="/sdk/react-native/ai-moderation">
-Automatically moderate messages using AI
-</Card>
+  <Card title="AI Agents Overview" icon="robot" href="/ai-agents">
+    Explore the full AI Agents platform documentation
+  </Card>
+  <Card title="AI Moderation" icon="shield-check" href="/sdk/react-native/ai-moderation">
+    Automatically moderate messages using AI
+  </Card>
+  <Card title="Send Messages" icon="paper-plane" href="/sdk/react-native/send-message">
+    Send text messages that trigger AI Agent responses
+  </Card>
 </CardGroup>

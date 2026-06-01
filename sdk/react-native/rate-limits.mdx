@@ -1,62 +1,111 @@
 ---
 title: "Rate Limits"
-description: "Understand CometChat REST API rate limits, how to monitor usage via response headers, and how to handle rate limit errors."
+description: "Understand CometChat REST API rate limits, response headers, and how to handle rate-limited requests in your React Native application."
 ---
 
-<Info>
-**Quick Reference** - Key rate limits at a glance:
+<Accordion title="AI Integration Quick Reference">
 
-| Operation Type | Limit                    |
-|----------------|--------------------------|
-| Core           | 10,000 requests/minute   |
-| Standard       | 20,000 requests/minute   |
-</Info>
+- Core Operations (login, create/delete user, create/join group): `10,000` requests/min cumulative
+- Standard Operations (all other): `20,000` requests/min cumulative
+- Rate-limited responses return HTTP `429` with `Retry-After` and `X-Rate-Limit-Reset` headers
+- Monitor usage via `X-Rate-Limit` and `X-Rate-Limit-Remaining` response headers
+</Accordion>
 
-## CometChat REST API Rate Limits
+CometChat applies rate limits to REST API requests to ensure fair usage and platform stability. SDK methods that call the REST API under the hood (like fetching users, sending messages, or creating groups) are subject to these limits. Understanding them helps you build applications that handle high traffic gracefully.
+
+## Rate Limit Tiers
+
+| Operation Type | Limit | Examples |
+| --- | --- | --- |
+| Core Operations | 10,000 requests/min | Login, create/delete user, create/join group |
+| Standard Operations | 20,000 requests/min | All other operations |
 
 <Note>
-The rate limits below are for general applications. Rate limits can be adjusted on a per-need basis, depending on your use case and plan. The rate limits are cumulative. For example: if the rate limit for core operations is 10,000 requests per minute, then you can login a user, add a user to a group, remove a user from a group, etc. for a combined total of 10,000 requests per minute.
+Rate limits are cumulative within each tier. For example, if you make 5,000 login requests and 5,000 create user requests in one minute, you've hit the 10,000 core operations limit.
 </Note>
 
-| Operation Type          | Rate Limit                  | Examples                                                        |
-|-------------------------|-----------------------------|-----------------------------------------------------------------|
-| **Core Operations**     | `10,000` requests per minute | User login, create/delete user, create/join group (cumulative) |
-| **Standard Operations** | `20,000` requests per minute | All other operations (cumulative)                              |
+## Response Headers
 
-## What Happens When the Rate Limit is Reached?
+CometChat includes rate limit information in response headers:
 
-The request isn't processed and a response is sent containing a `429` response code. Along with the response code, there will be a couple of headers sent which specify the time in seconds that you must wait before you can try the request again.
+| Header | Description |
+| --- | --- |
+| `X-Rate-Limit` | Your current rate limit |
+| `X-Rate-Limit-Remaining` | Requests remaining in current window |
+| `Retry-After` | Seconds to wait before retrying (on 429) |
+| `X-Rate-Limit-Reset` | Unix timestamp when limit resets (on 429) |
 
+## Handling Rate Limits
+
+When you exceed the rate limit, CometChat returns HTTP `429 Too Many Requests`. Implement exponential backoff to handle this gracefully:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+async function callWithRetry<T>(
+  apiCall: () => Promise<T>,
+  maxRetries: number = 3
+): Promise<T> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error: any) {
+      if (error.code === "TOO_MANY_REQUEST" && attempt < maxRetries - 1) {
+        const waitTime = Math.pow(2, attempt) * 1000;
+        console.log(`Rate limited. Retrying in ${waitTime / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error("Max retries exceeded");
+}
+
+// Usage
+const users: CometChat.User[] = await callWithRetry(() =>
+  new CometChat.UsersRequestBuilder().setLimit(30).build().fetchNext()
+);
 ```
-Retry-After: 15
-X-Rate-Limit-Reset: 1625143246
+</Tab>
+<Tab title="JavaScript">
+```javascript
+async function callWithRetry(apiCall, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error) {
+      if (error.code === "TOO_MANY_REQUEST" && attempt < maxRetries - 1) {
+        const waitTime = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+        console.log(`Rate limited. Retrying in ${waitTime / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+// Usage
+const users = await callWithRetry(() =>
+  new CometChat.UsersRequestBuilder().setLimit(30).build().fetchNext()
+);
 ```
+</Tab>
+</Tabs>
 
-## Is There an Endpoint That Returns Rate Limits?
+## Tips for Staying Within Limits
 
-No, CometChat does not provide a dedicated rate-limit endpoint.
+- **Batch operations** — Space out bulk operations over time instead of firing all at once
+- **Monitor headers** — Check `X-Rate-Limit-Remaining` to proactively slow down before hitting limits
+- **Avoid frequent login/logout** — Core operations share a lower limit; minimize login cycles
+- **Use pagination** — Fetch data in reasonable page sizes (30-50 items) rather than requesting everything at once
 
-However, the following response headers are included with every API response, which you can use to confirm the app's current rate limit and monitor the number of requests remaining in the current minute:
+<Note>
+Rate limits can be adjusted based on your use case and plan. Contact CometChat support if you need higher limits.
+</Note>
 
-```
-X-Rate-Limit: 700
-X-Rate-Limit-Remaining: 699
-```
-
-<AccordionGroup>
-  <Accordion title="Best Practices">
-    - Monitor `X-Rate-Limit-Remaining` headers to proactively manage your request volume
-    - Implement exponential backoff when you receive a `429` response
-    - Use the `Retry-After` header value to determine when to retry
-    - Batch operations where possible to reduce the total number of API calls
-    - Cache responses locally to avoid redundant requests
-  </Accordion>
-  <Accordion title="Troubleshooting">
-    - **Receiving 429 errors frequently:** Review your request patterns and consider batching or caching
-    - **Rate limit seems too low:** Contact CometChat support to discuss adjustments based on your plan and use case
-    - **Inconsistent rate limit headers:** Ensure you're reading headers from the correct response object in your HTTP client
-  </Accordion>
-</AccordionGroup>
+---
 
 ## Next Steps
 
@@ -66,5 +115,11 @@ X-Rate-Limit-Remaining: 699
   </Card>
   <Card title="Setup & Authentication" icon="lock" href="/sdk/react-native/overview">
     Initialize CometChat and authenticate users in your app
+  </Card>
+  <Card title="Real-Time Listeners" icon="tower-broadcast" href="/sdk/react-native/real-time-listeners">
+    Complete reference for all SDK event listeners
+  </Card>
+  <Card title="Connection Status" icon="signal" href="/sdk/react-native/connection-status">
+    Monitor SDK connection state changes
   </Card>
 </CardGroup>
