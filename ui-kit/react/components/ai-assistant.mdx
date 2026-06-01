@@ -1,0 +1,548 @@
+---
+title: "AI Assistant"
+description: "Full AI assistant chat experience with streaming responses, tool call display, conversation history, and suggestion pills."
+---
+
+<Accordion title="AI Integration Quick Reference">
+```json
+{
+  "component": "CometChatAIAssistantChat",
+  "package": "@cometchat/chat-uikit-react",
+  "import": "import { CometChatAIAssistantChat, CometChatAIPlugin } from \"@cometchat/chat-uikit-react/plugins/ai\";",
+  "cssImport": "import \"@cometchat/chat-uikit-react/css-variables.css\";",
+  "description": "Full AI assistant chat experience with streaming responses, tool call display, conversation history, and suggestion pills.",
+  "cssRootClass": ".cometchat-ai-assistant-chat",
+  "primaryOutput": {
+    "prop": "onSendButtonClick",
+    "type": "(message: CometChat.BaseMessage) => void"
+  },
+  "props": {
+    "data": {
+      "user": { "type": "CometChat.User", "default": "required" },
+      "parentMessageId": { "type": "number", "default": "undefined" },
+      "loadLastAgentConversation": { "type": "boolean", "default": "false" }
+    },
+    "behavior": {
+      "streamingSpeed": { "type": "number", "default": "30", "note": "ms delay between text chunks" },
+      "aiAssistantTools": { "type": "CometChatAIAssistantTools", "default": "undefined" },
+      "showSuggestedMessages": { "type": "boolean", "default": "true" },
+      "suggestedMessages": { "type": "string[]", "default": "[]" }
+    },
+    "visibility": {
+      "hideChatHistory": { "type": "boolean", "default": "false" },
+      "hideNewChat": { "type": "boolean", "default": "false" },
+      "showBackButton": { "type": "boolean", "default": "false" },
+      "showCloseButton": { "type": "boolean", "default": "false" }
+    },
+    "viewSlots": {
+      "greetingView": { "type": "ReactNode", "default": "undefined" },
+      "emptyView": { "type": "ReactNode", "default": "undefined" },
+      "loadingView": { "type": "ReactNode", "default": "undefined" },
+      "errorView": { "type": "ReactNode", "default": "undefined" }
+    },
+    "callbacks": {
+      "onSendButtonClick": { "type": "(message: CometChat.BaseMessage) => void", "default": "undefined" },
+      "onBackButtonClicked": { "type": "() => void", "default": "undefined" },
+      "onCloseButtonClicked": { "type": "() => void", "default": "undefined" },
+      "onError": { "type": "(error: unknown) => void", "default": "undefined" }
+    }
+  },
+  "sdkListeners": ["CometChat.addAIAssistantListener"],
+  "types": {
+    "CometChatAIAssistantTools": "class CometChatAIAssistantTools { constructor(actions: Record<string, (args) => void>); getAction(name: string): Function | undefined; }",
+    "CometChatAIAssistantChatProps": "interface CometChatAIAssistantChatProps { user: CometChat.User; streamingSpeed?: number; ... }"
+  }
+}
+```
+</Accordion>
+
+## Where It Fits
+
+`CometChatAIAssistantChat` is the top-level orchestrator for the AI assistant chat experience. It wires together `CometChatMessageHeader`, `CometChatMessageList`, `CometChatMessageComposer`, and the `CometChatAIAssistantChatHistory` sidebar. Register `CometChatAIPlugin` in the plugin registry so the message list renders AI assistant messages, tool call arguments, and tool call results correctly.
+
+```tsx lines
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+import {
+  CometChatAIPlugin,
+  CometChatAIAssistantChat,
+  CometChatAIAssistantTools,
+} from "@cometchat/chat-uikit-react/plugins/ai";
+import { defaultPlugins } from "@cometchat/chat-uikit-react";
+import "@cometchat/chat-uikit-react/css-variables.css";
+
+const aiTools = new CometChatAIAssistantTools({
+  getWeather: (args) => fetch(`/api/weather?location=${args.location}`),
+});
+
+function App() {
+  const [aiUser, setAIUser] = useState<CometChat.User | null>(null);
+
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="us"
+      plugins={[...defaultPlugins, CometChatAIPlugin]}
+    >
+      {aiUser && (
+        <CometChatAIAssistantChat
+          user={aiUser}
+          aiAssistantTools={aiTools}
+          streamingSpeed={30}
+          showCloseButton
+          onCloseButtonClicked={() => setAIUser(null)}
+        />
+      )}
+    </CometChatProvider>
+  );
+}
+```
+
+## Minimal Render
+
+```tsx lines
+import { CometChatAIAssistantChat } from "@cometchat/chat-uikit-react/plugins/ai";
+import "@cometchat/chat-uikit-react/css-variables.css";
+
+function Demo({ aiUser }: { aiUser: CometChat.User }) {
+  return <CometChatAIAssistantChat user={aiUser} />;
+}
+```
+
+Root CSS class: `.cometchat-ai-assistant-chat`
+
+## Plugin Registration
+
+Register `CometChatAIPlugin` in the `CometChatProvider` to enable AI message rendering in the message list:
+
+```tsx lines
+import { CometChatAIPlugin } from "@cometchat/chat-uikit-react/plugins/ai";
+import { defaultPlugins } from "@cometchat/chat-uikit-react";
+
+<CometChatProvider plugins={[...defaultPlugins, CometChatAIPlugin]}>
+  {/* ... */}
+</CometChatProvider>
+```
+
+The plugin handles three message types in the `agentic` category:
+- `assistant` → `CometChatAIAssistantBubble` (completed AI response with markdown)
+- `toolArguments` → `CometChatToolCallArgumentBubble` (tool call arguments as JSON)
+- `toolResults` → `CometChatToolCallResultBubble` (tool call results as JSON)
+
+## Streaming Architecture
+
+The AI assistant uses a sequential event queue to process streaming events:
+
+1. SDK emits `AIAssistantBaseEvent` chunks via `CometChat.addAIAssistantListener`
+2. `CometChatAIStreamingService` queues events and processes them sequentially
+3. Text chunks are delayed by `streamingSpeed` ms for a typing effect
+4. `CometChatStreamMessageBubble` subscribes via `useSyncExternalStore` for tear-free reads
+5. The bubble shows "Thinking..." → tool execution text → streamed markdown content
+
+```tsx lines
+// Stream lifecycle:
+// run_started → text_message_start → text_message_content (×N) → text_message_end
+// → [tool_call_start → tool_call_args (×N) → tool_call_end → tool_call_result] (×M)
+// → run_finished
+```
+
+## Tool Calls
+
+Register tool handlers via `CometChatAIAssistantTools`:
+
+```tsx lines
+import { CometChatAIAssistantTools } from "@cometchat/chat-uikit-react/plugins/ai";
+
+const tools = new CometChatAIAssistantTools({
+  // Called when the AI invokes the "getWeather" tool
+  getWeather: (args) => {
+    const { location } = args as { location: string };
+    return fetch(`/api/weather?location=${location}`);
+  },
+
+  // Called when the AI invokes the "searchDatabase" tool
+  searchDatabase: (args) => {
+    const { query } = args as { query: string };
+    return fetch(`/api/search?q=${query}`);
+  },
+});
+
+<CometChatAIAssistantChat user={aiUser} aiAssistantTools={tools} />
+```
+
+## Suggestion Pills
+
+Suggestion pills appear in the empty state. They can come from:
+1. The `suggestedMessages` prop (explicit)
+2. `user.getMetadata().suggestedMessages` (from user metadata)
+
+```tsx lines
+<CometChatAIAssistantChat
+  user={aiUser}
+  suggestedMessages={[
+    "Summarize this conversation",
+    "What are the key action items?",
+    "Draft a follow-up email",
+  ]}
+/>
+```
+
+## Chat History Sidebar
+
+The sidebar shows past AI conversations. Click a message to load that thread. Click "New Chat" to start fresh.
+
+```tsx lines
+<CometChatAIAssistantChat
+  user={aiUser}
+  hideChatHistory={false}   // show history button (default)
+  hideNewChat={false}        // show new chat button (default)
+  loadLastAgentConversation  // auto-load most recent conversation on mount
+/>
+```
+
+## Custom Greeting
+
+Override the default greeting with a custom view:
+
+```tsx lines
+<CometChatAIAssistantChat
+  user={aiUser}
+  greetingView={
+    <div>
+      <h2>Welcome to AI Support</h2>
+      <p>I can help you with orders, returns, and product questions.</p>
+    </div>
+  }
+/>
+```
+
+## Actions and Events
+
+### Callback Props
+
+#### onSendButtonClick
+
+Called when a message is sent to the AI assistant.
+
+```tsx lines
+<CometChatAIAssistantChat
+  user={aiUser}
+  onSendButtonClick={(message) => {
+    console.log("Message sent:", message.getId());
+  }}
+/>
+```
+
+#### onError
+
+Called when an error occurs (fetch failure, SDK error, etc.).
+
+```tsx lines
+<CometChatAIAssistantChat
+  user={aiUser}
+  onError={(error) => {
+    console.error("AI chat error:", error);
+  }}
+/>
+```
+
+## Lazy Loading
+
+`CometChatAIAssistantChat` is Tier 4 lazy — it's not included in the initial bundle. Load it on demand:
+
+```tsx lines
+import { lazy, Suspense } from "react";
+
+const LazyAIAssistantChat = lazy(
+  () => import("@cometchat/chat-uikit-react/plugins/ai/CometChatAIAssistantChat.lazy")
+);
+
+// Preload on button hover/focus to reduce perceived latency
+const preload = () =>
+  import("@cometchat/chat-uikit-react/plugins/ai/CometChatAIAssistantChat.lazy");
+
+function App() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        onMouseEnter={preload}
+        onFocus={preload}
+        onClick={() => setOpen(true)}
+      >
+        Open AI Assistant
+      </button>
+
+      {open && (
+        <Suspense fallback={<div>Loading...</div>}>
+          <LazyAIAssistantChat user={aiUser} onCloseButtonClicked={() => setOpen(false)} />
+        </Suspense>
+      )}
+    </>
+  );
+}
+```
+
+## CSS Architecture
+
+The component uses CSS custom properties defined in `@cometchat/chat-uikit-react/css-variables.css`.
+
+### Key Selectors
+
+| Target | Selector |
+| --- | --- |
+| Root | `.cometchat-ai-assistant-chat` |
+| Header | `.cometchat-ai-assistant-chat__header` |
+| Message list wrapper | `.cometchat-ai-assistant-chat__message-list-wrapper` |
+| Composer area | `.cometchat-ai-assistant-chat__composer-area` |
+| Streaming (disabled) | `.cometchat-ai-assistant-chat__composer-area--streaming` |
+| Empty state | `.cometchat-ai-assistant-chat__empty-state` |
+| Suggestion pill | `.cometchat-ai-assistant-chat__suggestion-pill` |
+| Stream bubble wrapper | `.cometchat-ai-assistant-chat__stream-bubble-wrapper` |
+| Sidebar | `.cometchat-ai-assistant-chat__sidebar` |
+| Sidebar overlay | `.cometchat-ai-assistant-chat__sidebar-overlay` |
+
+### Stream Message Bubble Selectors
+
+| Target | Selector |
+| --- | --- |
+| Root | `.cometchat-stream-message-bubble` |
+| Thinking state | `.cometchat-stream-message-bubble__thinking` |
+| Tool execution | `.cometchat-stream-message-bubble__tool-execution` |
+| Content | `.cometchat-stream-message-bubble__content` |
+| Error | `.cometchat-stream-message-bubble__error` |
+
+### AI Assistant Bubble Selectors
+
+| Target | Selector |
+| --- | --- |
+| Root | `.cometchat-ai-assistant-bubble` |
+| Content | `.cometchat-ai-assistant-bubble__content` |
+| Placeholder shimmer | `.cometchat-ai-assistant-bubble__placeholder` |
+
+### Tool Call Selectors
+
+| Target | Selector |
+| --- | --- |
+| Argument bubble root | `.cometchat-toolcall-argument-bubble` |
+| Argument item | `.cometchat-toolcall-argument-bubble__item` |
+| Result bubble root | `.cometchat-toolcall-result-bubble` |
+| Result code | `.cometchat-toolcall-result-bubble__code` |
+
+## Props
+
+All props are optional unless noted otherwise.
+
+---
+
+### user
+
+**Required.** The AI assistant user object. The component uses `user.getUid()` as the chat ID for streaming events.
+
+| | |
+| --- | --- |
+| Type | `CometChat.User` |
+| Default | required |
+
+---
+
+### streamingSpeed
+
+Delay in milliseconds between text content chunks. Lower values feel faster; higher values feel more natural.
+
+| | |
+| --- | --- |
+| Type | `number` |
+| Default | `30` |
+
+---
+
+### aiAssistantTools
+
+Tool handlers for function calls. When the AI invokes a tool, the corresponding handler is called with the parsed JSON arguments.
+
+| | |
+| --- | --- |
+| Type | `CometChatAIAssistantTools` |
+| Default | `undefined` |
+
+---
+
+### loadLastAgentConversation
+
+When `true`, automatically loads the most recent AI conversation on mount.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### showSuggestedMessages
+
+Whether to show suggestion pills in the empty state.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `true` |
+
+---
+
+### suggestedMessages
+
+Custom suggestion texts. Overrides `user.getMetadata().suggestedMessages`.
+
+| | |
+| --- | --- |
+| Type | `string[]` |
+| Default | `[]` |
+
+---
+
+### hideChatHistory
+
+Hide the chat history sidebar button.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hideNewChat
+
+Hide the "New Chat" button.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### showBackButton
+
+Show a back button in the header.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### showCloseButton
+
+Show a close button in the header.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### greetingView
+
+Custom greeting view shown in the empty state (replaces default greeting + intro text).
+
+| | |
+| --- | --- |
+| Type | `ReactNode` |
+| Default | `undefined` |
+
+---
+
+### emptyView
+
+Custom empty state view (replaces the entire default empty state including greeting and suggestions).
+
+| | |
+| --- | --- |
+| Type | `ReactNode` |
+| Default | `undefined` |
+
+---
+
+### parentMessageId
+
+Load a specific conversation thread by parent message ID.
+
+| | |
+| --- | --- |
+| Type | `number` |
+| Default | `undefined` |
+
+---
+
+### onSendButtonClick
+
+Called when a message is sent.
+
+| | |
+| --- | --- |
+| Type | `(message: CometChat.BaseMessage) => void` |
+| Default | `undefined` |
+
+---
+
+### onBackButtonClicked
+
+Called when the back button is clicked.
+
+| | |
+| --- | --- |
+| Type | `() => void` |
+| Default | `undefined` |
+
+---
+
+### onCloseButtonClicked
+
+Called when the close button is clicked.
+
+| | |
+| --- | --- |
+| Type | `() => void` |
+| Default | `undefined` |
+
+---
+
+### onError
+
+Called when an error occurs.
+
+| | |
+| --- | --- |
+| Type | `(error: unknown) => void` |
+| Default | `undefined` |
+
+---
+
+## CSS Selectors
+
+| Target | Selector |
+| --- | --- |
+| Root | `.cometchat-ai-assistant-chat` |
+| Header | `.cometchat-ai-assistant-chat__header` |
+| Header info | `.cometchat-ai-assistant-chat__header-info` |
+| Header actions | `.cometchat-ai-assistant-chat__header-actions` |
+| Header icon button | `.cometchat-ai-assistant-chat__header-icon-btn` |
+| Body | `.cometchat-ai-assistant-chat__body` |
+| Message list wrapper | `.cometchat-ai-assistant-chat__message-list-wrapper` |
+| Empty state | `.cometchat-ai-assistant-chat__empty-state` |
+| Empty state content | `.cometchat-ai-assistant-chat__empty-state-content` |
+| Greeting | `.cometchat-ai-assistant-chat__empty-state-greeting` |
+| Intro | `.cometchat-ai-assistant-chat__empty-state-intro` |
+| Suggestions | `.cometchat-ai-assistant-chat__empty-state-suggestions` |
+| Suggestion pill | `.cometchat-ai-assistant-chat__suggestion-pill` |
+| Stream bubble wrapper | `.cometchat-ai-assistant-chat__stream-bubble-wrapper` |
+| Composer area | `.cometchat-ai-assistant-chat__composer-area` |
+| Composer streaming | `.cometchat-ai-assistant-chat__composer-area--streaming` |
+| Sidebar | `.cometchat-ai-assistant-chat__sidebar` |
+| Sidebar overlay | `.cometchat-ai-assistant-chat__sidebar-overlay` |
+| Bubble copy footer | `.cometchat-ai-assistant-chat__bubble-footer` |
+| Bubble copy button | `.cometchat-ai-assistant-chat__bubble-copy-btn` |

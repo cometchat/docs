@@ -1,0 +1,212 @@
+---
+title: "Block/Unblock Users"
+sidebarTitle: "Block/Unblock Users"
+description: "Implement block and unblock user functionality in CometChat React UI Kit with composer state management."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react` |
+| Key components | `CometChatMessages` — uses `CometChat.blockUsers()` / `CometChat.unblockUsers()` SDK methods |
+| Init | `CometChatUIKit.init(UIKitSettings)` then `CometChatUIKit.login("UID")` |
+| Events | `CometChatUserEvents.ccUserBlocked`, `CometChatUserEvents.ccUserUnblocked` |
+| UI helpers | `CometChatConfirmDialog`, `CometChatToast` |
+| Sample app | [GitHub](https://github.com/cometchat/cometchat-uikit-react/tree/v6/sample-app) |
+| Related | [All Guides](/ui-kit/react/guide-overview) |
+
+</Accordion>
+
+Block/Unblock lets users prevent specific users from sending them messages. When blocked, the message composer is hidden and replaced with an unblock prompt.
+
+Before starting, complete the [Getting Started](/ui-kit/react/react-js-integration) guide for your framework.
+
+---
+
+## Components
+
+| Component / Class | Role |
+|:---|:---|
+| `CometChat.blockUsers()` | SDK method to block specific users |
+| `CometChat.unblockUsers()` | SDK method to unblock previously blocked users |
+| `CometChatUserEvents.ccUserBlocked` | Event fired when a user is blocked |
+| `CometChatUserEvents.ccUserUnblocked` | Event fired when a user is unblocked |
+| `CometChatConfirmDialog` | Confirmation dialog for block/unblock actions |
+
+---
+
+## Integration Steps
+
+### 1. Block User
+
+Call `CometChat.blockUsers()` with the target UID. On success, update the local user object with `setBlockedByMe(true)` and emit `ccUserBlocked` so all subscribed components (like the composer) react to the change.
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+```tsx lines
+const onBlockUserClicked: () => Promise<void> = () => {
+    let UID = user.getUid();
+    return new Promise(async (resolve, reject) => {
+        CometChat.blockUsers([UID]).then(
+            list => {
+                user.setBlockedByMe(true);
+                CometChatUserEvents.ccUserBlocked.next(user);
+                toastTextRef.current = getLocalizedString("blocked_successfully");
+                setShowToast(true);
+                return resolve();
+            }, error => {
+                console.log("Blocking user fails with error", error);
+                return reject();
+            }
+        )
+    })
+}
+```
+
+---
+
+### 2. Unblock User
+
+Call `CometChat.unblockUsers()` with the target UID. On success, reset the action items back to "Block" (instead of "Unblock"), update the local user object, and emit `ccUserUnblocked` to restore the composer.
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+```tsx lines
+const onUnblockUserClicked = () => {
+    let UID = user.getUid();
+    CometChat.unblockUsers([UID]).then(
+        list => {
+            setActionItems([{
+                "name": getLocalizedString("user_details_block"),
+                "icon": blockIcon,
+                "id": "block_unblock_user"
+            }, {
+                "name": getLocalizedString("delete_chat"),
+                "icon": deleteIcon,
+                "id": "delete_chat"
+            }]);
+            user.setBlockedByMe(false);
+            CometChatUserEvents.ccUserUnblocked.next(user);
+        }, error => {
+            console.log("Unblocking user fails with error", error);
+        }
+    );
+}
+```
+
+---
+
+### 3. Confirmation Dialog
+
+Show a confirmation dialog before blocking. This prevents accidental blocks. The dialog uses `CometChatConfirmDialog` with localized title, message, and button text.
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+```tsx lines
+const getBlockUserConfirmationDialogView = () => {
+    return <>
+        <div className="cometchat-block-user-dialog__backdrop">
+            <CometChatConfirmDialog
+                title={getLocalizedString("block_contact")}
+                messageText={getLocalizedString("confirm_block_contact")}
+                confirmButtonText={getLocalizedString("user_details_block")}
+                onCancelClick={() => {
+                    setShowBlockUserDialog(!showBlockUserDialog);
+                }}
+                onSubmitClick={onBlockUserClicked} />
+        </div>
+    </>
+}
+```
+
+---
+
+### 4. Composer Blocked State
+
+_File: [CometChatMessages.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatMessages/CometChatMessages.tsx)_
+
+When a user is blocked, the composer is replaced with an unblock prompt:
+
+```tsx lines
+{showComposerState ? (
+    <div className="cometchat-composer-wrapper">
+        <CometChatMessageComposer
+            user={user}
+            group={group}
+        />
+    </div>
+) : (
+    <div className="message-composer-blocked" onClick={() => {
+        if (user) {
+            CometChat.unblockUsers([user?.getUid()]).then(() => {
+                user.setBlockedByMe(false);
+                CometChatUserEvents.ccUserUnblocked.next(user);
+            })
+        }
+    }}>
+        <div className="message-composer-blocked__text">
+            {getLocalizedString("cannot_send_to_blocked_user")} 
+            <a>{getLocalizedString("click_to_unblock")}</a>
+        </div>
+    </div>
+)}
+```
+
+---
+
+### 5. Event Listeners
+
+_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+
+Subscribe to block/unblock events to update the UI in real time:
+
+```tsx lines
+const ccUserBlocked = CometChatUserEvents.ccUserBlocked.subscribe(user => {
+    if (user.getBlockedByMe()) {
+        setShowComposer(false);
+    }
+    updateUserAfterBlockUnblock(user);
+});
+
+const ccUserUnblocked = CometChatUserEvents.ccUserUnblocked.subscribe(user => {
+    if (!user.getBlockedByMe()) {
+        setShowComposer(true);
+    }
+    updateUserAfterBlockUnblock(user);
+});
+```
+
+---
+
+## Feature Matrix
+
+| Feature | Component / Method | File |
+|:---|:---|:---|
+| Block user | `CometChat.blockUsers([UID])` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Unblock user | `CometChat.unblockUsers([UID])` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Check blocked status | `user.getBlockedByMe()` | [CometChatMessages.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatMessages/CometChatMessages.tsx) |
+| Block confirmation | `CometChatConfirmDialog` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Blocked composer state | `message-composer-blocked` | [CometChatMessages.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatMessages/CometChatMessages.tsx) |
+| Block events | `ccUserBlocked.subscribe()` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Unblock events | `ccUserUnblocked.subscribe()` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+| Update user state | `user.setBlockedByMe(boolean)` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Users" href="/ui-kit/react/users">
+    Display and manage user lists.
+  </Card>
+  <Card title="Message Composer" href="/ui-kit/react/message-composer">
+    Customize the message input component.
+  </Card>
+  <Card title="All Guides" href="/ui-kit/react/guide-overview">
+    Browse all feature and formatter guides.
+  </Card>
+  <Card title="Sample App" href="https://github.com/cometchat/cometchat-uikit-react/tree/v6/sample-app">
+    Full working sample application on GitHub.
+  </Card>
+</CardGroup>

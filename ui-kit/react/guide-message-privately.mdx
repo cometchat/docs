@@ -1,189 +1,276 @@
 ---
 title: "Message Privately"
 sidebarTitle: "Message Privately"
-description: "Start private one-to-one chats from CometChat React UI Kit group conversations with message options, user lookup, and navigation."
+description: "Let users send a private one-on-one message to another user directly from within a group chat conversation."
 ---
 
-<Accordion title="AI Integration Quick Reference">
+## Goal
 
-| Field | Value |
-| --- | --- |
-| Package | `@cometchat/chat-uikit-react` |
-| Key components | `CometChatMessages`, `CometChatGroupMembers`, `CometChatMessageComposer`, `CometChatMessageList`, `CometChatMessageHeader` |
-| Init | `CometChatUIKit.init(UIKitSettings)` then `CometChatUIKit.login("UID")` |
-| Purpose | Launch a direct 1:1 chat from a group member profile |
-| Sample app | [GitHub](https://github.com/cometchat/cometchat-uikit-react/tree/v6/sample-app) |
-| Related | [All Guides](/ui-kit/react/guide-overview) |
+By the end of this guide you will have a group chat interface where users can select a group member and open a private one-on-one conversation with them — without leaving the current screen. This is useful for side conversations, follow-ups, or sensitive messages that shouldn't be shared with the entire group.
 
-</Accordion>
+## Prerequisites
 
-Message Privately lets users start a direct 1:1 conversation with a group member without leaving the group context. The user can return to the group after the private chat.
+- Completed the [Quick Start](/ui-kit/react/quick-start) guide
+- A running `CometChatProvider` setup with valid credentials
+- An existing group chat screen using `CometChatMessageList` and `CometChatMessageComposer`
 
-Before starting, complete the [Getting Started](/ui-kit/react/react-js-integration) guide for your framework.
+## Components Used
 
----
+| Component / API | Purpose |
+|:----------------|:--------|
+| `CometChatMessageList` | Displays group messages (publishes `ui:open-chat` internally via "Message Privately" option) |
+| `CometChatMessageComposer` | Text input for the private conversation |
+| `CometChatMessageHeader` | Displays user/group info |
+| `useCometChatEvents` | Subscribe to `ui:open-chat` event |
+| `ui:open-chat` | UI event published when user clicks "Message Privately" |
 
-## Components
+## Step 1: Set up the main layout with provider
 
-| Component / Class | Role |
-|:---|:---|
-| `CometChatGroupMembers` | Displays group members with click handlers for private messaging |
-| `CometChatMessageComposer` | Input component for composing private messages |
-| `CometChatMessageList` | Displays private conversation messages |
-| `CometChatMessageHeader` | Header showing private chat information |
+Start with a layout that includes a conversations sidebar and a main chat area wrapped in `CometChatProvider`.
 
----
+```tsx App.tsx
+import { useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatProvider,
+  CometChatConversations,
+  CometChatMessageList,
+  CometChatMessageComposer,
+  CometChatMessageHeader,
+} from "@cometchat/chat-uikit-react";
+import "@cometchat/chat-uikit-react/styles";
 
-## Integration Steps
-
-### 1. Group Member Click Handler
-
-When a group member is clicked, cast them to a `User` object and initiate a private chat. The current group is saved so the user can return to it later. `CometChat.getConversation()` fetches or creates the 1:1 conversation.
-
-_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
-
-```tsx lines
-const handleGroupMemberClick = (groupMember: CometChat.GroupMember) => {
-    const user = groupMember as CometChat.User;
-    startPrivateChatFromGroup(user, currentGroup);
+function App() {
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="YOUR_REGION"
+      authKey="YOUR_AUTH_KEY"
+    >
+      <ChatWithPrivateMessaging />
+    </CometChatProvider>
+  );
 }
 
-const startPrivateChatFromGroup = (user: CometChat.User, group: CometChat.Group) => {
-    setAppState({ type: "updatePreviousGroup", payload: group });
-    
-    CometChat.getConversation(user.getUid(), CometChatUIKitConstants.MessageReceiverType.user)
-        .then((conversation) => {
-            setSelectedItem(conversation);
-            setAppState({ type: "updateSideComponent", payload: { visible: false, type: "" } });
-            setShowPrivateChat(true);
-        })
-        .catch((error) => {
-            console.error("Failed to start private chat:", error);
-        });
+export default App;
+```
+
+## Step 2: Track group and private chat state
+
+Maintain state for the active group conversation and a separate state for the private user when a user initiates a private message.
+
+```tsx ChatWithPrivateMessaging.tsx
+import { useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+
+function ChatWithPrivateMessaging() {
+  const [user, setUser] = useState<CometChat.User | null>(null);
+  const [group, setGroup] = useState<CometChat.Group | null>(null);
+  const [privateUser, setPrivateUser] = useState<CometChat.User | null>(null);
+
+  // ... continued in next steps
 }
 ```
 
----
+## Step 3: Handle conversation selection
 
-### 2. Group Members with Private Messaging Option
+Connect `CometChatConversations` to switch between user and group chats. When switching conversations, close any open private message panel.
 
-Add a "Message Privately" option to the group members list. The `options` prop adds a context-menu action that triggers the private chat flow when clicked.
+```tsx
+function handleConversationClick(conversation: CometChat.Conversation) {
+  setPrivateUser(null); // close private panel on conversation switch
 
-_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
-
-```tsx lines
-const GroupMembersWithPrivateMessaging = ({ group }: { group: CometChat.Group }) => {
-    return (
-        <CometChatGroupMembers
-            group={group}
-            onItemClick={handleGroupMemberClick}
-            options={[
-                {
-                    id: "message_privately",
-                    title: getLocalizedString("message_privately"),
-                    iconURL: messageIcon,
-                    onClick: (member: CometChat.GroupMember) => {
-                        handleGroupMemberClick(member);
-                    }
-                }
-            ]}
-            selectionMode={SelectionMode.none}
-        />
-    );
+  const entity = conversation.getConversationWith();
+  if (entity instanceof CometChat.User) {
+    setUser(entity);
+    setGroup(null);
+  } else if (entity instanceof CometChat.Group) {
+    setGroup(entity);
+    setUser(null);
+  }
 }
 ```
 
----
+## Step 4: Initiate a private message from a group member
 
-### 3. Private Chat Interface
+Use the message header or a custom action to let users pick a group member for private messaging. You can fetch the user from a member click event or from the message sender's info.
 
-Render a full chat view (header, message list, composer) for the 1:1 conversation. The header includes a back button that returns the user to the original group, and a subtitle showing which group the private chat was initiated from.
+```tsx
+async function handleMessagePrivately(uid: string) {
+  try {
+    const targetUser = await CometChat.getUser(uid);
+    setPrivateUser(targetUser);
+  } catch (error) {
+    console.error("Failed to fetch user for private messaging:", error);
+  }
+}
+```
 
-_File: [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx)_
+## Step 5: Listen for the `ui:open-chat` event
 
-```tsx lines
-const PrivateChatFromGroupView = ({ user, previousGroup }: { 
-    user: CometChat.User, 
-    previousGroup: CometChat.Group 
-}) => {
-    const returnToGroup = () => {
-        setShowPrivateChat(false);
-        CometChat.getConversation(previousGroup.getGuid(), CometChatUIKitConstants.MessageReceiverType.group)
-            .then((conversation) => {
-                setSelectedItem(conversation);
-            });
-    };
+Use `useCometChatEvents` to subscribe to the `ui:open-chat` event, which is published internally when a user clicks "Message Privately" from the context menu. When the event fires, extract the user and open the private panel.
 
-    return (
-        <div className="cometchat-private-chat-from-group">
-            <CometChatMessageHeader
-                user={user}
-                onBack={returnToGroup}
-                showBackButton={true}
-                subtitle={`${getLocalizedString("private_message_from")} ${previousGroup.getName()}`}
-            />
-            <CometChatMessageList user={user} onThreadRepliesClick={() => {}} />
-            <CometChatMessageComposer user={user} />
+```tsx
+import { useCometChatEvents } from "@cometchat/chat-uikit-react";
+import type { CometChatEvent } from "@cometchat/chat-uikit-react";
+
+useCometChatEvents(
+  (event: CometChatEvent) => {
+    if (event.type === "ui:open-chat" && event.user) {
+      setPrivateUser(event.user);
+    }
+  },
+  [group?.getGuid()]
+);
+```
+
+## Step 6: Render the private message panel
+
+When `privateUser` is set, show a side panel with a private one-on-one chat. This panel includes a header, message list, and composer scoped to the private user.
+
+```tsx
+{privateUser && (
+  <div style={{ width: "400px", borderLeft: "1px solid #e0e0e0", display: "flex", flexDirection: "column" }}>
+    <div style={{ display: "flex", alignItems: "center", padding: "12px", borderBottom: "1px solid #e0e0e0" }}>
+      <span style={{ flex: 1, fontWeight: 600 }}>
+        Private: {privateUser.getName()}
+      </span>
+      <button onClick={() => setPrivateUser(null)}>✕</button>
+    </div>
+
+    <div style={{ flex: 1, overflow: "hidden" }}>
+      <CometChatMessageList user={privateUser} />
+    </div>
+
+    <CometChatMessageComposer user={privateUser} />
+  </div>
+)}
+```
+
+## Step 7: Handle edge cases
+
+Consider these scenarios when implementing private messaging from a group:
+
+| Scenario | Behavior |
+|:---------|:---------|
+| User messages themselves | Disable the private message option for the logged-in user's own messages |
+| User is blocked | Check `getBlockedByMe()` before opening the private panel and show a prompt |
+| Private panel already open | Replace the current private user with the newly selected one |
+| Group conversation changes | Close the private panel when switching to a different conversation |
+
+## Complete Example
+
+```tsx App.tsx
+import { useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatProvider,
+  CometChatConversations,
+  CometChatMessageList,
+  CometChatMessageComposer,
+  CometChatMessageHeader,
+  useCometChatEvents,
+} from "@cometchat/chat-uikit-react";
+import type { CometChatEvent } from "@cometchat/chat-uikit-react";
+import "@cometchat/chat-uikit-react/styles";
+
+function ChatWithPrivateMessaging() {
+  const [user, setUser] = useState<CometChat.User | null>(null);
+  const [group, setGroup] = useState<CometChat.Group | null>(null);
+  const [privateUser, setPrivateUser] = useState<CometChat.User | null>(null);
+
+  function handleConversationClick(conversation: CometChat.Conversation) {
+    setPrivateUser(null);
+    const entity = conversation.getConversationWith();
+    if (entity instanceof CometChat.User) {
+      setUser(entity);
+      setGroup(null);
+    } else if (entity instanceof CometChat.Group) {
+      setGroup(entity);
+      setUser(null);
+    }
+  }
+
+  async function handleMessagePrivately(uid: string) {
+    try {
+      const targetUser = await CometChat.getUser(uid);
+      setPrivateUser(targetUser);
+    } catch (error) {
+      console.error("Failed to fetch user for private messaging:", error);
+    }
+  }
+
+  useCometChatEvents(
+    (event: CometChatEvent) => {
+      if (event.type === "ui:open-chat" && event.user) {
+        setPrivateUser(event.user);
+      }
+    },
+    [group?.getGuid()]
+  );
+
+  return (
+    <div style={{ display: "flex", height: "100vh" }}>
+      {/* Conversations sidebar */}
+      <div style={{ width: "300px", borderRight: "1px solid #e0e0e0" }}>
+        <CometChatConversations onItemClick={handleConversationClick} />
+      </div>
+
+      {/* Main chat panel */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {(user || group) && (
+          <>
+            <CometChatMessageHeader user={user ?? undefined} group={group ?? undefined} />
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <CometChatMessageList
+                user={user ?? undefined}
+                group={group ?? undefined}
+              />
+            </div>
+            <CometChatMessageComposer user={user ?? undefined} group={group ?? undefined} />
+          </>
+        )}
+      </div>
+
+      {/* Private message panel */}
+      {privateUser && (
+        <div style={{ width: "400px", borderLeft: "1px solid #e0e0e0", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "12px", borderBottom: "1px solid #e0e0e0" }}>
+            <span style={{ flex: 1, fontWeight: 600 }}>
+              Private: {privateUser.getName()}
+            </span>
+            <button onClick={() => setPrivateUser(null)}>✕</button>
+          </div>
+
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            <CometChatMessageList user={privateUser} />
+          </div>
+
+          <CometChatMessageComposer user={privateUser} />
         </div>
-    );
+      )}
+    </div>
+  );
 }
+
+function App() {
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="YOUR_REGION"
+      authKey="YOUR_AUTH_KEY"
+    >
+      <ChatWithPrivateMessaging />
+    </CometChatProvider>
+  );
+}
+
+export default App;
 ```
-
----
-
-### 4. State Management
-
-Add reducer cases to track the group the user came from, whether the private chat is visible, and which user is being messaged. This lets the app restore the group context when the user navigates back.
-
-_File: [appReducer.ts](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/context/appReducer.ts)_
-
-```tsx lines
-interface AppState {
-    previousGroup?: CometChat.Group;
-    showPrivateChat?: boolean;
-    privateChatUser?: CometChat.User;
-}
-
-case "updatePreviousGroup": {
-    return { ...state, ["previousGroup"]: action.payload };
-}
-case "updateShowPrivateChat": {
-    return { ...state, ["showPrivateChat"]: action.payload };
-}
-case "updatePrivateChatUser": {
-    return { ...state, ["privateChatUser"]: action.payload };
-}
-```
-
----
-
-## Feature Matrix
-
-| Feature | Component / Method | File |
-|:---|:---|:---|
-| Group member selection | `CometChatGroupMembers` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
-| Private chat initiation | `startPrivateChatFromGroup()` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
-| Private chat interface | `PrivateChatFromGroupView` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
-| Context preservation | `updatePreviousGroup` | [appReducer.ts](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/context/appReducer.ts) |
-| Return to group | `returnToGroup()` | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
-| Member options | `options` in CometChatGroupMembers | [CometChatHome.tsx](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/components/CometChatHome/CometChatHome.tsx) |
-| State management | `updateShowPrivateChat` | [appReducer.ts](https://github.com/cometchat/cometchat-uikit-react/blob/v6/sample-app/src/context/appReducer.ts) |
-
----
 
 ## Next Steps
 
-<CardGroup cols={2}>
-  <Card title="Group Members" href="/ui-kit/react/group-members">
-    Display and manage group member lists.
-  </Card>
-  <Card title="Message List" href="/ui-kit/react/message-list">
-    Render real-time message threads.
-  </Card>
-  <Card title="All Guides" href="/ui-kit/react/guide-overview">
-    Browse all feature and formatter guides.
-  </Card>
-  <Card title="Sample App" href="https://github.com/cometchat/cometchat-uikit-react/tree/v6/sample-app">
-    Full working sample application on GitHub.
-  </Card>
-</CardGroup>
+- [Message Composer](/ui-kit/react/components/message-composer) — customize the composer for private chats
+- [Conversations](/ui-kit/react/components/conversations) — manage the conversations list
+- [Users](/ui-kit/react/components/cometchat-users) — browse and select users directly
+- [CometChatProvider](/ui-kit/react/cometchat-provider) — learn about provider configuration

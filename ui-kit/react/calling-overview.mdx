@@ -1,0 +1,216 @@
+---
+title: "Calling Overview"
+description: "Add voice and video calling to your app with the optional calls SDK, the callingEnabled flag, lazy-loaded call components, and the CallingPlugin."
+---
+
+## Overview
+
+Voice and video calling in CometChat React UI Kit v7 is entirely **opt-in**. The calling functionality is delivered through an optional peer dependency (`@cometchat/calls-sdk-javascript`), a feature flag (`callingEnabled`), and a dedicated `CallingPlugin` — all wired through the same provider and plugin system that powers the rest of the UI Kit.
+
+When calling is disabled (the default), no call-related code is included in your bundle. When enabled, call components are lazy-loaded on demand (Tier 2), keeping your initial bundle lean regardless of whether you use calling.
+
+**Key points:**
+
+- The calls SDK is an **optional peer dependency** — install it only if you need calling
+- The `callingEnabled` prop on `CometChatProvider` gates all call functionality
+- Call UI components (`CometChatIncomingCall`, `CometChatOutgoingCall`, `CometChatOngoingCall`, `CometChatCallLogs`) are Tier 2 lazy-loaded
+- The `CallingPlugin` renders call message bubbles in the message list
+
+## Optional Peer Dependency
+
+The calling feature requires `@cometchat/calls-sdk-javascript` as an optional peer dependency. It is **not** bundled with the UI Kit — you install it separately only when you need voice or video calling.
+
+```bash
+# npm
+npm install @cometchat/calls-sdk-javascript
+
+# yarn
+yarn add @cometchat/calls-sdk-javascript
+
+# pnpm
+pnpm add @cometchat/calls-sdk-javascript
+```
+
+If the package is not installed and `callingEnabled` is set to `true`, the provider will log a warning at initialization time and calling features will be unavailable.
+
+<Note>
+The calls SDK handles the WebRTC layer, call session management, and media device access. The UI Kit's calling components are a thin React layer on top of this SDK.
+</Note>
+
+## The `callingEnabled` Flag
+
+The `callingEnabled` prop on `CometChatProvider` is the single toggle that activates all calling functionality:
+
+```tsx
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+import "@cometchat/chat-uikit-react/styles";
+
+function App() {
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="us"
+      authKey="YOUR_AUTH_KEY"
+      callingEnabled={true}
+    >
+      <YourChatApp />
+    </CometChatProvider>
+  );
+}
+```
+
+### What `callingEnabled` controls
+
+| When `callingEnabled` is... | Behavior |
+|---|---|
+| `false` (default) | No call SDK initialization, no call listeners attached, no call components loaded, `CometChatCallButtons` renders nothing |
+| `true` | Calls SDK is initialized, SDK call listeners are attached in `SDKBridgeProvider`, call components are lazily available, `CometChatCallButtons` renders voice/video buttons |
+
+Internally, when `callingEnabled` is `true`:
+
+1. `CometChatProvider` initializes the calls SDK via `CometChatCalls.init()`
+2. `SDKBridgeProvider` attaches call-related SDK listeners (`onIncomingCallReceived`, `onOutgoingCallAccepted`, `onOutgoingCallRejected`, `onCallEndedMessageReceived`)
+3. Call components become available for lazy loading
+4. The `CallingPlugin` (if registered) renders call message bubbles
+
+## Lazy-Loading of Call Components
+
+All call UI components are **Tier 2 lazy-loaded** — they are only fetched from the server when `callingEnabled` is `true` AND the component is needed. This means zero impact on bundle size for apps that don't use calling.
+
+### Tier 2 Components
+
+| Component | When Loaded | Purpose |
+|---|---|---|
+| `CometChatIncomingCall` | When an incoming call event is received | Full-screen overlay with accept/reject buttons |
+| `CometChatOutgoingCall` | When the user initiates a call | Full-screen overlay with cancel button |
+| `CometChatOngoingCall` | When a call is accepted (either direction) | Active call view with controls (mute, video toggle, end) |
+| `CometChatCallLogs` | When the user navigates to call history | Paginated list of past calls |
+
+### How Lazy Loading Works
+
+Each Tier 2 component has a `.lazy.ts` file that provides the default export required by `React.lazy()`:
+
+```typescript
+// CometChatIncomingCall.lazy.ts
+export { CometChatIncomingCall as default } from './CometChatIncomingCall';
+```
+
+The provider conditionally loads these components only when `callingEnabled` is `true`:
+
+```typescript
+import { lazy, Suspense } from 'react';
+
+// Only created when callingEnabled is true
+const LazyCometChatIncomingCall = lazy(
+  () => import('./CometChatIncomingCall/CometChatIncomingCall.lazy')
+);
+
+// Rendered inside CometChatProvider when calling is enabled
+{callingEnabled && (
+  <Suspense fallback={null}>
+    <LazyCometChatIncomingCall />
+  </Suspense>
+)}
+```
+
+<Note>
+`CometChatIncomingCall` and `CometChatOutgoingCall` are managed internally by `CometChatProvider` — they auto-display based on SDK call events. You don't render them manually unless you need custom behavior.
+</Note>
+
+### Bundle Impact
+
+| Scenario | Call Code in Bundle |
+|---|---|
+| `callingEnabled={false}` (default) | 0 KB — no call code loaded |
+| `callingEnabled={true}`, no active call | ~2 KB (listener setup only) |
+| `callingEnabled={true}`, call in progress | Full call component chunk loaded on demand |
+
+## CallingPlugin Registration
+
+The `CallingPlugin` is a `CometChatMessagePlugin` that renders call message bubbles (missed call, call ended, call rejected) in the message list and provides conversation list previews for call messages.
+
+### Registering the Plugin
+
+Add `CometChatCallingPlugin` to the `plugins` array:
+
+```tsx
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+import { defaultPlugins } from "@cometchat/chat-uikit-react/plugins/core";
+import { CometChatCallingPlugin } from "@cometchat/chat-uikit-react/plugins/calling";
+
+function App() {
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="us"
+      authKey="YOUR_AUTH_KEY"
+      callingEnabled={true}
+      plugins={[...defaultPlugins, CometChatCallingPlugin]}
+    >
+      <YourChatApp />
+    </CometChatProvider>
+  );
+}
+```
+
+### What CallingPlugin Handles
+
+| Capability | Details |
+|---|---|
+| `messageTypes` | `['meeting']` |
+| `messageCategories` | `['call']` |
+| `renderBubble` | Renders `CometChatCallBubble` showing call type, duration, and status |
+| `getOptions` | Returns empty array (call messages have no context menu) |
+| `getLastMessagePreview` | Returns previews like `📞 Voice call` or `📹 Video call (2:34)` |
+
+### Call Bubble Rendering
+
+The `CometChatCallBubble` component (rendered by the plugin) displays:
+
+- Call type icon (voice or video)
+- Call status (missed, rejected, ended, ongoing)
+- Call duration (for completed calls)
+- Caller/receiver information
+
+```tsx
+// The plugin handles this internally via renderBubble.
+// You don't render CometChatCallBubble directly.
+// It appears automatically in CometChatMessageList for call messages.
+```
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  CometChatProvider (callingEnabled={true})                   │
+│                                                             │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  SDKBridgeProvider                                     │ │
+│  │  • Attaches call listeners                             │ │
+│  │  • Emits call/incoming, call/outgoing events           │ │
+│  └────────────────────────┬───────────────────────────────┘ │
+│                           │                                  │
+│           ┌───────────────┼───────────────┐                  │
+│           ▼               ▼               ▼                  │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐        │
+│  │ IncomingCall  │ │ OutgoingCall  │ │ OngoingCall   │        │
+│  │ (Tier 2 lazy)│ │ (Tier 2 lazy)│ │ (Tier 2 lazy) │        │
+│  └──────────────┘ └──────────────┘ └──────────────┘        │
+│                                                             │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  PluginRegistry                                        │ │
+│  │  • CallingPlugin → renders CometChatCallBubble         │ │
+│  │  • Handles messageType: 'meeting', category: 'call'    │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Related Pages
+
+- [Calling Integration Guide](/ui-kit/react/calling-integration) — Step-by-step setup instructions
+- [Call Buttons](/ui-kit/react/components/call-buttons) — Voice and video call trigger buttons
+- [Call Logs](/ui-kit/react/components/call-logs) — Paginated call history list
+- [Incoming Call](/ui-kit/react/components/incoming-call) — Incoming call overlay component
+- [Outgoing Call](/ui-kit/react/components/outgoing-call) — Outgoing call overlay component
+- [CometChatProvider](/ui-kit/react/cometchat-provider) — Root provider configuration
+- [Plugin System](/ui-kit/react/plugin-system) — How plugins work

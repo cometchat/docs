@@ -1,0 +1,322 @@
+---
+title: "AI Features Overview"
+description: "Register the AIPlugin, handle AI message types, and integrate streaming AI responses in your chat application."
+---
+
+## Overview
+
+The AI features in CometChat React UI Kit v7 are delivered as an **extension plugin** — opt-in, lazy-loaded, and registered through the same plugin system that powers all message rendering. The `CometChatAIPlugin` handles AI assistant messages, tool call visualization, and real-time streaming responses.
+
+The AI plugin integrates with CometChat's server-side AI Assistant feature. When enabled on your CometChat dashboard, the SDK delivers AI-generated messages through a dedicated `agentic` message category, and streams partial responses via WebSocket events that the plugin renders in real time.
+
+**Key capabilities:**
+
+- Render completed AI assistant messages with markdown formatting
+- Display live streaming responses with a typing effect
+- Visualize tool call arguments and results
+- Conversation list previews for AI messages
+- Configurable streaming speed
+- Client-side tool execution via `CometChatAIAssistantTools`
+
+## Interface / API
+
+The AI plugin implements the standard `CometChatMessagePlugin` interface:
+
+```typescript
+import type { CometChatMessagePlugin } from '@cometchat/chat-uikit-react';
+
+const CometChatAIPlugin: CometChatMessagePlugin = {
+  id: 'ai',
+
+  messageTypes: ['assistant', 'toolArguments', 'toolResults', 'run_started'],
+
+  messageCategories: ['agentic', 'custom'],
+
+  renderBubble(message, context) { /* ... */ },
+  getOptions(message, context) { /* returns [] — AI messages have no context menu */ },
+  getLastMessagePreview(message) { /* returns plain-text preview */ },
+  getAttachmentOption(context) { /* returns null — AI chat uses a dedicated button */ },
+};
+```
+
+### Message Types Handled
+
+| Message Type | Category | Bubble Component | Description |
+|---|---|---|---|
+| `assistant` | `agentic` | `CometChatAIAssistantBubble` | Completed AI response with markdown |
+| `toolArguments` | `agentic` | `CometChatToolCallArgumentBubble` | Tool call arguments (JSON) |
+| `toolResults` | `agentic` | `CometChatToolCallResultBubble` | Tool call results (JSON) |
+| `run_started` | `custom` | `CometChatStreamMessageBubble` | Live streaming placeholder |
+
+### Conversation List Previews
+
+The plugin provides `getLastMessagePreview()` for the conversation list subtitle:
+
+| Message Type | Preview Format |
+|---|---|
+| `assistant` | `🤖 {first 80 chars of plain text}` |
+| `toolArguments` | `🔧 Tool call` |
+| `toolResults` | `✅ Tool result` |
+
+## Streaming Service Architecture
+
+The streaming service (`CometChatAIStreamingService`) is a module-level singleton that manages real-time AI response delivery. It processes SDK WebSocket events and exposes reactive state that bubble components subscribe to.
+
+### How It Works
+
+```
+SDK WebSocket Events
+        │
+        ▼
+┌─────────────────────────┐
+│  handleWebsocketMessage │  ← Pushes events into the queue
+│  (per chatId)           │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Sequential Queue      │  ← Processes events one at a time
+│   (no drops)            │     with configurable delay for typing effect
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Per-chatId State Map  │  ← StreamState per conversation
+│   (text, isComplete,    │
+│    activeToolCall, etc.) │
+└───────────┬─────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Subscriber Listeners  │  ← Bubble components re-render on state change
+└─────────────────────────┘
+```
+
+### Stream State
+
+Each active stream is tracked per `chatId` with the following state shape:
+
+```typescript
+interface CometChatStreamState {
+  text: string;              // Accumulated text content
+  isComplete: boolean;       // Whether the stream has finished
+  activeToolCall: string | null; // Currently executing tool name
+  toolExecutionText: string; // Description of tool being executed
+  isThinking: boolean;       // AI is processing (before first text)
+  hasContent: boolean;       // Whether any text has been received
+  hasError: boolean;         // Network/offline error occurred
+  hasStarted: boolean;       // Whether streaming has begun
+}
+```
+
+### Stream Event Flow
+
+The SDK delivers these events in sequence during an AI response:
+
+1. `run_started` — AI begins processing
+2. `text_message_start` — First text chunk incoming
+3. `text_message_content` (repeated) — Text delta chunks
+4. `text_message_end` — Text generation complete
+5. `tool_call_start` — Tool invocation begins (optional)
+6. `tool_call_args` (repeated) — Tool argument deltas (optional)
+7. `tool_call_end` — Tool execution complete (optional)
+8. `run_finished` — Entire response complete
+
+### Streaming Service API
+
+```typescript
+import {
+  handleWebsocketMessage,
+  startStreamingMessage,
+  stopStreamingMessage,
+  setStreamSpeed,
+  getStreamState,
+  subscribeToStreamState,
+  setStreamError,
+  isStreaming,
+  setAIAssistantTools,
+} from '@cometchat/chat-uikit-react/plugins/ai';
+
+// Configure typing speed (ms between text chunks)
+setStreamSpeed(30);
+
+// Subscribe to stream state changes for a conversation
+const unsubscribe = subscribeToStreamState(chatId, () => {
+  const state = getStreamState(chatId);
+  console.log('Stream update:', state.text, state.isComplete);
+});
+
+// Check if streaming is active
+const active = isStreaming(chatId);
+
+// Clean up
+unsubscribe();
+```
+
+## Integration with CometChatProvider
+
+### Step 1: Register AIPlugin
+
+Add `CometChatAIPlugin` to the `plugins` array alongside `defaultPlugins`:
+
+```tsx
+import { CometChatProvider } from '@cometchat/chat-uikit-react';
+import { defaultPlugins } from '@cometchat/chat-uikit-react/plugins/core';
+import { CometChatAIPlugin } from '@cometchat/chat-uikit-react/plugins/ai';
+
+function App() {
+  return (
+    <CometChatProvider
+      appId="YOUR_APP_ID"
+      region="YOUR_REGION"
+      authKey="YOUR_AUTH_KEY"
+      plugins={[...defaultPlugins, CometChatAIPlugin]}
+    >
+      {/* Your chat UI */}
+    </CometChatProvider>
+  );
+}
+```
+
+### Step 2: Enable AI Assistant on CometChat Dashboard
+
+Before AI messages can be received, you must enable the AI Assistant feature in your [CometChat Dashboard](https://app.cometchat.com):
+
+1. Navigate to **AI** → **AI Agents** in your dashboard
+2. Create or configure an AI agent
+3. Note the agent's UID — this is the `user` you pass to `CometChatAIAssistantChat`
+
+### Step 3: Set Up SDK AI Assistant Listener
+
+The CometChat SDK provides an AI Assistant listener that delivers streaming events. The `CometChatAIAssistantChat` component handles this internally, but if you need manual control:
+
+```typescript
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { handleWebsocketMessage } from '@cometchat/chat-uikit-react/plugins/ai';
+
+const listenerId = 'ai-stream-listener';
+
+CometChat.addAIAssistantListener(
+  listenerId,
+  new CometChat.AIAssistantListener({
+    onAssistantEvent(event: CometChat.AIAssistantBaseEvent) {
+      const chatId = event.getReceiverId();
+      handleWebsocketMessage(event, chatId);
+    },
+  })
+);
+
+// Clean up when done
+CometChat.removeAIAssistantListener(listenerId);
+```
+
+<Note>
+In most cases, you don't need to set up the listener manually. The `CometChatAIAssistantChat` component manages listener registration and cleanup automatically.
+</Note>
+
+## Built-in Components
+
+The AI plugin provides these bubble components:
+
+| Component | Purpose | Lazy-Loaded |
+|---|---|---|
+| `CometChatAIAssistantBubble` | Renders completed AI responses with markdown | Yes |
+| `CometChatStreamMessageBubble` | Renders live streaming text with typing effect | No (inline) |
+| `CometChatToolCallArgumentBubble` | Displays tool call arguments as formatted JSON | Yes |
+| `CometChatToolCallResultBubble` | Displays tool call results as formatted JSON | Yes |
+| `CometChatAIAssistantChat` | Full AI chat orchestrator (Tier 4 lazy) | Yes |
+| `CometChatAIAssistantChatHistory` | Chat history sidebar | No |
+
+## Advanced Patterns
+
+### Configuring Streaming Speed
+
+Control the typing effect speed (delay between text chunks):
+
+```typescript
+import { setStreamSpeed } from '@cometchat/chat-uikit-react/plugins/ai';
+
+// Faster streaming (20ms between chunks)
+setStreamSpeed(20);
+
+// Slower, more readable streaming (50ms between chunks)
+setStreamSpeed(50);
+```
+
+Or pass it as a prop to `CometChatAIAssistantChat`:
+
+```tsx
+<CometChatAIAssistantChat user={aiUser} streamingSpeed={40} />
+```
+
+### Registering Client-Side Tool Handlers
+
+When the AI agent calls tools, you can handle them on the client:
+
+```tsx
+import {
+  CometChatAIAssistantTools,
+  CometChatAIAssistantChat,
+} from '@cometchat/chat-uikit-react/plugins/ai';
+
+const tools = new CometChatAIAssistantTools({
+  openUserProfile: (args) => {
+    const { userId } = args as { userId: string };
+    navigate(`/users/${userId}`);
+  },
+  showNotification: (args) => {
+    const { message } = args as { message: string };
+    toast.info(message);
+  },
+});
+
+<CometChatAIAssistantChat user={aiUser} aiAssistantTools={tools} />;
+```
+
+### Using createCometChatAIPlugin Factory
+
+For configuration options, use the factory function:
+
+```tsx
+import { createCometChatAIPlugin } from '@cometchat/chat-uikit-react/plugins/ai';
+
+const aiPlugin = createCometChatAIPlugin({
+  enableAssistantPanel: true,
+  enableSmartReplies: true,
+  enableConversationSummary: true,
+  enableConversationStarters: true,
+});
+
+<CometChatProvider plugins={[...defaultPlugins, aiPlugin]}>
+```
+
+### Preloading the AI Assistant Chat
+
+Reduce perceived latency by preloading the AI chat component on hover:
+
+```tsx
+import { preloadAIAssistantChat } from '@cometchat/chat-uikit-react/plugins/ai';
+
+<button
+  onMouseEnter={preloadAIAssistantChat}
+  onFocus={preloadAIAssistantChat}
+  onClick={() => setShowAIChat(true)}
+>
+  Open AI Assistant
+</button>
+```
+
+### Error Handling During Streaming
+
+If a network error occurs during streaming, the service marks the stream with an error state:
+
+```typescript
+import { setStreamError, getStreamState } from '@cometchat/chat-uikit-react/plugins/ai';
+
+// The stream bubble will display an error indicator
+// when state.hasError is true
+const state = getStreamState(chatId);
+if (state.hasError) {
+  // Show retry UI
+}
+```
