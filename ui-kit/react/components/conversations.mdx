@@ -77,8 +77,7 @@ description: "Scrollable list of recent one-on-one and group conversations for t
       "searchView": "ReactNode",
       "loadingView": "ReactNode",
       "emptyView": "ReactNode",
-      "errorView": "ReactNode",
-      "options": "(conversation: CometChat.Conversation) => CometChatConversationOption[]"
+      "errorView": "ReactNode"
     }
   },
   "events": [
@@ -134,7 +133,7 @@ description: "Scrollable list of recent one-on-one and group conversations for t
 
 `CometChatConversations` is a sidebar list component. It renders recent conversations for the logged-in user and emits the selected `CometChat.Conversation` via `onItemClick`. Wire it to `CometChatMessageHeader`, `CometChatMessageList`, and `CometChatMessageComposer` to build a standard two-panel chat layout.
 
-{/* TODO:IMAGE - CometChatConversations component showing a list of conversations with avatars, names, last messages, timestamps, and unread badges */}
+<Frame><img src="/images/two_panel_layout_without_tabs_react_v7.png" /></Frame>
 
 <Info>
 **Live Preview** — interact with the default conversations list.
@@ -155,7 +154,6 @@ The component handles:
 - Paginated fetching with infinite scroll
 - Real-time updates (new messages, typing indicators, presence changes)
 - Search filtering
-- Swipe/hover options (delete conversation)
 - Selection mode (single/multiple)
 
 ---
@@ -371,7 +369,447 @@ Use view props to replace sections of the default UI while keeping the component
 | `emptyView` | `ReactNode` | Empty state |
 | `errorView` | `ReactNode` | Error state |
 
-{/* TODO:IMAGE - Annotated diagram showing which view slot maps to which part of the conversation item */}
+#### itemView
+
+Replace the entire list item row.
+
+Default:
+
+<Frame>
+  <img src="/images/264a5cc0-list_item_view_default_web_screens-981f3ae54a9cef1c1f774bbda2f05a81.png" />
+</Frame>
+
+Customized:
+
+<Frame>
+  <img src="/images/288ed9bb-list_item_view_custom_web_screens-84bd7def72c71696e4ecb34d0ace5341.png" />
+</Frame>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatConversations,
+  CometChatAvatar,
+  CometChatDate,
+} from "@cometchat/chat-uikit-react";
+
+function CustomItemViewConversations() {
+  const getItemView = (conversation: CometChat.Conversation) => {
+    const title = conversation.getConversationWith().getName();
+    const timestamp = conversation?.getLastMessage()?.getSentAt();
+
+    return (
+      <div className="conversations__custom-item">
+        <CometChatAvatar.Root name={title}>
+          <CometChatAvatar.Image />
+          <CometChatAvatar.Initials />
+        </CometChatAvatar.Root>
+        <span className="conversations__custom-item-title">{title}</span>
+        {timestamp ? (
+          <CometChatDate.Root timestamp={timestamp}>
+            <CometChatDate.Text />
+          </CometChatDate.Root>
+        ) : null}
+      </div>
+    );
+  };
+
+  return <CometChatConversations itemView={getItemView} />;
+}
+```
+</Tab>
+<Tab title="CSS">
+```css
+.conversations__custom-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  width: 100%;
+}
+
+.conversations__custom-item-title {
+  flex: 1;
+  font: 500 16px/19.2px Roboto;
+  color: #141414;
+}
+
+.cometchat-conversations .cometchat-avatar {
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+}
+```
+</Tab>
+</Tabs>
+
+#### leadingView
+
+Replace the avatar / left section. Typing-aware avatar example.
+
+<Frame>
+  <img src="/images/5f55a4a0-conversations_leadingview-3b297f3151794854485fc087d0c0aeec.png" />
+</Frame>
+
+```tsx
+import { useEffect, useRef, useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatConversations,
+  CometChatAvatar,
+  useLoggedInUser,
+} from "@cometchat/chat-uikit-react";
+
+function TypingAwareConversations() {
+  const [isTyping, setIsTyping] = useState(false);
+  const typingObjRef = useRef<CometChat.TypingIndicator | null>(null);
+  const loggedInUser = useLoggedInUser();
+
+  useEffect(() => {
+    const listenerId = "typing_demo_" + Date.now();
+    CometChat.addMessageListener(
+      listenerId,
+      new CometChat.MessageListener({
+        onTypingStarted: (typingIndicator: CometChat.TypingIndicator) => {
+          typingObjRef.current = typingIndicator;
+          setIsTyping(true);
+        },
+        onTypingEnded: (typingIndicator: CometChat.TypingIndicator) => {
+          if (
+            typingObjRef.current &&
+            typingObjRef.current.getSender().getUid() ===
+              typingIndicator.getSender().getUid()
+          ) {
+            typingObjRef.current = null;
+            setIsTyping(false);
+          }
+        },
+      })
+    );
+    return () => {
+      CometChat.removeMessageListener(listenerId);
+    };
+  }, []);
+
+  const getLeadingView = (conversation: CometChat.Conversation) => {
+    const entity = conversation.getConversationWith();
+    const isUser = entity instanceof CometChat.User;
+    const isGroup = entity instanceof CometChat.Group;
+
+    const isMyTyping = isUser
+      ? (entity as CometChat.User).getUid() ===
+          typingObjRef.current?.getSender().getUid() &&
+        loggedInUser?.getUid() === typingObjRef.current?.getReceiverId()
+      : isGroup &&
+        (entity as CometChat.Group).getGuid() ===
+          typingObjRef.current?.getReceiverId();
+
+    const avatar = isUser
+      ? (entity as CometChat.User).getAvatar()
+      : (entity as CometChat.Group).getIcon();
+
+    return (
+      <div className="conversations__leading-view">
+        <CometChatAvatar.Root
+          image={isTyping && isMyTyping ? undefined : avatar}
+          name={isTyping && isMyTyping ? undefined : entity.getName()}
+        >
+          <CometChatAvatar.Image />
+          <CometChatAvatar.Initials />
+        </CometChatAvatar.Root>
+      </div>
+    );
+  };
+
+  return <CometChatConversations leadingView={getLeadingView} />;
+}
+```
+
+#### titleView
+
+Replace the name / title text. Inline user status example.
+
+<Frame>
+  <img src="/images/015d947c-conversations_titleview-b5822bb42232ef47727b553cbf1facd8.png" />
+</Frame>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatConversations } from "@cometchat/chat-uikit-react";
+
+function StatusTitleConversations() {
+  const getTitleView = (conversation: CometChat.Conversation) => {
+    const user =
+      conversation.getConversationType() === "user"
+        ? (conversation.getConversationWith() as CometChat.User)
+        : undefined;
+
+    return (
+      <div className="conversations__title-view">
+        <span className="conversations__title-view-name">
+          {user
+            ? conversation.getConversationWith().getName() + " · "
+            : conversation.getConversationWith().getName()}
+        </span>
+        {user && (
+          <span className="conversations__title-view-status">
+            {user.getStatusMessage()}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  return <CometChatConversations titleView={getTitleView} />;
+}
+```
+</Tab>
+<Tab title="CSS">
+```css
+.cometchat-conversations .conversations__title-view {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+
+.conversations__title-view-name {
+  color: #141414;
+  font: 500 16px/19.2px Roboto;
+}
+
+.conversations__title-view-status {
+  color: #6852d6;
+  font: 400 16px/19.2px Roboto;
+}
+```
+</Tab>
+</Tabs>
+
+#### subtitleView
+
+Replace the last message preview text.
+
+Default:
+
+<Frame>
+  <img src="/images/68f87420-subtitle_View_default_web_screens-981f3ae54a9cef1c1f774bbda2f05a81.png" />
+</Frame>
+
+Customized:
+
+<Frame>
+  <img src="/images/a5a0ef3f-subtitle_View_custom_web_screens-cc38fdf73a8f272804d2c3b73e898ce5.png" />
+</Frame>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatConversations } from "@cometchat/chat-uikit-react";
+
+function formatTimestamp(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleString();
+}
+
+function SubtitleConversations() {
+  const getSubtitleView = (conversation: CometChat.Conversation) => {
+    if (conversation.getConversationType() === "user") {
+      return (
+        <span className='custom-conversation-subtitle'>
+          Last active:{" "}
+          {new Date(
+            (conversation.getConversationWith() as CometChat.User).getLastActiveAt() * 1000
+          ).toLocaleString()}
+        </span>
+      );
+    }
+    return (
+      <span className='custom-conversation-subtitle'>
+        Created:{" "}
+        {new Date(
+          (conversation.getConversationWith() as CometChat.Group).getCreatedAt() * 1000
+        ).toLocaleString()}
+      </span>
+    );
+  };
+
+  return <CometChatConversations subtitleView={getSubtitleView} />;
+}
+```
+</Tab>
+<Tab title="CSS">
+```css
+.custom-conversation-subtitle {
+  overflow: hidden;
+  color: grey;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--cometchat-font-body-regular);
+}
+```
+</Tab>
+</Tabs>
+
+#### trailingView
+
+Replace the timestamp / badge / right section. Relative time badge example.
+
+<Frame>
+  <img src="/images/13a712d0-conversations_trailingview-3aecd22196f2ccfb66af2b9a00d2c93f.png" />
+</Frame>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatConversations } from "@cometchat/chat-uikit-react";
+
+function RelativeTimeConversations() {
+  const getTrailingView = (conv: CometChat.Conversation) => {
+    if (!conv.getLastMessage()) return <></>;
+
+    const timestamp = conv.getLastMessage()?.getSentAt() * 1000;
+    const now = Date.now();
+    const diffInMinutes = Math.floor((now - timestamp) / (1000 * 60));
+    const diffInHours = Math.floor((now - timestamp) / (1000 * 60 * 60));
+
+    let className = "conversations__trailing-view-min";
+    let topLabel = `${diffInMinutes}`;
+    let bottomLabel = diffInMinutes === 1 ? "Min ago" : "Mins ago";
+
+    if (diffInHours >= 1 && diffInHours <= 10) {
+      className = "conversations__trailing-view-hour";
+      topLabel = `${diffInHours}`;
+      bottomLabel = diffInHours === 1 ? "Hour ago" : "Hours ago";
+    } else if (diffInHours > 10) {
+      className = "conversations__trailing-view-date";
+      const time = new Date(timestamp);
+      topLabel = time.toLocaleDateString("en-US", { day: "numeric" });
+      bottomLabel = time.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+    }
+
+    return (
+      <div className={`conversations__trailing-view ${className}`}>
+        <span className="conversations__trailing-view-time">{topLabel}</span>
+        <span className="conversations__trailing-view-status">{bottomLabel}</span>
+      </div>
+    );
+  };
+
+  return <CometChatConversations trailingView={getTrailingView} />;
+}
+```
+</Tab>
+<Tab title="CSS">
+```css
+.conversations__trailing-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 55px;
+  height: 40px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.conversations__trailing-view-min { background-color: #e0d4f7; }
+.conversations__trailing-view-hour { background-color: #fff3cd; }
+.conversations__trailing-view-date { background-color: #f8d7da; }
+
+.conversations__trailing-view-time {
+  font: 600 18px Roboto;
+  color: #4a3f99;
+  margin-bottom: 4px;
+}
+
+.conversations__trailing-view-status {
+  font: 600 8px Roboto;
+  color: #6a5b99;
+}
+
+.cometchat-conversations .cometchat-list-item__trailing-view {
+  height: 50px;
+}
+```
+</Tab>
+</Tabs>
+
+#### headerView
+
+Replace the entire header bar.
+
+<Frame>
+  <img src="/images/c8e9953f-conversations_headerview-334738e0afe495ef89165ee0cea86b5c.png" />
+</Frame>
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import {
+  CometChatButton,
+  CometChatConversations,
+  useLocale,
+} from "@cometchat/chat-uikit-react";
+
+function CustomHeaderConversations() {
+  const { getLocalizedString } = useLocale();
+
+  return (
+    <CometChatConversations
+      headerView={
+        <div className="conversations__header">
+          <div className="conversations__header__title">
+            {getLocalizedString("chats")}
+          </div>
+          <CometChatButton.Root onClick={() => { /* handle click */ }}>
+            <CometChatButton.Icon />
+          </CometChatButton.Root>
+        </div>
+      }
+    />
+  );
+}
+```
+</Tab>
+<Tab title="CSS">
+```css
+.conversations__header {
+  display: flex;
+  width: 100%;
+  padding: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 10px;
+  border: 1px solid #e8e8e8;
+  background: #edeafa;
+}
+
+.conversations__header__title {
+  overflow: hidden;
+  color: #141414;
+  text-overflow: ellipsis;
+  font: 700 24px Roboto;
+}
+
+.conversations__header .cometchat-button .cometchat-button__icon {
+  background: #141414;
+}
+
+.conversations__header .cometchat-button {
+  width: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+}
+```
+</Tab>
+</Tabs>
 
 ### Compound Composition
 
@@ -589,36 +1027,6 @@ Custom sound URL to play when new messages arrive (replaces the built-in sound).
 
 ---
 
-### options
-
-Function that returns context menu options for each conversation item (shown on hover/swipe).
-
-| | |
-| --- | --- |
-| Type | `(conversation: CometChat.Conversation) => CometChatConversationOption[]` |
-| Default | Default options (delete) |
-
-```tsx
-<CometChatConversations
-  options={(conversation) => [
-    {
-      id: "pin",
-      title: "Pin",
-      iconURL: pinIcon,
-      onClick: (conv) => pinConversation(conv),
-    },
-    {
-      id: "mute",
-      title: "Mute",
-      iconURL: muteIcon,
-      onClick: (conv) => muteConversation(conv),
-    },
-  ]}
-/>
-```
-
----
-
 ### onItemClick
 
 Callback when a conversation item is clicked.
@@ -674,24 +1082,89 @@ Callback when the search bar is clicked. When provided, the search input becomes
 
 ---
 
-## CSS Selectors
+## CSS Architecture
+
+The component uses CSS custom properties (design tokens) that are bundled with `@cometchat/chat-uikit-react`. The cascade:
+
+1. Global tokens (e.g., `--cometchat-primary-color`, `--cometchat-background-color-01`) are set on the `.cometchat` root wrapper.
+2. Component CSS (`.cometchat-conversations`) consumes these tokens via `var()` with fallback values.
+3. Overrides target `.cometchat-conversations` descendant selectors in a global stylesheet.
+
+To scope overrides to a single instance when multiple `CometChatConversations` exist on the same page, wrap the component in a container and scope selectors:
+
+```css
+.sidebar-left .cometchat-conversations .cometchat-badge {
+  background: #e5484d;
+}
+```
+
+Overrides survive component updates because the component never sets inline styles on these elements — all styling flows through CSS classes and custom properties.
+
+### Key Selectors
 
 | Target | Selector |
 | --- | --- |
-| Root container | `.cometchat-conversations` |
-| Header | `.cometchat-conversations__header` |
-| Search bar | `.cometchat-conversations__search-bar` |
-| List container | `.cometchat-conversations__list` |
-| Conversation item | `.cometchat-conversations__item` |
-| Active item | `.cometchat-conversations__item--active` |
-| Item avatar | `.cometchat-conversations__item-avatar` |
-| Item title | `.cometchat-conversations__item-title` |
-| Item subtitle | `.cometchat-conversations__item-subtitle` |
-| Item trailing | `.cometchat-conversations__item-trailing` |
-| Unread badge | `.cometchat-conversations__item-unread-count` |
-| Empty state | `.cometchat-conversations__empty-state` |
-| Error state | `.cometchat-conversations__error-state` |
-| Loading state | `.cometchat-conversations__loading-state` |
+| Root | `.cometchat-conversations` |
+| Header title | `.cometchat-conversations .cometchat-list__header-title` |
+| List item | `.cometchat-conversations .cometchat-list-item` |
+| Body title | `.cometchat-conversations .cometchat-list-item__body-title` |
+| Avatar | `.cometchat-conversations .cometchat-avatar` |
+| Avatar text | `.cometchat-conversations .cometchat-avatar__text` |
+| Unread badge | `.cometchat-conversations .cometchat-badge` |
+| Subtitle text | `.cometchat-conversations .cometchat-conversations__subtitle-text` |
+| Status indicator | `.cometchat-conversations .cometchat-status-indicator` |
+| Read receipts | `.cometchat-conversations .cometchat-receipts-read` |
+| Active item | `.cometchat-conversations__list-item-active .cometchat-list-item` |
+| Typing indicator | `.cometchat-conversations__subtitle-typing` |
+| Trailing view | `.cometchat-conversations__trailing-view` |
+
+### Example: Brand-themed conversations
+
+<Frame>
+  <img src="/images/46655ced-style_custom_web_screens-967e2c7c42b5c97c59c10a9212aef0c4.png" />
+</Frame>
+
+```css
+.cometchat-conversations .cometchat-conversations__item-title,
+.cometchat-conversations .cometchat-conversations__header-title,
+.cometchat-conversations .cometchat-avatar__text,
+.cometchat-conversations .cometchat-conversations__item-unread-badge,
+.cometchat-conversations .cometchat-conversations__item-subtitle-text {
+  font-family: "SF Pro";
+}
+
+.cometchat-conversations .cometchat-conversations__header {
+  background: #fef8f8;
+  border-bottom: 2px solid #f4b6b8;
+}
+
+.cometchat-conversations .cometchat-avatar {
+  background: #FAAA75;
+}
+
+.cometchat-conversations .cometchat-status-indicator {
+  min-width: 10px;
+  height: 10px;
+}
+
+.cometchat-conversations .cometchat-conversations__item-unread-badge {
+  background: #F76809;
+}
+
+.cometchat-conversations .cometchat-conversations__item-receipt--read {
+  background: #FAAA75;
+}
+```
+
+### Customization Matrix
+
+| What to change | Where | Property/API | Example |
+| --- | --- | --- | --- |
+| Override behavior on user interaction | Component props | `on<Event>` callbacks | `onItemClick={(c) => setActive(c)}` |
+| Filter which conversations appear | Component props | `conversationsRequestBuilder` | `conversationsRequestBuilder={new CometChat.ConversationsRequestBuilder().setLimit(10)}` |
+| Toggle visibility of UI elements | Component props | `hide<Feature>` boolean props | `hideReceipts={true}` |
+| Replace a section of the list item | Component props | `<slot>View` render props | `itemView={(conversation) => <div>...</div>}` |
+| Change colors, fonts, spacing | Global CSS | Target `.cometchat-conversations` class | `.cometchat-conversations .cometchat-badge { background: #e5484d; }` |
 
 ---
 
