@@ -1,0 +1,214 @@
+---
+title: "Text Formatters"
+description: "Transform plain text into formatted HTML in message bubbles. Built-in formatters handle URLs, mentions, and markdown."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Base Class | `CometChatTextFormatter` |
+| Package | `@cometchat/chat-uikit-react` |
+| Built-in Formatters | `CometChatMarkdownFormatter`, `CometChatMentionsFormatter`, `CometChatUrlFormatter` |
+| Pipeline Order | Sorted by `priority` (lower = first) |
+| Used By | Text plugin (`getTextFormatters()`), media plugins (caption rendering) |
+
+</Accordion>
+
+## Overview
+
+Text formatters detect patterns in message text and transform them into formatted HTML for display in bubbles. They run as a pipeline — each formatter receives the output of the previous one, sorted by priority (lower number = runs first).
+
+The Text plugin provides three built-in formatters. You can add custom formatters to extend the pipeline.
+
+---
+
+## Built-in Formatters
+
+| Formatter | Priority | Detects | Output |
+| --- | --- | --- | --- |
+| `CometChatMarkdownFormatter` | 10 | `**bold**`, `_italic_`, `` `code` ``, `> quote`, lists, links | HTML tags (`<b>`, `<i>`, `<code>`, etc.) |
+| `CometChatMentionsFormatter` | 50 | `<@uid:xxx>` tokens | Styled `@DisplayName` chips |
+| `CometChatUrlFormatter` | 100 | `https://...`, `www.` | Clickable `<a>` links |
+
+### Pipeline Flow
+
+```
+Raw text: "Hey **@Alice**, check https://example.com"
+  ↓ MarkdownFormatter (priority 10)
+"Hey <b>@Alice</b>, check https://example.com"
+  ↓ MentionsFormatter (priority 50)
+"Hey <b><span class="mention">@Alice</span></b>, check https://example.com"
+  ↓ UrlFormatter (priority 100)
+"Hey <b><span class="mention">@Alice</span></b>, check <a href="...">https://example.com</a>"
+```
+
+---
+
+## The Formatter Interface
+
+All formatters extend the abstract `CometChatTextFormatter` class:
+
+```typescript
+abstract class CometChatTextFormatter {
+  /** Unique identifier. */
+  abstract readonly id: string;
+
+  /** Priority in the pipeline (lower = runs first). Default: 100. */
+  priority: number;
+
+  /** Regex pattern for detecting formattable content. */
+  abstract getRegex(): RegExp;
+
+  /** Transform the input text. Must store originalText, apply changes, return formattedText. */
+  abstract format(text: string): string;
+
+  /** Whether this formatter should process the given text. Override to skip conditionally. */
+  shouldFormat(text: string, message?: BaseMessage): boolean;
+
+  /** Reset internal state. */
+  reset(): void;
+}
+```
+
+---
+
+## Creating a Custom Formatter
+
+Here's a hashtag formatter that wraps `#word` patterns in a styled span:
+
+```typescript title="src/formatters/HashtagFormatter.ts"
+import { CometChatTextFormatter } from "@cometchat/chat-uikit-react";
+
+export class HashtagFormatter extends CometChatTextFormatter {
+  readonly id = "hashtag-formatter";
+  override priority = 90; // After mentions (50), before URLs (100)
+
+  private hashtags: string[] = [];
+
+  getRegex(): RegExp {
+    return /(#\w+)/g;
+  }
+
+  format(text: string): string {
+    if (!text) {
+      this.originalText = "";
+      this.formattedText = "";
+      this.hashtags = [];
+      return "";
+    }
+
+    this.originalText = text;
+    this.hashtags = [];
+
+    this.formattedText = text.replace(this.getRegex(), (match) => {
+      this.hashtags.push(match);
+      return `<span class="cometchat-hashtag" style="color: #6851FF; font-weight: 500;">${match}</span>`;
+    });
+
+    this.metadata = { hashtags: this.hashtags };
+    return this.formattedText;
+  }
+
+  /** Get detected hashtags from the last format() call. */
+  getHashtags(): string[] {
+    return [...this.hashtags];
+  }
+
+  override reset(): void {
+    super.reset();
+    this.hashtags = [];
+  }
+}
+```
+
+---
+
+## Registering Custom Formatters
+
+Custom formatters are registered by creating a custom text plugin that extends the default one:
+
+```typescript title="src/plugins/CustomTextPlugin.ts"
+import { CometChatTextPlugin } from "@cometchat/chat-uikit-react";
+import type { CometChatTextFormatter } from "@cometchat/chat-uikit-react";
+import { CometChatMarkdownFormatter } from "@cometchat/chat-uikit-react";
+import { CometChatMentionsFormatter } from "@cometchat/chat-uikit-react";
+import { CometChatUrlFormatter } from "@cometchat/chat-uikit-react";
+import { HashtagFormatter } from "../formatters/HashtagFormatter";
+
+export const CustomTextPlugin = {
+  ...CometChatTextPlugin,
+  id: "custom-text",
+
+  getTextFormatters(): CometChatTextFormatter[] {
+    return [
+      new CometChatMarkdownFormatter(),   // priority 10
+      new CometChatMentionsFormatter(),   // priority 50
+      new HashtagFormatter(),             // priority 90
+      new CometChatUrlFormatter(),        // priority 100
+    ];
+  },
+};
+```
+
+Then use it in your provider with a custom plugin array (replacing the default text plugin):
+
+```tsx
+import { CometChatProvider, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+import { defaultPlugins } from "@cometchat/chat-uikit-react";
+import { CustomTextPlugin } from "./plugins/CustomTextPlugin";
+
+// Replace the default text plugin with our custom one
+const plugins = defaultPlugins.map(p =>
+  p.id === "text" ? CustomTextPlugin : p
+);
+
+const settings = new UIKitSettingsBuilder()
+  .setAppId("YOUR_APP_ID")
+  .setRegion("us")
+  .setAuthKey("YOUR_AUTH_KEY")
+  .setPlugins(plugins)
+  .build();
+
+<CometChatProvider settings={settings} uid="cometchat-uid-1">
+  <MyChatApp />
+</CometChatProvider>
+```
+
+---
+
+## Formatter Details
+
+### CometChatMarkdownFormatter
+
+Converts markdown syntax to HTML. Runs first (priority 10) so subsequent formatters operate on HTML output.
+
+**Supported syntax:**
+- `**bold**` → `<b>bold</b>`
+- `_italic_` → `<i>italic</i>`
+- `__underline__` or `++underline++` → `<u>underline</u>`
+- `~~strikethrough~~` → `<s>strikethrough</s>`
+- `` `inline code` `` → `<code>inline code</code>`
+- ` ```code block``` ` → `<pre><code>code block</code></pre>`
+- `> blockquote` → `<blockquote>blockquote</blockquote>`
+- `[text](url)` → `<a href="url">text</a>`
+- `1. item` → ordered list
+- `• item` or `- item` → unordered list
+
+### CometChatMentionsFormatter
+
+Resolves SDK mention tokens (`<@uid:xxx>` and `<@all:label>`) into styled mention chips. Requires the mentioned users list from the message to resolve UIDs to display names.
+
+### CometChatUrlFormatter
+
+Detects bare URLs (`https://...` and `www.`) and wraps them in clickable `<a>` tags with `target="_blank"` and `rel="noopener noreferrer"`. Protects existing markdown links and `<a>` tags from double-processing.
+
+---
+
+## Tips
+
+- **Priority matters** — markdown must run before mentions/URLs so it doesn't break HTML tags
+- **Protect code blocks** — formatters should skip content inside `<code>` and `<pre>` tags
+- **Keep it fast** — formatters run on every text message render, avoid expensive operations
+- **Use `shouldFormat()`** — override to skip formatting for specific messages (e.g., skip hashtags in system messages)
+- **Store metadata** — use `this.metadata` to expose extracted data (URLs, hashtags, mentions) to consumers
