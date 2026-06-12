@@ -1,0 +1,244 @@
+---
+title: "Upgrading from v6 to v7"
+sidebarTitle: "Overview"
+description: "Migration guide covering breaking changes, architecture shifts, and step-by-step upgrade path from CometChat React UI Kit v6 to v7."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react` v6 → v7 |
+| React minimum | `>=18.0.0 <21.0.0` |
+| New peer dep | `dompurify` 3.3.1 |
+| Removed dep | `rxjs` (no longer needed) |
+| Init change | `CometChatProvider` (declarative) or manual `CometChatUIKit.init()` (both work) |
+| Extensibility | `DataSource`/`ChatConfigurator` → `CometChatMessagePlugin` interface |
+| Events | RxJS Subjects → `useCometChatEvents` hook |
+| Theming | Same CSS variables, simpler setup via `theme` prop |
+
+</Accordion>
+
+## What's New in v7
+
+v7 is a ground-up rewrite that replaces global singletons with React-native patterns while keeping most component props compatible. The core shifts:
+
+| Area | v6 | v7 |
+| --- | --- | --- |
+| Initialization | `CometChatUIKit.init()` + `login()` (imperative) | `CometChatProvider` (declarative) OR manual init (both supported) |
+| Extensibility | `DataSource` / `DataSourceDecorator` / `ChatConfigurator` | Plugin system (`CometChatMessagePlugin` interface) |
+| Events | Multiple RxJS Subject classes | Unified event bus (`useCometChatEvents` hook) |
+| Component API | Flat props only | Compound components (flat API still works) |
+| Theming | CSS variables + manual `data-theme` setup | CSS variables + `theme` prop on provider (same tokens) |
+| Dependencies | `rxjs` required | No `rxjs` dependency |
+
+---
+
+## Step-by-Step Migration Checklist
+
+### 1. Update Dependencies
+
+```bash
+npm install @cometchat/chat-uikit-react@7 @cometchat/chat-sdk-javascript@^4.1.10 dompurify@3.3.1
+npm uninstall rxjs  # No longer needed for CometChat
+```
+
+| Package | v6 | v7 |
+| --- | --- | --- |
+| `@cometchat/chat-uikit-react` | `^6.x` | `^7.0.0` |
+| `@cometchat/chat-sdk-javascript` | `^4.x` | `^4.1.10` (peer dep) |
+| `react` | `>=18` | `>=18 <21` |
+| `dompurify` | — | `3.3.1` (new peer dep) |
+| `rxjs` | Required | Not needed |
+| `@cometchat/calls-sdk-javascript` | Optional | Optional (unchanged) |
+
+### 2. Update Initialization
+
+**Option A: Declarative (recommended)**
+
+Replace manual `init()` + `login()` with `CometChatProvider`:
+
+```tsx title="v6"
+// main.tsx
+CometChatUIKit.init(settings).then(() => render(<App />));
+
+// App.tsx
+CometChatUIKit.login("uid").then(() => setLoggedIn(true));
+```
+
+```tsx title="v7"
+<CometChatProvider
+  appId="APP_ID"
+  region="us"
+  authKey="AUTH_KEY"
+  uid="cometchat-uid-1"
+>
+  <App />
+</CometChatProvider>
+```
+
+**Option B: Manual (same as v6)**
+
+You can still use `CometChatUIKit.init()` + `login()` and compose individual providers. See [CometChatProvider — Individual Providers](/ui-kit/react/cometchat-provider#approach-2%3A-individual-providers-advanced).
+
+### 3. Replace DataSource/Decorator with Plugins
+
+```tsx title="v6"
+class MyDecorator extends DataSourceDecorator {
+  getTextMessageBubble() { ... }
+  getAttachmentOptions() { ... }
+}
+ChatConfigurator.enable(new MyDecorator());
+```
+
+```tsx title="v7"
+const MyPlugin: CometChatMessagePlugin = {
+  id: "my-plugin",
+  messageTypes: ["custom-type"],
+  messageCategories: ["custom"],
+  renderBubble(message, context) { return <MyBubble />; },
+  getOptions(message, context) { return [...]; },
+  getLastMessagePreview(message) { return "Preview text"; },
+};
+
+<CometChatProvider plugins={[MyPlugin]}>
+```
+
+See [Plugins Overview](/ui-kit/react/plugins/overview) for the full guide.
+
+### 4. Replace RxJS Event Subscriptions
+
+```tsx title="v6"
+import { CometChatMessageEvents } from "@cometchat/chat-uikit-react";
+
+CometChatMessageEvents.ccMessageSent.subscribe((data) => { ... });
+CometChatMessageEvents.ccMessageEdited.subscribe((data) => { ... });
+```
+
+```tsx title="v7"
+import { useCometChatEvents } from "@cometchat/chat-uikit-react";
+
+useCometChatEvents((event) => {
+  if (event.type === "ui:message/sent") { ... }
+  if (event.type === "message/edited") { ... }
+});
+```
+
+See [Event System](/ui-kit/react/event-system) for the full event catalog.
+
+### 5. Update Component Props
+
+Most component props are unchanged. Key patterns to watch for:
+
+| Pattern | v6 | v7 |
+| --- | --- | --- |
+| View props type | `JSX.Element` | `ReactNode` (compatible) |
+| Date format type | `CalendarObject` | `CometChatDateFormatConfig` (same shape) |
+| Error handling | `hideError` prop | `errorView` prop (pass custom error UI) |
+| Loading state | `disableLoadingState` prop | `loadingView` prop (pass custom loading UI) |
+| Templates | `templates` prop | Plugin system (removed from components) |
+| Text formatters on lists | `textFormatters` prop | Plugin system (removed from list components) |
+
+For the full prop-by-prop reference, see [Property Changes](/ui-kit/react/migration-property-changes).
+
+### 6. Update Theming (Minor)
+
+CSS variables are the same between v6 and v7. The only change is how you set the theme:
+
+```tsx title="v6"
+// Manual data-theme attribute
+<div className="cometchat-root" data-theme="dark">
+```
+
+```tsx title="v7"
+// theme prop on provider
+<CometChatProvider theme="dark" ...>
+```
+
+Or use the `useTheme()` hook for runtime switching:
+```tsx
+const { theme, setTheme } = useTheme();
+```
+
+### 7. Enable Calling (If Used)
+
+Calling is now opt-in:
+
+```tsx title="v7"
+<CometChatProvider callingEnabled={true} ...>
+```
+
+Without `callingEnabled`, call buttons are hidden and the Calls SDK is not loaded.
+
+---
+
+## Architecture Changes
+
+### DataSource → Plugin System
+
+v6 used a decorator pattern (`DataSourceDecorator`) to customize message rendering. v7 replaces this with a simpler plugin interface:
+
+- Each plugin owns one or more message types
+- Plugins provide `renderBubble()`, `getOptions()`, `getLastMessagePreview()`
+- Default plugins are included automatically
+- Custom plugins are passed via the `plugins` prop
+
+### RxJS Subjects → Unified Event Bus
+
+v6 had separate RxJS Subject classes for each event category (`CometChatMessageEvents`, `CometChatGroupEvents`, `CometChatCallEvents`, etc.). v7 merges all events into a single typed pub/sub system:
+
+- Subscribe: `useCometChatEvents((event) => { ... })`
+- Publish: `const publish = usePublishEvent()`
+- SDK events (from network) and UI events (from components) flow through the same bus
+
+### Flat API → Compound Components
+
+v7 components support both flat API (same as v6) and compound composition:
+
+```tsx title="Flat API (works same as v6)"
+<CometChatConversations hideSearch onItemClick={handleClick} />
+```
+
+```tsx title="Compound (new in v7)"
+<CometChatConversations.Root onItemClick={handleClick}>
+  {/* Search omitted — just don't render it */}
+  <CometChatConversations.List />
+</CometChatConversations.Root>
+```
+
+The flat API is fully backward-compatible. Compound composition is optional for advanced customization.
+
+---
+
+## Removed Concepts
+
+| v6 Concept | Replacement in v7 |
+| --- | --- |
+| `DataSource` / `DataSourceDecorator` | `CometChatMessagePlugin` interface |
+| `ChatConfigurator.enable()` | `plugins` prop on `CometChatProvider` |
+| `CometChatMessageEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatGroupEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatCallEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatUIEvents` (RxJS) | `usePublishEvent` hook |
+| `CometChatMessageTemplate` | Plugin `renderBubble()` method |
+| `*Configuration` objects | Direct props on compound sub-components |
+| `MessagesDataSource.getAttachmentOptions()` | Composer handles attachments directly |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Property Changes" icon="list" href="/ui-kit/react/migration-property-changes">
+    Full prop-by-prop migration reference for every component
+  </Card>
+  <Card title="CometChatProvider" icon="box" href="/ui-kit/react/cometchat-provider">
+    New declarative setup with both approaches explained
+  </Card>
+  <Card title="Plugins" icon="puzzle-piece" href="/ui-kit/react/plugins/overview">
+    The new plugin system that replaces DataSource
+  </Card>
+  <Card title="Event System" icon="bolt" href="/ui-kit/react/event-system">
+    Unified event bus replacing RxJS Subjects
+  </Card>
+</CardGroup>
