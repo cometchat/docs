@@ -1,0 +1,223 @@
+---
+title: "Customization Architecture: the DataSource Decorator Chain"
+sidebarTitle: "Customization Architecture"
+description: "How the React UI Kit composes customizations — the DataSource decorator chain, why you append instead of replace, the category_type template map, and the event bus that stitches components together."
+---
+
+<Note>
+This guide explains the mental model behind advanced UI Kit customization. The deep
+detail (file paths, symbol names) is grounded in the **React v6** UI Kit; the same
+*concept* applies to every platform, with the per-platform mechanism summarized in the
+cross-platform table below.
+</Note>
+
+The UI Kit's extensibility is the classic **Decorator pattern (GoF)**. Every
+"customization request" — adding an attachment option, a message template, a
+message action, a text formatter — is a method on a **DataSource**, and the kit
+composes a *chain* of DataSource decorators (one per enabled extension) on top of
+a base. Understanding this chain explains both **why you append, not replace** and
+**why behavior is consistent across every enabled extension**.
+
+## The four pieces (`src/utils/`)
+
+| Piece | File | Role |
+|---|---|---|
+| `MessagesDataSource` | `utils/MessagesDataSource.tsx` | **The base.** Implements the real defaults — e.g. `getAttachmentOptions(id, config?)` returns `[image, video, audio, file]`, each gated by `config?.hide*` (the base uses optional chaining). |
+| `DataSource` | `utils/DataSource.ts` | **The interface** every node implements: `getAttachmentOptions`, `getAllMessageTemplates`, `getMessageOptions`, `getAllMessageCategories/Types`, `getAllTextFormatters`, `getAuxiliaryOptions`, … plus `getId()`. |
+| `DataSourceDecorator` | `utils/DataSourceDecorator.ts` | **The wrapper base.** Holds a `dataSource` and **delegates** every method by default: `getAttachmentOptions(id, c?) => (this.dataSource ?? new MessagesDataSource()).getAttachmentOptions(id, c)`. A decorator only overrides the methods it cares about; everything else passes through. |
+| `ChatConfigurator` | `utils/ChatConfigurator.ts` | **The chain builder.** A static `dataSource`, seeded with `MessagesDataSource` at `init()`. `enable(callback)` wraps the current head: `newSource = callback(oldSource)` (deduped by `getId()`). `getDataSource()` returns the head. |
+
+## How the chain is built
+
+At `CometChatUIKit.init()`, each enabled extension's `.enable()` is invoked, and each
+extension's `enable()` calls:
+
+```ts
+// e.g. components/Extensions/Polls/PollsExtension.ts
+ChatConfigurator.enable((oldSource: DataSource) =>
+  new PollsExtensionDecorator(oldSource, this.configuration));
+```
+
+So enabling Polls + Collaborative Document + Collaborative Whiteboard yields a
+chain whose **head** is the last-registered decorator:
+
+```
+[WhiteboardDecorator] -> [CollaborativeDocDecorator] -> [PollsDecorator] -> ... -> MessagesDataSource
+```
+
+`CometChatUIKit.getDataSource()` returns `ChatConfigurator.getDataSource()` — the
+head of that chain.
+
+## The call trace: "add a Share Location attachment option"
+
+```ts
+const defaults = CometChatUIKit.getDataSource()
+  .getAttachmentOptions(composerId, additionalConfigurations);
+const merged = [...defaults, myLocationAction];
+// <CometChatMessageComposer attachmentOptions={merged} />
+```
+
+1. The call hits the **head** decorator. It calls `super.getAttachmentOptions(...)`,
+   which walks **down** the chain to `MessagesDataSource`, returning the base
+   `[image, video, audio, file]`.
+2. On the way **back up**, each decorator runs its own override —
+   `const opts = super.getAttachmentOptions(...); opts.push(myExtensionAction); return opts;` —
+   so Polls pushes "Polls", Doc pushes "Collaborative Document", Whiteboard pushes
+   "Collaborative Whiteboard".
+3. The caller receives the **fully-accumulated default list**, appends its own
+   `CometChatMessageComposerAction`, and hands the merged array to the composer.
+
+The same shape powers `getAllMessageTemplates()` (each decorator pushes its
+custom-message template), `getMessageOptions()` (each pushes its long-press
+action), `getAllTextFormatters()`, etc.
+
+## Why this means "append, not replace"
+
+Internally every decorator does `super.getX().push(...)`. When you **replace** (pass
+a list containing only your item), you discard the entire chain's accumulated output
+— which is why the default text/image/file bubbles, the camera/gallery/document
+attachments, or reply/edit/delete options silently vanish. The rule **"start from
+`getAllX()` / the defaults, then push"** literally mirrors the decorator chain. Pass
+*only* your item to a `templates=` / `attachmentOptions=` prop that **replaces**, and
+you have amputated the chain.
+
+<Warning>
+**`getAttachmentOptions` and its second argument.** `getAttachmentOptions(id, additionalConfigurations?)`
+threads the second argument through **every** decorator in the chain. A few extension
+decorators (Polls, Collaborative Document, Collaborative Whiteboard) read a field on it,
+so when you call it yourself, always pass a defined object — even if empty:
+
+```ts
+const defaults = CometChatUIKit.getDataSource()
+  .getAttachmentOptions(composerId, { messageToReplyRef: { current: null } });
+```
+
+Because the chain runs *every* enabled decorator, omitting the argument can surface an
+error the instant any one of those extensions is active. Passing the defined object
+above is safe across kit versions.
+</Warning>
+
+## Cross-platform: same concept, different mechanism
+
+| Platform | Customization mechanism | Append seam |
+|---|---|---|
+| **React (web)** | `DataSourceDecorator` chain via `ChatConfigurator` | `CometChatUIKit.getDataSource().getAttachmentOptions(composerId, config)` then spread + push. Pass the 2nd arg as shown above. |
+| **React Native** | Same `DataSourceDecorator` chain, different signature | `ChatConfigurator.getDataSource().getAttachmentOptions(theme, user, group, composerId, params?)` — `theme`-first, trailing params optional. |
+| **Angular** | Composer appends your `[attachmentOptions]` `@Input` internally | Pass only your option; defaults are preserved automatically. Custom bubbles go through `MessageBubbleConfigService.setBubbleView`; message actions through `additionalOptions` / `optionsOverride`. |
+| **Flutter** | Template list + `BubbleFactory` | `addTemplate:` merges (vs `templates:` which replaces); `attachmentOptions` is a `ComposerActionsBuilder` whose return value becomes the whole menu → seed from `ComposerAttachmentUtils.getAttachmentOptions(...)`. |
+| **Android** | `BubbleFactory` + options/attachment builders | `addOptions` / `addAttachmentOption` append; `options=` / `setAttachmentOptions` replace (built-ins re-added internally). Prefer `BubbleFactory` for bubbles. |
+| **iOS** | `DataSource` / `DataSourceDecorator` | Templates: start from `getAllMessageTemplates(...)` then append. `set(attachmentOptions:)` replaces — reconstruct from the defaults, or override a decorator's `getAttachmentOptions` (super + append). |
+
+## How the components are stitched together
+
+The DataSource chain answers *"what options/templates are available."* It is one of
+**four stitch layers** that together turn separate components into a working chat
+surface.
+
+### Layer 1 — Layout stitch (your app code)
+
+The kit ships **discrete** components; *you* compose them. The canonical two-pane shape:
+
+```
+CometChatSelector (left)                 CometChatMessages (right)
+  - CometChatConversations/Users/Groups    - CometChatMessageHeader  (user|group)
+      onItemClick(entity) ------------+     - CometChatMessageList    (user|group + templates + messagesRequestBuilder)
+                                      |      - CometChatCompactMessageComposer (user|group + attachmentOptions)
+   app state: selectedItem <----------+
+```
+
+- The Selector's `onItemClick` stores `selectedItem` and passes it down as **`user` OR
+  `group`** (mutually exclusive) to **all three** message components.
+- That shared `user`/`group` binding is the whole "which conversation" wiring — Header,
+  List, and Composer independently fetch/scope to the same target.
+- There is **no composite** that does this for you in the current web/RN/Angular/Android
+  kits — composing these four *is* the integration.
+
+### Layer 2 — Component → DataSource stitch (defaults vs override)
+
+Each component, **when you don't pass the prop**, pulls its config from the DataSource
+chain itself:
+
+- `CometChatMessageList` → `ChatConfigurator.getDataSource().getAllMessageTemplates({...})`.
+- `CometChatMessageComposer` → `getAttachmentOptions(...)`.
+
+Passing `templates=` / `attachmentOptions=` **replaces** that internal fetch with your
+array — which is exactly why you must *merge* (start from `getAllX()` then push). This
+is the bridge between Layer 1 (props) and the decorator chain.
+
+### Layer 3 — Render stitch (message → bubble via the template map)
+
+`CometChatMessageList` turns each message into a bubble through a **`category_type`
+lookup map**:
+
+1. It builds the map: `messagesTypesArray[el.category + "_" + el.type] = el` from the
+   templates (yours-merged-with-defaults).
+2. For each message it resolves the slot views by key:
+   `messagesTypesMap[item.getCategory() + "_" + item.getType()]?.contentView(item, …)`
+   — and similarly `headerView` / `footerView` / `bottomView` / `statusInfoView`, or
+   `bubbleView` to replace the whole bubble.
+3. `getBubbleWrapper` assembles those slot views into the rendered bubble.
+
+So a **custom message type renders only if there is a template whose `type` + `category`
+match the message** — that's the entire contract. No matching map entry → nothing (or an
+unknown-message fallback) renders. This is why the custom-message recipe is "register a
+template with `type: "location", category: "custom"` + a `contentView`."
+
+### Layer 4 — Runtime stitch (the event bus decouples the components)
+
+The components do **not** call each other directly. They communicate through pub/sub
+event buses — `CometChatMessageEvents`, `CometChatUIEvents`, `CometChatGroupEvents`:
+
+- `CometChatUIKit.sendCustomMessage(msg)` emits **`CometChatMessageEvents.ccMessageSent`**;
+  the List is subscribed and appends the message **optimistically** → the bubble appears
+  instantly (set `sender` on the message before sending so the optimistic bubble has one).
+- Incoming real-time messages arrive via the **SDK message listener** the List registers
+  → appended the same way.
+- Group mutations (`ccOwnershipChanged`, `ccGroupMemberAdded`, …) flow the same pub/sub
+  route, so the Header / Members views update without the List knowing about them.
+
+#### The event-bus catalog (`src/events/`)
+
+Six buses, two naming conventions. **`cc*` = UI-Kit-emitted** (a kit component reporting a
+local user action — subscribe to react to what the user did, often optimistically).
+**`on*` = SDK pass-through** (real-time inbound, mirroring the Chat SDK listeners —
+subscribe instead of registering a raw SDK listener).
+
+| Bus | `cc*` (UI-Kit actions) | `on*` (SDK real-time) |
+|---|---|---|
+| `CometChatMessageEvents` | `ccMessageSent`, `ccMessageEdited`, `ccMessageDeleted`, `ccMessageRead`, `ccReplyToMessage`, `ccMessageTranslated` | `onTextMessageReceived`, `onMediaMessageReceived`, `onCustomMessageReceived`, `onTypingStarted/Ended`, `onMessagesDelivered/Read`, `onMessageEdited/Deleted`, `onMessageReactionAdded/Removed`, `onForm/Card/SchedulerMessageReceived`, `onAIAssistantMessageReceived` |
+| `CometChatGroupEvents` | `ccGroupCreated/Deleted`, `ccGroupMemberJoined/Added/Kicked/Banned/Unbanned`, `ccGroupLeft`, `ccGroupMemberScopeChanged`, `ccOwnershipChanged` | — |
+| `CometChatUserEvents` | `ccUserBlocked`, `ccUserUnblocked` | — |
+| `CometChatCallEvents` | `ccOutgoingCall`, `ccCallAccepted`, `ccCallRejected`, `ccCallEnded` | — |
+| `CometChatConversationEvents` | `ccConversationDeleted`, `ccUpdateConversation`, `ccMarkConversationAsRead` | — |
+| `CometChatUIEvents` (UI orchestration) | `ccActiveChatChanged`, `ccOpenChat`, `ccComposeMessage`, `ccShow/HidePanel`, `ccShow/HideModal`, `ccShow/HideDialog`, `ccShowOngoingCall`, `ccActivePopover`, `ccMouseEvent`, `ccShowMentionsCountWarning` | — |
+
+**How to use them:** subscribe with `Bus.event.subscribe(cb)` and **always `unsubscribe()`
+on unmount** (every kit component does). For your *own* code reacting to chat state, prefer
+these over raw SDK listeners — they're already the kit's source of truth and fire for both
+UI-originated and SDK-originated changes. Emit `cc*` yourself (e.g. `ccMessageSent`) only
+when you send a message outside `CometChatUIKit.sendX` and want the kit's list to update —
+but `CometChatUIKit.sendCustomMessage` already emits it, which is why a custom bubble appears
+without any manual event work.
+
+**Putting it together — the full flow for "send a custom location message":**
+`Composer attachment onClick` → `sendLocationMessage` builds a `CustomMessage` →
+`CometChatUIKit.sendCustomMessage` → emits `ccMessageSent` → `MessageList` (subscribed)
+appends it → the render stitch looks up `custom_location` in the template map → calls your
+template's `contentView` → your location bubble renders. On reload, the same bubble comes
+from history *only if* the `messagesRequestBuilder` includes the `custom` category +
+`location` type (Layer 2).
+
+### The mental model in one line
+
+<Tip>
+You stitch the layout (Layer 1); the kit stitches behavior via the **DataSource chain** for
+*what's available* (Layer 2), the **`category_type` template map** for *how each message
+renders* (Layer 3), and the **event bus** for *when things change* (Layer 4). Customization
+= inserting your node into whichever layer owns the thing you want to change.
+</Tip>
+
+## Source references
+
+- `cometchat-uikit-react`: `src/utils/{ChatConfigurator,DataSource,DataSourceDecorator,MessagesDataSource}`, `src/components/Extensions/*/*ExtensionDecorator`, `src/CometChatUIKit/CometChatUIKit.ts`.
+- The official React sample app's live-location feature (attachment option + custom message + custom bubble) is a complete working reference for all four layers.
