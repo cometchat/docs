@@ -134,7 +134,7 @@
 
     // Route gating: version dropdown should appear only on configured prefixes
     const ALLOWED_VERSION_PREFIXES = (Array.isArray(window.ccVersionRoutes) && window.ccVersionRoutes.length)
-        ? window.ccVersionRoutes : ['/ui-kit','/sdk'];
+        ? window.ccVersionRoutes : ['/ui-kit','/sdk','/calls'];
     function isVersionRoute() {
         try {
             let p = window.location.pathname || '/';

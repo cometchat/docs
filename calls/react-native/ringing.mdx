@@ -1,6 +1,8 @@
 ---
 title: "Ringing"
 sidebarTitle: "Ringing"
+sdk_version: "5.x"
+description: "Configure CometChat Calls SDK v5 ringing on React Native for incoming calls, outgoing calls, call alerts, and accept or reject flows."
 ---
 
 Implement incoming and outgoing call notifications using the CometChat Chat SDK's calling features. The Calls SDK handles the actual call session, while the Chat SDK manages call signaling.
@@ -41,6 +43,41 @@ initiateCall('user_uid', CometChat.CALL_TYPE.VIDEO, CometChat.RECEIVER_TYPE.USER
 // Initiate an audio call to a group
 initiateCall('group_guid', CometChat.CALL_TYPE.AUDIO, CometChat.RECEIVER_TYPE.GROUP);
 ```
+
+By default, an unanswered call automatically cancels after 45 seconds. You can customize this duration by passing an optional `timeout` parameter (in seconds) as the second argument to `initiateCall()`.
+
+```tsx
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+
+// Initiate a video call to a user with a 60-second timeout
+const userCall = new CometChat.Call('user_uid', CometChat.CALL_TYPE.VIDEO, CometChat.RECEIVER_TYPE.USER);
+
+CometChat.initiateCall(userCall, 60).then(
+  (outgoingCall) => {
+    console.log('Call initiated with 60s timeout:', outgoingCall);
+  },
+  (error) => {
+    console.error('Call initiation failed:', error);
+  }
+);
+
+// Initiate an audio call to a group with a 60-second timeout
+const groupCall = new CometChat.Call('group_guid', CometChat.CALL_TYPE.AUDIO, CometChat.RECEIVER_TYPE.GROUP);
+
+CometChat.initiateCall(groupCall, 60).then(
+  (outgoingCall) => {
+    console.log('Call initiated with 60s timeout:', outgoingCall);
+  },
+  (error) => {
+    console.error('Call initiation failed:', error);
+  }
+);
+```
+
+| Parameter  | Type     | Description                                                                                                     |
+| ---------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `call`     | `Call`   | The call object created with receiver ID, call type, and receiver type.                                         |
+| `timeout`  | `number` | Optional. The ringing duration in seconds before an unanswered call is automatically cancelled. Default: `45`.   |
 
 ## Listen for Incoming Calls
 
@@ -157,19 +194,19 @@ async function startCallSession(call: any) {
     // Generate token for the session
     const { token } = await CometChatCalls.generateToken(sessionId);
     
-    // Create call settings
+    // Create session settings
     const isAudioOnly = call.getType() === CometChat.CALL_TYPE.AUDIO;
     
-    const callSettings = new CometChatCalls.CallSettingsBuilder()
-      .setIsAudioOnlyCall(isAudioOnly)
-      .setCallEventListener(new CometChatCalls.OngoingCallListener({
-        onCallEnded: () => {
-          console.log('Call ended');
-        },
-      }))
-      .build();
+    const sessionSettings = {
+      sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+    };
     
-    return { token, callSettings };
+    // Subscribe to session events; addEventListener returns an unsubscribe function
+    const unsubscribe = CometChatCalls.addEventListener('onSessionLeft', () => {
+      console.log('Call ended');
+    });
+    
+    return { token, sessionSettings, unsubscribe };
   } catch (error) {
     console.error('Error starting call session:', error);
     throw error;
@@ -195,7 +232,7 @@ function CallManager({ children }: { children: React.ReactNode }) {
   const [incomingCall, setIncomingCall] = useState<Call | null>(null);
   const [activeCall, setActiveCall] = useState<{
     token: string;
-    settings: any;
+    sessionSettings: any;
   } | null>(null);
 
   useEffect(() => {
@@ -235,16 +272,16 @@ function CallManager({ children }: { children: React.ReactNode }) {
       
       const isAudioOnly = call.getType() === CometChat.CALL_TYPE.AUDIO;
       
-      const settings = new CometChatCalls.CallSettingsBuilder()
-        .setIsAudioOnlyCall(isAudioOnly)
-        .setCallEventListener(new CometChatCalls.OngoingCallListener({
-          onCallEnded: () => {
-            setActiveCall(null);
-          },
-        }))
-        .build();
+      const sessionSettings = {
+        sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+      };
 
-      setActiveCall({ token, settings });
+      // Clear active call when the session is left
+      CometChatCalls.addEventListener('onSessionLeft', () => {
+        setActiveCall(null);
+      });
+
+      setActiveCall({ token, sessionSettings });
       setIncomingCall(null);
     } catch (error) {
       console.error('Error starting session:', error);
@@ -321,7 +358,7 @@ function CallManager({ children }: { children: React.ReactNode }) {
           <View style={styles.callContainer}>
             <CometChatCalls.Component
               callToken={activeCall.token}
-              callSettings={activeCall.settings}
+              sessionSettings={activeCall.sessionSettings}
             />
           </View>
         </Modal>

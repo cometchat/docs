@@ -1,0 +1,98 @@
+---
+title: "Overview"
+description: "REST surface for the Campaigns product. Send transactional notifications, manage templates and channels, and administer the in-app feed."
+---
+
+The Campaigns REST API is the server-side surface of the product. It covers transactional sends, template and channel look-ups, and admin operations on the notification feed. All endpoints share a single response envelope, a single error envelope, and a single authentication model.
+
+### Base URL
+
+```
+https://{appId}.api-{region}.cometchat.io/v3/campaigns
+```
+
+Regions: `us`, `eu`, `in`. Replace `{appId}` with your application ID. See [Setup & Authentication](/rest-api/campaigns-apis/setup-and-authentication) for credentials and headers.
+
+### Response envelope
+
+#### Success
+
+Single-entity responses wrap the resource under `data`:
+
+```json
+{ "data": { "id": "feed-cl9xyz123", "deletedAt": "2026-05-04T10:35:00.000Z" } }
+```
+
+Paginated lists return an array under `data` and cursor metadata under `meta`:
+
+```json
+{
+  "data": [ /* items */ ],
+  "meta": {
+    "current":  { "limit": 20, "count": 5 },
+    "next":     { "affix": "append", "sentAt": 1730301000, "id": "feed-cl9xyz123" }
+  }
+}
+```
+
+Pagination is cursor-based. Pass `affix`, `sentAt` (or the configured sort field), and `id` from `meta.next` back into the next request to page forward.
+
+#### Error envelope (canonical)
+
+Every non-2xx response from the Campaigns service uses exactly this shape, wrapped under `error`:
+
+```json
+{
+  "error": {
+    "code":       "ERR_FEED_ITEM_NOT_FOUND",
+    "message":    "Feed item not found",
+    "devMessage": "Feed item not found: feed-cl9xyz123",
+    "details":    { "feedItemId": "feed-cl9xyz123" },
+    "source":     "campaigns-service"
+  }
+}
+```
+
+| Field        | Convention                                                                                                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code`       | Always `ERR_`-prefixed, SCREAMING_SNAKE. Domain codes (`ERR_TEMPLATE_NOT_FOUND`) and framework codes (`ERR_VALIDATION`, `ERR_UNAUTHORIZED`) share the prefix.            |
+| `message`    | User-facing, identifier-free, safe to render in a UI. Never carries IDs or PII.                                                                                         |
+| `devMessage` | Developer-facing. Carries identifiers and extra context for debugging. Defaults to `message` when omitted.                                                              |
+| `details`    | Structured drill-down. Object for domain errors (`{ "channelId": "feed-1" }`); array of strings for validation failures (one per failed field).                         |
+| `source`     | Always `"campaigns-service"`. Lets gateway-fronted callers attribute failures when multiple services share the gateway.                                                 |
+
+Unhandled internal errors fail closed; no stack trace or internal detail leaks:
+
+```json
+{
+  "error": {
+    "code": "ERR_INTERNAL",
+    "message": "An unexpected error occurred.",
+    "devMessage": "An unexpected error occurred.",
+    "source": "campaigns-service"
+  }
+}
+```
+
+### Error code reference
+
+Non-exhaustive. These are the codes a typical caller will encounter.
+
+| Class      | Codes                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Domain     | `ERR_TEMPLATE_NOT_FOUND`, `ERR_CHANNEL_NOT_FOUND`, `ERR_FEED_ITEM_NOT_FOUND`                                                                           |
+| Framework  | `ERR_VALIDATION` (400), `ERR_UNAUTHORIZED` (401), `ERR_NOT_FOUND` (404), `ERR_CONFLICT` (409), `ERR_TOO_MANY_REQUESTS` (429), `ERR_BAD_REQUEST` (4xx fallback), `ERR_INTERNAL` (500) |
+
+### Variable resolution
+
+Within template content, variables are referenced with `{{variableKey}}` syntax (for example `Hi {{user_name}}, your order #{{order_id}} shipped`) and resolved at send-time.
+
+For templated sends and campaign deliveries, three sources contribute to the final value substituted into channel content. Higher rows win:
+
+| Priority    | Source                              | Where it lives                                                                                                                     |
+| ----------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (highest) | Per-user variables                  | The `variables` map on a transactional send request, or per-row from a campaign's CSV import                                        |
+| 2           | Campaign-level defaults             | The campaign's `config.variables`                                                                                                  |
+| 3           | Template variable-schema defaults   | The template's `variableSchema[].default` field                                                                                    |
+
+If none of the three has a value, the token is left unresolved (`{{key}}`) in the rendered output.

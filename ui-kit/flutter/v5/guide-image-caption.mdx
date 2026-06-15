@@ -1,0 +1,517 @@
+---
+title: "Image Preview & Caption"
+sidebarTitle: "Image Preview & Caption"
+description: "Preview images before sending and display captions below image thumbnails in CometChat Flutter UI Kit."
+---
+
+<Accordion title="AI Agent Component Spec">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_chat_uikit` |
+| Key components | `CometChatCompactMessageComposer`, `CometChatMessageList`, `CometChatMessageTemplate` |
+| Init | `CometChatUIKit.init(uiKitSettings)` then `CometChatUIKit.login(uid)` |
+| Entry point | Attachment tap → image pick → inline preview → send with caption |
+| Extension points | `attachmentOptions`, `headerView`, `stateCallBack`, `onSendButtonTap`, `templates` |
+| Sample app | [GitHub](https://github.com/cometchat/cometchat-uikit-flutter/tree/v5/master_app) |
+| Related | [Compact Message Composer](/ui-kit/flutter/v5/compact-message-composer) · [Message Template](/ui-kit/flutter/v5/message-template) · [All Guides](/ui-kit/flutter/v5/guide-overview) |
+
+</Accordion>
+
+This guide adds two capabilities to the default messaging experience:
+
+1. When a user picks an image, an inline preview appears above the composer. They can type a caption, then tap send — or cancel to discard.
+2. Image messages that include a caption display the caption text below the thumbnail in the message bubble.
+
+No UIKit source files are modified. Everything uses the UIKit's public extension points.
+
+Before starting, complete the [Getting Started](/ui-kit/flutter/v5/getting-started) guide.
+
+---
+
+## Components
+
+| Component / Class | Role |
+|:---|:---|
+| `CometChatCompactMessageComposer` | Composer with `headerView`, `stateCallBack`, `onSendButtonTap`, and `attachmentOptions` slots |
+| `CometChatMessageList` | Renders messages using custom `templates` |
+| `CometChatMessageTemplate` | Defines a custom `contentView` for image messages with caption rendering |
+| `MediaPicker` | Picks images from gallery or camera |
+| `InlineImagePreview` | Custom widget shown above the composer (created in this guide) |
+
+---
+
+## Architecture
+
+```
+User picks image
+       │
+       ▼
+attachmentOptions (custom onItemClick)
+       │
+       ▼
+_showImagePreviewPanel()
+  ├─ setState() → stores pending image path
+  ├─ Injects zero-width space into text field (enables send button)
+  └─ headerView renders InlineImagePreview
+       │
+       ▼
+User types caption + taps Send
+       │
+       ▼
+onSendButtonTap → _handleSendButtonTap()
+  ├─ Reads caption from the TextMessage object
+  ├─ Strips zero-width space placeholder
+  ├─ Calls CometChatUIKit.sendMediaMessage() with caption
+  └─ Clears pending state
+       │
+       ▼
+Message list renders via custom template
+  ├─ Reads caption from mediaMessage.caption OR metadata['text']
+  └─ Renders Text widget below the image bubble
+```
+
+---
+
+## Integration Steps
+
+### 1. Add State for Pending Image
+
+Track the pending image path and a reference to the composer controller in your messages screen state.
+
+```dart
+class _MessagesSampleState extends State<MessagesSample> {
+  String? _pendingImagePath;
+  String? _pendingImageType;
+  CometChatCompactMessageComposerController? _composerController;
+
+  // ...
+}
+```
+
+### 2. Create the Inline Image Preview Widget
+
+This widget renders a thumbnail and cancel button above the composer. It uses `FileUtils.normalizeFilePath()` to handle percent-encoded iOS file paths.
+
+_File: image\_preview\_screen.dart_
+
+```dart
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';
+
+class InlineImagePreview extends StatelessWidget {
+  final String filePath;
+  final VoidCallback onCancel;
+
+  const InlineImagePreview({
+    super.key,
+    required this.filePath,
+    required this.onCancel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorPalette = CometChatThemeHelper.getColorPalette(context);
+    final spacing = CometChatThemeHelper.getSpacing(context);
+    final normalizedPath = FileUtils.normalizeFilePath(filePath);
+    final file = File(normalizedPath);
+
+    return Container(
+      padding: EdgeInsets.all(spacing.padding3 ?? 12),
+      margin: EdgeInsets.symmetric(horizontal: spacing.margin2 ?? 8),
+      decoration: BoxDecoration(
+        color: colorPalette.background1,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(spacing.radius3 ?? 12),
+          topRight: Radius.circular(spacing.radius3 ?? 12),
+        ),
+        border: Border.all(
+          color: colorPalette.borderDefault ?? Colors.transparent,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(spacing.radius2 ?? 8),
+            child: SizedBox(
+              width: 80,
+              height: 80,
+              child: Image.file(
+                file,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    color: colorPalette.background3,
+                    child: Icon(
+                      Icons.broken_image,
+                      color: colorPalette.iconTertiary,
+                      size: 32,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          SizedBox(width: spacing.padding3 ?? 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  filePath.split('/').last,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colorPalette.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Tap send to share',
+                  style: TextStyle(
+                    color: colorPalette.textTertiary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: onCancel,
+            icon: Icon(
+              Icons.close,
+              color: colorPalette.iconSecondary,
+              size: 20,
+            ),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+```
+
+### 3. Build Custom Attachment Options
+
+Replace the default image/camera attachment options with versions that pick the file but show a preview instead of sending immediately. Non-image options (video, audio, file) have no `onItemClick`, so they fall through to the default pick-and-send behavior.
+
+```dart
+List<CometChatMessageComposerAction> _buildAttachmentOptionsWithImagePreview(
+  BuildContext context,
+  User? user,
+  Group? group,
+) {
+  final colorPalette = CometChatThemeHelper.getColorPalette(context);
+  final List<CometChatMessageComposerAction> actions = [];
+
+  // Camera — pick and preview
+  actions.add(CometChatMessageComposerAction(
+    id: 'takePhoto',
+    title: Translations.of(context).camera,
+    icon: Icon(Icons.photo_camera, color: colorPalette.iconHighlight, size: 24),
+    onItemClick: (ctx, u, g) async {
+      final pickedFile = await MediaPicker.takePhoto();
+      if (pickedFile == null) return;
+      _showImagePreviewPanel(pickedFile.path, MessageTypeConstants.image);
+    },
+  ));
+
+  // Gallery — pick and preview
+  actions.add(CometChatMessageComposerAction(
+    id: MessageTypeConstants.attachPhoto,
+    title: Translations.of(context).attachImage,
+    icon: Icon(Icons.image, color: colorPalette.iconHighlight, size: 24),
+    onItemClick: (ctx, u, g) async {
+      final pickedFile = await MediaPicker.pickImage();
+      if (pickedFile == null) return;
+      final type = pickedFile.fileType ?? MessageTypeConstants.image;
+      _showImagePreviewPanel(pickedFile.path, type);
+    },
+  ));
+
+  // Video, audio, file — no onItemClick, default behavior
+  actions.add(CometChatMessageComposerAction(
+    id: MessageTypeConstants.attachVideo,
+    title: Translations.of(context).attachVideo,
+    icon: Icon(Icons.videocam_rounded, color: colorPalette.iconHighlight, size: 24),
+  ));
+
+  actions.add(CometChatMessageComposerAction(
+    id: MessageTypeConstants.audio,
+    title: Translations.of(context).attachAudio,
+    icon: Icon(Icons.headphones, color: colorPalette.iconHighlight, size: 24),
+  ));
+
+  actions.add(CometChatMessageComposerAction(
+    id: MessageTypeConstants.file,
+    title: Translations.of(context).attachDocument,
+    icon: Icon(Icons.description, color: colorPalette.iconHighlight, size: 24),
+  ));
+
+  return actions;
+}
+```
+
+### 4. Show and Clear the Preview Panel
+
+When an image is picked, store the path and inject a zero-width space (`\u200B`) into the text field to enable the send button. On cancel, clear the state and remove the placeholder only if no real text was typed.
+
+```dart
+void _showImagePreviewPanel(String filePath, String messageType) {
+  setState(() {
+    _pendingImagePath = filePath;
+    _pendingImageType = messageType;
+  });
+
+  final currentText = _composerController?.textEditingController?.text ?? '';
+  if (currentText.trim().isEmpty) {
+    _composerController?.textEditingController?.text = '\u200B';
+  }
+}
+
+void _clearPendingImage() {
+  setState(() {
+    _pendingImagePath = null;
+    _pendingImageType = null;
+  });
+
+  final currentText = _composerController?.textEditingController?.text ?? '';
+  if (currentText.replaceAll('\u200B', '').trim().isEmpty) {
+    _composerController?.textEditingController?.clear();
+  }
+}
+```
+
+<Tip>
+The zero-width space trick is needed because the composer's send button only enables when the text field is non-empty. This invisible character activates the button without showing any visible text.
+</Tip>
+
+### 5. Intercept the Send Button
+
+When the user taps send with a pending image, build a `MediaMessage` with the caption and send it via `CometChatUIKit.sendMediaMessage()`. Otherwise, forward to the default SDK send.
+
+The caption is read from the `TextMessage` object passed to the callback — not from the text field — because the controller clears the text field before calling `onSendButtonTap`.
+
+```dart
+void _handleSendButtonTap(
+  BuildContext ctx,
+  BaseMessage message,
+  PreviewMessageMode? previewMode,
+) {
+  if (_pendingImagePath != null && _pendingImageType != null) {
+    final path = _pendingImagePath!;
+    final type = _pendingImageType!;
+    final receiverUid = widget.user?.uid ?? widget.group?.guid ?? '';
+    final receiverType = widget.user != null
+        ? ReceiverTypeConstants.user
+        : ReceiverTypeConstants.group;
+    final parentMsgId = widget.parentMessage?.id ?? 0;
+
+    // Read caption from the TextMessage the controller built before clearing
+    final caption = (message is TextMessage)
+        ? message.text.replaceAll('\u200B', '').trim()
+        : '';
+
+    _clearPendingImage();
+
+    CometChatUIKit.sendMediaMessage(
+      MediaMessage(
+        receiverType: receiverType,
+        type: type,
+        receiverUid: receiverUid,
+        file: path,
+        metadata: {"localPath": path},
+        parentMessageId: parentMsgId,
+        muid: DateTime.now().microsecondsSinceEpoch.toString(),
+        category: CometChatMessageCategory.message,
+        caption: caption.isNotEmpty ? caption : null,
+      ),
+    );
+  } else {
+    // No pending image — forward to default SDK send
+    if (message is TextMessage) {
+      CometChatMessageEvents.ccMessageSent(message, MessageStatus.inProgress);
+      CometChat.sendMessage(
+        message,
+        onSuccess: (TextMessage sentMessage) {
+          CometChatMessageEvents.ccMessageSent(sentMessage, MessageStatus.sent);
+        },
+        onError: (CometChatException e) {
+          if (message.metadata != null) {
+            message.metadata!["error"] = e;
+          } else {
+            message.metadata = {"error": e};
+          }
+          CometChatMessageEvents.ccMessageSent(message, MessageStatus.error);
+        },
+      );
+    }
+  }
+}
+```
+
+### 6. Wire Up the Composer
+
+Pass all four extension points to `CometChatCompactMessageComposer`:
+
+```dart
+CometChatCompactMessageComposer(
+  user: widget.user,
+  group: widget.group,
+  stateCallBack: (controller) {
+    _composerController = controller;
+  },
+  headerView: _pendingImagePath != null
+      ? (ctx, user, group, id) => InlineImagePreview(
+            filePath: _pendingImagePath!,
+            onCancel: () => _clearPendingImage(),
+          )
+      : null,
+  onSendButtonTap: (ctx, message, previewMode) {
+    _handleSendButtonTap(ctx, message, previewMode);
+  },
+  attachmentOptions: (ctx, user, group, composerId) {
+    return _buildAttachmentOptionsWithImagePreview(ctx, user, group);
+  },
+)
+```
+
+### 7. Render Captions in Image Bubbles
+
+Create a custom `CometChatMessageTemplate` for image messages that wraps the default image bubble with a caption `Text` widget below it.
+
+CometChat stores the caption in `MediaMessage.caption` and also in `metadata['text']`. The template checks both locations.
+
+```dart
+CometChatMessageTemplate _imageTemplateWithCaption() {
+  return CometChatMessageTemplate(
+    type: MessageTypeConstants.image,
+    category: MessageCategoryConstants.message,
+    contentView: (BaseMessage message, BuildContext context,
+        BubbleAlignment alignment,
+        {AdditionalConfigurations? additionalConfigurations}) {
+      if (message.deletedAt != null) {
+        return CometChatUIKit.getDataSource().getDeleteMessageBubble(
+            message, context, additionalConfigurations?.deletedBubbleStyle);
+      }
+
+      final mediaMessage = message as MediaMessage;
+      final caption = (mediaMessage.caption != null &&
+              mediaMessage.caption!.trim().isNotEmpty)
+          ? mediaMessage.caption
+          : (mediaMessage.metadata?['text'] as String?);
+
+      final imageBubble = CometChatUIKit.getDataSource()
+          .getImageMessageContentView(mediaMessage, context, alignment,
+              additionalConfigurations: additionalConfigurations);
+
+      if (caption == null || caption.trim().isEmpty) {
+        return imageBubble;
+      }
+
+      final colorPalette = CometChatThemeHelper.getColorPalette(context);
+      final typography = CometChatThemeHelper.getTypography(context);
+      final spacing = CometChatThemeHelper.getSpacing(context);
+      final isOutgoing = alignment == BubbleAlignment.right;
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          imageBubble,
+          Padding(
+            padding: EdgeInsets.only(
+              top: spacing.padding2 ?? 4,
+              left: spacing.padding2 ?? 4,
+              right: spacing.padding2 ?? 4,
+            ),
+            child: Text(
+              caption,
+              style: TextStyle(
+                color: isOutgoing
+                    ? colorPalette.white
+                    : colorPalette.textPrimary,
+                fontSize: typography.body?.regular?.fontSize,
+                fontWeight: typography.body?.regular?.fontWeight,
+                fontFamily: typography.body?.regular?.fontFamily,
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+    options: CometChatUIKit.getDataSource().getMessageOptions,
+  );
+}
+```
+
+### 8. Apply the Custom Template to the Message List
+
+Use the `templates` parameter on `CometChatMessageList` to replace the default image template. Filter out the built-in image template and append the custom one.
+
+<Warning>
+Use `templates`, not `addTemplate`. The `addTemplate` parameter only fills in null fields on existing templates — it cannot override an existing `contentView`.
+</Warning>
+
+```dart
+CometChatMessageList(
+  user: user,
+  group: group,
+  templates: [
+    ...(CometChatUIKit.getDataSource()
+        .getAllMessageTemplates()
+        .where((t) => !(t.type == MessageTypeConstants.image &&
+            t.category == MessageCategoryConstants.message))),
+    _imageTemplateWithCaption(),
+  ],
+)
+```
+
+---
+
+## Key Gotchas
+
+| Issue | Cause | Solution |
+|:------|:------|:---------|
+| Send button stays disabled with image preview | Composer requires non-empty text to enable send | Inject `\u200B` (zero-width space) into the text field |
+| Caption is empty in `onSendButtonTap` | Controller clears `textEditingController` before calling the callback | Read caption from the `TextMessage` object passed to the callback |
+| `headerView` disappears on keystroke | `CometChatMentionsFormatter` calls `hidePanel(composerTop)` on every text change | Use `headerView` (widget property) instead of `showPanel(composerTop)` |
+| Custom template ignored by `addTemplate` | Template merge only fills null fields; default image template already has a `contentView` | Use `templates` parameter and filter out the default image template |
+| Image preview crashes on iOS | `MediaPicker` percent-encodes paths with spaces on iOS | Use `FileUtils.normalizeFilePath()` to decode before passing to `File()` |
+
+---
+
+## Feature Matrix
+
+| Feature | Extension Point | Component |
+|:---|:---|:---|
+| Image pick without auto-send | `attachmentOptions` | `CometChatCompactMessageComposer` |
+| Inline preview above composer | `headerView` | `CometChatCompactMessageComposer` |
+| Controller access | `stateCallBack` | `CometChatCompactMessageComposer` |
+| Send interception | `onSendButtonTap` | `CometChatCompactMessageComposer` |
+| Caption in image bubbles | `templates` | `CometChatMessageList` |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Compact Message Composer" href="/ui-kit/flutter/v5/compact-message-composer">
+    Full reference for the compact composer component.
+  </Card>
+  <Card title="Message Template" href="/ui-kit/flutter/v5/message-template">
+    Customize how message types are rendered.
+  </Card>
+  <Card title="Message List" href="/ui-kit/flutter/v5/message-list">
+    Configure the message list component.
+  </Card>
+  <Card title="All Guides" href="/ui-kit/flutter/v5/guide-overview">
+    Browse all feature and formatter guides.
+  </Card>
+</CardGroup>

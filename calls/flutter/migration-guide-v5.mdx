@@ -1,0 +1,507 @@
+---
+title: "Migration Guide"
+sidebarTitle: "v4 to v5 Migration"
+sdk_version: "5.x"
+description: "Migrate to CometChat Calls SDK v5 on Flutter with updated setup, APIs, call sessions, layouts, and feature changes."
+---
+
+This guide covers migrating from Calls SDK v4 to v5 for Flutter.
+
+## Drop-in Compatibility
+
+Calls SDK v5 is a **drop-in replacement** for v4. All v4 APIs are preserved as deprecated methods that internally delegate to the new v5 implementations. You can update the package version and your existing code will compile and run without changes.
+
+```yaml
+dependencies:
+  cometchat_calls_sdk:
+    hosted: https://dart.cloudsmith.io/cometchat/cometchat/
+    version: ^5.0.0
+```
+
+<Info>
+If you're using CometChat UI Kits, simply updating the Calls SDK version is sufficient. The UI Kit will continue to work with v5 through the deprecated compatibility layer.
+</Info>
+
+## Why Migrate to v5 APIs?
+
+While v4 APIs will continue to work, migrating to v5 APIs gives you:
+
+- **Granular event listeners** — 5 focused listener classes (`SessionStatusListener`, `ParticipantEventListener`, `MediaEventsListener`, `ButtonClickListener`, `LayoutListener`) instead of one monolithic `CometChatCallsEventsListener`
+- **`CallSession` singleton** for cleaner session control — all actions on a single instance instead of scattered static methods
+- **Dedicated `login()` method** — the Calls SDK now handles its own authentication instead of depending on the Chat SDK's auth token or REST APIs
+- **Strongly-typed enums** — `SessionType`, `LayoutType`, `AudioMode`, `CameraFacing` instead of raw strings
+
+---
+
+## Initialization
+
+No changes required. The `init()` API is the same in v5.
+
+```dart
+CallAppSettings callAppSettings = (CallAppSettingBuilder()
+  ..appId = "APP_ID"
+  ..region = "REGION"
+).build();
+
+CometChatCalls.init(
+  callAppSettings,
+  onSuccess: (String message) {
+    // Initialized
+  },
+  onError: (CometChatCallsException e) {
+    // Handle error
+  },
+);
+```
+
+---
+
+## Authentication
+
+In v4, the Calls SDK had no dedicated authentication step. It relied on the Chat SDK's auth token (`CometChat.getUserAuthToken()`) or a REST API to obtain an auth token, which you then passed manually to `generateToken()`.
+
+v5 introduces its own `login()` method. After calling `login()`, the SDK caches the auth token internally, so you no longer need to pass it around to other API calls.
+
+<Tabs>
+<Tab title="v4">
+```dart
+// No dedicated Calls SDK login — relied on Chat SDK for auth token
+String authToken = CometChat.getUserAuthToken();
+
+// Had to pass authToken manually
+CometChatCalls.generateToken(sessionId, authToken,
+  onSuccess: (GenerateToken token) {
+    // Use token.token to start session
+  },
+  onError: (CometChatCallsException e) {},
+);
+```
+</Tab>
+<Tab title="v5">
+```dart
+// Login to the Calls SDK once (after your Chat SDK login)
+CometChatCalls.loginWithAuthToken(
+  authToken: authToken,
+  onSuccess: (User user) {
+    // Calls SDK is now authenticated — auth token is cached internally
+  },
+  onError: (CometChatCallsException e) {},
+);
+
+// generateToken no longer needs the authToken parameter
+CometChatCalls.generateToken(
+  sessionId: sessionId,
+  onSuccess: (CallToken token) {
+    // Use token
+  },
+  onError: (CometChatCallsException e) {},
+);
+```
+</Tab>
+</Tabs>
+
+<Note>
+Call `CometChatCalls.loginWithAuthToken()` once after your user authenticates (e.g., right after `CometChat.login()` succeeds). The SDK stores the auth token internally, so subsequent calls like `generateToken()` and `joinSession()` use it automatically without you having to pass it.
+</Note>
+
+---
+
+## Session Settings
+
+`CallSettingsBuilder` is replaced by `SessionSettingsBuilder`. The builder methods have been renamed for clarity and use strongly-typed enums.
+
+<Tabs>
+<Tab title="v4">
+```dart
+CallSettings callSettings = (CallSettingsBuilder()
+    ..isAudioOnly = true
+    ..enableDefaultLayout = true
+    ..showEndCallButton = true
+    ..showMuteAudioButton = true
+    ..showPauseVideoButton = true
+    ..showSwitchCameraButton = true
+    ..showRecordingButton = true
+    ..startWithAudioMuted = false
+    ..startWithVideoMuted = false
+    ..defaultAudioMode = "SPEAKER"
+    ..mode = "DEFAULT"
+    ..startRecordingOnCallStart = false
+    ..listener = myCallsEventsListener)
+  .build();
+```
+</Tab>
+<Tab title="v5">
+```dart
+SessionSettings sessionSettings = (SessionSettingsBuilder()
+    ..setType(SessionType.audio)
+    ..startAudioMuted(false)
+    ..startVideoPaused(false)
+    ..setLayout(LayoutType.tile)
+    ..setAudioMode(AudioMode.speaker)
+    ..hideLeaveSessionButton(false)
+    ..hideToggleAudioButton(false)
+    ..hideToggleVideoButton(false)
+    ..hideSwitchCameraButton(false)
+    ..hideRecordingButton(false)
+    ..hideControlPanel(false)
+    ..hideHeaderPanel(false)
+    ..enableAutoStartRecording(false))
+  .build();
+```
+</Tab>
+</Tabs>
+
+### Builder Method Mapping
+
+| v4 CallSettingsBuilder | v5 SessionSettingsBuilder | Notes |
+|-----------|-----------|-------|
+| `isAudioOnly = true` | `setType(SessionType.audio)` | Use `SessionType.video` for video calls |
+| `enableDefaultLayout = bool` | `hideControlPanel(!bool)` + `hideHeaderPanel(!bool)` | Inverted logic |
+| `showEndCallButton = bool` | `hideLeaveSessionButton(!bool)` | Inverted logic |
+| `showMuteAudioButton = bool` | `hideToggleAudioButton(!bool)` | Inverted logic |
+| `showPauseVideoButton = bool` | `hideToggleVideoButton(!bool)` | Inverted logic |
+| `showSwitchCameraButton = bool` | `hideSwitchCameraButton(!bool)` | Inverted logic |
+| `showRecordingButton = bool` | `hideRecordingButton(!bool)` | Inverted logic |
+| `showScreenSharingButton = bool` | `hideScreenSharingButton(!bool)` | Inverted logic |
+| `showRaiseHandButton = bool` | `hideRaiseHandButton(!bool)` | Inverted logic |
+| `showShareInviteButton = bool` | `hideShareInviteButton(!bool)` | Inverted logic |
+| `showParticipantListButton = bool` | `hideParticipantListButton(!bool)` | Inverted logic |
+| `showLayoutToggleButton = bool` | `hideChangeLayoutButton(!bool)` | Inverted logic |
+| `startWithAudioMuted = bool` | `startAudioMuted(bool)` | Same logic |
+| `startWithVideoMuted = bool` | `startVideoPaused(bool)` | Same logic |
+| `defaultAudioMode = "SPEAKER"` | `setAudioMode(AudioMode.speaker)` | Enum instead of string |
+| `mode = "DEFAULT"` | `setLayout(LayoutType.tile)` | Enum instead of string |
+| `defaultCameraFacing = "FRONT"` | `setInitialCameraFacing(CameraFacing.front)` | Enum instead of string |
+| `startRecordingOnCallStart = bool` | `enableAutoStartRecording(bool)` | Same logic |
+| `lowBandwidthMode = bool` | `enableLowBandwidthMode(bool)` | Same logic |
+| `idleTimeoutPeriod = int` | `setIdleTimeoutPeriod(int)` | Same logic |
+| `listener = listener` | Use `CallSession` listeners | See [Events](#event-listeners) section |
+
+---
+
+## Joining a Session
+
+`startSession()` is replaced by `joinSession()`, which returns a `Widget?` that you place in your Flutter widget tree.
+
+<Tabs>
+<Tab title="v4">
+```dart
+// Step 1: Generate token with auth token
+CometChatCalls.generateToken(sessionId, authToken,
+  onSuccess: (GenerateToken token) {
+    // Step 2: Start session with token string
+    CometChatCalls.startSession(token.token ?? "", callSettings,
+      onSuccess: (Widget? callWidget) {
+        // Place callWidget in your widget tree
+      },
+      onError: (CometChatCallsException e) {},
+    );
+  },
+  onError: (CometChatCallsException e) {},
+);
+```
+</Tab>
+<Tab title="v5">
+```dart
+// Option A: Two-step with token
+CometChatCalls.generateToken(
+  sessionId: sessionId,
+  onSuccess: (CallToken token) {
+    CometChatCalls.joinSession(
+      callToken: token,
+      sessionSettings: sessionSettings,
+      onSuccess: (Widget? callWidget) {
+        // Place callWidget in your widget tree
+      },
+      onError: (CometChatCallsException e) {},
+    );
+  },
+  onError: (CometChatCallsException e) {},
+);
+
+// Option B: One-step with session ID (recommended)
+CometChatCalls.joinSession(
+  sessionId: sessionId,
+  sessionSettings: sessionSettings,
+  onSuccess: (Widget? callWidget) {
+    // Token generation + join handled internally
+  },
+  onError: (CometChatCallsException e) {},
+);
+```
+</Tab>
+</Tabs>
+
+Key differences:
+- v5 `generateToken()` no longer requires the `authToken` parameter (uses cached token from `login()`)
+- v5 `joinSession()` accepts a `CallToken` object or a `sessionId` string directly
+- v5 offers a convenience overload that takes `sessionId` directly and handles token generation internally
+
+---
+
+## Session Control (Actions)
+
+In v4, session actions were static methods on `CometChatCalls`. In v5, they're instance methods on `CallSession`.
+
+<Tabs>
+<Tab title="v4">
+```dart
+CometChatCalls.endSession(
+  onSuccess: (String msg) {},
+  onError: (CometChatCallsException e) {},
+);
+CometChatCalls.switchCamera();
+CometChatCalls.muteAudio(true);
+CometChatCalls.pauseVideo(true);
+CometChatCalls.setAudioMode("SPEAKER");
+CometChatCalls.enterPIPMode();
+CometChatCalls.exitPIPMode();
+CometChatCalls.startRecording();
+CometChatCalls.stopRecording();
+```
+</Tab>
+<Tab title="v5">
+```dart
+CallSession? callSession = CallSession.getInstance();
+
+await callSession?.leaveSession();
+await callSession?.switchCamera();
+await callSession?.muteAudio();       // or callSession?.unMuteAudio()
+await callSession?.pauseVideo();      // or callSession?.resumeVideo()
+await callSession?.setAudioModeType(AudioMode.speaker);
+await callSession?.enablePictureInPictureLayout();
+await callSession?.disablePictureInPictureLayout();
+await callSession?.startRecording();
+await callSession?.stopRecording();
+```
+</Tab>
+</Tabs>
+
+### Action Method Mapping
+
+| v4 Static Method | v5 CallSession Method |
+|---|---|
+| `CometChatCalls.endSession(...)` | `callSession.leaveSession()` |
+| `CometChatCalls.switchCamera()` | `callSession.switchCamera()` |
+| `CometChatCalls.muteAudio(true)` | `callSession.muteAudio()` |
+| `CometChatCalls.muteAudio(false)` | `callSession.unMuteAudio()` |
+| `CometChatCalls.pauseVideo(true)` | `callSession.pauseVideo()` |
+| `CometChatCalls.pauseVideo(false)` | `callSession.resumeVideo()` |
+| `CometChatCalls.setAudioMode(mode)` | `callSession.setAudioModeType(AudioMode)` |
+| `CometChatCalls.enterPIPMode()` | `callSession.enablePictureInPictureLayout()` |
+| `CometChatCalls.exitPIPMode()` | `callSession.disablePictureInPictureLayout()` |
+| `CometChatCalls.startRecording()` | `callSession.startRecording()` |
+| `CometChatCalls.stopRecording()` | `callSession.stopRecording()` |
+| `CometChatCalls.switchToVideoCall()` | *Removed* |
+
+---
+
+## Event Listeners
+
+This is the biggest improvement in v5. The single `CometChatCallsEventsListener` mixin is replaced by 5 focused listener classes.
+
+### v4: Single Monolithic Listener
+
+```dart
+class MyCallController with CometChatCallsEventsListener {
+
+  void setupCallEvents() {
+    // Set via CallSettingsBuilder
+    callSettingsBuilder..listener = this;
+  }
+
+  @override
+  void onCallEnded() {}
+
+  @override
+  void onCallEndButtonPressed() {}
+
+  @override
+  void onSessionTimeout() {}
+
+  @override
+  void onUserJoined(RTCUser user) {}
+
+  @override
+  void onUserLeft(RTCUser user) {}
+
+  @override
+  void onUserListChanged(List<RTCUser> users) {}
+
+  @override
+  void onAudioModeChanged(List<AudioMode> devices) {}
+
+  @override
+  void onCallSwitchedToVideo(CallSwitchRequestInfo info) {}
+
+  @override
+  void onUserMuted(RTCMutedUser muteObj) {}
+
+  @override
+  void onRecordingToggled(RTCRecordingInfo info) {}
+
+  @override
+  void onError(CometChatCallsException e) {}
+}
+```
+
+### v5: Focused Listener Classes
+
+```dart
+CallSession? callSession = CallSession.getInstance();
+
+// Session lifecycle events
+final sessionStatusListener = SessionStatusListener(
+  onSessionJoined: () {},
+  onSessionLeft: () {},
+  onSessionTimedOut: () {},
+  onConnectionLost: () {},
+  onConnectionRestored: () {},
+  onConnectionClosed: () {},
+);
+callSession?.addSessionStatusListener(sessionStatusListener);
+
+// Participant events (replaces onUserJoined, onUserLeft, onUserListChanged, onUserMuted)
+final participantEventListener = ParticipantEventListener(
+  onParticipantJoined: (Participant participant) {},
+  onParticipantLeft: (Participant participant) {},
+  onParticipantListChanged: (List<Participant> participants) {},
+  onParticipantAudioMuted: (Participant participant) {},
+  onParticipantAudioUnmuted: (Participant participant) {},
+  onParticipantVideoPaused: (Participant participant) {},
+  onParticipantVideoResumed: (Participant participant) {},
+  onParticipantHandRaised: (Participant participant) {},
+  onParticipantHandLowered: (Participant participant) {},
+  onParticipantStartedRecording: (Participant participant) {},
+  onParticipantStoppedRecording: (Participant participant) {},
+  onDominantSpeakerChanged: (Participant participant) {},
+);
+callSession?.addParticipantEventListener(participantEventListener);
+
+// Media state events (replaces onAudioModeChanged, onRecordingToggled)
+final mediaEventsListener = MediaEventsListener(
+  onAudioMuted: () {},
+  onAudioUnMuted: () {},
+  onVideoPaused: () {},
+  onVideoResumed: () {},
+  onRecordingStarted: () {},
+  onRecordingStopped: () {},
+  onAudioModeChanged: (AudioMode audioMode) {},
+  onCameraFacingChanged: (CameraFacing facing) {},
+);
+callSession?.addMediaEventsListener(mediaEventsListener);
+
+// Button click events (replaces onCallEndButtonPressed)
+final buttonClickListener = ButtonClickListener(
+  onLeaveSessionButtonClicked: () {},
+  onToggleAudioButtonClicked: () {},
+  onToggleVideoButtonClicked: () {},
+  onSwitchCameraButtonClicked: () {},
+  onRaiseHandButtonClicked: () {},
+  onRecordingToggleButtonClicked: () {},
+);
+callSession?.addButtonClickListener(buttonClickListener);
+
+// Layout events
+final layoutListener = LayoutListener(
+  onCallLayoutChanged: (LayoutType layoutType) {},
+  onPictureInPictureLayoutEnabled: () {},
+  onPictureInPictureLayoutDisabled: () {},
+);
+callSession?.addLayoutListener(layoutListener);
+```
+
+<Warning>
+Flutter listeners are **not** lifecycle-aware. You must manually remove all listeners in your widget's `dispose()` method to prevent memory leaks.
+</Warning>
+
+```dart
+@override
+void dispose() {
+  CallSession.getInstance()?.removeSessionStatusListener(sessionStatusListener);
+  CallSession.getInstance()?.removeParticipantEventListener(participantEventListener);
+  CallSession.getInstance()?.removeMediaEventsListener(mediaEventsListener);
+  CallSession.getInstance()?.removeButtonClickListener(buttonClickListener);
+  CallSession.getInstance()?.removeLayoutListener(layoutListener);
+  super.dispose();
+}
+```
+
+### Event Mapping
+
+| v4 Event | v5 Listener | v5 Event |
+|----------|-------------|----------|
+| `onCallEnded()` | `SessionStatusListener` | `onSessionLeft()` |
+| `onCallEndButtonPressed()` | `ButtonClickListener` | `onLeaveSessionButtonClicked()` |
+| `onSessionTimeout()` | `SessionStatusListener` | `onSessionTimedOut()` |
+| `onUserJoined(RTCUser)` | `ParticipantEventListener` | `onParticipantJoined(Participant)` |
+| `onUserLeft(RTCUser)` | `ParticipantEventListener` | `onParticipantLeft(Participant)` |
+| `onUserListChanged(List<RTCUser>)` | `ParticipantEventListener` | `onParticipantListChanged(List<Participant>)` |
+| `onAudioModeChanged(List<AudioMode>)` | `MediaEventsListener` | `onAudioModeChanged(AudioMode)` |
+| `onCallSwitchedToVideo(CallSwitchRequestInfo)` | *Removed* | — |
+| `onUserMuted(RTCMutedUser)` | `ParticipantEventListener` | `onParticipantAudioMuted(Participant)` |
+| `onRecordingToggled(RTCRecordingInfo)` | `MediaEventsListener` | `onRecordingStarted()` / `onRecordingStopped()` |
+| `onError(CometChatCallsException)` | — | Errors returned via `onError` callbacks |
+
+### New Events in v5
+
+These events are only available with the v5 listener APIs:
+
+| Listener | Event | Description |
+|----------|-------|-------------|
+| `SessionStatusListener` | `onConnectionLost()` | Network interrupted |
+| `SessionStatusListener` | `onConnectionRestored()` | Network restored |
+| `SessionStatusListener` | `onConnectionClosed()` | Connection permanently closed |
+| `ParticipantEventListener` | `onParticipantVideoResumed()` | Participant turned camera on |
+| `ParticipantEventListener` | `onParticipantVideoPaused()` | Participant turned camera off |
+| `ParticipantEventListener` | `onParticipantHandRaised()` | Participant raised hand |
+| `ParticipantEventListener` | `onParticipantHandLowered()` | Participant lowered hand |
+| `ParticipantEventListener` | `onParticipantStartedScreenShare()` | Participant started screen share |
+| `ParticipantEventListener` | `onParticipantStoppedScreenShare()` | Participant stopped screen share |
+| `ParticipantEventListener` | `onDominantSpeakerChanged()` | Active speaker changed |
+| `MediaEventsListener` | `onCameraFacingChanged()` | Camera switched front/back |
+| `ButtonClickListener` | Various button events | Individual button click tracking |
+| `LayoutListener` | `onCallLayoutChanged()` | Layout type changed |
+| `LayoutListener` | `onPictureInPictureLayoutEnabled/Disabled()` | PiP state changed |
+
+---
+
+## Call Logs
+
+The `CallLogRequest` API is unchanged. The only difference is that auth is now handled by `CometChatCalls.login()` instead of passing the auth token manually.
+
+```dart
+CallLogRequest callLogRequest = CallLogRequest.CallLogRequestBuilder()
+    .setLimit(30)
+    .build();
+
+callLogRequest.fetchNext(
+  onSuccess: (List<CallLog> callLogs) {
+    for (CallLog callLog in callLogs) {
+      debugPrint("Session: ${callLog.sessionID}");
+    }
+  },
+  onError: (CometChatCallsException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+
+---
+
+## Deprecated Classes Summary
+
+These classes still exist in v5 for backward compatibility but are deprecated:
+
+| Deprecated Class | Replacement |
+|-----------------|-------------|
+| `CallSettings` | `SessionSettings` |
+| `CallSettingsBuilder` | `SessionSettingsBuilder` |
+| `CometChatCallsEventsListener` | 5 focused listeners on `CallSession` |
+| `GenerateToken` | `CallToken` |
+| `RTCUser` | `Participant` |
+| `RTCMutedUser` | `ParticipantEventListener.onParticipantAudioMuted(Participant)` |
+| `RTCRecordingInfo` | `MediaEventsListener.onRecordingStarted()` / `onRecordingStopped()` |
+| `CallSwitchRequestInfo` | *Removed (no replacement)* |
+| `CometChatCalls.startSession()` | `CometChatCalls.joinSession()` |
+| `CometChatCalls.endSession()` | `CallSession.getInstance()?.leaveSession()` |
