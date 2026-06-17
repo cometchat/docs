@@ -1,31 +1,33 @@
 ---
 title: "Search Messages"
 sidebarTitle: "Search Messages"
-description: "Add message search to your chat so users can find specific messages within a conversation."
+description: "Add message search to your chat so users can find specific messages within a conversation using the built-in CometChatSearch component."
 ---
 
 ## Goal
 
-By the end of this guide you will have a chat interface with a search panel that lets users query messages in a conversation by keyword, displays matching results, and scrolls to a selected message — all using v7 compound components and the CometChat SDK's `MessagesRequestBuilder`.
+By the end of this guide you will have a chat interface with a search panel that lets users find messages in a conversation by keyword and scroll to a selected result — using the built-in [`CometChatSearch`](/ui-kit/react/components/search) component instead of building your own search UI.
+
+`CometChatSearch` already handles the input, debouncing, SDK queries, result rendering, pagination, loading/empty/error states, and keyword highlighting — so you only wire it to your message list.
 
 ## Prerequisites
 
-- Completed the [Integration Guide](/ui-kit/react/integration-react) guide
+- Completed the [Integration Guide](/ui-kit/react/integration-react)
 - A running `CometChatProvider` setup with valid credentials
 - An existing chat screen using `CometChatMessageList` and `CometChatMessageHeader`
 
 ## Components Used
 
-| Component / API | Purpose |
-|:----------------|:--------|
-| `CometChatSearch` or `CometChat.MessagesRequestBuilder` | SDK builder for querying messages by keyword |
+| Component | Purpose |
+|:----------|:--------|
+| `CometChatSearch` | Built-in search panel — input, message queries, result list, and states |
 | `CometChatMessageList` | Displays messages and supports `goToMessageId` for scrolling to a result |
-| `CometChatMessageHeader` | Header with search trigger button |
+| `CometChatMessageHeader` | Header with a search trigger button |
 | `CometChatConversations` | Sidebar for switching conversations |
 
 ## Step 1: Set up the chat layout with search state
 
-Start with a full chat layout that includes a conversations sidebar, message panel, and state to control the search panel visibility and the message to jump to.
+Start with a full chat layout — a conversations sidebar, message panel, and state to control the search panel visibility and the message to jump to.
 
 _File: App.tsx_
 
@@ -38,8 +40,9 @@ import {
   CometChatMessageList,
   CometChatMessageComposer,
   CometChatMessageHeader,
+  CometChatSearch,
+  type CometChatSearchMessageClickEvent,
 } from "@cometchat/chat-uikit-react";
-import MessageSearchPanel from "./MessageSearchPanel";
 
 function ChatWithSearch() {
   const [user, setUser] = useState<CometChat.User | null>(null);
@@ -60,9 +63,9 @@ function ChatWithSearch() {
     }
   }
 
-  function handleMessageSelect(message: CometChat.BaseMessage) {
-    setGoToMessageId(message.getId());
-    setShowSearch(false);
+  // Fired by CometChatSearch when a message result is clicked
+  function handleMessageClick(event: CometChatSearchMessageClickEvent) {
+    setGoToMessageId(event.message.getId());
   }
 
   return (
@@ -101,14 +104,17 @@ function ChatWithSearch() {
         )}
       </div>
 
-      {/* Search panel */}
+      {/* Built-in search panel, scoped to the open conversation */}
       {showSearch && (user || group) && (
-        <MessageSearchPanel
-          user={user ?? undefined}
-          group={group ?? undefined}
-          onMessageSelect={handleMessageSelect}
-          onClose={() => setShowSearch(false)}
-        />
+        <div style={{ width: "350px", borderLeft: "1px solid #e0e0e0" }}>
+          <CometChatSearch
+            searchIn={["messages"]}
+            uid={user?.getUid()}
+            guid={group?.getGuid()}
+            onMessageClicked={handleMessageClick}
+            onBack={() => setShowSearch(false)}
+          />
+        </div>
       )}
     </div>
   );
@@ -120,6 +126,7 @@ function App() {
       appId="YOUR_APP_ID"
       region="YOUR_REGION"
       authKey="YOUR_AUTH_KEY"
+      uid="cometchat-uid-1"
     >
       <ChatWithSearch />
     </CometChatProvider>
@@ -129,113 +136,36 @@ function App() {
 export default App;
 ```
 
-## Step 2: Create the search panel component
+## Step 2: Scope CometChatSearch to the conversation
 
-Build a `MessageSearchPanel` component that accepts a `user` or `group`, takes a search keyword, queries messages using `MessagesRequestBuilder`, and displays the results.
-
-_File: MessageSearchPanel.tsx_
+`CometChatSearch` is a complete, self-contained search panel — there's no custom input or result list to build. A few props tailor it to in-conversation message search:
 
 ```tsx
-import { useState, useCallback } from "react";
-import { CometChat } from "@cometchat/chat-sdk-javascript";
-
-interface MessageSearchPanelProps {
-  user?: CometChat.User;
-  group?: CometChat.Group;
-  onMessageSelect: (message: CometChat.BaseMessage) => void;
-  onClose: () => void;
-}
-
-function MessageSearchPanel({ user, group, onMessageSelect, onClose }: MessageSearchPanelProps) {
-  const [keyword, setKeyword] = useState("");
-  const [results, setResults] = useState<CometChat.BaseMessage[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  const handleSearch = useCallback(async () => {
-    if (!keyword.trim()) return;
-
-    setLoading(true);
-    try {
-      const builder = new CometChat.MessagesRequestBuilder()
-        .setSearchKeyword(keyword)
-        .setLimit(50);
-
-      if (user) {
-        builder.setUID(user.getUid());
-      } else if (group) {
-        builder.setGUID(group.getGuid());
-      }
-
-      const request = builder.build();
-      const messages = await request.fetchPrevious();
-      setResults(messages);
-    } catch (error) {
-      console.error("Search failed:", error);
-    } finally {
-      setLoading(false);
-    }
-  }, [keyword, user, group]);
-
-  return (
-    <div style={{ width: "350px", borderLeft: "1px solid #e0e0e0", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid #e0e0e0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0, fontSize: "16px" }}>Search Messages</h3>
-        <button onClick={onClose} aria-label="Close search panel">✕</button>
-      </div>
-
-      {/* Search input */}
-      <div style={{ padding: "12px 16px" }}>
-        <input
-          type="text"
-          placeholder="Search messages..."
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
-          style={{ width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid #e0e0e0" }}
-          aria-label="Search keyword"
-        />
-      </div>
-
-      {/* Results */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 16px" }}>
-        {loading && <p>Searching...</p>}
-        {!loading && results.length === 0 && keyword && <p>No messages found.</p>}
-        {results.map((message) => (
-          <button
-            key={message.getId()}
-            onClick={() => onMessageSelect(message)}
-            style={{ display: "block", width: "100%", textAlign: "left", padding: "10px", marginBottom: "8px", border: "1px solid #e0e0e0", borderRadius: "8px", background: "none", cursor: "pointer" }}
-          >
-            <span style={{ fontSize: "12px", color: "#666" }}>
-              {message.getSender()?.getName()} •{" "}
-              {new Date(message.getSentAt() * 1000).toLocaleDateString()}
-            </span>
-            <p style={{ margin: "4px 0 0", fontSize: "14px" }}>
-              {(message as CometChat.TextMessage).getText?.() || "Media message"}
-            </p>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export default MessageSearchPanel;
+<CometChatSearch
+  searchIn={["messages"]}
+  uid={user?.getUid()}
+  guid={group?.getGuid()}
+  onMessageClicked={handleMessageClick}
+  onBack={() => setShowSearch(false)}
+/>
 ```
+
+| Prop | What it does |
+|:-----|:-------------|
+| `searchIn={["messages"]}` | Shows only message results (omit it to also search conversations) |
+| `uid` / `guid` | Scopes the search to a single user or group conversation. Pass whichever matches the open chat |
+| `onMessageClicked` | Fired when a result is tapped. The event payload is `{ message, searchKeyword }` |
+| `onBack` | Fired when the back button is clicked — use it to close the panel |
+
+The component handles the search input, debouncing, SDK queries, pagination, and the loading/empty/error states internally. For the full prop list and customization (filter chips, custom result item views, request builders), see the [Search component reference](/ui-kit/react/components/search).
 
 ## Step 3: Navigate to a selected search result
 
-When the user clicks a search result, pass the message ID to `CometChatMessageList` via the `goToMessageId` prop. This scrolls the message list to the matching message and highlights it.
-
-_File: ChatWithSearch.tsx_
+When a result is clicked, `onMessageClicked` gives you the selected `message`. Pass its ID to `CometChatMessageList` via the `goToMessageId` prop — the list scrolls to the matching message and highlights it.
 
 ```tsx
-const [goToMessageId, setGoToMessageId] = useState<number | undefined>(undefined);
-
-function handleMessageSelect(message: CometChat.BaseMessage) {
-  setGoToMessageId(message.getId());
-  setShowSearch(false);
+function handleMessageClick(event: CometChatSearchMessageClickEvent) {
+  setGoToMessageId(event.message.getId());
 }
 
 <CometChatMessageList
@@ -245,9 +175,13 @@ function handleMessageSelect(message: CometChat.BaseMessage) {
 />
 ```
 
+<Note>
+Reset `goToMessageId` to `undefined` when switching conversations (as in `handleConversationClick` above) so the list doesn't try to jump to a message ID from a previous chat.
+</Note>
+
 ## Next Steps
 
-- [Message List](/ui-kit/react/components/message-list) — configure message list rendering and scroll behavior
+- [Search](/ui-kit/react/components/search) — full `CometChatSearch` reference: filters, scopes, custom result views, and request builders
+- [Message List](/ui-kit/react/components/message-list) — configure message rendering and scroll behavior
 - [Message Header](/ui-kit/react/components/message-header) — customize header actions and auxiliary views
-- [CometChatProvider](/ui-kit/react/cometchat-provider) — learn about provider configuration
 - [Threaded Messages](/ui-kit/react/guide-threaded-messages) — add threaded replies to your chat
