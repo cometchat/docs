@@ -1,7 +1,7 @@
 ---
 title: "Next.js Integration"
 sidebarTitle: "Integration"
-description: "Add CometChat to a Next.js (App Router) app in 4 steps: create project, install, wrap in CometChatProvider, run."
+description: "Add CometChat to a Next.js (App Router) app in 5 steps: create project, install, init + login, render, run."
 ---
 
 <Accordion title="AI Integration Quick Reference">
@@ -10,10 +10,12 @@ description: "Add CometChat to a Next.js (App Router) app in 4 steps: create pro
 | --- | --- |
 | Package | `@cometchat/chat-uikit-react` v7.0.x |
 | Peer deps | `react` >=18, `react-dom` >=18, `@cometchat/chat-sdk-javascript` ^4.1.9, `dompurify` ^3.3.1 |
-| Setup | Wrap app in `<CometChatProvider appId="..." region="..." authKey="..." uid="...">` |
-| Auth Key | Dev/testing only. Use `authToken` prop in production |
+| Init | `CometChatUIKit.init(UIKitSettings)` — must resolve before `login()` |
+| Login | `CometChatUIKit.login("UID")` — must resolve before rendering components |
+| Order | `init()` → `login()` → render `<CometChatProvider>`. Breaking this order = blank screen |
+| Auth Key | Dev/testing only. Use `loginWithAuthToken` in production |
 | SSR | CometChat components must be loaded with `dynamic(() => import(...), { ssr: false })` |
-| Calling | Optional. Install `@cometchat/calls-sdk-javascript` and set `callingEnabled` prop |
+| Calling | Optional. Install `@cometchat/calls-sdk-javascript` and call `.setCallingEnabled(true)` on `UIKitSettingsBuilder` |
 | Other frameworks | [React.js](/ui-kit/react/integration-react) · [React Router](/ui-kit/react/integration-react-router) · [Astro](/ui-kit/react/integration-astro) |
 
 </Accordion>
@@ -79,7 +81,7 @@ npm install @cometchat/calls-sdk-javascript
 
 ## Step 3 — Create the CometChat Client Component
 
-CometChat uses browser APIs and cannot run in Server Components. Create a `'use client'` component that wraps your chat UI in `CometChatProvider`.
+CometChat uses browser APIs and cannot run in Server Components. Create a `'use client'` component that initializes the SDK, logs in, and renders your chat UI inside `CometChatProvider`.
 
 For development, use one of the pre-created test UIDs:
 
@@ -88,9 +90,11 @@ For development, use one of the pre-created test UIDs:
 ```tsx title="app/CometChatClient.tsx"
 'use client';
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CometChat } from "@cometchat/chat-sdk-javascript";
 import {
+  CometChatUIKit,
+  UIKitSettingsBuilder,
   CometChatProvider,
   CometChatConversations,
   CometChatMessageHeader,
@@ -99,8 +103,25 @@ import {
 } from "@cometchat/chat-uikit-react";
 
 export default function CometChatClient() {
+  const [ready, setReady] = useState(false);
   const [chatUser, setChatUser] = useState<CometChat.User | undefined>();
   const [chatGroup, setChatGroup] = useState<CometChat.Group | undefined>();
+
+  useEffect(() => {
+    const settings = new UIKitSettingsBuilder()
+      .setAppId("YOUR_APP_ID")
+      .setRegion("YOUR_REGION")
+      .setAuthKey("YOUR_AUTH_KEY")
+      .subscribePresenceForAllUsers()
+      .build();
+
+    CometChatUIKit.init(settings).then(async () => {
+      await CometChatUIKit.login("cometchat-uid-1");
+      setReady(true);
+    });
+  }, []);
+
+  if (!ready) return <div>Loading chat...</div>;
 
   const handleConversationClick = (conversation: CometChat.Conversation) => {
     const entity = conversation.getConversationWith();
@@ -114,12 +135,7 @@ export default function CometChatClient() {
   };
 
   return (
-    <CometChatProvider
-      appId="YOUR_APP_ID"
-      region="YOUR_REGION"
-      authKey="YOUR_AUTH_KEY"
-      uid="cometchat-uid-1"
-    >
+    <CometChatProvider>
       <div style={{ display: "flex", height: "100vh" }}>
         <div style={{ width: 360, borderRight: "1px solid #eee" }}>
           <CometChatConversations onItemClick={handleConversationClick} />
@@ -139,10 +155,10 @@ export default function CometChatClient() {
 }
 ```
 
-`'use client'` is required because CometChat components use browser APIs. `CometChatProvider` handles init, login, and all context setup automatically. For advanced use cases (custom login flows, individual providers), see the [CometChatProvider](/ui-kit/react/cometchat-provider) guide.
+`'use client'` is required because CometChat components use browser APIs. Init and login happen in a `useEffect`, and the provider only mounts after login succeeds. See the [CometChatProvider](/ui-kit/react/cometchat-provider) guide for all provider props.
 
 <Note>
-For production, use the `authToken` prop instead of `authKey` + `uid`. Generate auth tokens server-side via the CometChat REST API. Never ship auth keys in client code.
+For production, use `CometChatUIKit.loginWithAuthToken(token)` instead of `login(uid)`. Generate auth tokens server-side via the CometChat REST API. Never ship auth keys in client code.
 </Note>
 
 ---

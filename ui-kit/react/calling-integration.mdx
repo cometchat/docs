@@ -10,7 +10,7 @@ By the end of this guide you will have voice and video calling working in your R
 ## Prerequisites
 
 - A working CometChat React UI Kit v7 setup (completed the [Integration Guide](/ui-kit/react/integration-react))
-- `CometChatProvider` configured with valid credentials
+- `CometChatUIKit.init()` and `login()` completed before rendering
 - A CometChat plan that includes calling features enabled in your [dashboard](https://app.cometchat.com)
 
 ## Step 1: Install the Calls SDK
@@ -35,37 +35,37 @@ pnpm add @cometchat/calls-sdk-javascript
 
 This package provides the WebRTC layer for voice and video calls. It is loaded lazily by the UI Kit — no additional bundle cost until calling is actually used.
 
-## Step 2: Enable calling in CometChatProvider
+## Step 2: Enable Calling in UIKitSettingsBuilder
 
-Set the `callingEnabled` prop to `true` on your `CometChatProvider`:
+Set `.setCallingEnabled(true)` on your `UIKitSettingsBuilder` during initialization:
 
-```tsx
-import { CometChatProvider } from "@cometchat/chat-uikit-react";
+```tsx title="src/main.tsx"
+import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
 
-function App() {
-  return (
-    <CometChatProvider
-      appId="YOUR_APP_ID"
-      region="YOUR_REGION"
-      authKey="YOUR_AUTH_KEY"
-      callingEnabled={true}
-    >
-      <MyChatApp />
-    </CometChatProvider>
-  );
-}
+const settings = new UIKitSettingsBuilder()
+  .setAppId("YOUR_APP_ID")
+  .setRegion("YOUR_REGION")
+  .setAuthKey("YOUR_AUTH_KEY")
+  .subscribePresenceForAllUsers()
+  .setCallingEnabled(true)
+  .build();
+
+CometChatUIKit.init(settings).then(async () => {
+  await CometChatUIKit.login("cometchat-uid-1");
+  // Render your app
+});
 ```
 
-When `callingEnabled` is `true`, the UI Kit:
+When calling is enabled, the UI Kit:
 - Registers the `CallingPlugin` for call-related message rendering
 - Lazy-loads call components (`CometChatIncomingCall`, `CometChatOutgoingCall`, `CometChatOngoingCall`) only when needed
 - Enables the `CometChatCallButtons` component to initiate calls
 
-When `callingEnabled` is `false` (the default), call components are not loaded and `CometChatCallButtons` renders nothing.
+When calling is not enabled (the default), call components are not loaded and `CometChatCallButtons` renders nothing.
 
 ## Step 3: Configure call settings
 
-The Calls SDK uses the same `appId` and `region` as your chat SDK — no separate configuration is needed. `CometChatProvider` passes these credentials to the Calls SDK automatically when `callingEnabled` is `true`.
+The Calls SDK uses the same `appId` and `region` from your `UIKitSettings` — no separate configuration is needed. The UI Kit passes these credentials to the Calls SDK automatically when calling is enabled.
 
 <Note>
 The `config` prop on `CometChatProvider` accepts a `CometChatGlobalConfig` object for UI/behavior flags (`hideReceipts`, `hideUserStatus`, `disableSoundForCalls`, `customSoundForCalls`, `callSettingsBuilder`). It does **not** take a separate calling app ID or region.
@@ -73,7 +73,7 @@ The `config` prop on `CometChatProvider` accepts a `CometChatGlobalConfig` objec
 
 ## Step 4: Add Call Buttons via CometChatMessageHeader
 
-`CometChatMessageHeader` automatically renders voice and video call buttons when `callingEnabled` is `true` on your provider. No extra configuration needed — just render the header with a `user` or `group`:
+`CometChatMessageHeader` automatically renders voice and video call buttons when calling is enabled. No extra configuration needed — just render the header with a `user` or `group`:
 
 ```tsx
 import { CometChat } from "@cometchat/chat-sdk-javascript";
@@ -142,13 +142,7 @@ export default function App() {
   };
 
   return (
-    <CometChatProvider
-      appId="YOUR_APP_ID"
-      region="YOUR_REGION"
-      authKey="YOUR_AUTH_KEY"
-      uid="cometchat-uid-1"
-      callingEnabled={true}
-    >
+    <CometChatProvider>
       <div style={{ display: "flex", height: "100vh" }}>
         <div style={{ width: "360px", borderRight: "1px solid #eee" }}>
           <CometChatConversations onItemClick={handleConversationClick} />
@@ -179,49 +173,73 @@ Video calls work identically — click the **video call** button (camera icon) i
 
 No additional configuration is needed to switch between audio-only and video calls. The call type is determined by which button the user clicks.
 
-## Step 7: Handle incoming and outgoing calls
+## Step 7: Render CometChatIncomingCall
 
-`CometChatIncomingCall` and `CometChatOutgoingCall` are automatically rendered by the UI Kit when `callingEnabled` is `true`. They listen for SDK call events via `SDKBridgeProvider` and display themselves as overlays when a call is initiated or received.
-
-You do not need to render these components manually — they are managed internally. However, you can customize their behavior with callbacks:
+`CometChatIncomingCall` must be rendered in your app — it is NOT auto-rendered by the UI Kit. Place it at the root level of your authenticated layout so it can display the incoming call overlay from anywhere:
 
 ```tsx
 import {
   CometChatProvider,
   CometChatIncomingCall,
-  CometChatOutgoingCall,
+  CometChatConversations,
+  CometChatMessageHeader,
+  CometChatMessageList,
+  CometChatMessageComposer,
 } from "@cometchat/chat-uikit-react";
 
-function App() {
+export default function App() {
+  const [user, setUser] = useState<CometChat.User | null>(null);
+
+  const handleConversationClick = (conversation: CometChat.Conversation) => {
+    const conversationWith = conversation.getConversationWith();
+    if (conversationWith instanceof CometChat.User) {
+      setUser(conversationWith);
+    }
+  };
+
   return (
-    <CometChatProvider
-      appId="YOUR_APP_ID"
-      region="YOUR_REGION"
-      authKey="YOUR_AUTH_KEY"
-      callingEnabled={true}
-    >
-      {/* These override the default auto-rendered call screens */}
-      <CometChatIncomingCall
-        onAccept={(call) => console.log("Call accepted:", call)}
-        onReject={(call) => console.log("Call rejected:", call)}
-      />
-      <CometChatOutgoingCall
-        onCancel={(call) => console.log("Call cancelled:", call)}
-      />
-      <MyChatApp />
+    <CometChatProvider>
+      <div style={{ display: "flex", height: "100vh" }}>
+        <div style={{ width: "360px", borderRight: "1px solid #eee" }}>
+          <CometChatConversations onItemClick={handleConversationClick} />
+        </div>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+          {user && (
+            <>
+              <CometChatMessageHeader user={user} />
+              <CometChatMessageList user={user} />
+              <CometChatMessageComposer user={user} />
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Incoming call overlay — renders at root level, listens for call events */}
+      <CometChatIncomingCall />
     </CometChatProvider>
   );
 }
 ```
+
+`CometChatIncomingCall` listens for incoming call events and displays an accept/reject overlay. When the user accepts, it transitions to the `CometChatOngoingCall` screen internally. You can customize its behavior with callbacks:
+
+```tsx
+<CometChatIncomingCall
+  onAccept={(call) => console.log("Call accepted:", call)}
+  onDecline={(call) => console.log("Call declined:", call)}
+/>
+```
+
+`CometChatOutgoingCall` is rendered automatically by the `CometChatCallButtons` component when the user initiates a call — you do not need to place it manually.
 
 ## Summary
 
 | Step | Action |
 |------|--------|
 | 1 | Install `@cometchat/calls-sdk-javascript` |
-| 2 | Set `callingEnabled={true}` on `CometChatProvider` |
-| 3 | (Optional) Configure separate calling app settings via `config` prop |
-| 4 | Add `CometChatCallButtons` with a `user` or `group` prop |
+| 2 | Set `.setCallingEnabled(true)` on `UIKitSettingsBuilder` |
+| 3 | (Optional) Configure call behavior via `config` prop on `CometChatProvider` |
+| 4 | Call buttons appear in `CometChatMessageHeader` automatically |
 | 5 | Test voice calls between two users |
 | 6 | Test video calls between two users |
 | 7 | (Optional) Customize incoming/outgoing call handlers |
