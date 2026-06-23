@@ -12,7 +12,7 @@ AI Agents enable intelligent, automated interactions within your application. Th
 
 ## Agent Run Lifecycle and Message Flow
 
-This section explains how a user’s text message to an Agent becomes a structured "run" which emits real-time events and then produces agentic messages for historical retrieval.
+This section explains how a user's text message to an Agent becomes a structured "run" which emits real-time events and then produces agentic messages for historical retrieval.
 - A user sends a text message to an Agent.
 - The platform starts a run and streams real-time events via the **`AIAssistantListener`**.
 - After the run completes, persisted Agentic Messages arrive via the **`MessageListener`**.
@@ -26,16 +26,21 @@ Events are received via the **`onAIAssistantEventReceived`** method of the **`AI
     - Tool Call Arguments
     - Tool Call End
     - Tool Call Result
-3. One or more assistant reply streams:
+3. Zero or more card generation cycles (repeats for each card produced):
+    - Card Start
+    - Card (full payload)
+    - Card End
+4. One or more assistant reply streams:
     - Text Message Start
     - Text Message Content (multiple times; token/char streaming)
     - Text Message End
-4. Run Finished
+5. Run Finished
 
 Notes:
 - `Run Start` and `Run Finished` are always emitted.
 - `Tool Call` events appear only when a backend or frontend tool is invoked. There can be multiple tool calls in a single run.
-- `Text Message` events are always emitted and carry the assistant’s reply incrementally.
+- `Card` events appear only when the agent produces a card. The UI can show a loading state on `Card Start`, render the card on `Card` (payload), and finalize on `Card End`.
+- `Text Message` events are always emitted and carry the assistant's reply incrementally.
 
 <Tabs>
     <Tab title="Dart">
@@ -63,6 +68,18 @@ class AIAssistantEventHandler with AIAssistantListener {
     debugPrint(
       "Received AI Event: ${aiAssistantBaseEvent.type} for Run ID: ${aiAssistantBaseEvent.id}",
     );
+
+    // Handle card streaming events
+    if (aiAssistantBaseEvent is AIAssistantCardStartedEvent) {
+      debugPrint("Card generation started: ${aiAssistantBaseEvent.cardId}");
+      debugPrint("Execution text: ${aiAssistantBaseEvent.executionText}");
+    } else if (aiAssistantBaseEvent is AIAssistantCardReceivedEvent) {
+      debugPrint("Card received: ${aiAssistantBaseEvent.cardId}");
+      final cardPayload = aiAssistantBaseEvent.getCard();
+      // Pass cardPayload to CometChatCardView renderer
+    } else if (aiAssistantBaseEvent is AIAssistantCardEndedEvent) {
+      debugPrint("Card generation ended: ${aiAssistantBaseEvent.cardId}");
+    }
   }
 }
         ```
@@ -70,15 +87,26 @@ class AIAssistantEventHandler with AIAssistantListener {
 </Tabs>
 
 #### Event descriptions
-- Run Start: A new run has begun for the user’s message.
+- Run Start: A new run has begun for the user's message.
 - Tool Call Start: The agent decided to invoke a tool.
 - Tool Call Arguments: Arguments being passed to the tool.
 - Tool Call End: Tool execution completed.
-- Tool Call Result: Tool’s output is available.
+- Tool Call Result: Tool's output is available.
+- Card Start: The agent started generating a card. Contains `cardId` and `executionText` (a human-readable status like "Building your product card...").
+- Card: The full card payload is available. Use `getCard()` to retrieve the raw card JSON and pass it to the renderer.
+- Card End: The card generation flow is finalized.
 - Text Message Start: The agent started composing a reply.
 - Text Message Content: Streaming content chunks for progressive rendering.
 - Text Message End: The agent reply is complete.
 - Run Finished: The run is finalized; persisted messages will follow.
+
+#### Card Streaming Event Classes
+
+| Class | Properties |
+| -- | -- |
+| `AIAssistantCardStartedEvent` | `runId`, `threadId`, `streamMessageId`, `cardId`, `executionText` |
+| `AIAssistantCardReceivedEvent` | `runId`, `threadId`, `streamMessageId`, `cardId`, `getCard()` → `Map<String, dynamic>?` |
+| `AIAssistantCardEndedEvent` | `runId`, `threadId`, `streamMessageId`, `cardId` |
 
 ### Agentic Messages
 
@@ -113,3 +141,106 @@ These events are received via the **`MessageListener`** after the run completes.
         ```
     </Tab>
 </Tabs>
+
+### AIAssistantMessage Elements
+
+A persisted `AIAssistantMessage` carries its content in two ways:
+
+1. **`getText()`** — The flat content string (unchanged, legacy/fallback path).
+2. **`getElements()`** — An ordered array of `AIAssistantElement` objects representing discrete content blocks (text, cards, graphs, etc.) in the order the agent produced them. **This is the default render source** — when present, walk the list left-to-right and render each block in order.
+
+When `getElements()` returns `null` or is empty (older messages), fall back to `getText()`.
+
+#### AIAssistantElement
+
+Each element exposes two accessors:
+
+| Method | Return Type | Description |
+| -- | -- | -- |
+| `getType()` | `String?` | The element's type: `"text"`, `"card"`, `"graph"`, etc. |
+| `getData()` | `dynamic` | The element's raw body data. Shape depends on type — `String` for text, `Map<String, dynamic>` (with keys `card` and `cardId`) for card, raw JSON value for others. |
+
+<Tabs>
+    <Tab title="Dart">
+        ```dart
+        void handleAIAssistantMessage(AIAssistantMessage message) {
+          final elements = message.getElements();
+
+          if (elements != null && elements.isNotEmpty) {
+            // Preferred path: walk elements in order
+            for (final element in elements) {
+              switch (element.getType()) {
+                case 'text':
+                  final textContent = element.getData() as String;
+                  debugPrint("Text block: $textContent");
+                  break;
+                case 'card':
+                  final cardData = element.getData() as Map<String, dynamic>;
+                  final cardPayload = cardData['card'] as Map<String, dynamic>;
+                  final cardId = cardData['cardId'] as String;
+                  debugPrint("Card block: $cardId");
+                  // Pass cardPayload to CometChatCardView renderer
+                  break;
+                default:
+                  debugPrint("Unknown element type: ${element.getType()}");
+                  break;
+              }
+            }
+          } else {
+            // Fallback: use getText() for older messages without elements
+            debugPrint("Message text: ${message.text}");
+          }
+        }
+        ```
+    </Tab>
+</Tabs>
+
+## Card Messages (Developer Cards)
+
+Developer card messages are rich, interactive messages (buttons, images, styled layouts) described as JSON and sent via the Platform API or Bubble Builder. The SDK only **receives** card messages — it does not send them.
+
+A `CardMessage` arrives with `category: "card"` and is delivered on the `onCardMessageReceived` callback of the `MessageListener`.
+
+### CardMessage Class
+
+| Method | Return Type | Description |
+| -- | -- | -- |
+| `getCard()` | `Map<String, dynamic>?` | The raw card schema payload. Pass directly to the card renderer. |
+| `getText()` | `String?` | Preview text for push notifications and conversation list. |
+| `getFallbackText()` | `String?` | Fallback text from inside the card (`card.fallbackText`). Used for accessibility or when the renderer fails. |
+| `getTags()` | `List<String>?` | Tags associated with this message. |
+
+<Tabs>
+    <Tab title="Dart">
+        ```dart
+        const listenerId = "unique_listener_id";
+
+        class CardMessageHandler with MessageListener {
+          // CometChat.addMessageListener(listenerId, this);
+
+          @override
+          void onCardMessageReceived(CardMessage cardMessage) {
+            debugPrint("Card message received: ${cardMessage.id}");
+
+            // Get the raw card payload for the renderer
+            final cardPayload = cardMessage.getCard();
+            debugPrint("Card payload: $cardPayload");
+
+            // Get fallback text for previews
+            final fallback = cardMessage.getFallbackText();
+            debugPrint("Fallback: $fallback");
+
+            // Get preview text for conversation list
+            final previewText = cardMessage.getText();
+            debugPrint("Preview text: $previewText");
+          }
+        }
+        ```
+    </Tab>
+</Tabs>
+
+<Note>
+
+Card messages are **receive-only**. They are created and sent exclusively via the Platform (REST) API and Dashboard Bubble Builder. The SDK exposes the card payload raw via `getCard()` — an external renderer library (e.g., CometChatCardView) is responsible for drawing the card UI.
+
+</Note>
