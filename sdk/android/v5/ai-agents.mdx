@@ -25,15 +25,20 @@ Events are received via the **`onAIAssistantEventReceived`** method of the **`AI
     - Tool Call Arguments
     - Tool Call End
     - Tool Call Result
-3. One or more assistant reply streams:
+3. Zero or more card streams (repeats for each card the agent produces):
+    - Card Start
+    - Card
+    - Card End
+4. One or more assistant reply streams:
     - Text Message Start
     - Text Message Content (multiple times; token/char streaming)
     - Text Message End
-4. Run Finished
+5. Run Finished
 
 Notes:
 - `Run Start` and `Run Finished` are always emitted.
 - `Tool Call` events appear only when a backend or frontend tool is invoked. There can be multiple tool calls in a single run.
+- `Card` events (`Card Start` → `Card` → `Card End`) appear only when the agent produces a card, and repeat for each card.
 - `Text Message` events are always emitted and carry the assistant’s reply incrementally.
 
 <Tabs>
@@ -72,10 +77,75 @@ Notes:
 - Tool Call Arguments: Arguments being passed to the tool.
 - Tool Call End: Tool execution completed.
 - Tool Call Result: Tool’s output is available.
+- Card Start: The agent began producing a card; carries a `cardId` and an `executionText` loading label.
+- Card: The full card payload for the given `cardId` is available to render.
+- Card End: The card stream for the given `cardId` is complete.
 - Text Message Start: The agent started composing a reply.
 - Text Message Content: Streaming content chunks for progressive rendering.
 - Text Message End: The agent reply is complete.
 - Run Finished: The run is finalized; persisted messages will follow.
+
+#### Card Streaming Events
+
+When an agent produces a card, it is delivered through three streaming events on `onAIAssistantEventReceived`. Each event is a subclass of `AIAssistantBaseEvent` — check the concrete type to handle it.
+
+| Event | Getter | Description |
+| ----- | ------ | ----------- |
+| `AIAssistantCardStartedEvent` | `getCardId()` | Identifier for the card being generated. |
+| | `getExecutionText()` | Loading label shown while the card is built. |
+| | `getStreamMessageId()` | Identifier of the streaming message that owns this card. |
+| `AIAssistantCardReceivedEvent` | `getCardId()` | Identifier matching the corresponding start event. |
+| | `getCard()` | The complete card payload (`JSONObject`) to render. |
+| `AIAssistantCardEndedEvent` | `getCardId()` | Signals the card stream for this `cardId` is complete. |
+
+<Tabs>
+    <Tab title="Java">
+        ```java
+
+        CometChat.addAIAssistantListener(LISTENERS_TAG, new CometChat.AIAssistantListener() {
+            @Override
+            public void onAIAssistantEventReceived(AIAssistantBaseEvent event) {
+                if (event instanceof AIAssistantCardStartedEvent) {
+                    AIAssistantCardStartedEvent started = (AIAssistantCardStartedEvent) event;
+                    String cardId = started.getCardId();
+                    String label = started.getExecutionText(); // e.g. "Building card…"
+                } else if (event instanceof AIAssistantCardReceivedEvent) {
+                    AIAssistantCardReceivedEvent received = (AIAssistantCardReceivedEvent) event;
+                    String cardId = received.getCardId();
+                    JSONObject card = received.getCard();       // full card payload
+                } else if (event instanceof AIAssistantCardEndedEvent) {
+                    AIAssistantCardEndedEvent ended = (AIAssistantCardEndedEvent) event;
+                    // card stream for ended.getCardId() is complete
+                }
+            }
+        });
+
+        ```
+    </Tab>
+    <Tab title="Kotlin">
+        ```kotlin
+
+        CometChat.addAIAssistantListener(LISTENERS_TAG, object : CometChat.AIAssistantListener() {
+            override fun onAIAssistantEventReceived(event: AIAssistantBaseEvent) {
+                when (event) {
+                    is AIAssistantCardStartedEvent -> {
+                        val cardId = event.cardId
+                        val label = event.executionText  // e.g. "Building card…"
+                    }
+                    is AIAssistantCardReceivedEvent -> {
+                        val cardId = event.cardId
+                        val card = event.card            // full card payload (JSONObject)
+                    }
+                    is AIAssistantCardEndedEvent -> {
+                        // card stream for event.cardId is complete
+                    }
+                }
+            }
+        })
+
+        ```
+    </Tab>
+</Tabs>
 
 ### Agentic Messages
 
@@ -127,6 +197,63 @@ These events are received via the **`MessageListener`** after the run completes.
                 Log.d(TAG, "AIToolArgumentMessage received successfully: " + aiToolArgumentMessage.toString())
             }
         })
+
+        ```
+    </Tab>
+</Tabs>
+
+### AIAssistantMessage Elements
+
+Once a run completes, the assistant's reply is persisted as an `AIAssistantMessage`. Its content is exposed as an ordered list of blocks via `getElements()`, letting you render text and cards in the exact order the agent produced them. When `getElements()` is `null` or empty, fall back to the plain `getText()` body.
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getElements()` | `List<AIAssistantElement>` | Ordered content blocks. `null`/empty for plain-text replies. |
+| `getText()` | `String` | Plain-text body (fallback when there are no elements). |
+
+Each `AIAssistantElement` exposes:
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getType()` | `String` | Block type — `"text"` or `"card"`. |
+| `getData()` | `Object` | The block body (text string, or card payload). |
+
+<Tabs>
+    <Tab title="Java">
+        ```java
+
+        List<AIAssistantElement> elements = message.getElements();
+        if (elements == null || elements.isEmpty()) {
+            renderText(message.getText());
+        } else {
+            for (AIAssistantElement element : elements) {
+                switch (element.getType()) {
+                    case "text":
+                        renderText(String.valueOf(element.getData()));
+                        break;
+                    case "card":
+                        renderCard(element.getData());
+                        break;
+                }
+            }
+        }
+
+        ```
+    </Tab>
+    <Tab title="Kotlin">
+        ```kotlin
+
+        val elements = message.elements
+        if (elements.isNullOrEmpty()) {
+            renderText(message.text.orEmpty())
+        } else {
+            for (element in elements) {
+                when (element.type) {
+                    "text" -> renderText(element.data?.toString().orEmpty())
+                    "card" -> renderCard(element.data)
+                }
+            }
+        }
 
         ```
     </Tab>
