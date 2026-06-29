@@ -1,0 +1,241 @@
+---
+title: "Card Messages"
+description: "How the Angular UIKit renders Card Messages — developer cards, persisted agent cards, and streaming agent cards — and how to handle card actions."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-angular` |
+| Renderer | `@cometchat/cards-angular` (`CometChatCardView`) |
+| Components | `CometChatCardBubble`, `CometChatAIAssistantMessageBubble`, `CometChatStreamMessageBubble` |
+| Key event | `CometChatMessageEvents.ccCardActionClicked` |
+| Required setup | `CometChatUIKit.init(uiKitSettings)` then `CometChatUIKit.login("UID")` |
+| Purpose | Render structured, interactive card payloads inside conversations and forward card actions to your app |
+| Related | [Card Bubble](/ui-kit/angular/components/cometchat-card-bubble) \| [AI Assistant Chat](/ui-kit/angular/components/cometchat-ai-assistant-chat) \| [Events](/ui-kit/angular/events) |
+
+</Accordion>
+
+Card Messages are structured, interactive cards delivered inside conversations. The Angular UIKit renders them through the prebuilt [`@cometchat/cards-angular`](https://www.npmjs.com/package/@cometchat/cards-angular) renderer and forwards every card action back to your application.
+
+<Info>
+  The UIKit is a **render-only** consumer of cards: it draws cards delivered by the SDK and forwards their actions to your app. It never parses or mutates the card body, and never sends or creates cards.
+</Info>
+
+## The render-only contract
+
+The UIKit is a **render-only** consumer of cards. For every card surface, the rules are identical:
+
+1. **Pass the payload through unchanged.** The raw card payload is read from the SDK, serialized verbatim (`JSON.stringify`), and handed to `CometChatCardView` as a `cardJson` string. The UIKit performs **no transformation**.
+2. **Forward actions, run no behavior.** The renderer emits actions through callbacks. The UIKit forwards them on the `ccCardActionClicked` event bus. Your app implements **all** behavior (open a URL, start a chat, call an API, …).
+3. **Fall back gracefully.** When a payload is empty or invalid, a single fallback line is shown instead of a broken card.
+
+This contract is centralized in a small set of helpers so the developer bubble, the agent bubble, and the streaming bubble all treat payloads identically.
+
+## Three delivery paths
+
+A card can reach the conversation in three ways. The UIKit routes each one to the correct renderer automatically.
+
+| Path | Source | Component | Routed by |
+| --- | --- | --- | --- |
+| **Developer card** | `CardMessage` with `category: "card"` | [`CometChatCardBubble`](/ui-kit/angular/components/cometchat-card-bubble) | message **category** |
+| **Persisted agent card** | `AIAssistantMessage` content block | `CometChatAIAssistantMessageBubble` | element `type: "card"` |
+| **Streaming agent card** | Live `card_start` / `card` / `card_end` events | `CometChatStreamMessageBubble` | stream event type |
+
+### Developer cards
+
+A message with category `"card"` is routed to `CometChatCardBubble` by [`CometChatMessageBubble`](/ui-kit/angular/components/cometchat-message-bubble), keyed on **category** (the developer `type` is arbitrary). The bubble renders `message.getCard()` and forwards taps on the `ccCardActionClicked` bus.
+
+In the conversation list, a card message's preview is its `getText()` if present, otherwise the localized `"Card Message"` label.
+
+To react to incoming developer cards in real time, listen on the message bus:
+
+```typescript expandable
+import { Injectable, DestroyRef, inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { CometChatMessageEvents } from '@cometchat/chat-uikit-angular';
+
+@Injectable({ providedIn: 'root' })
+export class CardListener {
+  private readonly destroyRef = inject(DestroyRef);
+
+  start(): void {
+    CometChatMessageEvents.subscribeOnCardMessageReceived(
+      (card: CometChat.CardMessage) => {
+        console.log('Card received:', card.getId(), card.getCard());
+      },
+      this.destroyRef
+    );
+  }
+}
+```
+
+See the [Card Bubble](/ui-kit/angular/components/cometchat-card-bubble) component reference for inputs, events, and theming.
+
+### Persisted agent cards
+
+After an AI agent run completes, the persisted `AIAssistantMessage` exposes its content as an **ordered list of blocks** via `getElements()`. `CometChatAIAssistantMessageBubble` renders them in order:
+
+- a `text` block renders as Markdown (via [`CometChatMarkdownRenderer`](/ui-kit/angular/components/cometchat-markdown-renderer));
+- a `card` block renders through `CometChatCardView`, using the same render-only path as developer cards.
+
+When a message has no elements (older messages), the bubble falls back to `getText()`. No additional wiring is required — the [AI Assistant Chat](/ui-kit/angular/components/cometchat-ai-assistant-chat) flow instantiates this bubble for you. Taps on a nested agent card are forwarded on the same `ccCardActionClicked` bus.
+
+### Streaming agent cards
+
+While an agent run is streaming, cards arrive progressively and are rendered by `CometChatStreamMessageBubble`, which subscribes to the streaming service's `messageStream$`:
+
+| Stream event | Behavior |
+| --- | --- |
+| `card_start` | Shows an in-place loader labeled with the event's `executionText`, keyed by `cardId`. |
+| `card` | Replaces the loader (correlated by `cardId`) with the rendered card. |
+| `card_end` | No-op — the run-complete persisted `AIAssistantMessage` replaces the streamed bubble. |
+
+Because no persisted message exists yet during streaming, a tap on a streaming card is forwarded with `message: null` on the `ccCardActionClicked` bus; the persisted bubble that follows is the source of truth.
+
+## Handling card actions
+
+The Cards renderer emits actions but never executes them. The UIKit forwards each action **untouched** on `CometChatMessageEvents.ccCardActionClicked`. Subscribe **once** at app startup and dispatch by action type.
+
+### The event payload
+
+```typescript
+export interface ICardActionEvent {
+  /**
+   * The owning message — CardMessage (developer) or AIAssistantMessage
+   * (persisted agent card). null only for a card tapped while the agent run
+   * is still streaming.
+   */
+  message: CometChat.BaseMessage | null;
+  /** The renderer's raw discriminated action (CometChatCardAction). */
+  action: unknown;
+  /** The renderer element id that emitted the action (used by customCallback). */
+  elementId?: string;
+  /** The raw card JSON the action originated from (used by customCallback). */
+  cardJson?: string;
+}
+```
+
+### Action types
+
+`action` is a `CometChatCardAction` — a discriminated union (from `@cometchat/cards-angular`) narrowed by its `type`. The UIKit forwards all of them; your app decides what each one does:
+
+| `type` | Intended behavior |
+| --- | --- |
+| `openUrl` | Open a URL (in a new tab or a webview). |
+| `copyToClipboard` | Copy a value to the clipboard. |
+| `downloadFile` | Download a file. |
+| `sendMessage` | Send a text message to a user/group (or the current conversation). |
+| `apiCall` | Make an HTTP request. |
+| `chatWithUser` | Open a one-to-one chat with a user. |
+| `chatWithGroup` | Open a group chat. |
+| `initiateCall` | Start an audio/video call. |
+| `customCallback` | Invoke an app-defined handler, keyed by `callbackId`. |
+
+### Reference handler
+
+Subscribe once (a root-provided service is the natural home) and dispatch by `type`. The snippet below mirrors the sample app's reference implementation:
+
+```typescript expandable
+import { Injectable, DestroyRef, inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatMessageEvents,
+  ICardActionEvent,
+} from '@cometchat/chat-uikit-angular';
+import type { CometChatCardAction } from '@cometchat/cards-angular';
+
+/** Narrows the discriminated card action union to one variant by its type. */
+type Action<T extends CometChatCardAction['type']> = Extract<CometChatCardAction, { type: T }>;
+
+@Injectable({ providedIn: 'root' })
+export class CardActionService {
+  private readonly destroyRef = inject(DestroyRef);
+  private started = false;
+
+  /** Subscribe once. Idempotent; auto-unsubscribes when the injector is destroyed. */
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    CometChatMessageEvents.subscribeOnCardActionClicked(
+      (event) => this.dispatch(event),
+      this.destroyRef
+    );
+  }
+
+  private dispatch(event: ICardActionEvent): void {
+    const action = event.action as CometChatCardAction | null | undefined;
+    if (!action || typeof action !== 'object') return;
+
+    switch (action.type) {
+      case 'openUrl':
+        this.openUrl(action);
+        break;
+      case 'copyToClipboard':
+        this.copyToClipboard(action);
+        break;
+      case 'chatWithUser':
+        void this.chatWithUser(action);
+        break;
+      // ...handle downloadFile, sendMessage, apiCall, chatWithGroup,
+      //    initiateCall, and customCallback the same way.
+      default:
+        break; // Unknown action — the renderer owns the action vocabulary.
+    }
+  }
+
+  private openUrl(a: Action<'openUrl'>): void {
+    if (!a.url) return;
+    const target = a.openIn === 'webview' ? '_self' : '_blank';
+    window.open(a.url, target, 'noopener,noreferrer');
+  }
+
+  private copyToClipboard(a: Action<'copyToClipboard'>): void {
+    if (a.value == null) return;
+    navigator.clipboard?.writeText(a.value);
+  }
+
+  private async chatWithUser(a: Action<'chatWithUser'>): Promise<void> {
+    if (!a.uid) return;
+    const user = await CometChat.getUser(a.uid);
+    // Navigate your app to the conversation with `user`.
+  }
+}
+```
+
+Start the service once your shell is ready — for example from your home component's `ngOnInit`:
+
+```typescript
+export class HomeComponent implements OnInit {
+  constructor(private cardActions: CardActionService) {}
+
+  ngOnInit(): void {
+    this.cardActions.start();
+  }
+}
+```
+
+<Warning>
+  Each tap is forwarded on **one** bus to all subscribers. Subscribe in a single place (a root service) so an action runs exactly once. If you also bind the [`(onCardAction)` output](/ui-kit/angular/components/cometchat-card-bubble#card-actions) on a directly-rendered card bubble, handle the action on only one of the two channels.
+</Warning>
+
+### `customCallback` actions
+
+A `customCallback` action carries a `callbackId` (and optional `payload`). Map each `callbackId` to an app-defined handler, and use `event.elementId` / `event.cardJson` / `event.message?.getId()` for context. No server message is sent by the UIKit for a custom callback — it is entirely app-defined.
+
+## Fallback behavior
+
+Every card surface resolves a single-line fallback when the payload is empty or invalid:
+
+1. `getFallbackText()` (when available on the message/element)
+2. `getText()`
+3. Localized `"Card Message"`
+
+This guarantees a readable conversation even when a card cannot be rendered.
+
+## Related
+
+- **[Card Bubble](/ui-kit/angular/components/cometchat-card-bubble)** — the developer card component reference.
+- **[AI Assistant Chat](/ui-kit/angular/components/cometchat-ai-assistant-chat)** — the agent chat experience that renders persisted and streaming agent cards.
+- **[Events](/ui-kit/angular/events)** — `ccCardActionClicked` and `onCardMessageReceived` reference.
