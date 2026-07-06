@@ -1,0 +1,243 @@
+---
+title: "Card Bubble"
+description: "Angular component that renders a developer Card Message inside a message bubble using the prebuilt CometChat Cards renderer, with pure-forwarded card actions."
+---
+
+The `CometChatCardBubbleComponent` renders a **developer Card Message** (`message.category === "card"`) as a card bubble inside a conversation. It is the card equivalent of [`CometChatTextBubble`](/ui-kit/angular/components/cometchat-text-bubble): the surrounding [`CometChatMessageBubble`](/ui-kit/angular/components/cometchat-message-bubble) wrapper supplies the container, receipts, reactions, long-press options, reply and thread view — this component only replaces the **content view** with the rendered card.
+
+## Overview
+
+The UIKit is a **render-only** consumer of cards: it draws cards delivered by the SDK and forwards card actions to your app. It never parses or mutates the card body, and never sends or creates cards. When a card message arrives, the UIKit routes it to this bubble automatically.
+
+The component follows a strict **render-only contract**:
+
+- **Render-only** — the raw card payload from `message.getCard()` is serialized verbatim and handed to the prebuilt `CometChatCardView` renderer (from [`@cometchat/cards-angular`](https://www.npmjs.com/package/@cometchat/cards-angular)) as a `cardJson` string. The UI Kit performs **zero transformation** of the payload.
+- **No behavior** — the bubble runs no action logic of its own. When a user taps an interactive element, the renderer's raw action is **pure-forwarded** on two channels (see [Card Actions](#card-actions)); your app owns all behavior.
+- **Graceful fallback** — when the payload is empty or invalid, a single-line fallback text is shown instead of an empty bubble (see [Fallback Behavior](#fallback-behavior)).
+
+<Info>
+  Card rendering (layout, theming, interactive elements) is owned by the prebuilt `@cometchat/cards-angular` renderer library, **not** by the UI Kit. The UI Kit is responsible only for delivering the payload to the renderer and forwarding actions back out.
+</Info>
+
+## Automatic Rendering
+
+In the standard chat flow you do **not** instantiate this component yourself. [`CometChatMessageList`](/ui-kit/angular/components/cometchat-message-list) and `CometChatMessageBubble` route any message with category `"card"` to `CometChatCardBubbleComponent` automatically, keyed by **category** (the developer `type` is arbitrary). To handle card actions in this flow, subscribe to the [`ccCardActionClicked`](#card-actions) event bus — no component wiring is required.
+
+Use the component directly only when you are building a fully custom message renderer.
+
+## Basic Usage
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatCardBubbleComponent,
+  MessageBubbleAlignment,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-card-message',
+  standalone: true,
+  imports: [CometChatCardBubbleComponent],
+  template: `
+    <cometchat-card-bubble
+      [message]="cardMessage"
+      [alignment]="MessageBubbleAlignment.left"
+    ></cometchat-card-bubble>
+  `,
+})
+export class CardMessageComponent {
+  cardMessage!: CometChat.CardMessage;
+  MessageBubbleAlignment = MessageBubbleAlignment;
+}
+```
+
+### Incoming vs Outgoing Messages
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatCardBubbleComponent,
+  MessageBubbleAlignment,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-card-list',
+  standalone: true,
+  imports: [CometChatCardBubbleComponent],
+  template: `
+    <!-- Incoming card (left-aligned) -->
+    <cometchat-card-bubble
+      [message]="incomingCard"
+      [alignment]="MessageBubbleAlignment.left"
+    ></cometchat-card-bubble>
+
+    <!-- Outgoing card (right-aligned) -->
+    <cometchat-card-bubble
+      [message]="outgoingCard"
+      [alignment]="MessageBubbleAlignment.right"
+    ></cometchat-card-bubble>
+  `,
+})
+export class CardListComponent {
+  incomingCard!: CometChat.CardMessage;
+  outgoingCard!: CometChat.CardMessage;
+  MessageBubbleAlignment = MessageBubbleAlignment;
+}
+```
+
+## Properties
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `message` | `CometChat.CardMessage` | **required** | The card message to render. The raw payload is read from `message.getCard()`. |
+| `alignment` | `MessageBubbleAlignment` | `MessageBubbleAlignment.left` | Bubble alignment. `left` for incoming/receiver messages, `right` for outgoing/sender messages. Kept for parity with the text bubble. |
+| `themeMode` | `CometChatCardThemeMode` | `'auto'` | Renderer theme mode. One of `'auto'`, `'light'`, or `'dark'`. Passed straight to `CometChatCardView`. |
+| `themeOverride` | `CometChatCardThemeOverride` | `undefined` | Optional renderer theme overrides (colors, spacing, typography for the rendered card). Passed straight to `CometChatCardView`. |
+
+<Note>
+  `CometChatCardThemeMode` and `CometChatCardThemeOverride` are exported by `@cometchat/cards-angular`. Type these inputs precisely — passing `unknown` will fail strict-template AOT compilation.
+</Note>
+
+## Events
+
+| Event | Payload Type | Description |
+|-------|-------------|-------------|
+| `onCardAction` | `CardBubbleAction` | Emitted when a user taps an interactive element on the card. Carries the raw renderer action. |
+
+```typescript
+/** Payload emitted by the bubble's onCardAction output. */
+export interface CardBubbleAction {
+  message: CometChat.CardMessage; // the card message the action originated from
+  action: unknown;                // the renderer's raw discriminated action
+}
+```
+
+## Card Actions
+
+The Cards renderer is a **pure renderer** — it emits actions through callbacks without executing them. The bubble forwards each action on **both** channels and runs no behavior of its own:
+
+1. **`(onCardAction)` output** — for apps that render this bubble directly.
+2. **`CometChatMessageEvents.ccCardActionClicked` event bus** — for the standard, internally rendered flow where the bubble is created by the UI Kit. This is the recommended channel for the default message list.
+
+<Warning>
+  Act on **one** channel only to avoid double-handling the same tap. In the standard `CometChatMessageList` flow, use the `ccCardActionClicked` bus.
+</Warning>
+
+### Handling actions via the output
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatCardBubbleComponent,
+  CardBubbleAction,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-card-message',
+  standalone: true,
+  imports: [CometChatCardBubbleComponent],
+  template: `
+    <cometchat-card-bubble
+      [message]="cardMessage"
+      (onCardAction)="onCardAction($event)"
+    ></cometchat-card-bubble>
+  `,
+})
+export class CardMessageComponent {
+  cardMessage!: CometChat.CardMessage;
+
+  onCardAction(event: CardBubbleAction): void {
+    // event.action is the raw renderer action (a CometChatCardAction).
+    // Your app implements the behavior — the UI Kit performs none.
+    console.log('Card action on message', event.message.getId(), event.action);
+  }
+}
+```
+
+### Handling actions via the event bus
+
+```typescript expandable
+import { Injectable, OnDestroy } from '@angular/core';
+import {
+  CometChatMessageEvents,
+  ICardActionEvent,
+} from '@cometchat/chat-uikit-angular';
+import type { CometChatCardAction } from '@cometchat/cards-angular';
+import { Subscription } from 'rxjs';
+
+@Injectable({ providedIn: 'root' })
+export class CardActionHandler implements OnDestroy {
+  private actionSub?: Subscription;
+
+  start(): void {
+    // Subscribe on the event Subject; unsubscribe in ngOnDestroy.
+    this.actionSub = CometChatMessageEvents.ccCardActionClicked.subscribe((event: ICardActionEvent) => {
+      const action = event.action as CometChatCardAction;
+      switch (action.type) {
+        case 'openUrl':
+          window.open(action.url, '_blank', 'noopener,noreferrer');
+          break;
+        case 'copyToClipboard':
+          navigator.clipboard?.writeText(action.value);
+          break;
+        // ...handle the remaining action types
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.actionSub?.unsubscribe();
+  }
+}
+```
+
+The full set of action types and a complete reference handler are covered in the [Card Messages guide](/ui-kit/angular/guides/card-messages#handling-card-actions).
+
+## Fallback Behavior
+
+When `getCard()` returns nothing drawable (`null`, a blank string, or an empty object), the bubble renders a single line of fallback text instead of an empty card. The fallback is resolved in this order:
+
+1. `message.getFallbackText()`
+2. `message.getText()`
+3. Localized `"Card Message"` (the `card_message` localization key)
+
+This keeps the conversation readable even if a card payload is malformed or a client cannot render it.
+
+## Customization
+
+The card's internal layout, colors, and typography are controlled by the renderer through [`themeMode`](#properties) and [`themeOverride`](#properties). The bubble wrapper and fallback line are styled with CSS variables:
+
+```css expandable
+cometchat-card-bubble {
+  /* Spacing around the card content */
+  --cometchat-spacing-2: 8px;
+  --cometchat-spacing-3: 12px;
+
+  /* Fallback text */
+  --cometchat-font-body-regular: 400 14px 'Inter';
+  --cometchat-text-color-secondary: #666666;
+
+  /* Bubble surface (incoming) */
+  --cometchat-background-color-02: #F5F5F5;
+  --cometchat-radius-3: 12px;
+}
+```
+
+To restyle the rendered card itself (button colors, header, body), pass a `themeOverride` to the bubble rather than overriding CSS — the card DOM is owned by the renderer.
+
+## Technical Details
+
+- **Standalone Component** — import and use independently.
+- **Change Detection** — `OnPush` for optimal performance; uses Angular signals for the card payload and fallback.
+- **Renderer dependency** — `CometChatCardViewComponent` from `@cometchat/cards-angular`.
+- **Callback before schema** — the renderer's `(onAction)` output is bound before `[cardJson]` is assigned, so the action callback is registered before the card schema is rendered.
+
+## Related
+
+- **[Card Messages guide](/ui-kit/angular/guides/card-messages)** — the full card rendering implementation: developer cards, agent cards, streaming cards, and the complete action vocabulary.
+- **[CometChatMessageBubble](/ui-kit/angular/components/cometchat-message-bubble)** — routes card messages to this bubble.
+- **[CometChatMessageList](/ui-kit/angular/components/cometchat-message-list)** — renders card bubbles in the conversation.
+- **[Events](/ui-kit/angular/events)** — the `ccCardActionClicked` event reference.
