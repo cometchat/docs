@@ -57,13 +57,16 @@ Events arrive via `onAIAssistantEventReceived` in this order:
 | 3 | Tool Call Arguments | Arguments being passed to the tool |
 | 4 | Tool Call End | Tool execution completed |
 | 5 | Tool Call Result | Tool's output is available |
-| 6 | Text Message Start | Agent started composing a reply |
-| 7 | Text Message Content | Streaming content chunks (multiple) |
-| 8 | Text Message End | Agent reply is complete |
-| 9 | Run Finished | Run finalized; persisted messages follow |
+| 6 | Card Start | Agent started generating a card |
+| 7 | Card | Full card payload is available |
+| 8 | Card End | Card generation is complete |
+| 9 | Text Message Start | Agent started composing a reply |
+| 10 | Text Message Content | Streaming content chunks (multiple) |
+| 11 | Text Message End | Agent reply is complete |
+| 12 | Run Finished | Run finalized; persisted messages follow |
 
 <Note>
-`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked — there can be multiple tool call cycles in a single run. Text Message events are always emitted and carry the assistant's reply incrementally.
+`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked — there can be multiple tool call cycles in a single run. Card events (`Card Start` → `Card` → `Card End`) only appear when the agent produces a card, and may repeat for each card. Text Message events are always emitted and carry the assistant's reply incrementally.
 </Note>
 
 ### Event Object Properties
@@ -88,6 +91,9 @@ Some events carry additional data:
 | Text Message Content | `getDelta()` | The streaming text chunk for progressive rendering |
 | Tool Call Arguments | `getToolCallId()`, `getDelta()` | Tool call ID and argument chunk |
 | Tool Call Result | `getToolCallId()`, `getContent()`, `getRole()` | Tool call ID, result content, and role |
+| Card Start | `getCardId()`, `getExecutionText()`, `getStreamMessageId()` | Card ID, a human-readable status string, and the stream message ID |
+| Card | `getCardId()`, `getCard()`, `getStreamMessageId()` | Card ID, the raw card payload, and the stream message ID |
+| Card End | `getCardId()`, `getStreamMessageId()` | Card ID and the stream message ID |
 
 <Tabs>
 <Tab title="TypeScript">
@@ -137,10 +143,66 @@ CometChat.removeAIAssistantListener("unique_listener_id");
 - Tool Call Arguments: Arguments being passed to the tool.
 - Tool Call End: Tool execution completed.
 - Tool Call Result: Tool's output is available.
+- Card Start: The agent started generating a card. Carries `cardId` and `executionText` (a human-readable status like "Building your product card...").
+- Card: The full card payload is available. Use `getCard()` to retrieve the raw card JSON and pass it to the renderer.
+- Card End: The card generation flow is finalized.
 - Text Message Start: The agent started composing a reply.
 - Text Message Content: Streaming content chunks for progressive rendering.
 - Text Message End: The agent reply is complete.
 - Run Finished: The run is finalized; persisted messages will follow.
+
+#### Card Streaming Events
+
+When the agent generates a card, the run emits a card cycle (`Card Start` → `Card` → `Card End`). All three are `AIAssistantBaseEvent` subclasses delivered through the same `onAIAssistantEventReceived` callback — no separate listener is required.
+
+| Class | Event type (`getType()`) | Getters |
+|-------|--------------------------|---------|
+| `AIAssistantCardStartedEvent` | `card_start` | `getCardId()`, `getExecutionText()`, `getStreamMessageId()` |
+| `AIAssistantCardReceivedEvent` | `card` | `getCardId()`, `getCard()`, `getStreamMessageId()` |
+| `AIAssistantCardEndedEvent` | `card_end` | `getCardId()`, `getStreamMessageId()` |
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addAIAssistantListener("unique_listener_id", {
+  onAIAssistantEventReceived: (event: CometChat.AIAssistantBaseEvent) => {
+    if (event instanceof CometChat.AIAssistantCardStartedEvent) {
+      console.log("Card generation started:", event.getCardId());
+      console.log("Execution text:", event.getExecutionText());
+    } else if (event instanceof CometChat.AIAssistantCardReceivedEvent) {
+      console.log("Card received:", event.getCardId());
+      const cardPayload = event.getCard();
+      // Pass cardPayload to your card renderer
+    } else if (event instanceof CometChat.AIAssistantCardEndedEvent) {
+      console.log("Card generation ended:", event.getCardId());
+    }
+  },
+});
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.addAIAssistantListener("unique_listener_id", {
+  onAIAssistantEventReceived: (event) => {
+    if (event instanceof CometChat.AIAssistantCardStartedEvent) {
+      console.log("Card generation started:", event.getCardId());
+      console.log("Execution text:", event.getExecutionText());
+    } else if (event instanceof CometChat.AIAssistantCardReceivedEvent) {
+      console.log("Card received:", event.getCardId());
+      const cardPayload = event.getCard();
+      // Pass cardPayload to your card renderer
+    } else if (event instanceof CometChat.AIAssistantCardEndedEvent) {
+      console.log("Card generation ended:", event.getCardId());
+    }
+  },
+});
+```
+
+</Tab>
+
+</Tabs>
 
 ### Agentic Messages
 
@@ -219,6 +281,83 @@ The `getToolCalls()` method on `AIToolArgumentMessage` returns an array of `AITo
 <Warning>
 Always remove listeners when they're no longer needed (e.g., on component unmount or page navigation). Failing to remove listeners can cause memory leaks and duplicate event handling.
 </Warning>
+
+### AIAssistantMessage Elements
+
+Starting from React Native SDK **4.0.26**, a persisted `AIAssistantMessage` carries its content as an ordered list of blocks via `getElements()`. This is the preferred render source — when present, walk the list in order and render each block. If the agent response contains only a card (no accompanying text), the text returned by `getAssistantMessageData().getText()` will be empty, so always prefer `getElements()`.
+
+`getElements()` returns an array of `AIAssistantElement` (or `null` for older messages without elements). Each element exposes:
+
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `getType()` | `string` | The block type, e.g. `"text"` or `"card"`. Determines the shape of `getData()`. |
+| `getData()` | `string \| object` | The block's raw body. `"text"` → `string`; `"card"` → `{ card, cardId }`; other types → raw JSON value. The SDK never interprets this — it returns the value as-is. |
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+function handleAIAssistantMessage(message: CometChat.AIAssistantMessage) {
+  const elements = message.getElements();
+
+  if (elements && elements.length > 0) {
+    // Preferred path: walk elements in order
+    elements.forEach((element: CometChat.AIAssistantElement) => {
+      switch (element.getType()) {
+        case "text":
+          console.log("Text block:", element.getData());
+          break;
+        case "card": {
+          const { card, cardId } = element.getData() as {
+            card: object;
+            cardId: string;
+          };
+          console.log("Card block:", cardId);
+          // Pass card to your card renderer
+          break;
+        }
+        default:
+          console.log("Unknown element type:", element.getType());
+      }
+    });
+  } else {
+    // Fallback for older messages without elements
+    console.log("Message text:", message.getAssistantMessageData().getText());
+  }
+}
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+function handleAIAssistantMessage(message) {
+  const elements = message.getElements();
+
+  if (elements && elements.length > 0) {
+    elements.forEach((element) => {
+      switch (element.getType()) {
+        case "text":
+          console.log("Text block:", element.getData());
+          break;
+        case "card": {
+          const { card, cardId } = element.getData();
+          console.log("Card block:", cardId);
+          // Pass card to your card renderer
+          break;
+        }
+        default:
+          console.log("Unknown element type:", element.getType());
+      }
+    });
+  } else {
+    console.log("Message text:", message.getAssistantMessageData().getText());
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
 
 ---
 
