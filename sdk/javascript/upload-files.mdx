@@ -21,7 +21,7 @@ The classic path (passing a file, or `FileList`, straight to the `MediaMessage` 
     Get platform-native file objects (e.g. `File`/`Blob` from an `<input type="file">` on web).
   </Step>
   <Step title="Upload">
-    Call `CometChat.uploadFiles(files, listener)`. It returns **synchronously** with a `batchId` and a `fileId` per file (in input order) so you can map callbacks back to your UI rows.
+    Call `CometChat.uploadFiles(files, receiverId, receiverType, listener)`. The **recipient** (`receiverId` + `receiverType`) is required — the server uses it to apply role- and scope-based access control before issuing upload URLs. It returns **synchronously** with a `batchId` and a `fileId` per file (in input order) so you can map callbacks back to your UI rows.
   </Step>
   <Step title="Track progress & handle failures">
     Your `MediaUploadListener` receives `onProgress` for each file, then `onFileUploaded` (success), `onFileError` (rejected — not retryable), or `onFileFailure` (failed — retryable). Use `cancelFileUpload()` / `retryFileUpload()` as the user acts.
@@ -48,6 +48,9 @@ The classic path (passing a file, or `FileList`, straight to the `MediaMessage` 
 ```typescript
 const files: FileList = (document.getElementById("files") as HTMLInputElement).files!;
 
+const receiverId = "UID";                              // recipient uid or guid
+const receiverType = CometChat.RECEIVER_TYPE.USER;     // "user" or "group"
+
 const listener = new CometChat.MediaUploadListener({
   onProgress: (fileId: string, loaded: number, total: number, percent: number) => {
     console.log(`${fileId}: ${percent}%`);
@@ -66,7 +69,12 @@ const listener = new CometChat.MediaUploadListener({
   },
 });
 
-const { batchId, fileIds } = CometChat.uploadFiles(Array.from(files), listener);
+const { batchId, fileIds } = CometChat.uploadFiles(
+  Array.from(files),
+  receiverId,
+  receiverType,
+  listener
+);
 console.log("Upload group:", batchId, fileIds);
 ```
 </Tab>
@@ -74,6 +82,9 @@ console.log("Upload group:", batchId, fileIds);
 <Tab title="JavaScript">
 ```javascript
 const files = document.getElementById("files").files;
+
+const receiverId = "UID";                              // recipient uid or guid
+const receiverType = CometChat.RECEIVER_TYPE.USER;     // "user" or "group"
 
 const listener = new CometChat.MediaUploadListener({
   onProgress: (fileId, loaded, total, percent) => {
@@ -93,7 +104,12 @@ const listener = new CometChat.MediaUploadListener({
   },
 });
 
-const { batchId, fileIds } = CometChat.uploadFiles(Array.from(files), listener);
+const { batchId, fileIds } = CometChat.uploadFiles(
+  Array.from(files),
+  receiverId,
+  receiverType,
+  listener
+);
 console.log("Upload group:", batchId, fileIds);
 ```
 </Tab>
@@ -101,11 +117,17 @@ console.log("Upload group:", batchId, fileIds);
 
 `uploadFiles()` accepts these arguments:
 
-| Parameter  | Type                                    | Description                                                                              | Required |
-| ---------- | --------------------------------------- | ---------------------------------------------------------------------------------------- | -------- |
-| `files`    | `Array<File \| Blob>`                    | Platform-native file objects to upload.                                                  | Yes      |
-| `listener` | `MediaUploadListener`                    | Callback bundle for progress, per-file outcomes, and batch completion.                   | Yes      |
-| `options`  | `UploadOptions`                          | Optional `{ concurrency?, batchId? }` — see [Upload options](#upload-options).            | No       |
+| Parameter      | Type                    | Description                                                                                                          | Required |
+| -------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------- | -------- |
+| `files`        | `Array<File \| Blob>`   | Platform-native file objects to upload.                                                                             | Yes      |
+| `receiverId`   | `string`                | Intended recipient — a user's `uid` or a group's `guid`. The server needs it to authorize the upload (see below).   | Yes      |
+| `receiverType` | `string`                | `CometChat.RECEIVER_TYPE.USER` (`"user"`) or `CometChat.RECEIVER_TYPE.GROUP` (`"group"`).                            | Yes      |
+| `listener`     | `MediaUploadListener`   | Callback bundle for progress, per-file outcomes, and batch completion.                                             | Yes      |
+| `options`      | `UploadOptions`         | Optional `{ concurrency?, batchId? }` — see [Upload options](#upload-options).                                      | No       |
+
+<Warning>
+**The recipient must match the message you'll eventually send.** `receiverId` / `receiverType` are sent to the upload-authorization (presign) endpoint, which enforces the sender's **role- and scope-based access control** for that conversation *before* any bytes transfer. If the sender isn't allowed to send media to that user or group, each file is **rejected** via `onFileError` with `ERR_PERMISSION_DENIED` (not retryable). Pass the same recipient you'll set on the `MediaMessage` at send time — uploading against one recipient and sending to another can pass the upload check but is not the intended usage.
+</Warning>
 
 It returns **synchronously**:
 
@@ -131,7 +153,7 @@ Pass a `MediaUploadListener` with only the callbacks you need — all are option
 | `onComplete`     | `(result) => void`                                                | The batch drained (no files in flight). Delivers an aggregate [`UploadResult`](#uploadresult). |
 
 <Warning>
-**Rejected vs. failed — the key distinction.** `onFileError` (rejected) means the file itself is unacceptable — invalid file object, over the size limit, or the storage refused it. Retrying won't help; the user must swap the file. `onFileFailure` (failed) means a transient transport problem — network drop, an expired presigned URL, or a stalled upload. These **can** be retried with `retryFileUpload()`.
+**Rejected vs. failed — the key distinction.** `onFileError` (rejected) means the request itself is unacceptable — invalid file object, over the size limit, or the sender isn't permitted to upload to this recipient (`ERR_PERMISSION_DENIED`). Retrying won't help; the user must swap the file or you must fix the recipient/permissions. `onFileFailure` (failed) means a transient transport problem — network drop, an expired presigned URL, or a stalled upload. These **can** be retried with `retryFileUpload()`.
 </Warning>
 
 ### UploadResult
@@ -160,20 +182,20 @@ Pass an optional third argument to tune the batch:
 <Tab title="TypeScript">
 ```typescript
 // Upload 3 files at a time
-const { batchId } = CometChat.uploadFiles(firstFiles, listener, { concurrency: 3 });
+const { batchId } = CometChat.uploadFiles(firstFiles, receiverId, receiverType, listener, { concurrency: 3 });
 
-// Later, add more files to the same group
-CometChat.uploadFiles(moreFiles, listener, { batchId });
+// Later, add more files to the same group (same recipient)
+CometChat.uploadFiles(moreFiles, receiverId, receiverType, listener, { batchId });
 ```
 </Tab>
 
 <Tab title="JavaScript">
 ```javascript
 // Upload 3 files at a time
-const { batchId } = CometChat.uploadFiles(firstFiles, listener, { concurrency: 3 });
+const { batchId } = CometChat.uploadFiles(firstFiles, receiverId, receiverType, listener, { concurrency: 3 });
 
-// Later, add more files to the same group
-CometChat.uploadFiles(moreFiles, listener, { batchId });
+// Later, add more files to the same group (same recipient)
+CometChat.uploadFiles(moreFiles, receiverId, receiverType, listener, { batchId });
 ```
 </Tab>
 </Tabs>
@@ -231,22 +253,22 @@ Once your files are uploaded, collect their `Attachment`s (from `onFileUploaded`
 ```typescript
 const uploaded: CometChat.Attachment[] = [];
 
+// Declare the recipient once — used for BOTH the upload authorization and the message.
+const receiverID = "UID";
+const receiverType = CometChat.RECEIVER_TYPE.USER;
+
 const listener = new CometChat.MediaUploadListener({
   onProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
   onFileUploaded: (fileId, attachment) => uploaded.push(attachment),
   onFileFailure: (fileId, error) => markRetryable(fileId, error),
-  onFileError: (fileId, error) => markRejected(fileId, error),
+  onFileError: (fileId, error) => markRejected(fileId, error), // incl. ERR_PERMISSION_DENIED
   onComplete: async (result) => {
     if (result.successful.length === 0) return;
-
-    const receiverID = "UID";
-    const messageType = CometChat.MESSAGE_TYPE.FILE;
-    const receiverType = CometChat.RECEIVER_TYPE.USER;
 
     const mediaMessage = new CometChat.MediaMessage(
       receiverID,
       "",            // no raw file — attachments already carry hosted URLs
-      messageType,
+      CometChat.MESSAGE_TYPE.FILE,
       receiverType
     );
     mediaMessage.setAttachments(result.successful.map((s) => s.attachment));
@@ -262,7 +284,7 @@ const listener = new CometChat.MediaUploadListener({
 });
 
 const files = (document.getElementById("files") as HTMLInputElement).files!;
-CometChat.uploadFiles(Array.from(files), listener, { concurrency: 3 });
+CometChat.uploadFiles(Array.from(files), receiverID, receiverType, listener, { concurrency: 3 });
 ```
 </Tab>
 
@@ -270,22 +292,22 @@ CometChat.uploadFiles(Array.from(files), listener, { concurrency: 3 });
 ```javascript
 const uploaded = [];
 
+// Declare the recipient once — used for BOTH the upload authorization and the message.
+const receiverID = "UID";
+const receiverType = CometChat.RECEIVER_TYPE.USER;
+
 const listener = new CometChat.MediaUploadListener({
   onProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
   onFileUploaded: (fileId, attachment) => uploaded.push(attachment),
   onFileFailure: (fileId, error) => markRetryable(fileId, error),
-  onFileError: (fileId, error) => markRejected(fileId, error),
+  onFileError: (fileId, error) => markRejected(fileId, error), // incl. ERR_PERMISSION_DENIED
   onComplete: async (result) => {
     if (result.successful.length === 0) return;
-
-    const receiverID = "UID";
-    const messageType = CometChat.MESSAGE_TYPE.FILE;
-    const receiverType = CometChat.RECEIVER_TYPE.USER;
 
     const mediaMessage = new CometChat.MediaMessage(
       receiverID,
       "",            // no raw file — attachments already carry hosted URLs
-      messageType,
+      CometChat.MESSAGE_TYPE.FILE,
       receiverType
     );
     mediaMessage.setAttachments(result.successful.map((s) => s.attachment));
@@ -301,7 +323,7 @@ const listener = new CometChat.MediaUploadListener({
 });
 
 const files = document.getElementById("files").files;
-CometChat.uploadFiles(Array.from(files), listener, { concurrency: 3 });
+CometChat.uploadFiles(Array.from(files), receiverID, receiverType, listener, { concurrency: 3 });
 ```
 </Tab>
 </Tabs>
@@ -357,13 +379,14 @@ Every error delivered to `onFileError` / `onFileFailure` (and rejections from `s
 | -------------------------- | ------------------------- | --------- | ----------------------------------------------------------------- |
 | `ERR_INVALID_FILE_OBJECT`  | `onFileError`             | No        | The file is invalid or its size can't be determined.              |
 | `ERR_FILE_SIZE_EXCEEDED`   | `onFileError`             | No        | The file is larger than `file.size.max`.                          |
+| `ERR_PERMISSION_DENIED`    | `onFileError`             | No        | The sender isn't allowed to upload media to this `receiverId` / `receiverType` (role/scope access control). |
 | `ERR_FILE_COUNT_EXCEEDED`  | `sendMediaMessage()`      | No        | More attachments on the message than `file.count.max` allows.     |
-| `ERR_S3_UPLOAD_FAILED`     | `onFileFailure`           | Yes       | Storage rejected the upload, or the transport errored.            |
+| `ERR_S3_UPLOAD_FAILED`     | `onFileFailure`, `onFileError` | Yes / No | Storage rejected the upload or the transport errored (`onFileFailure`, retryable); also the fallback when the server declines a file with no specific code (`onFileError`, not retryable). |
 | `ERR_PRESIGNED_URL_EXPIRED`| `onFileFailure`           | Yes       | The pre-signed URL expired (a retry re-presigns automatically).   |
 | `ERR_UPLOAD_STALLED`       | `onFileFailure`           | Yes       | No progress for 30s; the upload was aborted.                      |
 | `ERR_UPLOAD_CANCELLED`     | —                         | —         | The upload was cancelled via `cancelFileUpload()`.                |
 
-See the full list on the [Error Codes](/sdk/javascript/error-codes#media-upload-errors) page.
+`ERR_PERMISSION_DENIED` is returned by the server's access-control check, so its exact code and message come from your backend. See the full list on the [Error Codes](/sdk/javascript/error-codes#media-upload-errors) page.
 
 ## Next Steps
 
