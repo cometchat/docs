@@ -205,6 +205,131 @@ void AMyActor::FetchGroups()
 
 ---
 
+## Group Member Management
+
+Once a group exists, use these nodes to fetch its members, add new ones, and moderate (kick/ban/unban), and change a member's role.
+
+### Fetch Members
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Fetch Group Members Async** node with an `FCometChatGroupMembersRequest` struct (set `GUID` to the target group).
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatFetchGroupMembersAction.h"
+
+void AMyActor::FetchMembers(const FString& Guid)
+{
+    FCometChatGroupMembersRequest Request;
+    Request.GUID = Guid;
+    Request.Limit = 30;
+
+    auto* Action = UCometChatFetchGroupMembersAction::FetchGroupMembersAsync(this, Request);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnMembersFetched);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnFetchFailed);
+    Action->Activate();
+}
+
+void AMyActor::OnMembersFetched(const TArray<FCometChatGroupMember>& Members)
+{
+    for (const FCometChatGroupMember& Member : Members)
+    {
+        UE_LOG(LogTemp, Log, TEXT("%s — %s"), *Member.User.Name, *Member.Scope);
+    }
+}
+```
+</Tab>
+</Tabs>
+
+### Add Members
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Add Members Async** node with the group `Guid` and a `TArray<FCometChatGroupMember>` (set each entry's `User.Uid` and `Scope`, typically `"participant"`).
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatAddMembersAction.h"
+
+void AMyActor::AddMemberToGroup(const FString& Guid, const FString& Uid)
+{
+    FCometChatGroupMember NewMember;
+    NewMember.User.Uid = Uid;
+    NewMember.Scope = TEXT("participant");
+
+    auto* Action = UCometChatAddMembersAction::AddMembersAsync(this, Guid, { NewMember });
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnMemberAdded);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnAddFailed);
+    Action->Activate();
+}
+```
+</Tab>
+</Tabs>
+
+### Kick, Ban, and Unban
+
+**Kick** removes a member — they can rejoin. **Ban** removes them and prevents rejoining until **Unban** is called.
+
+<Tabs>
+<Tab title="Blueprint">
+Call **Kick Member Async**, **Ban Member Async**, or **Unban Member Async** with the target `Uid` and the group `Guid`. Fetch **Fetch Banned Members Async** (same request shape as fetching members) to list who's currently banned.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatKickMemberAction.h"
+#include "AsyncActions/CometChatBanMemberAction.h"
+#include "AsyncActions/CometChatUnbanMemberAction.h"
+#include "AsyncActions/CometChatFetchBannedMembersAction.h"
+
+void AMyActor::BanMember(const FString& Uid, const FString& Guid)
+{
+    auto* Action = UCometChatBanMemberAction::BanMemberAsync(this, Uid, Guid);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnMemberBanned);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnActionFailed);
+    Action->Activate();
+}
+```
+</Tab>
+</Tabs>
+
+<Warning>
+Ban and unban only take effect for other members — the SDK does not let a member ban themselves or the group owner. The server enforces this, but you should also gate the ban/kick/promote/demote UI controls in your app by the logged-in user's own scope (see the permission model below) so unauthorized options aren't even shown.
+</Warning>
+
+### Promote and Demote (Change Scope)
+
+A member's role (`participant` → `moderator` → `admin`) is changed with the same node in either direction.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Change Scope Async** node with the target `Uid`, the group `Guid`, and the new `Scope` (`"participant"`, `"moderator"`, or `"admin"`).
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatChangeScopeAction.h"
+
+void AMyActor::PromoteToModerator(const FString& Uid, const FString& Guid)
+{
+    auto* Action = UCometChatChangeScopeAction::ChangeScopeAsync(this, Uid, Guid, TEXT("moderator"));
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnScopeChanged);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnActionFailed);
+    Action->Activate();
+}
+```
+</Tab>
+</Tabs>
+
+<Tip>
+**Permission model**: only `admin`/owner can promote someone to `admin`. A `moderator` can promote a `participant` to `moderator` and kick/ban members with a strictly lower scope than their own, but cannot touch another `admin` or the owner. Read the logged-in user's own scope from `FCometChatGroup.Scope` (or check `UserUid == Group.Owner`) before deciding which member actions to show.
+</Tip>
+
+<Info>
+Listen for `OnGroupMemberKicked`, `OnGroupMemberBanned`, `OnGroupMemberUnbanned`, and `OnGroupMemberScopeChanged` on the subsystem to keep member lists in sync in real time — including changes made by other admins/moderators. See [Real-Time Events](/sdk/unreal/real-time-events).
+</Info>
+
+---
+
 ## Send a Group Message
 
 Send a text message to all members of a group. See [Send a Message → Group Messages](/sdk/unreal/send-message#send-a-group-message) for details.
