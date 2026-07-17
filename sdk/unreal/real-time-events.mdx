@@ -62,6 +62,73 @@ void AMyActor::BeginPlay()
 
 ---
 
+## Use Case: Centralize Binding & Teardown
+
+**Goal:** bind every listener your game needs in **one** setup function that runs before Login, and mirror it with a teardown that unbinds on shutdown. One binding site keeps event wiring easy to reason about and prevents duplicate handlers and leaks.
+
+<Tabs>
+<Tab title="Blueprint">
+1. On your chat actor/widget **Begin Play** (before you call **Login**), get the **CometChat Subsystem**
+2. **Bind Event** to each delegate you need — messages, typing, receipts, presence, group, connection — wiring each to a custom event
+3. Call **Login** — events now flow into your handlers
+4. On **End Play** / widget **Destruct**, **Unbind** from the same delegates
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+    SubscribeToEvents();   // bind everything BEFORE Login
+    // ... then call Login
+}
+
+void AMyActor::EndPlay(const EEndPlayReason::Type Reason)
+{
+    UnsubscribeFromEvents();
+    Super::EndPlay(Reason);
+}
+
+void AMyActor::SubscribeToEvents()
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+    if (!Chat) return;
+    Chat->OnTextMessageReceived.AddDynamic(this, &AMyActor::HandleTextMessage);
+    Chat->OnMessagesRead.AddDynamic(this, &AMyActor::HandleRead);
+    Chat->OnTypingStarted.AddDynamic(this, &AMyActor::HandleTypingStarted);
+    Chat->OnUserOnline.AddDynamic(this, &AMyActor::HandleUserOnline);
+    Chat->OnConnected.AddDynamic(this, &AMyActor::HandleConnected);
+    Chat->OnDisconnected.AddDynamic(this, &AMyActor::HandleDisconnected);
+}
+
+void AMyActor::UnsubscribeFromEvents()
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+    if (!Chat) return;
+    Chat->OnTextMessageReceived.RemoveDynamic(this, &AMyActor::HandleTextMessage);
+    Chat->OnMessagesRead.RemoveDynamic(this, &AMyActor::HandleRead);
+    Chat->OnTypingStarted.RemoveDynamic(this, &AMyActor::HandleTypingStarted);
+    Chat->OnUserOnline.RemoveDynamic(this, &AMyActor::HandleUserOnline);
+    Chat->OnConnected.RemoveDynamic(this, &AMyActor::HandleConnected);
+    Chat->OnDisconnected.RemoveDynamic(this, &AMyActor::HandleDisconnected);
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+These delegates only fire while the socket is connected — a drop pauses **every** listener until it reconnects. Bind `OnDisconnected` / `OnConnected` here too, show a reconnection banner, and refresh any state (unread counts, receipts, presence) after reconnect, since events during the gap are missed.
+</Info>
+
+<Tip>
+**Best practice:** bind **all** listeners once, before Login, from a single Subscribe function — and unbind from the matching teardown. One binding site makes it easy to see what's wired and guarantees you're listening before the first event arrives.
+</Tip>
+
+<Warning>
+**Don't re-bind delegates every frame** (from Tick or on every widget rebuild) and **don't forget to unbind on teardown**. `AddDynamic` without a matching `RemoveDynamic` stacks duplicate handlers — the same event fires N times — and leaks bindings to destroyed objects. Bind once, unbind once.
+</Warning>
+
+---
+
 ## MessageListener Events
 
 These fire when messages, typing indicators, receipts, or reactions arrive.
@@ -290,14 +357,14 @@ Many delegates and failure callbacks provide an `FCometChatError` struct with de
 
 <Tabs>
 <Tab title="Blueprint">
-All async nodes have an **On Failure** pin. Wire it to a custom event that receives an `FString` error message. Connection and login listener events provide the full `FCometChatError` struct.
+All async nodes have an **On Failure** pin. Wire it to a custom event that receives an `FCometChatError` struct (with `Code`, `Message`, and `Details`).
 </Tab>
 <Tab title="C++">
 ```cpp
 // Async node failure handler (simple string)
-void AMyActor::HandleError(const FString& Error)
+void AMyActor::HandleError(const FCometChatError& Error)
 {
-    UE_LOG(LogTemp, Error, TEXT("Operation failed: %s"), *Error);
+    UE_LOG(LogTemp, Error, TEXT("Operation failed: %s"), *Error.Message);
     // Show error in UI, retry, or fallback
 }
 

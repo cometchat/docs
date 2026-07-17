@@ -17,7 +17,11 @@ These are called directly on `UCometChatSubsystem`.
 | `ConfigureWithSettings` | Config | `AppId: FString`, `Settings: FCometChatAppSettings` | `void` | Initialize with advanced settings (custom hosts, subscription type, manual connection). |
 | `IsLoggedIn` | Auth | — | `bool` | Returns `true` if a user is currently authenticated. |
 | `GetLoggedInUser` | Auth | — | `FCometChatUser` | Returns the currently logged-in user's profile. |
+| `GetUserAuthToken` | Auth | — | `FString` | Returns the current session's auth token. |
 | `GetConnectionStatus` | Connection | — | `ECometChatConnectionState` | Returns the current WebSocket connection state. |
+| `GetActiveCall` | Calls | — | `FCometChatCall` | Returns the current active call (empty if none). |
+| `HasActiveCall` | Calls | — | `bool` | Returns `true` if there is an active call. |
+| `GetConversationUpdateSettings` | Conversations | — | `FCometChatConversationUpdateSettings` | Returns which message categories update a conversation's state. |
 | `StartTyping` | Typing | `Indicator: FCometChatTypingIndicator` | `void` | Notify that the local user started typing. |
 | `EndTyping` | Typing | `Indicator: FCometChatTypingIndicator` | `void` | Notify that the local user stopped typing. |
 | `SendTransientMessage` | Messaging | `Message: FCometChatTransientMessage` | `void` | Send an ephemeral message that is not persisted. |
@@ -29,13 +33,23 @@ These are called directly on `UCometChatSubsystem`.
 
 Each node is a latent Blueprint action with **On Success** and **On Failure** output pins. In C++, create via the static factory method, bind delegates, and call `Activate()`.
 
-### Authentication
+### Configuration & Authentication
 
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
-| **Login Async** | `Uid: FString`, `AuthKey: FString` | — | Authenticate a user with Auth Key. |
-| **Login With Auth Token Async** | `AuthToken: FString` | — | Authenticate a user with a pre-generated Auth Token. |
+| **Configure Async** | `AppId: FString`, `Region: FString` | `FCometChatUser` | Initialize the SDK. On success returns the restored session user (empty `Uid` if none). |
+| **Configure With Settings Async** | `AppId: FString`, `Settings: FCometChatAppSettings` | `FCometChatUser` | Initialize with advanced settings (custom hosts, subscription type, manual connection). |
+| **Login Async** | `Uid: FString`, `AuthKey: FString` | `FCometChatUser` | Authenticate a user with an Auth Key. |
+| **Login With Auth Token Async** | `AuthToken: FString` | `FCometChatUser` | Authenticate a user with a pre-generated Auth Token. |
 | **Logout Async** | — | — | Log out the current user and disconnect. |
+
+### Connection
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Connect Async** | — | — | Manually establish the WebSocket connection. |
+| **Disconnect Async** | — | — | Manually close the WebSocket connection (stays logged in). |
+| **Ping Async** | — | — | Ping the server to verify connectivity. |
 
 ### Messaging
 
@@ -43,9 +57,37 @@ Each node is a latent Blueprint action with **On Success** and **On Failure** ou
 | ---- | ---------- | -------------- | ----------- |
 | **Send Message Async** | `ReceiverUid: FString`, `Text: FString` | `FCometChatMessage` | Send a 1:1 text message. |
 | **Send Group Message Async** | `Guid: FString`, `Text: FString` | `FCometChatMessage` | Send a text message to a group. |
+| **Send Media Message Async** | `Message: FCometChatMessage` | `FCometChatMessage` | Send an image/video/audio/file message (build an `FCometChatMessage` with `Type` + `Attachment`). |
+| **Send Custom Message Async** | `Message: FCometChatMessage` | `FCometChatMessage` | Send a custom-typed message with `CustomData` JSON (game events, gifts, pings). |
+| **Edit Message Async** | `Message: FCometChatMessage` | `FCometChatMessage` | Edit a message's text (set `Id` + new `Text`). |
+| **Delete Message Async** | `MessageId: int64` | `FCometChatMessage` | Delete a message; returns the tombstoned message with `DeletedAt` set. |
 | **Get Messages Async** | `Uid: FString`, `Limit: int32` | `TArray<FCometChatMessage>` | Fetch message history for a 1:1 conversation. |
 | **Get Group Messages Async** | `Guid: FString`, `Limit: int32`, `BeforeMessageId: int32` | `TArray<FCometChatMessage>`, `FCometChatPagination` | Fetch paginated message history for a group. |
-| **Fetch Messages Async** | `Request: FCometChatMessagesRequest` | `TArray<FCometChatMessage>` | Fetch messages with full filter/pagination control. |
+| **Fetch Previous Messages Async** | `Request: FCometChatMessagesRequest` | `TArray<FCometChatMessage>` | Fetch older messages with full filter/pagination control. |
+| **Fetch Next Messages Async** | `Request: FCometChatMessagesRequest` | `TArray<FCometChatMessage>` | Fetch newer messages with full filter/pagination control. |
+| **Get Message Details Async** | `MessageId: int64` | `FCometChatMessage` | Fetch a single message by ID. |
+
+### Receipts
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Mark As Read Async** | `Message: FCometChatMessage` | — | Mark a message (and earlier) as read. |
+| **Mark As Unread Async** | `Message: FCometChatMessage` | `FCometChatConversation` | Mark a conversation unread from this message. |
+| **Mark As Delivered Async** | `Message: FCometChatMessage` | — | Mark a message as delivered. |
+| **Mark As Interacted Async** | `MessageId: int64`, `ElementId: FString` | — | Record an interaction with an interactive-message element. |
+| **Get Receipts Async** | `MessageId: int64` | `TArray<FCometChatMessageReceipt>` | Fetch per-user delivery/read receipts for a message. |
+
+### Reactions
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Add Reaction Async** | `MessageId: int64`, `Reaction: FString` | `FCometChatMessage` | React to a message with an emoji. |
+| **Remove Reaction Async** | `MessageId: int64`, `Reaction: FString` | `FCometChatMessage` | Remove your reaction from a message. |
+| **Fetch Reactions Async** | `Request: FCometChatReactionsRequest` | `TArray<FCometChatReaction>` | Fetch the individual users who reacted to a message. |
+
+<Tip>
+`FCometChatMessage.Reactions` (a `TArray<FCometChatReactionCount>`) already gives per-emoji totals and whether the logged-in user reacted — enough to render reaction pills. Only call **Fetch Reactions Async** when you need the list of *who* reacted.
+</Tip>
 
 ### Users
 
@@ -53,15 +95,27 @@ Each node is a latent Blueprint action with **On Success** and **On Failure** ou
 | ---- | ---------- | -------------- | ----------- |
 | **Get User Async** | `Uid: FString` | `FCometChatUser` | Fetch a user's profile. |
 | **Fetch Users Async** | `Request: FCometChatUsersRequest` | `TArray<FCometChatUser>` | Fetch users with search, filters, and pagination. |
+| **Update Current User Async** | `User: FCometChatUser` | `FCometChatUser` | Update the logged-in user's own profile. |
+| **Block Users Async** | `UIDs: TArray<FString>` | — | Block one or more users. |
+| **Unblock Users Async** | `UIDs: TArray<FString>` | — | Unblock one or more users. |
+| **Fetch Blocked Users Async** | `Request: FCometChatBlockedUsersRequest` | `TArray<FCometChatUser>` | Fetch blocked users. |
+| **Get Online User Count Async** | — | `int32` | Get the count of currently-online users in the app. |
+| **Create User Async** | `User: FCometChatUser`, `ApiKey: FString` | `FCometChatUser` | Admin: create a user (requires REST API Key — server-side only). |
+| **Update User Async** | `User: FCometChatUser`, `ApiKey: FString` | `FCometChatUser` | Admin: update any user (requires REST API Key — server-side only). |
 
 ### Groups
 
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
-| **Create Group Async** | `Name: FString`, `MemberIds: TArray<FString>` | `FCometChatGroup` | Create a new group with initial members. |
-| **Join Group Async** | `Guid: FString` | — | Join an existing group. |
+| **Create Group Async** | `Group: FCometChatGroup` | `FCometChatGroup` | Create a new group (set `Name` + `Type`); the caller becomes owner. |
+| **Join Group Async** | `GUID: FString`, `GroupType: FString`, `Password: FString` | `FCometChatGroup` | Join a group (`Password` only for password groups). |
 | **Leave Group Async** | `Guid: FString` | — | Leave a group. |
+| **Delete Group Async** | `GUID: FString` | — | Delete a group (owner only, irreversible). |
+| **Update Group Async** | `Group: FCometChatGroup` | `FCometChatGroup` | Update a group's name/description/icon/type/metadata. |
+| **Get Group Async** | `GUID: FString` | `FCometChatGroup` | Fetch a single group's details. |
 | **Fetch Groups Async** | `Request: FCometChatGroupsRequest` | `TArray<FCometChatGroup>` | Fetch groups with search, filters, and pagination. |
+| **Get Joined Groups Async** | — | `TArray<FString>` | Get the GUIDs of groups the logged-in user belongs to. |
+| **Get Online Group Member Count Async** | `GUIDs: TArray<FString>` | — | Get online member counts for the given groups (JSON). |
 
 ### Group Member Management
 
@@ -74,9 +128,10 @@ Each node is a latent Blueprint action with **On Success** and **On Failure** ou
 | **Unban Member Async** | `Uid: FString`, `Guid: FString` | — | Lift a ban, allowing the user to join the group again. |
 | **Fetch Banned Members Async** | `Request: FCometChatBannedMembersRequest` | `TArray<FCometChatGroupMember>` | Fetch a group's banned members with search, scope filters, and pagination. |
 | **Change Scope Async** | `Uid: FString`, `Guid: FString`, `Scope: FString` | — | Change a member's scope (`participant`, `moderator`, `admin`) — used to promote or demote. |
+| **Transfer Ownership Async** | `GUID: FString`, `UID: FString` | — | Transfer group ownership to another member (owner only). |
 
 <Info>
-**Permission model**: only `admin`/`owner` can promote a member to `admin`; `moderator` and above can promote a `participant` to `moderator` and kick/ban members with a strictly lower scope. The server enforces these rules — always check the logged-in user's own scope (`FCometChatGroup.Scope`, or `owner == UserUid`) before showing kick/ban/promote/demote actions in your UI, so you don't show controls a `participant` isn't allowed to use.
+**Permission model**: only `admin`/`owner` can promote a member to `admin`; `moderator` and above can promote a `participant` to `moderator` and kick/ban members with a strictly lower scope. The server enforces these rules — always check the logged-in user's own scope (`FCometChatGroup.Scope`, or `owner == UserUid`) before showing kick/ban/promote/demote actions in your UI.
 </Info>
 
 ### Conversations
@@ -84,33 +139,69 @@ Each node is a latent Blueprint action with **On Success** and **On Failure** ou
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
 | **Fetch Conversations Async** | `Request: FCometChatConversationsRequest` | `TArray<FCometChatConversation>` | Fetch conversations with filters and pagination. |
+| **Get Conversation Async** | `ConversationWith: FString`, `ConversationType: FString` | `FCometChatConversation` | Fetch a single conversation by peer UID/GUID and type. |
+| **Delete Conversation Async** | `ConversationWith: FString`, `ConversationType: FString` | — | Delete a conversation for the logged-in user. |
+| **Tag Conversation Async** | `ConversationWith: FString`, `ConversationType: FString`, `Tags: TArray<FString>` | `FCometChatConversation` | Set tags on a conversation. |
+| **Mark Conversation Read Async** | `ConversationWith: FString`, `ConversationType: FString` | — | Mark an entire conversation as read. |
+| **Mark Conversation Delivered Async** | `ConversationWith: FString`, `ConversationType: FString` | — | Mark an entire conversation as delivered. |
 
-### Connection
+### Unread Counts
 
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
-| **Connect Async** | — | — | Manually establish the WebSocket connection. |
-| **Disconnect Async** | — | — | Manually close the WebSocket connection. |
-| **Ping Async** | — | — | Ping the server to verify connectivity. |
+| **Get Unread Count Async** | — | `FString` (JSON) | Total unread counts across all conversations. |
+| **Get Unread Count For User Async** | `UID: FString` | `FString` | Unread count for one 1:1 conversation. |
+| **Get Unread Count For Group Async** | `GUID: FString` | `FString` | Unread count for one group. |
+| **Get Unread Count All Users Async** | — | `FString` | Unread counts for all 1:1 conversations. |
+| **Get Unread Count All Groups Async** | — | `FString` | Unread counts for all groups. |
+
+<Tip>
+For a conversation-list UI, the per-conversation `UnreadMessageCount` returned by **Fetch Conversations Async** is usually more convenient than these JSON-string endpoints.
+</Tip>
+
+### Calls
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Initiate Call Async** | `Call: FCometChatCall` | `FCometChatCall` | Start a call (build an `FCometChatCall` with the receiver + type). |
+| **Accept Call Async** | `SessionId: FString` | `FCometChatCall` | Accept an incoming call. |
+| **Reject Call Async** | `SessionId: FString`, `Status: FString` | `FCometChatCall` | Reject/decline an incoming call. |
+| **End Call Async** | `SessionId: FString` | `FCometChatCall` | End/hang up an active call. |
+
+### AI
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Ask Bot Async** | `ReceiverId: FString`, `ReceiverType: FString`, `BotId: FString`, `Question: FString` | `FString` (JSON) | Ask an AI bot a question. |
+| **Get Smart Replies Async** | `ReceiverId: FString`, `ReceiverType: FString` | `FString` (JSON) | Get suggested replies for a conversation. |
+| **Get Conversation Starter Async** | `ReceiverId: FString`, `ReceiverType: FString` | `FString` (JSON) | Get AI-suggested conversation openers. |
+| **Get Conversation Summary Async** | `ReceiverId: FString`, `ReceiverType: FString` | `FString` (JSON) | Get an AI summary of a conversation. |
+
+### Notifications & Preferences
+
+| Node | Parameters | Success Output | Description |
+| ---- | ---------- | -------------- | ----------- |
+| **Register Token Async** | `Token: FString`, `Platform: ECometChatPushPlatform`, `ProviderId: FString` | `FString` | Register a device push token. |
+| **Unregister Token Async** | — | — | Unregister the device's push token. |
+| **Fetch Preferences Async** | — | `FCometChatNotificationPreferences` | Fetch notification preferences. |
+| **Update Preferences Async** | `Preferences: FCometChatNotificationPreferences` | `FCometChatNotificationPreferences` | Update notification preferences. |
+| **Reset Preferences Async** | — | `FCometChatNotificationPreferences` | Reset preferences to defaults. |
+| **Mute Conversations Async** | `Conversations: TArray<FCometChatMutedConversation>` | — | Mute one or more conversations. |
+| **Unmute Conversations Async** | `Conversations: TArray<FCometChatUnmutedConversation>` | — | Unmute one or more conversations. |
+| **Get Muted Conversations Async** | — | `TArray<FCometChatMutedConversation>` | List the user's muted conversations. |
 
 ### Moderation
 
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
-| **Flag Message Async** | `MessageId: FString`, `FlagDetail: FCometChatFlagDetail` | — | Flag a message for moderation. |
+| **Flag Message Async** | `MessageId: int64`, `FlagDetail: FCometChatFlagDetail` | — | Flag a message for moderation review. |
 | **Get Flag Reasons Async** | — | `TArray<FCometChatFlagReason>` | Fetch available flag/report reasons. |
 
-### Reactions
+### Extensions
 
 | Node | Parameters | Success Output | Description |
 | ---- | ---------- | -------------- | ----------- |
-| **Add Reaction Async** | `MessageId: int64`, `Reaction: FString` | `FCometChatMessage` | React to a message with an emoji. |
-| **Remove Reaction Async** | `MessageId: int64`, `Reaction: FString` | `FCometChatMessage` | Remove your reaction from a message. |
-| **Fetch Reactions Async** | `Request: FCometChatReactionsRequest` | `TArray<FCometChatReaction>` | Fetch the individual users who reacted to a message with a given emoji. |
-
-<Tip>
-`FCometChatMessage.Reactions` (a `TArray<FCometChatReactionCount>`) already gives you per-emoji totals and whether the logged-in user reacted — enough to render reaction pills. Only call **Fetch Reactions Async** when you need the list of *who* reacted (e.g., a "seen by" tooltip on a reaction pill).
-</Tip>
+| **Call Extension Async** | `Slug: FString`, `Method: FString`, `Endpoint: FString`, `BodyJson: FString` | `FString` | Call a CometChat extension's REST endpoint and return its raw JSON response. |
 
 ---
 
@@ -162,6 +253,31 @@ All delegates are `UPROPERTY(BlueprintAssignable)` on `UCometChatSubsystem`. The
 | `OnGroupMemberScopeChanged` | `FCometChatScopeChangeEvent` | Member scope changed |
 | `OnMemberAddedToGroup` | `FCometChatAction, FCometChatUser, FCometChatUser, FCometChatGroup` | Member added |
 
+### CallListener
+
+| Delegate | Payload Type | Fires When |
+| -------- | ------------ | ---------- |
+| `OnIncomingCallReceived` | `FCometChatCall` | An incoming call arrives |
+| `OnOutgoingCallAccepted` | `FCometChatCall` | Your outgoing call is accepted |
+| `OnOutgoingCallRejected` | `FCometChatCall` | Your outgoing call is rejected |
+| `OnIncomingCallCancelled` | `FCometChatCall` | An incoming call is cancelled by the caller |
+| `OnCallEndedMessageReceived` | `FCometChatCall` | A call-ended message arrives |
+
+### OngoingCallListener
+
+| Delegate | Payload Type | Fires When |
+| -------- | ------------ | ---------- |
+| `OnCallUserJoined` | `FCometChatUser` | A user joins the ongoing call |
+| `OnCallUserLeft` | `FCometChatUser` | A user leaves the ongoing call |
+| `OnCallError` | `FCometChatError` | An error occurs during the call |
+| `OnOngoingCallEnded` | `FCometChatCall` | The ongoing call ends |
+| `OnCallUserListUpdated` | `TArray<FCometChatUser>` | The participant list changes |
+| `OnAudioModesUpdated` | `TArray<FCometChatAudioMode>` | Available audio output modes change |
+| `OnRecordingStarted` | `FCometChatUser` | A participant starts recording |
+| `OnRecordingStopped` | `FCometChatUser` | A participant stops recording |
+| `OnUserMuted` | `FCometChatUserMutedEvent` | A participant is muted |
+| `OnCallSwitchedToVideo` | `FCometChatCallSwitchedToVideoEvent` | The call switches from audio to video |
+
 ### ConnectionListener
 
 | Delegate | Payload Type | Fires When |
@@ -186,6 +302,15 @@ All delegates are `UPROPERTY(BlueprintAssignable)` on `UCometChatSubsystem`. The
 | Delegate | Payload Type | Fires When |
 | -------- | ------------ | ---------- |
 | `OnAIAssistantEvent` | `FCometChatAIAssistantEvent` | AI assistant event |
+
+### Push Notifications
+
+Only fire when push is enabled — see [Push Notifications](/sdk/unreal/push-notifications).
+
+| Delegate | Payload Type | Fires When |
+| -------- | ------------ | ---------- |
+| `OnPushNotificationReceived` | `FString` (payload JSON) | A push arrives while the game is running |
+| `OnPushNotificationTapped` | `FString` (payload JSON) | The player taps a CometChat notification (including a cold start) |
 
 ---
 
@@ -451,6 +576,108 @@ Returned by **Fetch Reactions Async** — one entry per user who reacted, as opp
 | `HasMore` | `bool` | Whether more pages exist |
 | `NextCursor` | `int32` | Cursor for next page |
 
+### FCometChatPresence
+
+Legacy presence payload (`OnPresenceChanged`).
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `Uid` | `FString` | The user whose presence changed |
+| `Status` | `ECometChatPresenceStatus` | `Online`, `Offline`, or `Away` |
+| `LastActiveAt` | `int64` | Unix timestamp of last activity |
+
+### FCometChatCall
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `BaseMessage` | `FCometChatMessage` | The underlying call message |
+| `SessionId` | `FString` | Unique call session identifier |
+| `CallStatus` | `FString` | `initiated`, `ongoing`, `ended`, `rejected`, `busy`, `cancelled`, `unanswered` |
+| `Action` | `FString` | Call action type |
+| `InitiatedAt` | `int64` | When the call was initiated |
+| `JoinedAt` | `int64` | When the local user joined |
+| `CallInitiator` | `FCometChatUser` | The user who started the call |
+| `CallReceiverUser` | `FCometChatUser` | The receiver (for 1:1 calls) |
+| `CallReceiverGroup` | `FCometChatGroup` | The receiver (for group calls) |
+
+### FCometChatAudioMode
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `Mode` | `FString` | Audio output mode (e.g. `speaker`, `earpiece`, `bluetooth`) |
+| `bIsSelected` | `bool` | Whether this mode is currently active |
+
+### FCometChatUserMutedEvent
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `MutedUser` | `FCometChatUser` | The user who was muted |
+| `MutedBy` | `FCometChatUser` | The user who performed the mute |
+
+### FCometChatCallSwitchedToVideoEvent
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `SessionId` | `FString` | The call session |
+| `InitiatedBy` | `FCometChatUser` | Who requested the switch to video |
+| `AcceptedBy` | `FCometChatUser` | Who accepted the switch |
+
+### FCometChatNotificationPreferences
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `bUsePrivacyTemplate` | `bool` | Use the app's privacy template |
+| `OneOnOne` | `FCometChatOneOnOnePreferences` | 1:1 notification preferences |
+| `Group` | `FCometChatGroupPreferences` | Group notification preferences |
+| `Mute` | `FCometChatMutePreferences` | Do-not-disturb / mute schedule |
+
+### FCometChatOneOnOnePreferences
+
+Each field is `int32` where `1` = notifications on, `0` = off.
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `Messages` | `int32` | New 1:1 messages |
+| `Replies` | `int32` | Replies |
+| `Reactions` | `int32` | Reactions |
+
+### FCometChatGroupPreferences
+
+Each field is `int32` (`1` = on, `0` = off): `Messages`, `Replies`, `Reactions`, `MemberLeft`, `MemberAdded`, `MemberJoined`, `MemberKicked`, `MemberBanned`, `MemberUnbanned`, `MemberScopeChanged`.
+
+### FCometChatMutePreferences
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `DND` | `int32` | Do-not-disturb toggle (`1` = on) |
+| `ScheduleJson` | `FString` | JSON mute schedule |
+
+### FCometChatMutedConversation
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `Id` | `FString` | Conversation peer UID or group GUID |
+| `Type` | `FString` | `user` or `group` |
+| `Until` | `int64` | Unix timestamp to mute until (`0` for indefinite) |
+
+### FCometChatUnmutedConversation
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `Id` | `FString` | Conversation peer UID or group GUID |
+| `Type` | `FString` | `user` or `group` |
+
+### FCometChatConversationUpdateSettings
+
+Returned by `GetConversationUpdateSettings()` — which message categories bump a conversation's last-message/unread state.
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `bCallActivities` | `bool` | Call activity messages update the conversation |
+| `bGroupActions` | `bool` | Group action messages update the conversation |
+| `bCustomMessages` | `bool` | Custom messages update the conversation |
+| `bMessageReplies` | `bool` | Thread replies update the conversation |
+
 ---
 
 ## Request Builder Structs
@@ -587,6 +814,14 @@ Returned by **Fetch Reactions Async** — one entry per user who reacted, as opp
 | `Pending` | Message is pending moderation review |
 | `Approved` | Message has been approved |
 | `Disapproved` | Message has been rejected |
+
+### ECometChatPushPlatform
+
+| Value | Description |
+| ----- | ----------- |
+| `FCM` | Firebase Cloud Messaging (Android) |
+| `APNS` | Apple Push Notification service (iOS) |
+| `APNS_VOIP` | Apple PushKit VoIP (iOS call notifications) |
 
 ---
 
