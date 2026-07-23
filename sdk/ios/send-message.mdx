@@ -219,107 +219,15 @@ mediaMessage.tags = ["vacation"]
 
 ## Multiple Attachments in a Media Message
 
-To send several attachments in one media message, use the upload-first flow: upload the files with `CometChat.uploadFiles()`, collect the returned `Attachment` objects, then send a single `MediaMessage` carrying all of them. Uploading before sending gives you per-file progress, per-file error handling, and the ability to cancel individual uploads — which is what a WhatsApp-style attachment tray needs.
+The SDK supports sending multiple attachments in a single media message. A media message can carry up to a configurable maximum number of attachments (default **10**, controlled by the `file.count.max` app setting) — read the current limit at runtime with `CometChat.getMaxFileCount()`.
 
-### Step 1: Upload the Files
+<Tip>
+**Recommended: upload first, then send.** For a real composer — where you want a progress bar per file, and the ability to remove or retry individual files — create an upload request with [`CometChat.createUploadFileRequest()`](/sdk/ios/upload-files), upload your files through it, then collect the resulting `Attachment`s (`request.getAttachments()`) and set them here on the message's `attachments` property. This decouples the (slow, cancellable) upload from the (instant) send. See [Upload Files & Send Attachments](/sdk/ios/upload-files) for the full flow.
+</Tip>
 
-Pass the files and a `MediaCallbackListener` to receive per-file callbacks. Two overloads are available — an array (file IDs are generated for you) and a dictionary keyed by your own file IDs (use this when your UI needs to correlate callbacks to tray items):
+There are two ways to send a multi-attachment media message using the CometChat SDK:
 
-```swift
-let files = [
-  File(name: "photo-1.jpg", data: photo1Data),
-  File(name: "photo-2.jpg", data: photo2Data),
-  File(name: "report.pdf", data: pdfData)
-]
-
-CometChat.uploadFiles(files: files, listener: self)
-
-// Or, with your own file IDs:
-CometChat.uploadFiles(files: ["tile-1": files[0], "tile-2": files[1]], listener: self)
-```
-
-Implement `MediaCallbackListener` to track each file:
-
-```swift
-extension MyComposer: MediaCallbackListener {
-
-  // Required — the file is uploaded; keep the Attachment for the message.
-  func onSuccess(fileId: String, attachment: Attachment) {
-    uploadedAttachments.append(attachment)
-  }
-
-  // Optional — per-file upload progress.
-  func onProgress(fileId: String, bytesUploaded: Int64, totalBytes: Int64) {
-    updateProgress(fileId: fileId, fraction: Double(bytesUploaded) / Double(totalBytes))
-  }
-
-  // Optional — the server rejected the file (size or type validation).
-  // Not retryable: retrying can never succeed. Let the user remove the file.
-  func onError(fileId: String, error: CometChatException) {
-    markRejected(fileId: fileId, reason: error.errorDescription)
-  }
-
-  // Optional — the upload failed for a transient reason (network, storage).
-  // Retryable: offer the user a retry, or call uploadFiles again for this file.
-  func onFailure(fileId: String, error: CometChatException) {
-    markFailed(fileId: fileId)
-  }
-}
-```
-
-To cancel an in-flight upload (for example when the user removes a staged file):
-
-```swift
-CometChat.cancelFile(fileId: "tile-1")
-```
-
-### Step 2: Send the Message
-
-Once every upload has succeeded, attach the collected `Attachment` objects to a single `MediaMessage` and send it:
-
-```swift
-let mediaMessage = MediaMessage(receiverUid: receiverId, fileurl: "", messageType: .image, receiverType: .user)
-mediaMessage.attachments = uploadedAttachments
-mediaMessage.caption = "Trip photos"
-
-CometChat.sendMediaMessage(message: mediaMessage, onSuccess: { (message) in
-  print("Message sent successfully")
-}, onError: { (error) in
-  print("Message sending failed: ", error?.errorDescription)
-})
-```
-
-<Warning>
-
-When sending a message built from pre-uploaded attachments, leave the message's `files` property `nil`. Passing an empty `files` array causes the send to fail with an invalid-message error, even though `attachments` is populated.
-
-</Warning>
-
-### Upload Limits
-
-The per-message file count and per-file size are governed by your app's settings (configured in the CometChat dashboard) and can be read at runtime:
-
-```swift
-let maxFiles = CometChat.getMaxFileCount()   // file.count.max — defaults to 10
-let maxBytes = CometChat.getMaxFileSize()    // file.size.max — defaults to 100 MB
-```
-
-Use these to cap your picker's selection and pre-validate file sizes before uploading. The SDK also validates each file's size before requesting an upload URL, and the server validates size and MIME type when issuing upload URLs — a file that fails validation is reported through `onError` while the rest of the batch continues.
-
-### Error Codes
-
-| Code | Meaning | Retryable |
-| --- | --- | --- |
-| `ERR_FILE_TOO_LARGE` | The file exceeds the `file.size.max` setting | No |
-| `ERR_FILE_DATA_EMPTY` | The `File` has no data | No |
-| `ERR_PRESIGNED_URL_FAILED` | The server did not issue an upload URL for the file | No |
-| `ERR_S3_UPLOAD_FAILED` | Uploading the bytes to storage failed | Yes |
-| `ERR_UPLOAD_QUEUE_FULL` | Too many uploads are already queued | Yes (after queue drains) |
-| `ERR_INVALID_URL` | The upload URL returned by the server was malformed | No |
-
-### Legacy: Direct Send with Files
-
-The older direct-send form (version 3.0.906 & above) still works: pass `File` objects on the message itself and the SDK uploads them as part of the send. It offers no per-file progress, cancellation, or per-file errors, so prefer the upload-first flow above for new integrations.
+1. **By providing an array of files:** You can share an array of `File` objects while creating an object of the MediaMessage class. When the media message is sent using the `sendMediaMessage()` method, the files are uploaded to the CometChat servers & the URLs of the files are sent in the success response of the `sendMediaMessage()` method. This is the simplest path, but it gives no upload progress and no per-file cancel/retry — for that, [upload first](/sdk/ios/upload-files).
 
 ```swift
 let receiverId = "cometchat-uid-1"
@@ -331,7 +239,7 @@ var files = [File]()
 files.append(File(name: "FileName 1", data: data))
 files.append(File(name: "FileName 2", data: data1))
 
-let mediaMessage = MediaMessage(receiverUid: receiverId, files: files, messageType: .file, receiverType: .user)
+let mediaMessage = MediaMessage(receiverUid: receiverId, files: files, messageType: .image, receiverType: .user)
 
 CometChat.sendMediaMessage(message: mediaMessage, onSuccess: { (message) in
   print("Message sent successfully")
@@ -339,6 +247,43 @@ CometChat.sendMediaMessage(message: mediaMessage, onSuccess: { (message) in
   print("Message sending failed: ", error?.errorDescription)
 })
 ```
+
+The `MediaMessage` class constructor takes the following parameters:
+
+| Parameter | Description | Required |
+| --- | --- | --- |
+| `receiverUid` | UID of the user or GUID of the group | Yes |
+| `files` | Array of `File` objects to upload and attach | Yes |
+| `messageType` | `.image`, `.video`, `.audio`, or `.file` | Yes |
+| `receiverType` | `.user` or `.group` | Yes |
+
+2. **By providing the URL of the multiple files:** The second way to send multiple attachments using the CometChat SDK is to provide the SDK with `Attachment` objects that already point at files hosted on your servers or any cloud storage. This is also the path the [upload-then-send flow](/sdk/ios/upload-files) uses — the `Attachment`s from an upload request's `getAttachments()` are ready to set straight on the message's `attachments` property. For more information, you can refer to the below code snippet:
+
+```swift
+let receiverId = "cometchat-uid-1"
+
+let attachments = [
+  Attachment(fileName: "photo-1", fileExtension: "jpg", fileMimeType: "image/jpeg", fileUrl: "https://your-storage.example.com/photo-1.jpg"),
+  Attachment(fileName: "photo-2", fileExtension: "jpg", fileMimeType: "image/jpeg", fileUrl: "https://your-storage.example.com/photo-2.jpg")
+]
+
+let mediaMessage = MediaMessage(receiverUid: receiverId, fileurl: "", messageType: .image, receiverType: .user)
+mediaMessage.attachments = attachments
+mediaMessage.caption = "Trip photos"
+
+CometChat.sendMediaMessage(message: mediaMessage, onSuccess: { (message) in
+  print("Message sent successfully")
+}, onError: { (error) in
+  print("Message sending failed: ", error?.errorDescription)
+})
+```
+
+<Warning>
+
+When sending a message built from pre-uploaded or already-hosted attachments, leave the message's `files` property `nil` — build the message with the `fileurl:` constructor and an empty string. Passing an empty `files` array causes the send to fail with an invalid-message error, even though `attachments` is populated.
+
+</Warning>
+
 
 ## Custom Message
 
