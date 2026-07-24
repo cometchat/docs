@@ -1,0 +1,253 @@
+---
+title: "Upload Files & Send Attachments"
+sidebarTitle: "Upload Files"
+description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
+---
+
+`CometChat.createUploadFileRequest(receiverId, receiverType)` returns an **`UploadFileRequest`** — the entry point for uploading files **directly to storage** with **per-file progress, success, and failure**. Upload is **decoupled from sending**: each uploaded file yields an `Attachment` (carrying a hosted URL), which you then attach to a `MediaMessage` and send with [`sendMediaMessage()`](/sdk/flutter/send-message#media-message).
+
+A request object is scoped to **one destination** (`receiverId` / `receiverType`) and **one upload batch**. This is the recommended way to build a **multi-attachment composer**: create a request, upload a batch of files, show a progress bar per file, let the user remove or retry individual files, then send them as a single media message with multiple attachments (or split across several).
+
+<Info>
+**Why upload separately instead of passing files to `sendMediaMessage()`?**
+
+The classic path (passing a `files` list straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
+</Info>
+
+## The upload-then-send flow
+
+<Steps>
+  <Step title="Create a request">
+    Call `CometChat.createUploadFileRequest(receiverId, receiverType)`. The **recipient** is required — the server uses it to apply role- and scope-based access control before issuing upload URLs.
+  </Step>
+  <Step title="Upload">
+    Call `request.uploadAttachments(items, listener)`, where each `UploadAttachment` pairs a file with an **app-supplied `fileId`** (required) that is echoed back on every event, so you can map callbacks to your UI rows. Validation, presigning, and the byte transfer run asynchronously and report through the listener.
+  </Step>
+  <Step title="Track progress & handle failures">
+    Your `UploadFileListener` receives `onFileProgress` per file, then `onFileUploaded` (success), `onFileError` (rejected — not retryable), or `onFileFailure` (failed — retryable). Use `request.removeAttachment()` or `request.retryAttachment()` as the user acts.
+  </Step>
+  <Step title="Collect attachments">
+    Each `onFileUploaded` hands you an `Attachment` with a hosted URL. You can also read them from the request at any time with `request.getAttachments()`.
+  </Step>
+  <Step title="Build & send the message">
+    Put the attachments on a `MediaMessage` with `attachments:` and call `sendMediaMessage()`. Because the attachments already have URLs, the message is sent as JSON — no re-upload.
+  </Step>
+  <Step title="Clean up">
+    Call `request.clearAll()` after a successful send (or to abandon the composer) to release the batch from memory.
+  </Step>
+</Steps>
+
+## Create an upload request
+
+Create an `UploadFileRequest` scoped to one destination, then upload files into it. The request owns a single **batch** — every file shares one `batchId` — and you pair each file with a **`fileId`** you choose, so you can correlate progress and errors back to your own UI.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request = CometChat.createUploadFileRequest(
+  "cometchat-uid-1",               // receiverId
+  CometChatConversationType.user,  // receiverType — "user" or "group"
+);
+
+request.uploadAttachments(
+  [
+    UploadAttachment("img1",
+      UploadFile.fromPath("/storage/emulated/0/Download/image1.jpg", size: 482113)),
+    UploadAttachment("clip1",
+      UploadFile.fromPath("/storage/emulated/0/Download/clip.mp4", size: 8552499)),
+  ],
+  MyUploader(), // per-call listener — see "Track progress" below
+);
+
+debugPrint(request.getBatchId()); // the shared batch id
+```
+
+</Tab>
+
+</Tabs>
+
+Call `uploadAttachments` again on the **same** request to add more files to the same batch (the user picks more, pastes, or drags another in). For a single file, `request.uploadAttachment(fileId, file, listener)` is the convenience form.
+
+On web — or anywhere you only hold bytes, such as a clipboard paste — build the file from bytes instead:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+UploadFile.fromBytes(pickedBytes, name: "image1.jpg", mimeType: "image/jpeg");
+```
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+`size` must be accurate — the storage upload policy allows only a ±10% tolerance, and a file with an unknown or zero size is rejected before any upload starts.
+</Warning>
+
+## Configure the request
+
+`receiverId` / `receiverType` are fixed when you create the request; the server authorizes every upload against that conversation once role-based access control is enabled. The rest are optional and must be set **before** the batch is first used (they throw once it is):
+
+| Method | Default | Description |
+| --- | --- | --- |
+| `setBatchId(String)` | auto UUID | Reuse a known batch id — e.g. to tie the SDK batch to your own group. Omit to let the SDK generate one. |
+| `setConcurrency(int)` | `1` | How many files upload at once. Sequential by default — parallel large uploads on a cellular link tend to stall each other. |
+| `setParentMessageId(int)` | — | Marks the batch as a thread reply; the parent id is sent with every presign. Omit for a top-level message. |
+
+## Track progress and completion
+
+Pass an `UploadFileListener` to `uploadAttachments` (it receives that call's files), or register a batch-wide one with `request.addUploadListener(...)`. `UploadFileListener` ships default no-op callbacks, so extend it and override only the ones you need.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class MyUploader extends UploadFileListener {
+  @override
+  void onFileProgress(String fileId, int loaded, int total, int percent) {
+    debugPrint("$fileId — $percent%");
+  }
+
+  @override
+  void onFileUploaded(String fileId, Attachment attachment) {
+    // Keep `attachment` — you attach it to the message on send.
+  }
+
+  @override
+  void onFileError(String fileId, CometChatException error) {
+    // Rejected. NOT retryable (too large, wrong type, over the count).
+  }
+
+  @override
+  void onFileFailure(String fileId, CometChatException error) {
+    // Transient. Retryable (network dropped, storage hiccup).
+  }
+
+  @override
+  void onComplete(UploadResult result) {
+    // result.successful / result.rejected / result.failed
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+`onFileError` and `onFileFailure` are deliberately different: an **error** will never succeed as-is, so surface it and let the user remove the file; a **failure** is worth a retry. `onComplete` fires when the batch drains — nothing left in flight.
+
+You can also poll the batch at any point instead of tracking events:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+request.getStatus();          // UploadStatus.inProgress or UploadStatus.idle
+request.getAttachmentCount(); // files in any state — the count for file.count.max
+request.getAttachments();     // the Attachment objects uploaded so far
+```
+
+</Tab>
+
+</Tabs>
+
+## Retry, remove, and clear
+
+<Tabs>
+<Tab title="Dart">
+```dart
+// Retry one transiently-failed file (onFileFailure), from its retained bytes.
+request.retryAttachment(fileId);
+
+// Remove one file from the batch (aborts it if still in flight).
+request.removeAttachment(fileId);
+
+// Abandon the whole batch — the user closed the composer — or release it
+// after a successful send.
+request.clearAll();
+```
+
+</Tab>
+
+</Tabs>
+
+`removeAttachment` is safe in any state and frees the file's slot against `file.count.max`, so the user can pick a replacement. `retryAttachment` is a no-op on a rejected file (`onFileError` — not retryable).
+
+## Read the limits
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.getMaxAttachmentCount(); // file.count.max — default 10
+CometChat.getMaxAttachmentSize();  // file.size.max  — default 100 MB (bytes)
+```
+
+</Tab>
+
+</Tabs>
+
+Use `getMaxAttachmentCount()` to cap your picker so the user cannot select more than the message allows, and `getMaxAttachmentSize()` to reject an over-sized file before uploading it.
+
+## Send the uploaded attachments
+
+Attach the `Attachment` objects the batch produced — the ones you kept from `onFileUploaded`, or `request.getAttachments()` — to one `MediaMessage`. Use `attachments` (not `files` — the bytes are already on storage), and set `type` to the kind those attachments are. Call `request.clearAll()` once the message is sent to release the batch.
+
+<Note>
+Keep one message to a single kind. `type` is what a receiving UI picks its bubble from, so images in a message typed `file` render as file cards rather than a grid. If the user picked a mix, group the attachments by kind and send one message per kind — this is exactly what the UI Kit's composer does, tagging each message with a shared `batchId` so they display as one group.
+</Note>
+
+<Tabs>
+<Tab title="Dart">
+```dart
+MediaMessage mediaMessage = MediaMessage(
+  receiverUid: "cometchat-uid-1",
+  receiverType: CometChatConversationType.user,
+  type: CometChatMessageType.image,
+  attachments: uploadedAttachments, // collected from onFileUploaded
+  caption: "From the trip",         // optional
+);
+
+await CometChat.sendMediaMessage(mediaMessage,
+  onSuccess: (MediaMessage message) {
+    debugPrint("Sent with ${message.attachments?.length} attachments");
+  },
+  onError: (CometChatException e) {
+    debugPrint("Sending failed: ${e.message}");
+  }
+);
+```
+
+</Tab>
+
+</Tabs>
+
+## Error handling
+
+| Code | Retryable | Meaning |
+| --- | --- | --- |
+| `ERR_FILE_SIZE_EXCEEDED` | No | Larger than `file.size.max`. |
+| `ERR_FILE_COUNT_EXCEEDED` | No | The batch is already at `file.count.max`. |
+| `ERR_INVALID_FILE_OBJECT` | No | Missing/zero size, or an unreadable source. |
+| `ERR_S3_UPLOAD_FAILED` | Yes | Storage rejected the transfer. |
+| `ERR_CONNECTION` | Yes | Network error while uploading. |
+
+The non-retryable codes arrive via `onFileError`, the retryable ones via `onFileFailure`.
+
+<Warning>
+Upload state is in-memory and does not survive the app being killed — a batch cannot be resumed after a restart. A file with no progress for 30 seconds is treated as stalled and failed (retryable).
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Send A Message" icon="paper-plane" href="/sdk/flutter/send-message">
+    Send text, media, and custom messages
+  </Card>
+  <Card title="Multiple Attachments" icon="paperclip" href="/sdk/flutter/send-message#send-multiple-media-files">
+    Send several attachments in one media message
+  </Card>
+  <Card title="Receive Messages" icon="inbox" href="/sdk/flutter/receive-messages">
+    Listen for incoming messages in real-time
+  </Card>
+  <Card title="Threaded Messages" icon="comments" href="/sdk/flutter/threaded-messages">
+    Upload into a thread with setParentMessageId
+  </Card>
+</CardGroup>
