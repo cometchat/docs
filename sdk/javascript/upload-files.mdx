@@ -149,7 +149,7 @@ request.uploadAttachments(items, listener);
 <Note>
 **`fileId` is caller-supplied and required.** The SDK does not generate one — you provide a stable id per file (echoed back unchanged on every event) so you can line each file up with its UI row. A `fileId` already present in the batch is **silently skipped** (deduped), so re-adding the same file is a no-op. `file` must be a platform-native `File`/`Blob` (the pipeline needs a numeric `size`).
 
-Validation, presigning, and the byte transfer all run **asynchronously** after `uploadAttachments()` returns — track outcomes through the listener.
+Validation, presigning, and the byte transfer all run **asynchronously** after `uploadAttachments()` returns — track outcomes through the listener. Each file is presigned and uploaded **independently**, so one file being rejected or failing never affects the others in the batch.
 </Note>
 
 ## The UploadFileListener
@@ -318,7 +318,7 @@ request.clearAll();
 | Method                     | Behavior                                                                                                                    |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `removeAttachment(fileId)` | Removes one file from the batch. If it's still uploading, the transfer is aborted **silently** (no `onFileFailure`); if it already uploaded, it's dropped from the set. |
-| `retryAttachment(fileId)`  | Re-uploads one **failed** file, re-presigning first if the earlier upload URL expired. No-op for rejected or uploaded files. |
+| `retryAttachment(fileId)`  | Re-uploads one **failed** file, re-presigning first if the earlier upload URL expired. No-op for already-rejected or uploaded files. |
 | `clearAll()`               | Aborts any in-flight uploads and drops the whole batch from SDK memory.                                                     |
 
 <Note>
@@ -453,7 +453,7 @@ The **per-file size** limit is checked at upload time (before the byte transfer)
 The SDK handles a few transport edge cases for you:
 
 - **Stalled uploads** — if a file makes no progress for 30 seconds, its upload is aborted and reported through `onFileFailure` with `ERR_UPLOAD_STALLED`. Retry it with `retryAttachment()`.
-- **Expired upload URLs** — the pre-signed upload URL for each file is valid for 15 minutes. `retryAttachment()` automatically requests a fresh URL if the original has expired, so retries keep working even after a long delay.
+- **Expired upload URLs** — the pre-signed upload URL for each file is valid for 15 minutes. `retryAttachment()` automatically requests a fresh URL if the original has expired, so retries keep working even after a long delay. If that fresh request is permanently denied (e.g. permissions changed), the file moves to **rejected** (`onFileError`) rather than looping as a failure.
 - **Storage errors** — if storage rejects the upload, the failure surfaces through `onFileFailure` with `ERR_S3_UPLOAD_FAILED` and, where available, the storage's own message.
 
 ## Error handling
@@ -466,7 +466,7 @@ Every error delivered to `onFileError` / `onFileFailure` (and rejections from `s
 | `ERR_FILE_SIZE_EXCEEDED`   | `onFileError`             | No        | The file is larger than `file.size.max`.                          |
 | `ERR_PERMISSION_DENIED`    | `onFileError`             | No        | The sender isn't allowed to upload media to this `receiverId` / `receiverType` (role/scope access control). |
 | `ERR_FILE_COUNT_EXCEEDED`  | `sendMediaMessage()`      | No        | More attachments on the message than `file.count.max` allows.     |
-| `ERR_S3_UPLOAD_FAILED`     | `onFileFailure`           | Yes       | Storage rejected the upload, or the transport errored.            |
+| `ERR_S3_UPLOAD_FAILED`     | `onFileFailure`, `onFileError` | Yes / No | Storage rejected the upload or the transport errored (`onFileFailure`, retryable); also the fallback when the server declines a file with no specific code (`onFileError`, not retryable). |
 | `ERR_PRESIGNED_URL_EXPIRED`| `onFileFailure`           | Yes       | The pre-signed URL expired (a retry re-presigns automatically).   |
 | `ERR_UPLOAD_STALLED`       | `onFileFailure`           | Yes       | No progress for 30s; the upload was aborted.                      |
 
