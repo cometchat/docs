@@ -1,0 +1,578 @@
+---
+title: "Upload Files & Send Attachments"
+sidebarTitle: "Upload Files"
+description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
+---
+
+`CometChat.createUploadFileRequest(receiverId, receiverType)` returns an **`UploadFileRequest`** — the entry point for uploading files **directly to storage** with **per-file progress, success, and failure**. Upload is **decoupled from sending**: each uploaded file yields an `Attachment` (carrying a hosted URL), which you then attach to a `MediaMessage` and send with [`sendMediaMessage()`](/sdk/android/v5/send-message#media-message).
+
+A request object is scoped to **one destination** (`receiverId` / `receiverType`) and **one upload batch**. This is the recommended way to build a **multi-attachment composer**: create a request, upload a batch of files, show a progress bar per file, let the user remove or retry individual files, then send them as a single media message with multiple attachments (or split across several).
+
+<Info>
+**Why upload separately instead of passing files to `sendMediaMessage()`?**
+
+The classic path (passing a `File`, or a list of files, straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
+</Info>
+
+## The upload-then-send flow
+
+<Steps>
+  <Step title="Create a request">
+    Call `CometChat.createUploadFileRequest(receiverId, receiverType)`. The **recipient** is required — the server uses it to apply role- and scope-based access control before issuing upload URLs.
+  </Step>
+  <Step title="Upload">
+    Call `request.uploadAttachments(items, listener)`, where each `UploadFileItem` pairs a file with an **app-supplied `fileId`** (required) that is echoed back on every event, so you can map callbacks to your UI rows. Validation, presigning, and the byte transfer run asynchronously and report through the listener.
+  </Step>
+  <Step title="Track progress & handle failures">
+    Your `UploadFileListener` receives `onFileProgress` per file, then `onFileUploaded` (success), `onFileError` (rejected — not retryable), or `onFileFailure` (failed — retryable). Use `request.removeAttachment()` or re-upload the same `fileId` as the user acts.
+  </Step>
+  <Step title="Collect attachments">
+    Each `onFileUploaded` hands you an `Attachment` with a hosted URL. You can also read them from the request at any time with `request.getAttachments()` / `request.getAttachmentsByType()`.
+  </Step>
+  <Step title="Build & send the message">
+    Put the attachments on a `MediaMessage` with `setAttachments(...)` and call `sendMediaMessage()`. Because the attachments already have URLs, the message is sent as JSON — no re-upload.
+  </Step>
+  <Step title="Clean up">
+    Call `request.clearAll()` after a successful send (or to abandon the composer) to release the batch from memory.
+  </Step>
+</Steps>
+
+## Create an upload request
+
+<Tabs>
+<Tab title="Java">
+```java
+String receiverId = "cometchat-uid-1";
+
+UploadFileRequest request = CometChat.createUploadFileRequest(
+    receiverId,
+    CometChatConstants.RECEIVER_TYPE_USER
+);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val receiverId = "cometchat-uid-1"
+
+val request = CometChat.createUploadFileRequest(
+    receiverId,
+    CometChatConstants.RECEIVER_TYPE_USER
+)
+```
+</Tab>
+</Tabs>
+
+`createUploadFileRequest()` accepts:
+
+| Parameter      | Type     | Description                                                                              | Required |
+| -------------- | -------- | ---------------------------------------------------------------------------------------- | -------- |
+| `receiverId`   | `String` | UID of the user or GUID of the group the files will be sent to.                          | Yes      |
+| `receiverType` | `String` | `CometChatConstants.RECEIVER_TYPE_USER` or `CometChatConstants.RECEIVER_TYPE_GROUP`.     | Yes      |
+
+<Warning>
+**The recipient must match the message you'll eventually send.** `receiverId` / `receiverType` are sent to the upload-authorization (presign) endpoint, which enforces the sender's **role- and scope-based access control** for that conversation *before* any bytes transfer. If the server declines a file (billing, plan, or content-type policy), it is **rejected** via `onFileError` — not retryable. Pass the same recipient you'll set on the `MediaMessage` at send time.
+</Warning>
+
+## Upload files
+
+Build an `UploadFileListener` and call `uploadAttachments()` (or `uploadAttachment()` for a single file). Each `UploadFileItem` pairs a file with a **required, app-supplied `fileId`**. An item is backed by either a `File` or a content `Uri` — Uri-backed items (from the Android document/media pickers) need the `Context` overload so the SDK can resolve each Uri's name, size, and mime type.
+
+<Tabs>
+<Tab title="Java">
+```java
+// Pair each file with an id you own, so you can map events back to your UI.
+List<UploadFileItem> items = new ArrayList<>();
+items.add(new UploadFileItem(UUID.randomUUID().toString(), new File("/storage/emulated/0/Download/photo-1.jpg")));
+items.add(new UploadFileItem(UUID.randomUUID().toString(), new File("/storage/emulated/0/Download/photo-2.jpg")));
+
+UploadFileListener listener = new UploadFileListener() {
+    @Override
+    public void onFileProgress(String fileId, long loaded, long total, int percent) {
+        Log.d(TAG, fileId + ": " + percent + "%");
+    }
+
+    @Override
+    public void onFileUploaded(String fileId, Attachment attachment) {
+        Log.d(TAG, fileId + " uploaded -> " + attachment.getFileUrl());
+    }
+
+    @Override
+    public void onFileError(String fileId, CometChatException error) {
+        Log.d(TAG, fileId + " rejected (not retryable): " + error.getCode());
+    }
+
+    @Override
+    public void onFileFailure(String fileId, CometChatException error) {
+        Log.d(TAG, fileId + " failed (retryable): " + error.getCode());
+    }
+
+    @Override
+    public void onComplete(UploadResult result) {
+        Log.d(TAG, "Batch settled: " + result);
+    }
+};
+
+request.uploadAttachments(items, listener);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// Pair each file with an id you own, so you can map events back to your UI.
+val items = listOf(
+    UploadFileItem(UUID.randomUUID().toString(), File("/storage/emulated/0/Download/photo-1.jpg")),
+    UploadFileItem(UUID.randomUUID().toString(), File("/storage/emulated/0/Download/photo-2.jpg"))
+)
+
+val listener = object : UploadFileListener() {
+    override fun onFileProgress(fileId: String, loaded: Long, total: Long, percent: Int) {
+        Log.d(TAG, "$fileId: $percent%")
+    }
+
+    override fun onFileUploaded(fileId: String, attachment: Attachment) {
+        Log.d(TAG, "$fileId uploaded -> ${attachment.fileUrl}")
+    }
+
+    override fun onFileError(fileId: String, error: CometChatException) {
+        Log.d(TAG, "$fileId rejected (not retryable): ${error.code}")
+    }
+
+    override fun onFileFailure(fileId: String, error: CometChatException) {
+        Log.d(TAG, "$fileId failed (retryable): ${error.code}")
+    }
+
+    override fun onComplete(result: UploadResult) {
+        Log.d(TAG, "Batch settled: $result")
+    }
+}
+
+request.uploadAttachments(items, listener)
+```
+</Tab>
+</Tabs>
+
+For files picked through the system pickers (content `Uri`s), use the `Context` overloads:
+
+<Tabs>
+<Tab title="Java">
+```java
+List<UploadFileItem> items = new ArrayList<>();
+for (Uri uri : pickedUris) {
+    items.add(new UploadFileItem(UUID.randomUUID().toString(), uri));
+}
+request.uploadAttachments(context, items, listener);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val items = pickedUris.map { uri -> UploadFileItem(UUID.randomUUID().toString(), uri) }
+request.uploadAttachments(context, items, listener)
+```
+</Tab>
+</Tabs>
+
+| Method                                                   | Description                                                                                                     |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `uploadAttachments(items, listener)`                     | Upload multiple `File`-backed `UploadFileItem`s. `listener` receives events for these files.                    |
+| `uploadAttachments(context, items, listener)`            | Same, but with a `Context` so content-`Uri`-backed items can be read.                                           |
+| `uploadAttachment(fileId, file, listener)`               | Upload a single `File` under `fileId`.                                                                          |
+| `uploadAttachment(context, fileId, uri, listener)`       | Upload a single content `Uri` under `fileId`.                                                                   |
+
+<Note>
+**`fileId` is app-supplied and required.** The SDK does not generate one — you provide a stable id per file (echoed back unchanged on every event) so you can line each file up with its UI row. The app owns id uniqueness within the batch: **re-using a `fileId` replaces that entry** with a fresh queued upload (aborting the old one if it was in flight) — that is also the [retry path](#remove-retry--clear). `Uri`-backed items uploaded through an overload without a `Context` are rejected as invalid.
+
+Validation, presigning, and the byte transfer all run **asynchronously** after `uploadAttachments()` returns — track outcomes through the listener.
+</Note>
+
+## The UploadFileListener
+
+`UploadFileListener` is an abstract class — override only the callbacks you need. Unlike [`MessageListener`](/sdk/android/v5/receive-messages) or `CallListener`, it is **not** registered globally with a string id; it lives for the duration of the upload batch.
+
+| Callback         | Signature                                          | Fires when                                                                                       |
+| ---------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `onFileProgress` | `(fileId, loaded, total, percent)`                 | Transfer progress for a file. Throttled internally, so it is safe to update the UI on every event. |
+| `onFileUploaded` | `(fileId, attachment)`                             | A file finished uploading. `attachment` is ready to include via `setAttachments(...)`.           |
+| `onFileError`    | `(fileId, error)`                                  | A file was **rejected** — **not retryable** (fix the input or permissions).                      |
+| `onFileFailure`  | `(fileId, error)`                                  | A file's transfer **failed** — **retryable** by re-uploading the same `fileId`.                  |
+| `onComplete`     | `(result)`                                         | The batch drained (no files in flight). Delivers an aggregate [`UploadResult`](#uploadresult).   |
+
+<Warning>
+**Rejected vs. failed — the key distinction.** Exactly one of the two fires per non-successful file. `onFileError` (rejected) means the request itself is unacceptable — an invalid or unreadable file, the size or count limit breached, or a server-side authorization/policy denial at presign time. Retrying won't help; the user must remove or replace the file. `onFileFailure` (failed) means a transient transport problem — network drop, a storage error, an expired upload URL, or a stalled upload. These **can** be retried by re-uploading the same `fileId` through the request.
+</Warning>
+
+### UploadResult
+
+`onComplete` receives the batch's settled state. It fires **each time** the batch drains — including after more files are added and it drains again — and always reflects the **whole batch's** current state, so treat it idempotently (recompute from `result`; *set* your Send-enabled flag, don't toggle it).
+
+| Method            | Returns                        | Description                                                                        |
+| ----------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| `getBatchId()`    | `String`                       | The upload batch this result belongs to.                                           |
+| `getSuccessful()` | `List<UploadResult.Success>`   | Uploaded files — each pairs `getFileId()` with its ready `getAttachment()`.        |
+| `getRejected()`   | `List<UploadResult.Failure>`   | Files reported via `onFileError` — each pairs `getFileId()` with `getError()`. **Not retryable.** |
+| `getFailed()`     | `List<UploadResult.Failure>`   | Files reported via `onFileFailure` — **retryable** by re-uploading the same `fileId`. |
+
+## Configuring the request
+
+Chainable setters let you configure the batch before (or between) uploads:
+
+<Tabs>
+<Tab title="Java">
+```java
+UploadFileRequest request = CometChat.createUploadFileRequest(receiverId, CometChatConstants.RECEIVER_TYPE_USER)
+    .setConcurrency(3)                 // upload up to 3 files at once (default 1, sequential)
+    .setParentMessageId(parentId);     // mark this batch as belonging to a thread
+
+String batchId = request.getBatchId(); // auto-generated UUID unless you set one
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val request = CometChat.createUploadFileRequest(receiverId, CometChatConstants.RECEIVER_TYPE_USER)
+    .setConcurrency(3)                 // upload up to 3 files at once (default 1, sequential)
+    .setParentMessageId(parentId)      // mark this batch as belonging to a thread
+
+val batchId = request.batchId          // auto-generated UUID unless you set one
+```
+</Tab>
+</Tabs>
+
+| Method                        | Description                                                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `setConcurrency(count)`       | How many files upload simultaneously. Default `1` (sequential). Applies to queued files from the next drain; uploads already in flight are never interrupted. |
+| `setBatchId(batchId)`         | Set the batch id all files share. Optional — the request auto-generates a UUID. **Locked once set / once uploading starts.** |
+| `getBatchId()`                | The effective batch id (app-set or auto-generated).                                                               |
+| `setParentMessageId(id)`      | Mark the batch as belonging to a thread — sent to the presign endpoint with every file. Omit for a top-level message. |
+
+<Tip>
+Parallel uploads of large files over cellular data can saturate the connection and stall every file — raise `setConcurrency` only on known-fast networks (ideally network-aware: higher on Wi-Fi, `1` on cellular).
+</Tip>
+
+<Note>
+Each request owns exactly one batch. For separate destinations (e.g. a main conversation and a thread), create a **separate `UploadFileRequest`** for each — their file ids never cross.
+</Note>
+
+### Adding more files to the batch
+
+To add files incrementally (e.g. the user picks more while earlier uploads are still running), just call `uploadAttachments()` again **on the same request** — they join the same batch, and `onComplete` refires when the batch next drains.
+
+## Per-call and global listeners
+
+There are two listener scopes, and events fire on **both** (per-call first):
+
+- **Per-call listener** — the `listener` you pass to `uploadAttachment()` / `uploadAttachments()`. It receives events only for the files in *that* call.
+- **Global batch listener** — registered with `request.addUploadListener(listener)`. It receives events for **every** file across all upload calls on the request. There is a **single global slot**: a later `addUploadListener()` replaces the previous one; `removeUploadListener()` clears it.
+
+<Tabs>
+<Tab title="Java">
+```java
+// One listener for the whole batch, regardless of how many upload calls you make.
+request.addUploadListener(new UploadFileListener() {
+    @Override
+    public void onFileProgress(String fileId, long loaded, long total, int percent) {
+        updateRow(fileId, percent);
+    }
+
+    @Override
+    public void onFileUploaded(String fileId, Attachment attachment) {
+        markUploaded(fileId, attachment);
+    }
+
+    @Override
+    public void onComplete(UploadResult result) {
+        Log.d(TAG, "Whole batch settled: " + result);
+    }
+});
+
+// Later (e.g. on composer unmount):
+request.removeUploadListener();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// One listener for the whole batch, regardless of how many upload calls you make.
+request.addUploadListener(object : UploadFileListener() {
+    override fun onFileProgress(fileId: String, loaded: Long, total: Long, percent: Int) {
+        updateRow(fileId, percent)
+    }
+
+    override fun onFileUploaded(fileId: String, attachment: Attachment) {
+        markUploaded(fileId, attachment)
+    }
+
+    override fun onComplete(result: UploadResult) {
+        Log.d(TAG, "Whole batch settled: $result")
+    }
+})
+
+// Later (e.g. on composer unmount):
+request.removeUploadListener()
+```
+</Tab>
+</Tabs>
+
+## Reading the batch
+
+Query the request's current state at any time — useful when the user hits "send":
+
+| Method                       | Returns              | Notes                                                                                              |
+| ---------------------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| `getAttachment(fileId)`      | `Attachment` or `null` | The uploaded attachment for `fileId`, or `null` if unknown or **not yet uploaded**.               |
+| `getAttachments()`           | `List<Attachment>`   | All **uploaded** attachments in the batch, in the order the files were added.                      |
+| `getAttachmentsByType(type)` | `List<Attachment>`   | Uploaded attachments of one kind (`CometChatConstants.MESSAGE_TYPE_IMAGE` / `_VIDEO` / `_AUDIO` / `_FILE`, derived from each attachment's mime type) — always a list. |
+| `getAttachmentCount()`       | `int`                | Total files in the batch in **any** state (in-progress, failed, rejected, or uploaded).            |
+| `getStatus()`                | `UploadStatus`       | `IN_PROGRESS` while any file is still uploading, else `IDLE` (an empty batch is `IDLE`). `onComplete` fires exactly at the transition to `IDLE`. |
+
+<Note>
+The attachment getters (`getAttachment`, `getAttachments`, `getAttachmentsByType`) return **only uploaded** files, so they're safe to hand straight to `setAttachments()`. `getAttachmentCount()` counts every file regardless of state, so you can compare it against `getAttachments().size()` to see how many are still pending.
+</Note>
+
+## Remove, retry & clear
+
+<Tabs>
+<Tab title="Java">
+```java
+// Remove one file: aborts its in-flight upload (silently — no onFileFailure),
+// or drops it from the batch if it has already uploaded.
+request.removeAttachment(fileId);
+
+// Retry one FAILED file: re-upload it under the SAME fileId. The fresh entry
+// replaces the failed one and re-presigns automatically if the URL expired.
+request.uploadAttachment(fileId, file, listener);
+
+// Release the whole batch from memory, aborting anything still in flight.
+// Call this after a successful send, or to abandon the composer.
+request.clearAll();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+// Remove one file: aborts its in-flight upload (silently — no onFileFailure),
+// or drops it from the batch if it has already uploaded.
+request.removeAttachment(fileId)
+
+// Retry one FAILED file: re-upload it under the SAME fileId. The fresh entry
+// replaces the failed one and re-presigns automatically if the URL expired.
+request.uploadAttachment(fileId, file, listener)
+
+// Release the whole batch from memory, aborting anything still in flight.
+// Call this after a successful send, or to abandon the composer.
+request.clearAll()
+```
+</Tab>
+</Tabs>
+
+| Action     | Call                                    | Behavior                                                                                                                        |
+| ---------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Remove** | `removeAttachment(fileId)`              | Removes one file from the batch. If it's still uploading, the transfer is aborted **silently** (no `onFileFailure`); if it already uploaded, it's dropped from the set (the unreferenced storage object is cleaned up server-side). |
+| **Retry**  | `uploadAttachment(fileId, file, listener)` | Re-uploading the **same `fileId`** replaces the failed entry with a fresh one and re-presigns automatically if the earlier upload URL expired. Don't retry rejected files — the same check would just fail again. |
+| **Clear**  | `clearAll()`                            | Aborts any in-flight uploads and drops the whole batch from SDK memory.                                                          |
+
+<Note>
+There is no auto-clear on send or logout — call `clearAll()` yourself after a successful send (or when abandoning the composer) so the batch doesn't linger in memory.
+</Note>
+
+## Send the uploaded files as a media message
+
+Once your files are uploaded, collect their `Attachment`s (from `request.getAttachments()` or from `result.getSuccessful()` in `onComplete`), set them on a `MediaMessage` built with the **no-file constructor**, and send. One batch can go out as a single multi-attachment message, or you can split the attachments across several messages — e.g. one message per media type using `getAttachmentsByType()`, reusing the same batch id across the sends.
+
+<Tabs>
+<Tab title="Java">
+```java
+String receiverId = "cometchat-uid-1";
+
+UploadFileRequest request = CometChat.createUploadFileRequest(receiverId, CometChatConstants.RECEIVER_TYPE_USER)
+        .setConcurrency(3);
+
+UploadFileListener listener = new UploadFileListener() {
+    @Override
+    public void onFileProgress(String fileId, long loaded, long total, int percent) {
+        updateRow(fileId, percent);
+    }
+
+    @Override
+    public void onFileFailure(String fileId, CometChatException error) {
+        markRetryable(fileId, error); // offer Retry → re-upload the same fileId
+    }
+
+    @Override
+    public void onFileError(String fileId, CometChatException error) {
+        markRejected(fileId, error);  // offer Remove/Replace
+    }
+
+    @Override
+    public void onComplete(UploadResult result) {
+        List<Attachment> attachments = request.getAttachments();
+        if (attachments.isEmpty()) return;
+
+        MediaMessage mediaMessage = new MediaMessage(
+            receiverId,
+            CometChatConstants.MESSAGE_TYPE_IMAGE,   // no raw file — attachments already carry hosted URLs
+            CometChatConstants.RECEIVER_TYPE_USER
+        );
+        mediaMessage.setAttachments(new ArrayList<>(attachments));
+        mediaMessage.setCaption("Trip photos");
+        mediaMessage.setMuid(request.getBatchId()); // reconcile the message with its upload batch
+
+        CometChat.sendMediaMessage(mediaMessage, new CometChat.CallbackListener<MediaMessage>() {
+            @Override
+            public void onSuccess(MediaMessage message) {
+                Log.d(TAG, "Media message sent successfully");
+                request.clearAll(); // release the batch
+            }
+
+            @Override
+            public void onError(CometChatException e) {
+                Log.d(TAG, "Media message sending failed: " + e.getMessage());
+            }
+        });
+    }
+};
+
+List<UploadFileItem> items = new ArrayList<>();
+for (File f : pickedFiles) {
+    items.add(new UploadFileItem(UUID.randomUUID().toString(), f));
+}
+request.uploadAttachments(items, listener);
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val receiverId = "cometchat-uid-1"
+
+val request = CometChat.createUploadFileRequest(receiverId, CometChatConstants.RECEIVER_TYPE_USER)
+    .setConcurrency(3)
+
+val listener = object : UploadFileListener() {
+    override fun onFileProgress(fileId: String, loaded: Long, total: Long, percent: Int) {
+        updateRow(fileId, percent)
+    }
+
+    override fun onFileFailure(fileId: String, error: CometChatException) {
+        markRetryable(fileId, error) // offer Retry → re-upload the same fileId
+    }
+
+    override fun onFileError(fileId: String, error: CometChatException) {
+        markRejected(fileId, error)  // offer Remove/Replace
+    }
+
+    override fun onComplete(result: UploadResult) {
+        val attachments = request.getAttachments()
+        if (attachments.isEmpty()) return
+
+        val mediaMessage = MediaMessage(
+            receiverId,
+            CometChatConstants.MESSAGE_TYPE_IMAGE,   // no raw file — attachments already carry hosted URLs
+            CometChatConstants.RECEIVER_TYPE_USER
+        )
+        mediaMessage.attachments = ArrayList(attachments)
+        mediaMessage.caption = "Trip photos"
+        mediaMessage.muid = request.batchId // reconcile the message with its upload batch
+
+        CometChat.sendMediaMessage(mediaMessage, object : CometChat.CallbackListener<MediaMessage>() {
+            override fun onSuccess(message: MediaMessage) {
+                Log.d(TAG, "Media message sent successfully")
+                request.clearAll() // release the batch
+            }
+
+            override fun onError(e: CometChatException) {
+                Log.d(TAG, "Media message sending failed: ${e.message}")
+            }
+        })
+    }
+}
+
+val items = pickedFiles.map { f -> UploadFileItem(UUID.randomUUID().toString(), f) }
+request.uploadAttachments(items, listener)
+```
+</Tab>
+</Tabs>
+
+<Warning>
+Build the message with the constructor that takes **no files** — `MediaMessage(receiverId, messageType, receiverType)` — when sending pre-uploaded attachments. If you also pass `File` objects, the SDK re-uploads them on send, which defeats the upload-first flow.
+</Warning>
+
+<Note>
+A message's attachments should all match the message's own type — send mixed picks as one message per kind (images → videos → audios → files) using `getAttachmentsByType()`. `sendMediaMessage()` also enforces the **maximum attachments per message** (see [Limits](#limits)); if a batch has more successful uploads than the limit allows, split them across multiple `MediaMessage`s. See [Multiple Attachments in a Media Message](/sdk/android/v5/send-message#multiple-attachments-in-a-media-message).
+</Note>
+
+## Limits
+
+Two limits guard the flow, each read from your app settings (configured in the CometChat dashboard, with a built-in fallback):
+
+| Limit                       | Enforced in                              | App setting      | Default  | On breach                                                                 |
+| --------------------------- | ---------------------------------------- | ---------------- | -------- | ------------------------------------------------------------------------- |
+| **Per-file size**           | `uploadAttachments()`                    | `file.size.max`  | 100 MB   | That file is rejected via `onFileError` with `ERR_FILE_SIZE_EXCEEDED`.    |
+| **Attachments per message** | `uploadAttachments()` and `sendMediaMessage()` | `file.count.max` | 10       | At upload time, files beyond the batch's remaining capacity are rejected via `onFileError` with `ERR_FILE_COUNT_EXCEEDED` (accepted in input order); at send time, `sendMediaMessage()` calls back `onError` with the same code if the message carries more attachments than allowed. |
+
+Read the current limits at runtime — useful for capping your picker's selection and pre-validating file sizes before uploading:
+
+<Tabs>
+<Tab title="Java">
+```java
+int maxFiles  = CometChat.getMaxAttachmentCount(); // file.count.max — defaults to 10
+long maxBytes = CometChat.getMaxFileSize();        // file.size.max — defaults to 104857600 (100 MB)
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val maxFiles = CometChat.getMaxAttachmentCount()  // file.count.max — defaults to 10
+val maxBytes = CometChat.getMaxFileSize()         // file.size.max — defaults to 104857600 (100 MB)
+```
+</Tab>
+</Tabs>
+
+<Note>
+An oversized or over-count file only rejects **that file** — the rest of the batch continues uploading. Removing a rejected file frees no capacity (rejected entries don't consume it); removing a queued, failed, or uploaded file does.
+</Note>
+
+## Reliability behavior
+
+The SDK handles a few transport edge cases for you:
+
+- **Stalled uploads** — if a file makes no progress for 30 seconds, its upload is aborted and reported through `onFileFailure` with `ERR_UPLOAD_STALLED`. Retry it by re-uploading the same `fileId`.
+- **Expired upload URLs** — each file's pre-signed upload URL has a limited validity. If it expires before the transfer finishes, the file fails with `ERR_PRESIGNED_URL_EXPIRED`; re-uploading the same `fileId` requests a fresh URL automatically, so retries keep working even after a long delay.
+- **Storage errors** — if storage rejects the upload or the network drops, the failure surfaces through `onFileFailure` with `ERR_S3_UPLOAD_FAILED` and, where available, the transport's own message.
+
+## Error handling
+
+Every error delivered to `onFileError` / `onFileFailure` (and `onError` callbacks from `sendMediaMessage()`) is a `CometChatException` — read `getCode()` to branch:
+
+| Code                        | Surfaced via         | Retryable | Meaning                                                                 |
+| --------------------------- | -------------------- | --------- | ----------------------------------------------------------------------- |
+| `ERR_INVALID_FILE_OBJECT`   | `onFileError`        | No        | The file is invalid, unreadable, missing a `fileId`, or its size can't be determined. |
+| `ERR_FILE_SIZE_EXCEEDED`    | `onFileError`        | No        | The file is larger than `file.size.max`.                                |
+| `ERR_FILE_COUNT_EXCEEDED`   | `onFileError`, `sendMediaMessage()` | No | More files than `file.count.max` allows — at upload time (batch capacity) or send time (attachments on the message). |
+| `ERR_PRESIGN_REJECTED`      | `onFileError`        | No        | The server refused an upload URL (billing, plan, or content-type policy). |
+| `ERR_PRESIGN_FAILED`        | `onFileFailure`      | Yes       | Failed to obtain an upload URL for the file.                            |
+| `ERR_S3_UPLOAD_FAILED`      | `onFileFailure`      | Yes       | The file failed to upload to storage, or the transport errored.         |
+| `ERR_PRESIGNED_URL_EXPIRED` | `onFileFailure`      | Yes       | The upload URL expired before the file finished uploading (a retry re-presigns automatically). |
+| `ERR_UPLOAD_STALLED`        | `onFileFailure`      | Yes       | No progress for 30s; the upload was aborted.                            |
+| `ERR_UPLOAD_CANCELLED`      | —                    | —         | The upload was cancelled via `removeAttachment()` / `clearAll()` (recorded in `UploadResult`, not delivered as a callback). |
+
+<Note>
+Server-side rejections at presign time (e.g. policy or plan denials) carry the server's own code and message where one is provided — `ERR_PRESIGN_REJECTED` is the fallback classification.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Send A Message" icon="paper-plane" href="/sdk/android/v5/send-message">
+    Send text, media, and custom messages
+  </Card>
+  <Card title="Multiple Attachments" icon="paperclip" href="/sdk/android/v5/send-message#multiple-attachments-in-a-media-message">
+    Send several attachments in one media message
+  </Card>
+  <Card title="Receive Messages" icon="inbox" href="/sdk/android/v5/receive-messages">
+    Listen for incoming messages in real-time
+  </Card>
+  <Card title="Threaded Messages" icon="comments" href="/sdk/android/v5/threaded-messages">
+    Upload into a thread with setParentMessageId
+  </Card>
+</CardGroup>
