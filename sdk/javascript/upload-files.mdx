@@ -327,7 +327,11 @@ All active upload batches are also cleared automatically on [`CometChat.logout()
 
 ## Send the uploaded files as a media message
 
-Once your files are uploaded, collect their `Attachment`s (from `request.getAttachments()` or from `result.successful` in `onComplete`), set them on a `MediaMessage`, and send. One batch can go out as a single multi-attachment message, or you can split the attachments across several messages — e.g. one message per media type using `getAttachmentsByType()`.
+Drive the send from an **explicit user action** (a "Send" button) — read the uploaded `Attachment`s from the request, build one or more `MediaMessage`s, and send. Splitting the batch into **one `MediaMessage` per media type** (via `getAttachmentsByType()`) keeps each message's type aligned with its content, so images arrive as image messages, files as file messages, and so on.
+
+<Warning>
+**Send from a button, not from `onComplete`.** `onComplete` fires **every time the batch drains** — including after a retry re-drains it. Sending there would ship whatever happened to be uploaded on that drain and (with `clearAll()`) discard the files the user was about to retry. Gate an explicit "Send" action on the batch being fully settled instead: at least one file, and every staged file uploaded (nothing pending, failed, or rejected).
+</Warning>
 
 <Tabs>
 <Tab title="TypeScript">
@@ -337,37 +341,47 @@ const receiverType = CometChat.RECEIVER_TYPE.USER;
 
 const request = CometChat.createUploadFileRequest(receiverID, receiverType).setConcurrency(3);
 
+// Track per-file outcomes to drive your composer UI — but never send from here.
 const listener = new CometChat.UploadFileListener({
   onFileProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
-  onFileFailure: (fileId, error) => markRetryable(fileId, error),
-  onFileError: (fileId, error) => markRejected(fileId, error), // incl. ERR_PERMISSION_DENIED
-  onComplete: async (result) => {
-    // Wait until nothing is in flight, then send what uploaded successfully.
-    if (request.getStatus() !== CometChat.UploadStatus.IDLE) return;
-    const attachments = request.getAttachments();
-    if (attachments.length === 0) return;
-
-    const mediaMessage = new CometChat.MediaMessage(
-      receiverID,
-      "",            // no raw file — attachments already carry hosted URLs
-      CometChat.MESSAGE_TYPE.FILE,
-      receiverType
-    );
-    mediaMessage.setAttachments(attachments);
-
-    try {
-      const sent = await CometChat.sendMediaMessage(mediaMessage);
-      console.log("Media message sent successfully", sent);
-      request.clearAll();
-    } catch (error) {
-      console.log("Media message sending failed with error", error);
-    }
-  },
+  onFileFailure: (fileId, error) => markRetryable(fileId, error), // request.retryAttachment(fileId)
+  onFileError: (fileId, error) => markRejected(fileId, error),    // not retryable — remove/replace the file
 });
 
 const files = (document.getElementById("files") as HTMLInputElement).files!;
 const items = Array.from(files).map((file) => ({ fileId: crypto.randomUUID(), file }));
 request.uploadAttachments(items, listener);
+
+// Enable your "Send" button only when every staged file has uploaded — i.e. nothing
+// pending, failed, or rejected. Have the user retry or remove the rest first.
+function canSend(): boolean {
+  const total = request.getAttachmentCount();
+  return total > 0 && request.getAttachments().length === total;
+}
+
+// Wire this to the "Send" button's click handler.
+async function send(): Promise<void> {
+  if (!canSend()) return;
+  try {
+    // One MediaMessage per media type, so each sends with the matching message type.
+    for (const type of ["image", "video", "audio", "file"] as const) {
+      const attachments = request.getAttachmentsByType(type);
+      if (attachments.length === 0) continue;
+
+      const mediaMessage = new CometChat.MediaMessage(
+        receiverID,
+        "",     // no raw file — attachments already carry hosted URLs
+        type,   // matches CometChat.MESSAGE_TYPE.IMAGE / VIDEO / AUDIO / FILE
+        receiverType
+      );
+      mediaMessage.setAttachments(attachments);
+      await CometChat.sendMediaMessage(mediaMessage);
+    }
+    request.clearAll(); // release the batch only after a successful send
+  } catch (error) {
+    console.log("Media message sending failed with error", error);
+  }
+}
 ```
 </Tab>
 
@@ -378,43 +392,53 @@ const receiverType = CometChat.RECEIVER_TYPE.USER;
 
 const request = CometChat.createUploadFileRequest(receiverID, receiverType).setConcurrency(3);
 
+// Track per-file outcomes to drive your composer UI — but never send from here.
 const listener = new CometChat.UploadFileListener({
   onFileProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
-  onFileFailure: (fileId, error) => markRetryable(fileId, error),
-  onFileError: (fileId, error) => markRejected(fileId, error), // incl. ERR_PERMISSION_DENIED
-  onComplete: async (result) => {
-    // Wait until nothing is in flight, then send what uploaded successfully.
-    if (request.getStatus() !== CometChat.UploadStatus.IDLE) return;
-    const attachments = request.getAttachments();
-    if (attachments.length === 0) return;
-
-    const mediaMessage = new CometChat.MediaMessage(
-      receiverID,
-      "",            // no raw file — attachments already carry hosted URLs
-      CometChat.MESSAGE_TYPE.FILE,
-      receiverType
-    );
-    mediaMessage.setAttachments(attachments);
-
-    try {
-      const sent = await CometChat.sendMediaMessage(mediaMessage);
-      console.log("Media message sent successfully", sent);
-      request.clearAll();
-    } catch (error) {
-      console.log("Media message sending failed with error", error);
-    }
-  },
+  onFileFailure: (fileId, error) => markRetryable(fileId, error), // request.retryAttachment(fileId)
+  onFileError: (fileId, error) => markRejected(fileId, error),    // not retryable — remove/replace the file
 });
 
 const files = document.getElementById("files").files;
 const items = Array.from(files).map((file) => ({ fileId: crypto.randomUUID(), file }));
 request.uploadAttachments(items, listener);
+
+// Enable your "Send" button only when every staged file has uploaded — i.e. nothing
+// pending, failed, or rejected. Have the user retry or remove the rest first.
+function canSend() {
+  const total = request.getAttachmentCount();
+  return total > 0 && request.getAttachments().length === total;
+}
+
+// Wire this to the "Send" button's click handler.
+async function send() {
+  if (!canSend()) return;
+  try {
+    // One MediaMessage per media type, so each sends with the matching message type.
+    for (const type of ["image", "video", "audio", "file"]) {
+      const attachments = request.getAttachmentsByType(type);
+      if (attachments.length === 0) continue;
+
+      const mediaMessage = new CometChat.MediaMessage(
+        receiverID,
+        "",     // no raw file — attachments already carry hosted URLs
+        type,   // matches CometChat.MESSAGE_TYPE.IMAGE / VIDEO / AUDIO / FILE
+        receiverType
+      );
+      mediaMessage.setAttachments(attachments);
+      await CometChat.sendMediaMessage(mediaMessage);
+    }
+    request.clearAll(); // release the batch only after a successful send
+  } catch (error) {
+    console.log("Media message sending failed with error", error);
+  }
+}
 ```
 </Tab>
 </Tabs>
 
 <Note>
-`sendMediaMessage()` enforces the **maximum attachments per message** (see [Limits](#limits)). If a batch has more successful uploads than the limit allows, split them across multiple `MediaMessage`s — grouping by kind with `getAttachmentsByType()` is a natural way to do this. See [Multiple Attachments in a Media Message](/sdk/javascript/send-message#multiple-attachments-in-a-media-message).
+`sendMediaMessage()` enforces the **maximum attachments per message** (see [Limits](#limits)). The per-type split above already keeps message types correct, but it does **not** guarantee each message is under the count limit — if a single type has more attachments than `file.count.max` allows, chunk that type across multiple `MediaMessage`s too. See [Multiple Attachments in a Media Message](/sdk/javascript/send-message#multiple-attachments-in-a-media-message).
 </Note>
 
 ## Limits
