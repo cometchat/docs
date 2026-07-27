@@ -1,39 +1,56 @@
 ---
 title: "Flutter Push Notifications (Android)"
-description: "CometChat push notifications in Flutter apps on Android using Firebase Cloud Messaging (FCM)."
+description: "Add CometChat push notifications and VoIP calls to a Flutter Android app with the drop-in cometchat_push_notifications SDK and Firebase Cloud Messaging (FCM)."
 ---
- 
-<Card
-  title="Flutter UI Kit Sample App"
-  icon="github"
-  href="https://github.com/cometchat/cometchat-uikit-flutter/tree/v5/sample_app_push_notifications"
->
-  Reference implementation of Flutter UI Kit, FCM and Push Notification Setup.
-</Card>
- 
+
+<CardGroup cols={2}>
+  <Card
+    title="cometchat_push_notifications"
+    icon="cube"
+    href="https://pub.dev/packages/cometchat_push_notifications"
+  >
+    The drop-in push & VoIP plugin on pub.dev.
+  </Card>
+  <Card
+    title="SDK source"
+    icon="github"
+    href="https://github.com/cometchat/push-notifications-sdk-flutter"
+  >
+    Source, changelog, and example app.
+  </Card>
+</CardGroup>
+
 ## What this guide covers
 
-- CometChat dashboard setup (enable push, add FCM provider) with screenshots.
-- Firebase/FCM + Flutter wiring (credentials, pubspec, Firebase init).
-- Copying the sample notification stack and aligning package IDs/provider IDs.
-- Native Android glue (manifest, MethodChannel, lock-screen call activity/receiver).
-- Token registration, notification/call handling, navigation, testing, and troubleshooting.
-- App icon badge count and grouped notifications using `unreadMessageCount` from the CometChat push payload.
+- CometChat dashboard setup (enable push, add an FCM provider) with screenshots.
+- Firebase/FCM wiring (service account, `google-services.json`, Gradle).
+- Adding the `cometchat_push_notifications` plugin and initializing it.
+- Requesting permission and registering the FCM token after login.
+- Receiving pushes and letting the SDK render chat notifications and full-screen calls.
+- Handling notification taps, incoming-call navigation, badge counts, and OEM permissions.
+- Testing and troubleshooting.
 
-{/* ## What you need first
+<Info>
+The `cometchat_push_notifications` plugin replaces the previous approach of copying the UI Kit sample's `lib/notifications` stack and hand-wiring `PNRegistry`, `flutter_callkit_incoming`, and native `MainActivity`/`CallActionReceiver` bridges. Token registration, foreground presentation, notification taps, badge management, and the full incoming-call experience (including the lock-screen call activity) are handled inside the plugin.
+</Info>
 
-- Firebase project with an Android app configured (package name matches your `applicationId`) and Cloud Messaging enabled; `google-services.json` inside `android/app`.
-- CometChat app credentials (App ID, Region, Auth Key) plus Push Notifications enabled with an **FCM provider** for Flutter Android.
-- Flutter 3.24+ / Dart 3+, the latest CometChat UI Kit (`cometchat_chat_uikit`) and Calls UI Kit (`cometchat_calls_uikit`) packages.
-- Physical Android device for testing—full-screen call notifications and background delivery are unreliable on emulators. */}
+## How FCM + CometChat + the SDK work together
 
-## How FCM + CometChat work together
+- **FCM's role:** Issues the Android registration token and delivers the CometChat push payload to the device as a data message.
+- **CometChat's role:** The FCM provider you add in the dashboard stores your Firebase service account. When you register the FCM token after login, CometChat binds it to the logged-in user and sends pushes to FCM on your behalf.
+- **The plugin's role:** `cometchat_push_notifications` retrieves the FCM token, registers it with CometChat, and — when you pass an incoming message to `handlePushNotification` — parses the payload and either shows a chat notification or drives the full incoming-call UI. It internally uses [`notification_voip_plugin`](https://pub.dev/packages/notification_voip_plugin) and [`cometchat_sdk`](https://pub.dev/packages/cometchat_sdk), which pub resolves for you.
 
-- **FCM’s role:** Issues the Android registration token and delivers the push payload to the device.  
-- **CometChat’s role:** The FCM provider you add in the CometChat dashboard stores your Firebase service account. When `PNRegistry.registerPNService(token, true, false)` runs after login, CometChat binds that token to the logged-in user and sends pushes to FCM on your behalf.  
-- **Flow:** Permission (Android 13+ `POST_NOTIFICATIONS`) → Firebase returns FCM token → after `CometChatUIKit.login`, register with `PNRegistry` (uses `AppCredentials.fcmProviderId`) → CometChat sends to FCM → FCM delivers to the device → `NotificationLaunchHandler` / `VoipNotificationHandler` route taps and call actions.
+**Flow:** Permission (`POST_NOTIFICATIONS` on Android 13+) → Firebase returns the FCM token → after your CometChat user logs in, call `registerToken(PushPlatform.FCM_FLUTTER_ANDROID)` → CometChat sends to FCM → your `firebase_messaging` handler forwards `message.data` to `CometChatPushNotifications.handlePushNotification` → the plugin displays the notification or call → taps route through `onNotificationTap` / `handleIncomingCallLaunch`.
 
-## 1. Enable push and add providers (CometChat Dashboard)
+## Prerequisites
+
+- Flutter 3.3.0+ / Dart 3.10.8+, and **Kotlin 2.0 or newer** in your Android build (required by `notification_voip_plugin` 2.1.0+).
+- Android `minSdkVersion 24`, `compileSdkVersion 36`.
+- A Firebase project with an Android app (package name matches your `applicationId`) and Cloud Messaging enabled; `google-services.json` in `android/app/`.
+- CometChat app credentials (App ID, Region, Auth Key) with **Push Notifications** enabled and an **FCM provider** configured.
+- A physical Android device — full-screen call notifications and background delivery are unreliable on emulators.
+
+## 1. Enable push and add an FCM provider (CometChat Dashboard)
 
 1. Go to **Notifications → Settings** and enable **Push Notifications**.
 
@@ -41,319 +58,366 @@ description: "CometChat push notifications in Flutter apps on Android using Fire
   <img src="/images/80a520bb-pushnotification-enable-e64632d479a2ebba111453b95bd522c6.png" alt="Enable Push Notifications" />
 </Frame>
 
-2. Click **Add Credentials**, choose **FCM**, upload the Firebase service account JSON (Firebase → Project settings → Service accounts → Generate new private key), and copy the Provider ID.
+2. Click **Add Credentials**, choose **FCM**, upload the Firebase service account JSON (Firebase → Project settings → Service accounts → Generate new private key), and copy the **Provider ID**.
 
 <Frame>
   <img src="/images/c6447647-pushnotification-fcm-68092b02a5361d51ba14b09289da3a78.png" alt="Upload FCM service account JSON" />
 </Frame>
 
-Keep the provider ID—you’ll use it in `AppCredentials.fcmProviderId`.
+Keep the provider ID — you'll pass it to `registerToken`.
 
 ## 2. Prepare Firebase and credentials
 
-### 2.1 Firebase Console
-
-1. Register your Android package name (the same as `applicationId` in `android/app/build.gradle`) and download `google-services.json` into `android/app`.
-2. Enable Cloud Messaging and copy the Server key if you want to send test messages manually.
+1. In the Firebase Console, register your Android package name (the same as `applicationId` in `android/app/build.gradle`) and download `google-services.json` into `android/app/`.
+2. Enable Cloud Messaging.
 
 <Frame>
   <img src="/images/firebase-push-notifications.png" alt="Firebase - Push Notifications" />
 </Frame>
 
-### 2.3 Local configuration file
-
-Update [`lib/app_credentials.dart`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/lib/app_credentials.dart) so it exposes your credentials and provider IDs:
+Store your CometChat and provider values somewhere your app can read them (for example a small `AppCredentials` class):
 
 ```dart lines
 class AppCredentials {
-  static String _appId = "YOUR_APP_ID";
-  static String _authKey = "YOUR_AUTH_KEY";
-  static String _region = "YOUR_REGION";
-  static String _fcmProviderId = "FCM-PROVIDER-ID";
+  static const appId = "YOUR_APP_ID";
+  static const region = "YOUR_REGION";
+  static const authKey = "YOUR_AUTH_KEY";
+  static const fcmProviderId = "FCM-PROVIDER-ID";
 }
 ```
 
-The sample persists these values to `SharedPreferences`; `saveAppSettingsToNative()` passes them to Android so `CallActionReceiver` can reject calls even if Flutter is not running.
+## 3. Add the plugin and configure Gradle
 
-## 3. Bring the notification stack into Flutter
+### 3.1 Dependencies
 
-### 3.1 Copy [`lib/notifications`](https://github.com/cometchat/cometchat-uikit-flutter/tree/v5/sample_app_push_notifications/lib/notifications)
-
-- Clone or download the sample once.
-- Copy the entire `lib/notifications` directory (models, Android/iOS services, helpers) into your app.
-- Update the import prefixes (for example replace `package:sample_app_push_notifications/...` with your own package name). Keeping the same folder names avoids manual refactors later.
-
-### 3.2 Wire the entry points
-
-**[`lib/main.dart`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/lib/main.dart)**
-
-- Initialize `SharedPreferencesClass`, `FlutterLocalNotificationsPlugin`, and Firebase before calling `runApp`.
-- Cache `NotificationLaunchHandler.pendingNotificationResponse` when the app is launched from a tapped notification while terminated.
-- Keep the `callMain` entrypoint; `CallActivity` uses it to render the ongoing-call UI over the lock screen.
-
-**[`lib/guard_screen.dart`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/lib/guard_screen.dart) / [`lib/dashboard.dart`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/lib/dashboard.dart) (or your first screen after login)**
-
-- Ensure `CometChatUIKit.init()` and `CometChatUIKit.login()` finish before rendering the dashboard.
-- On Android, instantiate `FirebaseService` and call `notificationService.init(context)` once; on iOS, keep `APNSService`.
-- Replay `NotificationLaunchHandler.pendingNotificationResponse` after the widget tree builds so taps from a killed app still navigate to `MessagesScreen`.
-- Forward lifecycle changes to `IncomingCallOverlay` / `BoolSingleton` to hide stale overlays when the app resumes.
-- `VoipNotificationHandler.handleNativeCallIntent(context)` runs after the first frame to act on accept/decline actions that were tapped from the Android notification before Flutter started.
-
-### 3.3 Align dependencies and configuration
-
-Mirror the sample `pubspec.yaml` versions (update as needed when newer releases ship):
+Add the plugin plus Firebase Messaging (used to receive the FCM data messages) to `pubspec.yaml`:
 
 ```yaml lines
 dependencies:
+  cometchat_push_notifications: ^1.0.1
   firebase_core: ^3.9.0
   firebase_messaging: ^15.1.6
-  flutter_local_notifications: ^18.0.0
-  flutter_callkit_incoming:
-    path: ../sample_app_push_notifications/flutter_callkit_incoming
-  cometchat_chat_uikit: ^5.2.5
-  cometchat_calls_uikit: ^5.0.11
-  permission_handler: ^11.3.1
-  shared_preferences: ^2.2.1
 ```
 
-Run `flutter pub get`, then `flutterfire configure` if you still need to generate `firebase_options.dart`.
+`cometchat_sdk` and `notification_voip_plugin` are pulled in transitively. Run:
 
-## 4. Configure the native Android layer
+```bash
+flutter pub get
+```
 
-### 4.1 Gradle + Firebase
+Then run `flutterfire configure` if you still need to generate `firebase_options.dart`.
 
-1. Add `google-services.json` to `android/app`.
-2. Ensure `android/app/build.gradle` applies the plugins used in the sample:
+### 3.2 Gradle + Kotlin
 
-```gradle lines
+1. Add `google-services.json` to `android/app/`.
+2. Apply the Google Services plugin and ensure Kotlin is **2.0+** in `android/settings.gradle.kts`:
+
+```kotlin lines
 plugins {
-  id "com.android.application"
-  id "com.google.gms.google-services"
-  id "kotlin-android"
-  id "dev.flutter.flutter-gradle-plugin"
+  id("dev.flutter.flutter-plugin-loader") version "1.0.0"
+  id("com.android.application") version "8.11.1" apply false
+  id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+  id("com.google.gms.google-services") version "4.4.2" apply false
 }
 ```
 
-Set `applicationId` to your package name and keep `minSdk 24` or higher. `compileSdk 36` / `targetSdk 35` match the sample but can be raised if your project already targets a newer API.
+3. Apply the plugins in `android/app/build.gradle.kts`:
 
-### 4.2 Manifest permissions and components
+```kotlin lines
+plugins {
+  id("com.android.application")
+  id("kotlin-android")
+  id("com.google.gms.google-services")
+  id("dev.flutter.flutter-gradle-plugin")
+}
+```
 
-Use the sample [`AndroidManifest.xml`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/android/app/src/main/AndroidManifest.xml) as a baseline:
+4. Set `applicationId` to your package name and keep `minSdk = 24` or higher.
 
-- Permissions for notifications, audio/video, and lock-screen call UI: `POST_NOTIFICATIONS`, `RECORD_AUDIO`, `CAMERA`, `FOREGROUND_SERVICE`, `USE_FULL_SCREEN_INTENT`, `WAKE_LOCK`, `SHOW_WHEN_LOCKED`, `TURN_SCREEN_ON`, and `SYSTEM_ALERT_WINDOW`.
-- `MainActivity` uses `launchMode="singleTask"` with `android:showWhenLocked="true"` / `android:turnScreenOn="true"` so incoming calls can wake the screen.
-- `CallActivity` is a dedicated entrypoint (uses `callMain`) to render the ongoing call over the lock screen and is excluded from recents.
-- `CallActionReceiver` listens to `flutter_callkit_incoming` actions (and mirrored app-specific actions) so Accept/Decline from the native notification reach Flutter.
-- Set `default_notification_icon` meta-data to your icon if you change the launcher asset.
+<Note>
+You do **not** need to add notification, call, full-screen-intent, or lock-screen permissions to your `AndroidManifest.xml`. The plugin declares everything it needs (including the lock-screen `IncomingCallActivity` and the Decline broadcast receiver), and Gradle merges them into your app automatically.
+</Note>
 
-### 4.3 Kotlin bridge for call intents
+## 4. Initialize the SDK
 
-- [`MainActivity.kt`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/android/app/src/main/kotlin/com/cometchat/sampleapp/flutter/android/MainActivity.kt) exposes a `MethodChannel("com.cometchat.sampleapp")` that supports:
-  - `get_initial_call_intent` – read and clear any call intent extras so `VoipNotificationHandler.handleNativeCallIntent` in Dart can react after Flutter launches.
-  - `setupLockScreenForCall` / `restoreLockScreenAfterCall` – temporarily bypass and then restore the lock screen when a call is accepted.
-  - `saveAppSettings` – stores your App ID and Region for the broadcast receiver.
-- [`CallActionReceiver.kt`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/android/app/src/main/kotlin/com/cometchat/sampleapp/flutter/android/CallActionReceiver.kt) wakes the app for Accept/Decline actions. On decline, it can initialize the CometChat SDK headlessly (using the saved App ID/Region) to reject the call as busy even if Flutter is not running.
-- [`CallActivity.kt`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/android/app/src/main/kotlin/com/cometchat/sampleapp/flutter/android/CallActivity.kt) overrides `getDartEntrypointFunctionName` to `callMain`, letting the ongoing-call UI render in its own activity with lock-screen flags.
+### 4.1 `main.dart`
 
-If you change the MethodChannel name in Kotlin, update `voipPlatformChannel` inside [`lib/notifications/services/save_settings_to_native.dart`](https://github.com/cometchat/cometchat-uikit-flutter/blob/v5/sample_app_push_notifications/lib/notifications/services/save_settings_to_native.dart) to match.
-
-## 5. Token registration and runtime events
-
-### 5.1 FCM tokens
-
-`FirebaseService.init` requests notification permission, sets the background handler (`firebaseMessagingBackgroundHandler`), and registers tokens:
+Initialize Firebase and the plugin before `runApp`, register a background message handler, and expose the `incomingCallMain` entrypoint that the plugin's lock-screen call activity runs.
 
 ```dart lines
-final token = await FirebaseMessaging.instance.getToken();
-if (token != null) {
-  PNRegistry.registerPNService(token, true, false); // platform: FCM_FLUTTER_ANDROID
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/material.dart';
+import 'package:cometchat_push_notifications/cometchat_push_notifications.dart';
+
+/// Runs in a background isolate for data messages delivered while the app is
+/// terminated or backgrounded. Must initialize the plugin before handling.
+@pragma('vm:entry-point')
+Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  await CometChatPushNotifications.init(
+    CometChatNotificationConfig(
+      appId: AppCredentials.appId,
+      region: AppCredentials.region,
+    ),
+  );
+  await CometChatPushNotifications.handlePushNotification(message.data);
 }
-FirebaseMessaging.instance.onTokenRefresh.listen(
-  (token) => PNRegistry.registerPNService(token, true, false),
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+
+  await CometChatPushNotifications.init(
+    CometChatNotificationConfig(
+      appId: AppCredentials.appId,
+      region: AppCredentials.region,
+      // Fires when the user accepts from the plugin's default call screen.
+      onCallAccepted: (call) {
+        // Start your CometChat call session, then:
+        // CometChatPushNotifications.setCallConnected(call.sessionId);
+      },
+      // Fires on decline (including from the lock-screen notification action).
+      onCallDeclined: (call) {
+        // Reject the call server-side via the CometChat SDK.
+      },
+    ),
+  );
+
+  // Forward FCM data messages to the plugin.
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+  FirebaseMessaging.onMessage.listen((message) {
+    CometChatPushNotifications.handlePushNotification(message.data);
+  });
+
+  runApp(const MyApp());
+}
+```
+
+The `CometChatNotificationConfig` also accepts:
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `customCallScreenBuilder` | `null` | Return your own incoming-call widget. When set, you own accept/reject, dismissing the call notification (`cancelCallNotification`), and popping the screen; `onCallAccepted`/`onCallDeclined` are **not** called. |
+| `onCallAccepted` / `onCallDeclined` | `null` | Callbacks for the built-in default call screen. |
+| `callActionHandler` | default | Subclass `CometChatCallActionHandler` to intercept mute/speaker/camera (e.g. drive your WebRTC engine). |
+| `showInAppNotifications` | `false` | Show chat pushes as in-app banners when the app is foregrounded. |
+| `showInAppVoIP` | `false` | Show the incoming-call UI for pushes received in the foreground (leave `false` if your UI Kit's `CallEventService` already handles foreground calls over WebSocket). |
+
+### 4.2 The `incomingCallMain` entrypoint
+
+When a call arrives while the device is locked, the plugin launches a dedicated full-screen activity that runs a separate Dart entrypoint named `incomingCallMain`. Define it in `main.dart`. It talks to the plugin's native activity over the `cometchat_locked_call` method channel:
+
+```dart lines
+import 'package:flutter/services.dart';
+
+@pragma('vm:entry-point')
+void incomingCallMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const _LockedCallApp());
+}
+
+class _LockedCallApp extends StatefulWidget {
+  const _LockedCallApp();
+  @override
+  State<_LockedCallApp> createState() => _LockedCallAppState();
+}
+
+class _LockedCallAppState extends State<_LockedCallApp> {
+  static const _channel = MethodChannel('cometchat_locked_call');
+  CometChatCallDetails? _call;
+
+  @override
+  void initState() {
+    super.initState();
+    // The native activity calls "reload" for each new/duplicate call.
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'reload') _loadCall();
+    });
+    _loadCall();
+  }
+
+  Future<void> _loadCall() async {
+    final d = await _channel.invokeMapMethod<String, dynamic>('getCallDetails');
+    if (d == null) return;
+    setState(() {
+      _call = CometChatCallDetails(
+        sessionId: d['callId'] as String? ?? '',
+        callerUid: '',
+        callerName: d['callerName'] as String? ?? 'Unknown',
+        callerAvatar: d['callerAvatar'] as String?,
+        callType: (d['isVideo'] as bool? ?? false)
+            ? CometChatCallType.video
+            : CometChatCallType.audio,
+        receiverType: CometChatReceiverType.user,
+        conversationId: '',
+        isVideo: d['isVideo'] as bool? ?? false,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final call = _call;
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: call == null
+          ? const SizedBox.shrink()
+          : CometChatDefaultCallScreen(
+              callDetails: call,
+              onAccept: () async {
+                await _channel.invokeMethod('cancelNotification',
+                    {'callId': call.sessionId});
+                // Bring your app forward / start the call session here.
+                await _channel.invokeMethod('finish', {'callId': call.sessionId});
+              },
+              onDecline: () async {
+                await _channel.invokeMethod('finish', {'callId': call.sessionId});
+              },
+            ),
+    );
+  }
+}
+```
+
+<Note>
+Adapt the accept path to launch your in-call screen. The channel methods (`getCallDetails`, `cancelNotification`, `finish`, and the incoming `reload`) are the contract the plugin's `IncomingCallActivity` exposes.
+</Note>
+
+### 4.3 Route call navigation once the app is running
+
+On your first screen after login (once the navigator is ready), let the plugin replay a cold-start call launch and route subsequent call taps:
+
+```dart lines
+final navigatorKey = GlobalKey<NavigatorState>();
+
+// After the widget tree builds:
+CometChatPushNotifications.handleIncomingCallLaunch(navigatorKey);
+```
+
+Pass the same `navigatorKey` to your `MaterialApp`.
+
+## 5. Request permission and register the FCM token
+
+Request notification permission early, and register the FCM token **after** your CometChat user logs in (registration binds the token to the session):
+
+```dart lines
+// Ask for POST_NOTIFICATIONS (Android 13+).
+await CometChatPushNotifications.requestPermission();
+
+// After CometChatUIKit.login(...) / CometChat.login(...) succeeds:
+CometChatPushNotifications.registerToken(
+  PushPlatform.FCM_FLUTTER_ANDROID,
+  providerId: AppCredentials.fcmProviderId,
+  onSuccess: (token) => debugPrint('Registered FCM token: $token'),
+  onError: (e) => debugPrint('Registration failed: ${e.message}'),
 );
 ```
 
-`PNRegistry` pulls the provider ID from `AppCredentials.fcmProviderId`. Call this only after `CometChatUIKit.login` succeeds.
+Token refreshes are handled for you — the plugin listens for `onTokenRefresh` and automatically re-registers the new token with CometChat. Subscribe to `CometChatPushNotifications.onTokenRefresh` if you want to log it.
 
-### 5.2 Local notifications and navigation
+## 6. Notification taps and navigation
 
-- `LocalNotificationService.showNotification` renders a high-priority local notification when the incoming CometChat message does not belong to the currently open conversation.
-- `NotificationLaunchHandler.pendingNotificationResponse` caches taps triggered while the app is terminated; `dashboard.dart` replays it after navigation is ready.
-- `LocalNotificationService.handleNotificationTap` fetches the user/group and pushes `MessagesScreen` when a notification is tapped from foreground, background, or terminated states.
+When the app is running, subscribe to the tap stream to open the right conversation:
 
-### 5.3 Call events (VoIP-like pushes)
+```dart lines
+CometChatPushNotifications.onNotificationTap.listen((details) {
+  // details.conversationId, details.sender, details.receiverType, ...
+  // Navigate to your messages screen for this conversation.
+});
+```
 
-- The top-level `firebaseMessagingBackgroundHandler` shows the incoming-call UI by calling `VoipNotificationHandler.displayIncomingCall`, which uses `flutter_callkit_incoming` to render a full-screen notification.
-- `FirebaseService.initializeCallKitListeners` binds `FlutterCallkitIncoming.onEvent` so Accept/Decline/Timeout actions map to `VoipNotificationHandler.acceptVoipCall`, `declineVoipCall`, or `endCall`.
-- `VoipNotificationHandler.handleNativeCallIntent` reads Accept/Decline extras passed from `CallActionReceiver` via the MethodChannel if the user acted before Flutter started.
-- `saveAppSettingsToNative()` runs during `FirebaseService.init` to persist App ID/Region for the native receiver; keep it in place or `CallActionReceiver` cannot initialize CometChat when rejecting a call from the lock screen.
+For calls, coordinate with your media logic through the call-event stream:
 
-## 6. Badge count and grouped notifications
+```dart lines
+CometChatPushNotifications.onCallEvent.listen((event) {
+  switch (event.type) {
+    case CometChatCallEventType.accepted:
+      // Start / join the call session, then setCallConnected(event.sessionId).
+      break;
+    case CometChatCallEventType.declined:
+    case CometChatCallEventType.ended:
+    case CometChatCallEventType.timeoutEnded:
+      // Tear down any call state.
+      break;
+    case CometChatCallEventType.incoming:
+      break;
+  }
+});
+```
 
-CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field (a string) representing the total unread messages across all conversations for the logged-in user. You can use this to set the app icon badge and enrich local notifications.
+Useful call methods: `setCallConnected(sessionId)` (after media is established), `endCall(sessionId)`, `endAllCalls()` (on logout), and `getActiveCallIds()`.
 
-### 6.1 Enable unread badge count on the CometChat Dashboard
+## 7. OEM permissions for lock-screen calls
+
+To reliably show a full-screen call over the lock screen — especially on Android 14+ and OEM skins like MIUI/Redmi/POCO — check and request the relevant permissions:
+
+```dart lines
+final perms = await CometChatPushNotifications.checkCallPermissions();
+// perms: { fullScreenIntent, overlay, batteryOptimized }
+
+if (perms['fullScreenIntent'] == false) {
+  await CometChatPushNotifications.openFullScreenIntentSettings();
+}
+if (perms['overlay'] == false) {
+  await CometChatPushNotifications.openOverlaySettings();          // MIUI / Xiaomi
+}
+if (perms['batteryOptimized'] == true) {
+  await CometChatPushNotifications.openBatteryOptimizationSettings();
+}
+// Xiaomi / Oppo / Vivo / Huawei / Samsung autostart:
+await CometChatPushNotifications.openAutoStartSettings();
+```
+
+On iOS and web these checks return "granted" and the open-settings calls are no-ops.
+
+## 8. Badge count
+
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field (the total unread across all conversations). The plugin exposes badge helpers directly — no extra dependency needed.
+
+### 8.1 Enable unread badge count on the dashboard
 
 1. Go to **CometChat Dashboard → Notification Engine → Settings → Preferences → Push Notification Preferences**.
-2. Scroll to the bottom and enable the **Unread Badge Count** toggle.
+2. Enable the **Unread Badge Count** toggle.
 
-This ensures CometChat includes the `unreadMessageCount` field in every push payload sent to your app.
+This includes `unreadMessageCount` in every push payload.
 
-### 6.2 Add the `app_badge_plus` dependency
+### 8.2 Update and clear the badge
 
-```yaml lines
-dependencies:
-  app_badge_plus: ^1.2.6
-```
-
-Run `flutter pub get`.
-
-### 6.3 Expected payload format
-
-CometChat sends FCM data messages with this structure (relevant fields):
-
-```json
-{
-  "data": {
-    "unreadMessageCount": "5",
-    "title": "New Message",
-    "alert": "John: Hello!",
-    "conversationId": "user_abc123",
-    "conversationType": "user"
-  }
-}
-```
-
-`unreadMessageCount` is a string representing the total unread messages across all conversations for the logged-in user.
-
-### 6.4 Update the app badge from the push payload
-
-Inside your local notification handler (for example `LocalNotificationService.showNotification`), parse `unreadMessageCount` and update the badge:
+Set the badge from the payload (for example inside a foreground handler), and clear it when the app opens:
 
 ```dart lines
-import 'package:app_badge_plus/app_badge_plus.dart';
+// From an incoming message payload:
+final count = int.tryParse('${message.data['unreadMessageCount'] ?? ''}') ?? 0;
+await CometChatPushNotifications.setBadgeCount(count);
 
-// Inside showNotification, after receiving notificationData:
-final unreadCountRaw = notificationData['unreadMessageCount'];
-int unreadMessageCount = int.tryParse(unreadCountRaw?.toString() ?? '') ?? 0;
-
-if (unreadMessageCount >= 0) {
-  try {
-    await AppBadgePlus.updateBadge(unreadMessageCount);
-  } catch (e) {
-    debugPrint('Error updating badge count: $e');
-  }
-}
+// On app launch / resume:
+await CometChatPushNotifications.setBadgeCount(0);
+await CometChatPushNotifications.clearAll(); // dismiss stale banners
 ```
 
-On Android, `app_badge_plus` uses launcher-specific APIs (Samsung, Huawei, etc.) to display a badge number on the app icon. Passing `0` clears the badge.
+Add a `WidgetsBindingObserver` to your root widget and clear the badge in `initState` and on `AppLifecycleState.resumed`.
 
-### 6.5 Show grouped notifications with unread count
-
-Use `conversationId.hashCode` as the notification ID so each new message from the same conversation replaces the previous notification instead of creating a new one. Accumulate message lines per conversation for inbox-style display:
-
-```dart lines
-// Stable notification ID per conversation
-final int notificationId = conversationId.isNotEmpty
-    ? conversationId.hashCode
-    : DateTime.now().microsecondsSinceEpoch.hashCode;
-
-// Accumulate messages for inbox-style display
-static final Map<String, List<String>> _conversationMessages = {};
-_conversationMessages.putIfAbsent(conversationId, () => []);
-_conversationMessages[conversationId]!.add(messageBody);
-
-final messages = _conversationMessages[conversationId]!;
-
-// Choose notification style based on message count
-StyleInformation styleInformation;
-if (messages.length == 1) {
-  styleInformation = const DefaultStyleInformation(false, false);
-} else {
-  styleInformation = InboxStyleInformation(
-    messages,
-    contentTitle: title,
-    summaryText: unreadMessageCount > 0
-        ? '$unreadMessageCount unread ${unreadMessageCount == 1 ? 'message' : 'messages'}'
-        : '${messages.length} messages',
-  );
-}
-
-final androidDetails = AndroidNotificationDetails(
-  notificationChannelId,
-  notificationChannelName,
-  importance: Importance.max,
-  priority: Priority.high,
-  icon: 'ic_launcher',
-  styleInformation: styleInformation,
-  subText: unreadMessageCount > 0
-      ? '$unreadMessageCount unread ${unreadMessageCount == 1 ? 'message' : 'messages'}'
-      : null,
-  number: messages.length > 1 ? messages.length : null,
-);
-```
-
-- `subText` shows the unread count below the notification title on most Android devices.
-- `number` displays a count badge on the notification icon (Samsung One UI).
-- When the user opens a conversation, clear its accumulated messages by removing the key from `_conversationMessages`.
-
-### 6.6 Clear badge and notifications when the app opens
-
-Clear the badge count and dismiss all local notifications when the app launches and every time it resumes from the background. Add `WidgetsBindingObserver` to your root widget and register/remove the observer in `initState()` and `dispose()`:
-
-```dart lines
-Future<void> _clearBadge() async {
-  try {
-    LocalNotificationService.flutterLocalNotificationsPlugin.cancelAll();
-    await AppBadgePlus.updateBadge(0);
-    debugPrint("The badge was cleared");
-  } catch (e) {
-    debugPrint("Error in clearing the badge value $e");
-  }
-}
-
-@override
-void initState() {
-  super.initState();
-  WidgetsBinding.instance.addObserver(this);
-  _clearBadge();
-}
-
-@override
-void didChangeAppLifecycleState(AppLifecycleState state) {
-  if (state == AppLifecycleState.resumed) {
-    _clearBadge();
-  }
-}
-
-@override
-void dispose() {
-  WidgetsBinding.instance.removeObserver(this);
-  super.dispose();
-}
-```
-
-`cancelAll()` removes stale notification banners from the tray so they stay in sync with the badge count.
-
-## 7. Testing checklist
+## 9. Testing checklist
 
 1. Run on a physical Android device. Grant notification, microphone, and camera permissions when prompted (Android 13+ requires `POST_NOTIFICATIONS`).
 2. Send a message from another user:
-   - Foreground: a local notification banner shows (unless you are in that chat).
-   - Background: FCM notification appears; tapping opens the right conversation.
-3. Force-quit the app, send another message push, tap it, and confirm `NotificationLaunchHandler` launches `MessagesScreen`.
-4. Trigger an incoming CometChat call. Ensure:
-   - The full-screen call UI shows caller name/type with Accept/Decline.
-   - Accepting on the lock screen notifies Flutter (`handleNativeCallIntent`), starts the call session, and dismisses the native UI when the call ends.
-   - Declining from the notification triggers `CallActionReceiver` to reject the call server-side.
-5. Rotate through Wi-Fi/cellular and reinstall the app to confirm token registration works after refresh events.
+   - Foreground: no banner unless `showInAppNotifications: true` (and you're not already in that chat).
+   - Background: an FCM notification appears; tapping opens the right conversation via `onNotificationTap`.
+3. Force-quit the app, send another message, tap the notification, and confirm it navigates to the conversation.
+4. Trigger an incoming CometChat call and confirm:
+   - The full-screen call UI shows the caller with Accept/Decline, even on the lock screen.
+   - Accepting starts the call session and dismisses the notification.
+   - Declining from the notification rejects the call server-side (via your `onCallDeclined`).
+5. Toggle Wi-Fi/cellular and reinstall to confirm token registration survives refreshes.
 
-## 8. Troubleshooting tips
+## 10. Troubleshooting
 
 | Symptom | Quick checks |
 | --- | --- |
-| No notifications received | Confirm `google-services.json` is in `android/app`, the package name matches Firebase, and notification permission is granted (Android 13+). |
-| Token registration errors | Double-check `AppCredentials.fcmProviderId` and that `PNRegistry.registerPNService` runs after login. |
-| Call actions never reach Flutter | Ensure `CallActionReceiver` is declared in the manifest, MethodChannel names match `voipPlatformChannel`, and `VoipNotificationHandler.handleNativeCallIntent` is called from `dashboard.dart`. |
-| Full-screen call UI not showing | Verify `USE_FULL_SCREEN_INTENT`, `WAKE_LOCK`, and `SHOW_WHEN_LOCKED` permissions plus `android:showWhenLocked="true"` / `android:turnScreenOn="true"` on `MainActivity` and `CallActivity`. |
-| Tapping notification from killed app does nothing | Keep the `NotificationLaunchHandler` logic in `main.dart` and replay it after the navigator key is ready (post-frame callback). |
+| No notifications received | Confirm `google-services.json` is in `android/app/`, the package name matches Firebase, notification permission is granted (Android 13+), and your `firebase_messaging` handlers call `handlePushNotification(message.data)`. |
+| Build fails after adding the plugin | Ensure Kotlin is **2.0+** in `android/settings.gradle.kts` and `minSdk = 24`. |
+| Token registration errors | Verify `providerId` matches the FCM provider ID exactly and that `registerToken` runs **after** login. |
+| Full-screen call UI not showing | Check `checkCallPermissions()` and request full-screen-intent / overlay / battery / autostart via the helpers in section 7. |
+| Lock-screen call is a black screen | Make sure `incomingCallMain` is defined in `main.dart` and annotated with `@pragma('vm:entry-point')`. |
+| Tapping a call from a killed app does nothing | Call `handleIncomingCallLaunch(navigatorKey)` after the navigator is ready, and pass the same key to `MaterialApp`. |
