@@ -1,0 +1,225 @@
+---
+title: "Creating a Custom Plugin"
+sidebarTitle: "Custom Plugin"
+description: "Build a custom message plugin for rendering, context menus, and conversation previews, plus the plugin interface and context reference."
+---
+
+Custom plugins let you handle any message type with your own rendering logic. This walkthrough builds a complete "Location" plugin that renders a map preview, provides context menu options, and shows a conversation preview.
+
+## Step 1: Define the Plugin
+
+Create a file that implements `CometChatMessagePlugin`:
+
+```tsx title="src/plugins/LocationPlugin.tsx"
+import React from "react";
+import type { CometChat } from "@cometchat/chat-sdk-javascript";
+import type {
+  CometChatMessagePlugin,
+  CometChatMessagePluginContext,
+  CometChatMessageOption,
+} from "@cometchat/chat-uikit-react";
+
+// Extract location data from the custom message
+function getLocationData(message: CometChat.BaseMessage) {
+  const customMessage = message as CometChat.CustomMessage;
+  const data = customMessage.getCustomData() as {
+    latitude?: number;
+    longitude?: number;
+    address?: string;
+  } | undefined;
+  return {
+    latitude: data?.latitude ?? 0,
+    longitude: data?.longitude ?? 0,
+    address: data?.address ?? "",
+  };
+}
+
+export const LocationPlugin: CometChatMessagePlugin = {
+  id: "location",
+  messageTypes: ["location"],
+  messageCategories: ["custom"],
+
+  renderBubble(message: CometChat.BaseMessage, context: CometChatMessagePluginContext) {
+    const { latitude, longitude, address } = getLocationData(message);
+    const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${latitude},${longitude}&zoom=15&size=300x200&markers=${latitude},${longitude}&key=YOUR_API_KEY`;
+
+    return (
+      <div className="location-bubble">
+        <img
+          src={mapUrl}
+          alt={address || "Location"}
+          style={{ borderRadius: 8, width: "100%", maxWidth: 300 }}
+        />
+        {address && (
+          <p style={{ margin: "8px 0 0", fontSize: 13, color: "#666" }}>
+            {address}
+          </p>
+        )}
+        <a
+          href={`https://maps.google.com/?q=${latitude},${longitude}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 12, color: "#6851FF" }}
+        >
+          Open in Maps
+        </a>
+      </div>
+    );
+  },
+
+  getOptions(
+    message: CometChat.BaseMessage,
+    context: CometChatMessagePluginContext
+  ): CometChatMessageOption[] {
+    const options: CometChatMessageOption[] = [];
+
+    // Copy coordinates
+    options.push({
+      id: "copy-location",
+      title: "Copy Location",
+      onClick: (msg) => {
+        const { latitude, longitude } = getLocationData(msg);
+        void navigator.clipboard.writeText(`${latitude}, ${longitude}`);
+        context.showToast?.("Location copied to clipboard");
+      },
+    });
+
+    // Delete (sender only)
+    options.push({
+      id: "delete",
+      title: context.getLocalizedString?.("delete") ?? "Delete",
+      senderOnly: true,
+      onClick: (msg) => context.onDeleteMessage?.(msg),
+    });
+
+    return options;
+  },
+
+  getLastMessagePreview(
+    message: CometChat.BaseMessage
+  ): string {
+    const { address } = getLocationData(message);
+    return address ? `📍 ${address}` : "📍 Location";
+  },
+};
+```
+
+## Step 2: Register the Plugin
+
+Pass your plugin to `CometChatProvider`:
+
+```tsx title="src/App.tsx"
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+import { LocationPlugin } from "./plugins/LocationPlugin";
+
+function App() {
+  return (
+    <CometChatProvider plugins={[LocationPlugin]}>
+      <MyChatApp />
+    </CometChatProvider>
+  );
+}
+```
+
+Your plugin is appended after the default plugins. Since resolution is first-match, default plugins handle their types first, and your plugin handles `"location"` messages.
+
+## Step 3: Send a Location Message
+
+Use the CometChat SDK to send a custom message with type `"location"`:
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatUIKit } from "@cometchat/chat-uikit-react";
+
+async function sendLocation(receiverUid: string, lat: number, lng: number) {
+  const message = new CometChat.CustomMessage(
+    receiverUid,
+    CometChat.RECEIVER_TYPE.USER,
+    "location",
+    { latitude: lat, longitude: lng, address: "123 Main St" }
+  );
+
+  await CometChatUIKit.sendCustomMessage(message);
+}
+```
+
+## Step 4: Style the Bubble
+
+```css title="src/plugins/LocationPlugin.css"
+.location-bubble {
+  padding: 4px;
+  max-width: 300px;
+}
+
+.location-bubble img {
+  display: block;
+  border-radius: 8px;
+}
+```
+
+## Plugin Interface Reference
+
+```typescript
+interface CometChatMessagePlugin {
+  /** Unique plugin identifier. */
+  id: string;
+
+  /** SDK message types this plugin handles (e.g., ["text"], ["image"]). */
+  messageTypes: string[];
+
+  /** SDK message categories this plugin handles (e.g., ["message"], ["custom"]). */
+  messageCategories: string[];
+
+  /** Render the bubble content for a message. */
+  renderBubble(message: BaseMessage, context: PluginContext): ReactNode;
+
+  /** Return context menu options for a message. */
+  getOptions?(message: BaseMessage, context: PluginContext): MessageOption[];
+
+  /** Return plain-text preview for the conversation list subtitle. */
+  getLastMessagePreview?(message: BaseMessage, loggedInUser: User, t?: (key: string) => string): string;
+
+  /** Return text formatters (only relevant for text plugin). */
+  getTextFormatters?(): CometChatTextFormatter[];
+
+  // --- View Slot Methods (optional) ---
+  renderLeadingView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderHeaderView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderFooterView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderBottomView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderStatusInfoView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderReplyView?(message: BaseMessage, context: PluginContext): ReactNode;
+  renderThreadView?(message: BaseMessage, context: PluginContext): ReactNode;
+}
+```
+
+## Plugin Context
+
+The `context` object passed to every plugin method:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `loggedInUser` | `CometChat.User` | The currently logged-in user |
+| `group` | `CometChat.Group \| undefined` | The group (if group chat) |
+| `alignment` | `"left" \| "right" \| "center"` | Bubble alignment |
+| `theme` | `"light" \| "dark"` | Current theme |
+| `getLocalizedString` | `(key: string) => string` | Localization function |
+| `onDeleteMessage` | `(msg) => void` | Delete a message |
+| `onEditMessage` | `(msg) => void` | Enter edit mode |
+| `onReplyMessage` | `(msg) => void` | Set reply-to target |
+| `onThreadClick` | `(msg) => void` | Open thread view |
+| `onReactToMessage` | `(msg) => void` | Open emoji picker |
+| `onMessageInfo` | `(msg) => void` | Open message info panel |
+| `onMarkAsUnread` | `(msg) => void` | Mark as unread |
+| `onFlagMessage` | `(msg) => void` | Open flag/report dialog |
+| `showToast` | `(text) => void` | Show a toast notification |
+| `getTextFormatters` | `() => Formatter[]` | Get text formatters for caption rendering |
+| `publish` | `(event) => void` | Publish a UI event |
+
+## Tips
+
+- **Lazy-load heavy components** — use `React.lazy()` + `Suspense` for bubble components that import large libraries
+- **Use `context.getLocalizedString`** — for any user-facing text in options or bubbles
+- **Return `[]` from `getOptions`** — for system messages that shouldn't have a context menu
+- **Keep `getLastMessagePreview` short** — max ~100 characters, plain text only (no HTML)
+- **A single plugin can handle multiple types** — like the Call Action plugin handles both `audio` and `video` in the `call` category

@@ -1,6 +1,8 @@
 ---
 title: "Join Session"
 sidebarTitle: "Join Session"
+sdk_version: "5.x"
+description: "Join CometChat Calls SDK v5 sessions on React Native with session IDs, call tokens, participant setup, and in-call UI launch."
 ---
 
 This guide covers generating call tokens and joining call sessions using the CometChat Calls SDK.
@@ -33,7 +35,7 @@ The `sessionId` should be unique for each call. You can use a UUID, a combinatio
 
 ## Join Session with Component
 
-The `CometChatCalls.Component` renders the call UI. Pass the generated token and call settings to join the session.
+The `CometChatCalls.Component` renders the call UI. Pass the generated token and a plain `sessionSettings` object to join the session. Subscribe to call events with `CometChatCalls.addEventListener` and unsubscribe on cleanup.
 
 ```tsx
 import React, { useState, useEffect } from 'react';
@@ -47,7 +49,15 @@ interface CallScreenProps {
 
 function CallScreen({ sessionId, isAudioOnly = false }: CallScreenProps) {
   const [callToken, setCallToken] = useState<string | null>(null);
-  const [callSettings, setCallSettings] = useState(null);
+
+  // Plain session settings object
+  const sessionSettings = {
+    sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+    layout: 'TILE',
+    hideLeaveSessionButton: false,
+    hideToggleAudioButton: false,
+    hideToggleVideoButton: isAudioOnly,
+  };
 
   useEffect(() => {
     async function initializeCall() {
@@ -55,35 +65,35 @@ function CallScreen({ sessionId, isAudioOnly = false }: CallScreenProps) {
         // Generate call token
         const { token } = await CometChatCalls.generateToken(sessionId);
         setCallToken(token);
-
-        // Create call settings
-        const listener = new CometChatCalls.OngoingCallListener({
-          onUserJoined: (user) => console.log('User joined:', user.name),
-          onUserLeft: (user) => console.log('User left:', user.name),
-          onCallEnded: () => console.log('Call ended'),
-          onError: (error) => console.error('Error:', error),
-        });
-
-        const settings = new CometChatCalls.CallSettingsBuilder()
-          .enableDefaultLayout(true)
-          .setIsAudioOnlyCall(isAudioOnly)
-          .setMode(CometChatCalls.CALL_MODE.DEFAULT)
-          .showEndCallButton(true)
-          .showMuteAudioButton(true)
-          .showPauseVideoButton(!isAudioOnly)
-          .setCallEventListener(listener)
-          .build();
-
-        setCallSettings(settings);
       } catch (error) {
         console.error('Failed to initialize call:', error);
       }
     }
 
     initializeCall();
-  }, [sessionId, isAudioOnly]);
+  }, [sessionId]);
 
-  if (!callToken || !callSettings) {
+  useEffect(() => {
+    // Subscribe to call events
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    CometChatCalls.addEventListener('onParticipantJoined', (participant) =>
+      console.log('Participant joined:', participant.name)
+    , { signal });
+
+    CometChatCalls.addEventListener('onParticipantLeft', (participant) =>
+      console.log('Participant left:', participant.name)
+    , { signal });
+
+    CometChatCalls.addEventListener('onSessionLeft', () =>
+      console.log('Session left')
+    , { signal });
+
+    return () => controller.abort();
+  }, []);
+
+  if (!callToken) {
     return null; // Or show a loading indicator
   }
 
@@ -91,7 +101,7 @@ function CallScreen({ sessionId, isAudioOnly = false }: CallScreenProps) {
     <View style={styles.container}>
       <CometChatCalls.Component
         callToken={callToken}
-        callSettings={callSettings}
+        sessionSettings={sessionSettings}
       />
     </View>
   );
@@ -111,52 +121,7 @@ export default CallScreen;
 | Prop | Type | Required | Description |
 |------|------|----------|-------------|
 | `callToken` | string | Yes | Token generated from `generateToken()` |
-| `callSettings` | CallSettings | No | Configuration object from `CallSettingsBuilder` |
-
-## Session ID Strategies
-
-Choose a session ID strategy based on your use case:
-
-### 1:1 Calls
-
-For direct calls between two users, create a deterministic session ID:
-
-```tsx
-function getDirectCallSessionId(userId1: string, userId2: string): string {
-  // Sort IDs to ensure same session ID regardless of who initiates
-  const sortedIds = [userId1, userId2].sort();
-  return `direct_${sortedIds[0]}_${sortedIds[1]}`;
-}
-
-const sessionId = getDirectCallSessionId('alice', 'bob');
-// Result: "direct_alice_bob"
-```
-
-### Group Calls
-
-For group calls, use the group ID or a unique identifier:
-
-```tsx
-function getGroupCallSessionId(groupId: string): string {
-  return `group_${groupId}`;
-}
-
-const sessionId = getGroupCallSessionId('team-standup');
-// Result: "group_team-standup"
-```
-
-### Unique Sessions
-
-For one-time calls, generate a unique ID:
-
-```tsx
-function generateUniqueSessionId(): string {
-  return `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
-
-const sessionId = generateUniqueSessionId();
-// Result: "call_1704067200000_abc123xyz"
-```
+| `sessionSettings` | object | No | Plain session settings object |
 
 ## Complete Example
 
@@ -173,7 +138,6 @@ interface CallScreenProps {
 
 function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenProps) {
   const [callToken, setCallToken] = useState<string | null>(null);
-  const [callSettings, setCallSettings] = useState(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -181,6 +145,22 @@ function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenPro
     console.log('Call ended');
     onCallEnd?.();
   }, [onCallEnd]);
+
+  // Plain session settings object
+  const sessionSettings = {
+    sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+    layout: 'TILE',
+    hideLeaveSessionButton: false,
+    hideToggleAudioButton: false,
+    hideToggleVideoButton: isAudioOnly,
+    hideSwitchCameraButton: isAudioOnly,
+    hideAudioModeButton: false,
+    startAudioMuted: false,
+    startVideoPaused: false,
+    audioMode: 'SPEAKER',
+    hideRecordingButton: false,
+    idleTimeoutPeriodBeforePrompt: 180000,
+  };
 
   useEffect(() => {
     async function initializeCall() {
@@ -191,58 +171,6 @@ function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenPro
         // Generate call token
         const { token } = await CometChatCalls.generateToken(sessionId);
         setCallToken(token);
-
-        // Create call listener
-        const listener = new CometChatCalls.OngoingCallListener({
-          onUserJoined: (user) => {
-            console.log('User joined:', user.name);
-          },
-          onUserLeft: (user) => {
-            console.log('User left:', user.name);
-          },
-          onUserListUpdated: (userList) => {
-            console.log('Participants:', userList.length);
-          },
-          onCallEnded: handleCallEnd,
-          onCallEndButtonPressed: () => {
-            console.log('End button pressed');
-            CometChatCalls.leaveSession();
-          },
-          onSessionTimeout: () => {
-            console.log('Session timed out');
-            handleCallEnd();
-          },
-          onError: (err) => {
-            console.error('Call error:', err);
-            setError(err.errorDescription);
-          },
-          onRecordingStarted: () => {
-            console.log('Recording started');
-          },
-          onRecordingStopped: () => {
-            console.log('Recording stopped');
-          },
-        });
-
-        // Create call settings
-        const settings = new CometChatCalls.CallSettingsBuilder()
-          .enableDefaultLayout(true)
-          .setIsAudioOnlyCall(isAudioOnly)
-          .setMode(CometChatCalls.CALL_MODE.DEFAULT)
-          .showEndCallButton(true)
-          .showMuteAudioButton(true)
-          .showPauseVideoButton(!isAudioOnly)
-          .showSwitchCameraButton(!isAudioOnly)
-          .showAudioModeButton(true)
-          .startWithAudioMuted(false)
-          .startWithVideoMuted(false)
-          .setDefaultAudioMode(CometChatCalls.AUDIO_MODE.SPEAKER)
-          .showRecordingButton(true)
-          .setIdleTimeoutPeriod(180)
-          .setCallEventListener(listener)
-          .build();
-
-        setCallSettings(settings);
       } catch (err: any) {
         console.error('Failed to initialize call:', err);
         setError(err.errorDescription || 'Failed to initialize call');
@@ -252,7 +180,49 @@ function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenPro
     }
 
     initializeCall();
-  }, [sessionId, isAudioOnly, handleCallEnd]);
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Subscribe to call events
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    CometChatCalls.addEventListener('onParticipantJoined', (participant) => {
+      console.log('Participant joined:', participant.name);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onParticipantLeft', (participant) => {
+      console.log('Participant left:', participant.name);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onParticipantListChanged', (participants) => {
+      console.log('Participants:', participants.length);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onSessionLeft', () => {
+      handleCallEnd();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onLeaveSessionButtonClicked', () => {
+      console.log('Leave session button clicked');
+      CometChatCalls.leaveSession();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onSessionTimedOut', () => {
+      console.log('Session timed out');
+      handleCallEnd();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onRecordingStarted', () => {
+      console.log('Recording started');
+    }, { signal });
+
+    CometChatCalls.addEventListener('onRecordingStopped', () => {
+      console.log('Recording stopped');
+    }, { signal });
+
+    return () => controller.abort();
+  }, [handleCallEnd]);
 
   if (isLoading) {
     return (
@@ -271,7 +241,7 @@ function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenPro
     );
   }
 
-  if (!callToken || !callSettings) {
+  if (!callToken) {
     return null;
   }
 
@@ -279,7 +249,7 @@ function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenPro
     <View style={styles.container}>
       <CometChatCalls.Component
         callToken={callToken}
-        callSettings={callSettings}
+        sessionSettings={sessionSettings}
       />
     </View>
   );

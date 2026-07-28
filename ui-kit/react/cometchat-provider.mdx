@@ -1,0 +1,255 @@
+---
+title: "CometChatProvider"
+description: "The root provider that composes all internal contexts (plugin registry, theme, locale, global config, events) for the React UI Kit."
+---
+
+## Overview
+
+Every CometChat component must be rendered inside a `<CometChatProvider>` which supplies theme, locale, plugin registry, global config, and real-time events to the component tree.
+
+`CometChatProvider` does **not** handle SDK initialization or user login. You must call `CometChatUIKit.init()` and `CometChatUIKit.login()` (or `loginWithAuthToken()`) imperatively before mounting the provider.
+
+---
+
+## Setup Pattern
+
+The setup is always the same: initialize, login, then render.
+
+```tsx title="src/main.tsx"
+import ReactDOM from "react-dom/client";
+import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+import App from "./App";
+
+const settings = new UIKitSettingsBuilder()
+  .setAppId("YOUR_APP_ID")
+  .setRegion("us")
+  .setAuthKey("YOUR_AUTH_KEY")
+  .subscribePresenceForAllUsers()
+  .setCallingEnabled(true)
+  .build();
+
+CometChatUIKit.init(settings).then(async () => {
+  await CometChatUIKit.login("cometchat-uid-1");
+  ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+});
+```
+
+```tsx title="src/App.tsx"
+import { CometChatProvider, CometChatConversations } from "@cometchat/chat-uikit-react";
+
+function App() {
+  return (
+    <CometChatProvider>
+      <CometChatConversations />
+    </CometChatProvider>
+  );
+}
+
+export default App;
+```
+
+For production, use `CometChatUIKit.loginWithAuthToken(token)` instead of `login(uid)`.
+
+---
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `plugins` | `CometChatMessagePlugin[]` | No | — | Additional custom plugins, merged with the defaults |
+| `removePlugins` | `{ text: string; category: string }[]` | No | — | Plugins to exclude — including defaults. See [Removing Plugins](#removing-plugins) |
+| `config` | `CometChatGlobalConfig` | No | `{}` | Global flags (`hideReceipts`, `hideUserStatus`, etc.) |
+| `theme` | `"light" \| "dark"` | No | `"light"` | Active theme |
+| `locale` | `string` | No | `"en-us"` | Language code for localization |
+| `children` | `ReactNode` | Yes | — | Your app content |
+
+---
+
+## With Custom Theme and Locale
+
+```tsx
+<CometChatProvider theme="dark" locale="fr">
+  <MyChatApp />
+</CometChatProvider>
+```
+
+---
+
+## With Additional Plugins
+
+All default plugins (text, image, file, audio, video, AI, etc.) are always included. Pass your own custom plugins via the `plugins` prop:
+
+```tsx
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+import { MyCustomPlugin } from "./plugins/MyCustomPlugin";
+
+<CometChatProvider plugins={[MyCustomPlugin]}>
+  <MyChatApp />
+</CometChatProvider>
+```
+
+---
+
+## Removing Plugins
+
+Use `removePlugins` to exclude plugins — **including defaults** — so their message types no longer render. Each entry matches a plugin by its message **type** (`text`) and **category** (`category`); a plugin is removed when its `messageTypes` includes the `text` value **and** its `messageCategories` includes the `category` value.
+
+```tsx
+import { CometChatProvider } from "@cometchat/chat-uikit-react";
+
+// Remove the Polls plugin — poll messages will no longer render
+<CometChatProvider
+  removePlugins={[{ text: "extension_poll", category: "custom" }]}
+>
+  <MyChatApp />
+</CometChatProvider>
+```
+
+Pass multiple entries to remove several plugins at once:
+
+```tsx
+<CometChatProvider
+  removePlugins={[
+    { text: "extension_poll", category: "custom" },
+    { text: "extension_sticker", category: "custom" },
+  ]}
+>
+  <MyChatApp />
+</CometChatProvider>
+```
+
+<Note>
+The `text` field is the message **type** (e.g. `extension_poll`, `text`, `image`), not literal text. Look up a plugin's type and category in the [Plugins](/ui-kit/react/plugins/overview#built-in-plugins) table.
+</Note>
+
+---
+
+## With Global Config
+
+```tsx
+<CometChatProvider config={{ hideReceipts: true, hideUserStatus: false }}>
+  <MyChatApp />
+</CometChatProvider>
+```
+
+---
+
+## Accessing the Logged-In User
+
+Inside your components (children of `CometChatProvider`), access the logged-in user via the `useLoggedInUser()` hook or `CometChatUIKit.getLoggedInUser()`:
+
+```tsx
+import { useLoggedInUser } from "@cometchat/chat-uikit-react";
+
+function MyComponent() {
+  const loggedInUser = useLoggedInUser();
+
+  if (!loggedInUser) return <div>Loading...</div>;
+
+  return <div>Welcome, {loggedInUser.getName()}</div>;
+}
+```
+
+---
+
+## Internal Architecture
+
+`CometChatProvider` composes these internal providers in order:
+
+```
+CometChatProvider
+  └─ PluginRegistryContext     — plugin registry from CometChatUIKit
+     └─ GlobalConfigProvider   — hideReceipts, hideUserStatus, etc.
+        └─ ThemeProvider        — data-theme attribute + CSS variables
+           └─ LocaleProvider   — localization translations
+              └─ EventsProvider — SDK listeners + UI events
+                 └─ {children}
+```
+
+---
+
+## Next.js App Router
+
+`CometChatProvider` uses browser APIs internally, so it must be placed inside a Client Component. Additionally, init and login must happen client-side.
+
+```tsx title="app/providers.tsx"
+"use client";
+
+import { useEffect, useState } from "react";
+import { CometChatUIKit, UIKitSettingsBuilder, CometChatProvider } from "@cometchat/chat-uikit-react";
+
+export function ChatProviders({ children }: { children: React.ReactNode }) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const settings = new UIKitSettingsBuilder()
+      .setAppId(process.env.NEXT_PUBLIC_COMETCHAT_APP_ID!)
+      .setRegion(process.env.NEXT_PUBLIC_COMETCHAT_REGION!)
+      .setAuthKey(process.env.NEXT_PUBLIC_COMETCHAT_AUTH_KEY!)
+      .setCallingEnabled(true)
+      .build();
+
+    CometChatUIKit.init(settings).then(async () => {
+      await CometChatUIKit.loginWithAuthToken(getAuthToken());
+      setReady(true);
+    });
+  }, []);
+
+  if (!ready) return null;
+
+  return (
+    <CometChatProvider>
+      {children}
+    </CometChatProvider>
+  );
+}
+```
+
+---
+
+## Migration from v6
+
+In v6, initialization was imperative — call `init()` then `login()`, then render. v7 works the same way:
+
+```tsx title="v6 (before)"
+import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("REGION")
+  .setAuthKey("AUTH_KEY")
+  .build();
+
+await CometChatUIKit.init(settings);
+await CometChatUIKit.login("USER_ID");
+// Then render your app
+```
+
+```tsx title="v7 (after)"
+import { CometChatUIKit, UIKitSettingsBuilder, CometChatProvider } from "@cometchat/chat-uikit-react";
+
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("REGION")
+  .setAuthKey("AUTH_KEY")
+  .build();
+
+await CometChatUIKit.init(settings);
+await CometChatUIKit.login("USER_ID");
+
+// Then render with CometChatProvider wrapping your components
+function App() {
+  return (
+    <CometChatProvider>
+      <MyChatApp />
+    </CometChatProvider>
+  );
+}
+```
+
+Key differences:
+- v7 uses `CometChatProvider` to supply React context (theme, locale, plugins, events)
+- Init and login are still imperative — same as v6
+- Default plugins are included automatically
+- Theme and locale are props on the provider
+- Real-time events are managed internally (no RxJS, no manual listener setup)

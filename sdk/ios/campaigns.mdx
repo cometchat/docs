@@ -1,0 +1,542 @@
+---
+title: "Campaigns"
+description: "CometChat Campaigns SDK APIs — fetching feed items, managing engagement state, reporting interactions, and receiving real-time notifications."
+---
+
+CometChat Campaigns lets you deliver targeted, rich notifications to users via an in-app notification feed. Each notification is a Card Schema JSON — a structured layout rendered natively by the CometChat Cards library. The SDK provides APIs to fetch feed items, listen for real-time delivery, mark items as read/delivered, report engagement, and retrieve unread counts.
+
+<Note>
+Before using the SDK, set up your channels, categories, templates, and campaigns in the CometChat Dashboard. See the [Dashboard Setup Guide](/campaigns#setup-flow) for step-by-step instructions.
+</Note>
+
+---
+
+## Card Messages
+
+A **Card Message** is a structured, interactive message rendered as a card bubble inside a conversation. Cards are **receive-only** on the SDK: they are created through the **Platform REST API** or the **Dashboard Bubble Builder** and delivered to clients like any other message — the SDK does not send them.
+
+- **Type:** `CardMessage` (CometChatSDK)
+- **Category:** `"card"` (`MessageCategory.card`)
+
+### Properties
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getCard()` | `[String: Any]?` | The raw card schema/payload passed to the Cards renderer. |
+| `getText()` | `String?` | Optional text shown alongside the card. |
+| `getFallbackText()` | `String?` | Text displayed when the card payload cannot be rendered. |
+| `getTags()` | `[String]?` | Tags associated with the message. |
+
+### Listening for card messages
+
+To be notified when a card message arrives, implement `onCardMessageReceived` on your `CometChatMessageDelegate`.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import CometChatSDK
+
+extension ViewController: CometChatMessageDelegate {
+
+    func onCardMessageReceived(cardMessage: CardMessage) {
+        print("Card message received: \(String(describing: cardMessage.getCard()))")
+    }
+}
+```
+</Tab>
+</Tabs>
+
+See [Message Delegate Methods](/sdk/ios/all-real-time-delegates-listeners#message-delegate-methods) for the full `CometChatMessageDelegate` reference.
+
+---
+
+## CometChatCardsSwift
+
+`CometChatCardsSwift` is the rendering library for Campaigns. The `NotificationFeedItem.content` field contains a Card Schema JSON — a structured layout definition. `CometChatCardsSwift` takes this JSON and produces a native UIKit view. Without it, `content` is just a raw dictionary.
+
+The library:
+
+- Parses the JSON schema into typed Swift models.
+- Renders native UIKit views (no web views) for each element (text, images, buttons, rows, etc.).
+- Handles light/dark mode color resolution from themed color pairs.
+- Manages interactive actions — button taps emit structured `CometChatCardActionEvent` objects with the action type and element ID.
+- Supports dynamic content — accordions expand/collapse, tabs switch panels, all with proper auto-layout height changes.
+
+If you use `CometChatNotificationFeed` (UI Kit), the Cards library is used internally and you don't interact with it directly. If you're building a custom feed UI, you import `CometChatCardsSwift` and use `CometChatCardView` to render each item's content.
+
+---
+
+## Setting Up CometChatCardsSwift
+
+### Installation
+
+**Swift Package Manager**
+
+In Xcode: **File → Add Package Dependencies** → enter:
+
+```
+https://github.com/cometchat/cometchat-cards-sdk-ios
+```
+
+Add `CometChatCardsSwift` to your target.
+
+**CocoaPods**
+
+```ruby
+pod 'CometChatCardsSwift'
+```
+
+```bash
+pod install
+```
+
+No initialization is required. The library is stateless — import it and start rendering.
+
+### Rendering Feed Items as Cards
+
+```swift
+import CometChatSDK
+import CometChatCardsSwift
+
+// After fetching items via NotificationFeedRequest
+request.fetchNext(onSuccess: { items in
+    for item in items {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: item.content),
+              let jsonString = String(data: jsonData, encoding: .utf8) else { continue }
+
+        let cardView = CometChatCardView(frame: .zero)
+        cardView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.themeMode = .auto
+        cardView.cardJson = jsonString
+
+        cardView.actionCallback = { actionEvent in
+            // Report engagement on every action
+            CometChat.reportFeedEngagement(item, interactionString: actionEvent.elementId, onSuccess: {}, onError: { _ in })
+
+            switch actionEvent.action {
+            case .openUrl(let url, _):
+                if let link = URL(string: url) {
+                    UIApplication.shared.open(link)
+                }
+            case .chatWithUser(let uid):
+                // Navigate to 1-on-1 chat
+                break
+            case .chatWithGroup(let guid):
+                // Navigate to group chat
+                break
+            default:
+                break
+            }
+        }
+
+        container.addSubview(cardView)
+    }
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+### CometChatCardView Properties
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `cardJson` | `String?` | Set this to render a card. Triggers a full re-render. |
+| `themeMode` | `CometChatCardThemeMode` | `.auto` (follows system), `.light`, or `.dark`. |
+| `actionCallback` | `((CometChatCardActionEvent) -> Void)?` | Called when user taps a button, link, or icon button inside the card. |
+| `themeOverride` | `CometChatCardThemeOverride?` | Override default theme colors without modifying card JSON. |
+
+### Theme Override
+
+Override default card theme colors to match your app's brand:
+
+```swift
+var override = CometChatCardThemeOverride()
+override.textColor = CometChatCardColorValue(light: "#1A1A1A", dark: "#F0F0F0")
+override.buttonFilledBg = CometChatCardColorValue(light: "#6852D6", dark: "#8B7AE8")
+override.buttonFilledText = CometChatCardColorValue(light: "#FFFFFF", dark: "#FFFFFF")
+override.fontFamily = "Avenir"
+
+cardView.themeOverride = override
+```
+
+### Content Size Changes
+
+Cards with expandable content (accordions, tabs) change height dynamically. Observe size changes to update your layout:
+
+```swift
+NotificationCenter.default.addObserver(
+    forName: CometChatCardView.contentSizeDidChangeNotification,
+    object: cardView,
+    queue: .main
+) { _ in
+    tableView.beginUpdates()
+    tableView.endUpdates()
+}
+```
+
+---
+
+## Key Concepts
+
+| Concept | Description |
+| ------- | ----------- |
+| NotificationFeedItem | A single notification in the feed. Contains Card Schema JSON in its `content` field, a category for filtering, timestamps, and metadata. |
+| NotificationCategory | A category label used for filter chips (e.g., "Promotions", "Updates"). |
+| Card Schema JSON | The fully rendered card layout (images, text, buttons) inside `NotificationFeedItem.content`. Passed directly to the CometChat Cards renderer. |
+| PushNotification | Represents a campaign push notification payload received via APNs. |
+
+---
+
+## How Cards Render in the Notification Feed
+
+Each `NotificationFeedItem` has a `content` field containing a `[String: Any]` dictionary — this is the Card Schema JSON. This JSON is passed directly to the CometChat Cards renderer library.
+
+The rendering flow:
+
+1. Fetch feed items via `NotificationFeedRequest`
+2. For each item, extract `item.content` — this is the Card Schema JSON
+3. Pass to the Cards renderer (`CometChatCardView`)
+4. The renderer produces a native UIKit view from the JSON
+
+### Card Schema JSON Structure
+
+```json
+{
+  "version": "1.0",
+  "body": [
+    { "type": "image", "id": "img_1", "url": "https://...", "height": 200 },
+    { "type": "text", "id": "txt_1", "content": "Flash Sale!", "variant": "heading2" },
+    { "type": "button", "id": "btn_1", "label": "Shop Now", "action": { "type": "openUrl", "url": "https://..." } }
+  ],
+  "style": { "background": {"light": "#FFFFFF", "dark": "#1E1E1E"}, "borderRadius": 12, "padding": 16 },
+  "fallbackText": "Flash Sale! Shop Now: https://..."
+}
+```
+
+The `body` array contains elements (text, image, button, row, column, etc.) rendered top-to-bottom. Interactive elements like buttons emit actions via a callback — the consumer handles navigation, deep links, or API calls.
+
+---
+
+## Retrieve Notification Feed Items
+
+Use `NotificationFeedRequest` to fetch a paginated list of feed items. Uses cursor-based pagination internally.
+
+### Build the Request
+
+```swift
+let request = NotificationFeedRequest.NotificationFeedRequestBuilder()
+    .set(limit: 20)
+    .set(readState: .unread)
+    .set(category: "Updates")
+    .build()
+```
+
+### Builder Parameters
+
+| Method | Type | Default | Description |
+| ------ | ---- | ------- | ----------- |
+| `set(limit:)` | `Int` | 20 | Items per page. |
+| `set(readState:)` | `FeedReadState` | All | Filter by `.read` or `.unread`. Omit for all. |
+| `set(category:)` | `String` | nil | Filter by category name. Sent as `templateCategory` query param. If `categoryId` is also set, `categoryId` takes priority. |
+| `set(categoryId:)` | `String` | nil | Filter by category ID. Sent as `templateCategory` query param. Takes priority over `category` if both are set. |
+| `set(channelId:)` | `String` | nil | Filter by channel. |
+| `set(tags:)` | `[String]` | nil | Filter by tags (comma-joined). |
+| `set(dateFrom:)` | `String` | nil | ISO 8601 date — items sent on or after. |
+| `set(dateTo:)` | `String` | nil | ISO 8601 date — items sent on or before. |
+
+<Note>
+`set(category:)` and `set(categoryId:)` both map to the same server-side filter (`templateCategory`). Use one or the other — not both. If both are provided, `categoryId` silently overwrites `category`.
+</Note>
+
+### Fetch Items
+
+```swift
+request.fetchNext(onSuccess: { items in
+    for item in items {
+        let cardJson = item.content
+        // Pass cardJson to CometChatCardView
+    }
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+Call `fetchNext()` repeatedly for pagination. When the server has no more items, subsequent calls return an empty array.
+
+### NotificationFeedItem Fields
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `id` | `String` | Unique item identifier. |
+| `category` | `String` | Notification category (e.g., "promotions"). |
+| `categoryId` | `String` | Category ID. |
+| `content` | `[String: Any]` | Card Schema JSON — pass to CometChat Cards renderer. |
+| `readAt` | `Double` | Unix timestamp when read, or 0 if unread. |
+| `deliveredAt` | `Double` | Unix timestamp when delivered, or 0. |
+| `sentAt` | `Double` | Unix timestamp when sent. |
+| `metadata` | `[String: Any]` | Custom key-value metadata. |
+| `tags` | `[String]` | Tags for filtering. |
+| `sender` | `String` | Sender identifier. |
+| `receiver` | `String` | Receiver identifier. |
+| `receiverType` | `String` | Receiver type. |
+| `isRead` | `Bool` | Computed — `true` if `readAt != 0`. |
+
+---
+
+## Retrieve Notification Categories
+
+Use `NotificationCategoriesRequest` to fetch available categories for filter chips.
+
+```swift
+let categoriesRequest = NotificationCategoriesRequest.NotificationCategoriesRequestBuilder()
+    .set(limit: 50)
+    .build()
+
+categoriesRequest.fetchNext(onSuccess: { categories in
+    for category in categories {
+        print("Category: \(category.label)")
+    }
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+### NotificationCategory Fields
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `id` | `String` | Category identifier. |
+| `label` | `String` | Display label for filter UI. |
+
+---
+
+## Real-Time Notification Feed Listener
+
+Listen for new feed items arriving via WebSocket. This listener is independent from `CometChatMessageDelegate`, `CometChatGroupDelegate`, and `CometChatCallDelegate`.
+
+```swift
+CometChat.addNotificationFeedListener("feedListener", self)
+
+// Implement CometChatNotificationFeedDelegate
+extension MyViewController: CometChatNotificationFeedDelegate {
+    func onFeedItemReceived(feedItem: NotificationFeedItem) {
+        print("New item: \(feedItem.id)")
+        let cardJson = feedItem.content
+        // Insert at top of feed and render
+    }
+}
+```
+
+Remove the listener when no longer needed:
+
+```swift
+CometChat.removeNotificationFeedListener("feedListener")
+```
+
+---
+
+## Mark Feed Item as Read
+
+Mark a single item as read. Idempotent — safe to call multiple times.
+
+```swift
+CometChat.markFeedItemAsRead(feedItem, onSuccess: {
+    print("Marked as read")
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+---
+
+## Mark Feed Item as Delivered
+
+Mark a single item as delivered. Idempotent.
+
+```swift
+CometChat.markFeedItemAsDelivered(feedItem, onSuccess: {
+    // Success
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+---
+
+## Report Engagement
+
+Report that a user engaged with a feed item (e.g., viewed, clicked, interacted). Idempotent per topic.
+
+```swift
+CometChat.reportFeedEngagement(feedItem, interactionString: "clicked", onSuccess: {
+    // Success
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+The `interactionString` parameter is a free-form string describing the engagement (e.g., "viewed", "clicked", "interacted").
+
+---
+
+## Get Unread Count
+
+Fetch the total number of unread notification feed items. Optionally filter by category.
+
+```swift
+CometChat.getNotificationFeedUnreadCount(category: nil, onSuccess: { count in
+    print("Unread: \(count)")
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+---
+
+## Fetch Single Feed Item
+
+Fetch a specific item by ID — useful for deep linking from push notifications.
+
+```swift
+CometChat.getNotificationFeedItem(id: "item-id-123", onSuccess: { item in
+    let cardJson = item.content
+    // Render the card
+}, onError: { error in
+    print("Error: \(error?.errorDescription ?? "")")
+})
+```
+
+---
+
+## Push Notification Tracking
+
+When a campaign push notification arrives via APNs, use these methods to report delivery and click engagement.
+
+### Setting Up Notification Service Extension
+
+1. In Xcode: **File → New → Target** → select **Notification Service Extension**.
+2. Enable **App Groups** on both your main app target and the extension target with the same group ID (e.g., `group.com.yourapp.cometchat`).
+3. Add `CometChatSDK` as a dependency to the extension target.
+
+### Identifying Campaign Push Notifications
+
+Campaign pushes contain a `cometchat` dictionary with `"type": "business_messaging"`:
+
+```swift
+func isCampaignNotification(userInfo: [AnyHashable: Any]) -> Bool {
+    if let cometchat = userInfo["cometchat"] as? [String: Any],
+       let type = cometchat["type"] as? String,
+       type == "business_messaging" {
+        return true
+    }
+    return false
+}
+```
+
+### Push Payload Structure
+
+```json
+{
+  "aps": { "alert": { "title": "...", "body": "..." }, "badge": 1, "mutable-content": 1 },
+  "cometchat": {
+    "type": "business_messaging",
+    "appId": "your-app-id",
+    "campaignId": "campaign-cuid",
+    "notificationId": "notification-cuid",
+    "pushNotificationId": "uuid-for-push-tracking",
+    "uid": "target-user-id",
+    "sentAt": "2026-05-21T12:43:55.206Z"
+  }
+}
+```
+
+### Mark Push Notification as Delivered
+
+Call this in your Notification Service Extension:
+
+```swift
+import UserNotifications
+import CometChatSDK
+
+class NotificationService: UNNotificationServiceExtension {
+    override func didReceive(_ request: UNNotificationRequest,
+                             withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
+        let bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)!
+
+        // Required for extensions to share auth state via App Group container
+        CometChat.setExtensionGroupID(id: "group.your.app.group")
+
+        let userInfo = bestAttemptContent.userInfo
+        if let cometchat = userInfo["cometchat"] as? [String: Any],
+           let type = cometchat["type"] as? String,
+           type == "business_messaging" {
+            let push = PushNotification.fromPayload(cometchat)
+            CometChat.markPushNotificationDelivered(push, onSuccess: {}, onError: { _ in })
+        }
+
+        contentHandler(bestAttemptContent)
+    }
+}
+```
+
+### Mark Push Notification as Clicked
+
+Call this when the user taps the push notification:
+
+```swift
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                            didReceive response: UNNotificationResponse,
+                            withCompletionHandler completionHandler: @escaping () -> Void) {
+    let userInfo = response.notification.request.content.userInfo
+
+    if let cometchat = userInfo["cometchat"] as? [String: Any],
+       let type = cometchat["type"] as? String,
+       type == "business_messaging" {
+        let push = PushNotification.fromPayload(cometchat)
+        CometChat.markPushNotificationClicked(push, onSuccess: {}, onError: { _ in })
+        navigateToNotificationsTab()
+        completionHandler()
+        return
+    }
+
+    completionHandler()
+}
+```
+
+### PushNotification Fields
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `id` | `String` | Push notification ID from the push payload. |
+| `announcementId` | `String` | Notification/announcement ID. |
+| `campaignId` | `String?` | Campaign ID if from a campaign. |
+| `source` | `String` | Always "campaign" for notification feed pushes. |
+
+---
+
+## FeedReadState Enum
+
+| Case | Value | Description |
+| ---- | ----- | ----------- |
+| `.read` | `"read"` | Only read items. |
+| `.unread` | `"unread"` | Only unread items. |
+
+If not set, returns all items (default).
+
+---
+
+## Supported Card Actions
+
+When a user taps a button or link inside a card, the action callback receives one of these action types:
+
+| Action Type | Parameters | Description |
+| ----------- | ---------- | ----------- |
+| `openUrl` | url, openIn | Open a URL in browser or webview. |
+| `chatWithUser` | uid | Navigate to 1:1 chat. |
+| `chatWithGroup` | guid | Navigate to group chat. |
+| `sendMessage` | text, receiverUid, receiverGuid | Send a text message. |
+| `copyToClipboard` | value | Copy text to clipboard. |
+| `downloadFile` | url, filename | Download a file. |
+| `initiateCall` | callType (audio/video), uid, guid | Start a call. |
+| `apiCall` | url, method, headers, body | Make an HTTP request. |
+| `customCallback` | callbackId, payload | App-specific logic. |

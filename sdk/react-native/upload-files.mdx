@@ -1,0 +1,354 @@
+---
+title: "Upload Files & Send Attachments"
+sidebarTitle: "Upload Files"
+description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
+---
+
+`CometChat.createUploadFileRequest(receiverId, receiverType)` returns an **`UploadFileRequest`** — the entry point for uploading files **directly to storage** with **per-file progress, success, and failure**. Upload is **decoupled from sending**: each uploaded file yields an [`Attachment`](/sdk/reference/auxiliary#attachment) (carrying a hosted `url`), which you then attach to a [`MediaMessage`](/sdk/reference/messages#mediamessage) and send with [`sendMediaMessage()`](/sdk/react-native/send-message#media-message).
+
+A request object is scoped to **one destination** (`receiverId` / `receiverType`) and **one upload batch**. This is the recommended way to build a **multi-attachment composer**: create a request, upload a batch of files, show a progress bar per file, let the user remove or retry individual files, then send them as a single media message with multiple attachments (or split across several).
+
+<Info>
+**Why upload separately instead of passing files to `sendMediaMessage()`?**
+
+The classic path (passing a file straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
+</Info>
+
+## The upload-then-send flow
+
+<Steps>
+  <Step title="Create a request">
+    Call `CometChat.createUploadFileRequest(receiverId, receiverType)`. The **recipient** is required — the server uses it to apply role- and scope-based access control before issuing upload URLs.
+  </Step>
+  <Step title="Upload">
+    Call `request.uploadAttachments([{ fileId, file }], listener)`. Each file needs a **caller-supplied `fileId`** (required) that is echoed back on every event, so you can map callbacks to your UI rows. Validation, presigning, and the byte transfer run asynchronously and report through the listener.
+  </Step>
+  <Step title="Track progress & handle failures">
+    Your `UploadFileListener` receives `onFileProgress` per file, then `onFileUploaded` (success), `onFileError` (rejected — not retryable), or `onFileFailure` (failed — retryable). Use `request.removeAttachment()`, or re-upload the same `fileId` to retry, as the user acts.
+  </Step>
+  <Step title="Collect attachments">
+    Each `onFileUploaded` hands you an `Attachment` with a hosted `url`. You can also read them from the request at any time with `request.getAttachments()` / `request.getAttachmentsByType()`.
+  </Step>
+  <Step title="Build & send the message">
+    Put the attachments on a `MediaMessage` with `setAttachments([...])` and call `sendMediaMessage()`. Because the attachments already have URLs, the message is sent as JSON — no re-upload.
+  </Step>
+  <Step title="Clean up">
+    Call `request.clearAll()` after a successful send (or to abandon the composer) to release the batch from memory.
+  </Step>
+</Steps>
+
+## Create an upload request
+
+```typescript
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const receiverID = "UID";
+const receiverType = CometChat.RECEIVER_TYPE.USER;
+
+const request = CometChat.createUploadFileRequest(receiverID, receiverType);
+```
+
+`createUploadFileRequest()` accepts:
+
+| Parameter      | Type     | Description                                                        | Required |
+| -------------- | -------- | ----------------------------------------------------------------- | -------- |
+| `receiverId`   | `string` | UID of the user or GUID of the group the files will be sent to.   | Yes      |
+| `receiverType` | `string` | `CometChat.RECEIVER_TYPE.USER` or `CometChat.RECEIVER_TYPE.GROUP`. | Yes      |
+
+<Warning>
+**The recipient must match the message you'll eventually send.** `receiverId` / `receiverType` are sent to the upload-authorization (presign) endpoint, which enforces the sender's **role- and scope-based access control** for that conversation *before* any bytes transfer. If the sender isn't allowed to send media to that user or group, each file is **rejected** via `onFileError` — with `ERR_PERMISSION_DENIED` for an access-control denial, or `ERR_PRESIGN_REJECTED` for a billing / MIME-rule denial (neither is retryable). Pass the same recipient you'll set on the `MediaMessage` at send time.
+</Warning>
+
+## Upload files
+
+Build an `UploadFileListener` and call `uploadAttachments()` (or `uploadAttachment()` for a single file). Each item pairs a React Native file object with a **required, caller-supplied `fileId`**.
+
+```typescript
+// React Native native file objects — { uri, name, type, size } — from your image/file picker.
+const files = [
+  { uri: "file:///path/to/photo.jpg", name: "photo.jpg", type: "image/jpeg", size: 482113 },
+  { uri: "file:///path/to/report.pdf", name: "report.pdf", type: "application/pdf", size: 91234 },
+];
+
+// Pair each file with a stable, unique id you own, so you can map events back to your UI.
+const items = files.map((file, i) => ({ fileId: `${file.name}-${i}`, file }));
+
+const listener = new CometChat.UploadFileListener({
+  onFileProgress: (fileId, loaded, total, percent) => {
+    console.log(`${fileId}: ${percent}%`);
+  },
+  onFileUploaded: (fileId, attachment) => {
+    console.log(`${fileId} uploaded ->`, attachment.getUrl());
+  },
+  onFileError: (fileId, error) => {
+    console.log(`${fileId} rejected (not retryable):`, error.code);
+  },
+  onFileFailure: (fileId, error) => {
+    console.log(`${fileId} failed (retryable):`, error.code);
+  },
+  onComplete: (result) => {
+    console.log("Batch settled:", result);
+  },
+});
+
+request.uploadAttachments(items, listener);
+```
+
+| Method                                       | Description                                                                                          |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `uploadAttachments(items, listener)`         | Upload multiple files. `items` is `{ fileId, file }[]`. `listener` receives events for these files. |
+| `uploadAttachment(fileId, file, listener)`   | Upload a single file under `fileId`.                                                                 |
+
+The file object is a React Native `FileInput`:
+
+| Field  | Type     | Description                                     |
+| ------ | -------- | ----------------------------------------------- |
+| `uri`  | `string` | Local file URI from your image/file picker.     |
+| `name` | `string` | File name (used as the attachment name).        |
+| `type` | `string` | MIME type, e.g. `"image/jpeg"`.                 |
+| `size` | `number` | File size in bytes (used for the size check).   |
+
+<Note>
+**`fileId` is caller-supplied and required.** The SDK does not generate one — you provide a stable, unique id per file (echoed back unchanged on every event) so you can line each file up with its UI row. Re-uploading a `fileId` that is already in the batch **overwrites** its state and re-uploads it — this is exactly how you [retry a failed file](#remove-retry--clear); use a fresh `fileId` for each genuinely new file.
+
+Validation, presigning, and the byte transfer all run **asynchronously** after `uploadAttachments()` returns — track outcomes through the listener.
+</Note>
+
+## The UploadFileListener
+
+Pass an `UploadFileListener` with only the callbacks you need — all are optional. Unlike [`MessageListener`](/sdk/react-native/receive-messages), it is **not** registered globally with a string id; it lives for the duration of the upload batch.
+
+| Callback         | Signature                                    | Fires when                                                                                                     |
+| ---------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `onFileProgress` | `(fileId, loaded, total, percent) => void`   | Transfer progress for a file.                                                                                  |
+| `onFileUploaded` | `(fileId, attachment) => void`               | A file finished uploading. `attachment` is a ready-to-send [`Attachment`](/sdk/reference/auxiliary#attachment). |
+| `onFileError`    | `(fileId, error) => void`                    | A file was **rejected** — **not retryable** (fix the input or permissions).                                    |
+| `onFileFailure`  | `(fileId, error) => void`                    | A file's transfer **failed** — **retryable** by re-uploading the same `fileId`.                               |
+| `onComplete`     | `(result) => void`                           | The batch drained (no files in flight). Delivers an aggregate [`UploadResult`](#uploadresult).                 |
+
+<Warning>
+**Rejected vs. failed — the key distinction.** `onFileError` (rejected) means the request itself is unacceptable — invalid file object, over the size limit, not logged in, or the server declined the file at presign (permission / billing / role- and scope-based access control / MIME rules). Retrying won't help; the user must swap the file or you must fix the recipient/permissions. `onFileFailure` (failed) means a transient transport problem — a storage error, an expired presigned URL, a stalled upload, or an unreachable presign endpoint. These **can** be retried.
+</Warning>
+
+### UploadResult
+
+`onComplete` receives the batch's settled state. It fires **each time** the batch drains — including after a retry adds new work and it drains again — and always reflects the whole batch, so keep the handler idempotent.
+
+```typescript
+interface UploadResult {
+  batchId: string;
+  successful: { fileId: string; attachment: Attachment }[];    // uploaded, ready to send
+  rejected:   { fileId: string; error: CometChatException }[]; // reported via onFileError — not retryable
+  failed:     { fileId: string; error: CometChatException }[]; // reported via onFileFailure — retryable
+}
+```
+
+## Configuring the request
+
+Chainable setters let you configure the batch before (or between) uploads:
+
+```typescript
+request
+  .setConcurrency(3)              // upload up to 3 files at once (default 1, sequential)
+  .setParentMessageId(parentId); // mark this batch as belonging to a thread
+
+const batchId = request.getBatchId(); // auto-generated UUID unless you set one
+```
+
+| Method                     | Description                                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `setConcurrency(count)`    | How many files upload simultaneously. Default `1` (sequential). Applies from the next drain onward.              |
+| `setBatchId(batchId)`      | Set the batch id all files share. Optional — the request auto-generates a UUID on first use.                     |
+| `getBatchId()`             | The effective batch id (app-set or auto-generated).                                                              |
+| `setParentMessageId(id)`   | Mark the batch as belonging to a thread — sent to the presign endpoint. Omit for a top-level message.            |
+
+<Note>
+Each request owns exactly one batch. For separate destinations (e.g. a main conversation and a thread), create a **separate `UploadFileRequest`** for each — their file ids never cross.
+</Note>
+
+### Adding more files to the batch
+
+To add files incrementally (e.g. the user picks more while earlier uploads are still running), just call `uploadAttachments()` again **on the same request** — the new files join the same batch. Give each genuinely new file a fresh `fileId`; re-using an existing `fileId` re-uploads that file instead of adding a new one.
+
+## Per-call and global listeners
+
+There are two listener scopes, and events fire on **both**:
+
+- **Per-call listener** — the `listener` you pass to `uploadAttachment()` / `uploadAttachments()`. It receives events only for the files in *that* call.
+- **Global batch listener** — registered with `request.addUploadListener(listener)`. It receives events for **every** file across all upload calls on the request. There is a **single global slot**: a later `addUploadListener()` overrides the previous one; `removeUploadListener()` clears it.
+
+```typescript
+// One listener for the whole batch, regardless of how many upload calls you make.
+request.addUploadListener(
+  new CometChat.UploadFileListener({
+    onFileProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
+    onFileUploaded: (fileId, attachment) => markUploaded(fileId, attachment),
+    onComplete: (result) => console.log("Whole batch settled:", result),
+  })
+);
+
+// Later:
+request.removeUploadListener();
+```
+
+## Reading the batch
+
+Query the request's current state at any time — useful when the user hits "send":
+
+| Method                       | Returns              | Notes                                                                                               |
+| ---------------------------- | -------------------- | --------------------------------------------------------------------------------------------------- |
+| `getAttachment(fileId)`      | `Attachment \| null` | The uploaded attachment for `fileId`, or `null` if unknown or **not yet uploaded**.                 |
+| `getAttachments()`           | `Attachment[]`       | All **uploaded** attachments in the batch.                                                           |
+| `getAttachmentsByType(type)` | `Attachment[]`       | Uploaded attachments of one kind (`"image"` / `"video"` / `"audio"` / `"file"`) — always an array.  |
+| `getAttachmentCount()`       | `number`             | Total files in the batch in **any** state (in-progress, failed, or uploaded).                       |
+| `getStatus()`                | `UploadStatus`       | `IN_PROGRESS` while any file is still uploading, else `IDLE` (a fresh or drained batch is `IDLE`).   |
+
+<Note>
+The attachment getters (`getAttachment`, `getAttachments`, `getAttachmentsByType`) return **only uploaded** files, so they're safe to hand straight to `setAttachments()`. `getAttachmentCount()` counts every file regardless of state, so you can compare it against `getAttachments().length` to see how many are still pending.
+</Note>
+
+## Remove, retry & clear
+
+```typescript
+// Remove one file: aborts its in-flight upload (silently — no onFileFailure),
+// or drops it from the batch if it has already uploaded.
+request.removeAttachment(fileId);
+
+// Retry a FAILED file: re-upload it under the SAME fileId. Re-presigns automatically
+// if the URL expired. (There is no separate retry method — a re-upload is the retry.)
+request.uploadAttachment(fileId, file, listener);
+
+// Release the whole batch from memory, aborting anything still in flight.
+// Call this after a successful send, or to abandon the composer.
+request.clearAll();
+```
+
+| Method                     | Behavior                                                                                                                                                               |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `removeAttachment(fileId)` | Removes one file from the batch. If it's still uploading, the transfer is aborted **silently** (no `onFileFailure`); if it already uploaded, it's dropped from the set. |
+| `uploadAttachment(fileId, file, listener)` | Re-uploading a **failed** file under its existing `fileId` retries it, re-presigning first if the earlier upload URL expired.                          |
+| `clearAll()`               | Aborts any in-flight uploads and drops the whole batch from SDK memory.                                                                                                 |
+
+<Note>
+All active upload batches are also cleared automatically on [`CometChat.logout()`](/sdk/react-native/authentication-overview). Since there is no send hook, call `clearAll()` yourself after a successful send so a batch doesn't linger in memory until logout.
+</Note>
+
+## Send the uploaded files as a media message
+
+Once your files are uploaded, collect their `Attachment`s (from `request.getAttachments()` or from `result.successful` in `onComplete`), set them on a `MediaMessage`, and send. One batch can go out as a single multi-attachment message, or you can split the attachments across several messages — e.g. one message per media type using `getAttachmentsByType()`.
+
+```typescript
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const receiverID = "UID";
+const receiverType = CometChat.RECEIVER_TYPE.USER;
+
+const request = CometChat.createUploadFileRequest(receiverID, receiverType).setConcurrency(3);
+
+const listener = new CometChat.UploadFileListener({
+  onFileProgress: (fileId, loaded, total, percent) => updateRow(fileId, percent),
+  onFileFailure: (fileId, error) => markRetryable(fileId, error),
+  onFileError: (fileId, error) => markRejected(fileId, error), // incl. ERR_PERMISSION_DENIED
+  onComplete: async (result) => {
+    // Wait until nothing is in flight, then send what uploaded successfully.
+    if (request.getStatus() !== CometChat.UploadStatus.IDLE) return;
+    const attachments = request.getAttachments();
+    if (attachments.length === 0) return;
+
+    const mediaMessage = new CometChat.MediaMessage(
+      receiverID,
+      "",            // no raw file — attachments already carry hosted URLs
+      CometChat.MESSAGE_TYPE.FILE,
+      receiverType
+    );
+    mediaMessage.setAttachments(attachments);
+    mediaMessage.setMuid(request.getBatchId()); // reconcile the message with its upload batch
+
+    try {
+      const sent = await CometChat.sendMediaMessage(mediaMessage);
+      console.log("Media message sent successfully", sent);
+      request.clearAll();
+    } catch (error) {
+      console.log("Media message sending failed with error", error);
+    }
+  },
+});
+
+const files = [
+  { uri: "file:///path/to/photo.jpg", name: "photo.jpg", type: "image/jpeg", size: 482113 },
+  { uri: "file:///path/to/report.pdf", name: "report.pdf", type: "application/pdf", size: 91234 },
+];
+const items = files.map((file, i) => ({ fileId: `${file.name}-${i}`, file }));
+request.uploadAttachments(items, listener);
+```
+
+<Note>
+`sendMediaMessage()` enforces the **maximum attachments per message** (see [Limits](#limits)). If a batch has more successful uploads than the limit allows, split them across multiple `MediaMessage`s — grouping by kind with `getAttachmentsByType()` is a natural way to do this. See [Multiple Attachments in a Media Message](/sdk/react-native/send-message#multiple-attachments-in-a-media-message).
+</Note>
+
+## Limits
+
+Two independent checks guard the flow, each using a limit read from your app settings (with a built-in fallback):
+
+| Limit                       | Enforced in            | App setting      | Default | On breach                                                              |
+| --------------------------- | ---------------------- | ---------------- | ------- | --------------------------------------------------------------------- |
+| **Per-file size**           | `uploadAttachments()`  | `file.size.max`  | 100 MB  | That file is rejected via `onFileError` with `ERR_FILE_SIZE_EXCEEDED`. |
+| **Attachments per message** | `sendMediaMessage()`   | `file.count.max` | 10      | `sendMediaMessage()` rejects with `ERR_FILE_COUNT_EXCEEDED`.          |
+
+Read the current attachment-count limit at runtime with `CometChat.getMaxAttachmentCount()` — useful for disabling the "add file" button in your composer once the user hits the cap:
+
+```typescript
+const max = await CometChat.getMaxAttachmentCount();
+console.log("Max attachments per message:", max);
+```
+
+<Note>
+The **per-file size** limit is checked at upload time (before the byte transfer), while the **attachment count** limit is checked in `sendMediaMessage()` (when you send). A batch can therefore upload successfully but still be rejected at send time if it exceeds the count limit — plan your composer around both.
+</Note>
+
+## Reliability behavior
+
+The SDK handles a few transport edge cases for you:
+
+- **Stalled uploads** — if a file makes no progress for 30 seconds, its upload is aborted and reported through `onFileFailure` with `ERR_UPLOAD_STALLED`. Retry it by re-uploading the same `fileId`.
+- **Expired upload URLs** — the pre-signed upload URL for each file is valid for 15 minutes. The SDK re-presigns roughly 30 seconds before that TTL, and a retry requests a fresh URL if the original has expired — so retries keep working even after a long delay.
+- **Storage errors** — if storage rejects the upload, the failure surfaces through `onFileFailure` with `ERR_S3_UPLOAD_FAILED` and, where available, the storage's own message.
+
+## Error handling
+
+Every error delivered to `onFileError` / `onFileFailure` (and rejections from `sendMediaMessage()`) is a [`CometChatException`](/sdk/reference/auxiliary#cometchatexception). Each non-successful file hits exactly one of `onFileError` (rejected — not retryable) or `onFileFailure` (failed — retryable). The upload-specific codes:
+
+| Code                        | Surfaced via         | Retryable | Meaning                                                                                                |
+| --------------------------- | -------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
+| `ERR_INVALID_FILE_OBJECT`   | `onFileError`        | No        | The file object is invalid or its size can't be determined.                                            |
+| `ERR_FILE_SIZE_EXCEEDED`    | `onFileError`        | No        | The file is larger than `file.size.max`.                                                               |
+| `ERR_UNAUTHENTICATED`       | `onFileError`        | No        | No logged-in user — log in before uploading.                                                           |
+| `ERR_PERMISSION_DENIED`     | `onFileError`        | No        | The sender isn't allowed to upload media to this `receiverId` / `receiverType` (role/scope access control). |
+| `ERR_PRESIGN_REJECTED`      | `onFileError`        | No        | The server declined the file at presign — billing or MIME rules for this recipient.                   |
+| `ERR_FILE_COUNT_EXCEEDED`   | `sendMediaMessage()` | No        | More attachments on the message than `file.count.max` allows.                                          |
+| `ERR_S3_UPLOAD_FAILED`      | `onFileFailure`      | Yes       | Storage rejected the upload or the transport errored.                                                  |
+| `ERR_PRESIGNED_URL_EXPIRED` | `onFileFailure`      | Yes       | The pre-signed URL expired (a retry re-presigns automatically).                                        |
+| `ERR_UPLOAD_STALLED`        | `onFileFailure`      | Yes       | No progress for 30s; the upload was aborted.                                                           |
+| `ERR_PRESIGN_FETCH_FAILED`  | `onFileFailure`      | Yes       | Couldn't reach the presign endpoint (e.g. network drop). Retry when back online.                      |
+| `ERR_UPLOAD_CANCELLED`      | —                    | —         | The upload was removed via `removeAttachment()`.                                                       |
+
+<Note>
+`ERR_PERMISSION_DENIED` and `ERR_PRESIGN_REJECTED` are returned by the server's presign check, so their exact code and message come from your backend.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Send A Message" icon="paper-plane" href="/sdk/react-native/send-message">
+    Send text, media, and custom messages
+  </Card>
+  <Card title="Multiple Attachments" icon="paperclip" href="/sdk/react-native/send-message#multiple-attachments-in-a-media-message">
+    Send several attachments in one media message
+  </Card>
+  <Card title="Receive Messages" icon="inbox" href="/sdk/react-native/receive-messages">
+    Listen for incoming messages in real-time
+  </Card>
+  <Card title="Edit a Message" icon="pen" href="/sdk/react-native/edit-message">
+    Update an already-sent message
+  </Card>
+</CardGroup>
