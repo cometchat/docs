@@ -1,0 +1,354 @@
+---
+title: "Card Messages"
+description: "Receive and render rich card messages with the CometChat JavaScript SDK."
+---
+
+Card messages let your app display rich, structured content — such as product cards, confirmations, or AI-generated summaries — inside a conversation. In the JavaScript SDK, card support is **receive-only**: the SDK deserializes incoming cards and hands you their raw payload through typed accessors, and your app is responsible for turning that payload into UI.
+
+The body of a card is **Card Schema JSON** — the same structured layout used by [Campaigns notification feeds](/sdk/javascript/campaigns). Cards are authored server-side (they cannot be composed or sent from the SDK) via the [Platform (REST) API](/rest-api/messages/send-message) or the **Dashboard Bubble Builder**, and delivered to clients like any other message.
+
+<Note>
+  The SDK never interprets the body of a card — every accessor returns the raw
+  Card Schema JSON exactly as it was sent. Drawing it is your app's
+  responsibility: pass that JSON to the **CometChat Cards** renderer for your
+  framework.
+
+  - **React** — please refer to the [Card Messages](/ui-kit/react/v6/card-messages#the-render-only-contract) guide.
+  - **Angular** — please refer to the [Card Messages](/ui-kit/angular/guides/card-messages#the-render-only-contract) guide.
+</Note>
+
+## How Cards Arrive
+
+There are three ways a card can reach your app. Which one you handle depends on where the card originates.
+
+| Delivery                          | Listener / Callback                                         | Object                                                                                    | When to use                                                    |
+| --------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Standalone card message           | `MessageListener.onCardMessageReceived`                    | [`CardMessage`](/sdk/reference/messages#cardmessage)                                       | A card sent as a complete message on its own                  |
+| Inline card in an AI agent reply  | `MessageListener.onAIAssistantMessageReceived`             | [`AIAssistantMessage`](/sdk/reference/messages#aiassistantmessage) → `getElements()`       | A card embedded in a persisted AI Agent reply                 |
+| Real-time card streaming events   | `AIAssistantListener.onAIAssistantEventReceived`           | [`AIAssistantCardStartedEvent` / `...ReceivedEvent` / `...EndedEvent`](/sdk/reference/messages#aiassistantcardstartedevent) | Progressive rendering of a card while an AI Agent run streams |
+
+The sections below cover each of these in turn.
+
+---
+
+## Standalone Card Messages
+
+A standalone card arrives as a message whose category is `card` (its type is `text`). The SDK deserializes it into a [`CardMessage`](/sdk/reference/messages#cardmessage) and delivers it through the **`onCardMessageReceived`** callback of the [`MessageListener`](/sdk/javascript/all-real-time-listeners#message-listener).
+
+<Note>
+  Branch on `getCategory() === "card"` to identify a card message —
+  `getType()` returns `"text"`, the same as a plain text message.
+</Note>
+
+`CardMessage` extends [`BaseMessage`](/sdk/reference/messages#basemessage), so all the usual metadata (`getSender()`, `getReceiver()`, `getSentAt()`, `getConversationId()`, …) is available. It adds these card-specific accessors:
+
+| Getter              | Return Type          | Description                                                                        |
+| ------------------- | -------------------- | --------------------------------------------------------------------------------- |
+| `getCard()`         | `Object \| undefined`| The raw Card Schema JSON object (`data.card`). Returns `undefined` when no card is present. |
+| `getText()`         | `string`             | The plain-text content that accompanies the card (`data.text`), used as preview text in the conversation list and push notifications. |
+| `getFallbackText()` | `string`             | Text to display when the card cannot be rendered (`card.fallbackText`).           |
+| `getTags()`         | `Array<String>`      | Tags associated with the message.                                                 |
+
+### Receiving a Card Message
+
+Register a `MessageListener` and implement `onCardMessageReceived`:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const listenerID: string = "UNIQUE_LISTENER_ID";
+
+CometChat.addMessageListener(
+  listenerID,
+  new CometChat.MessageListener({
+    onCardMessageReceived: (cardMessage: CometChat.CardMessage) => {
+      console.log("Card message received", cardMessage);
+      // getCard() returns the raw Card Schema JSON — pass it to your card renderer.
+      const card = cardMessage.getCard();
+    },
+  })
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+const listenerID = "UNIQUE_LISTENER_ID";
+
+CometChat.addMessageListener(
+  listenerID,
+  new CometChat.MessageListener({
+    onCardMessageReceived: (cardMessage) => {
+      console.log("Card message received", cardMessage);
+      // getCard() returns the raw Card Schema JSON — pass it to your card renderer.
+      const card = cardMessage.getCard();
+    },
+  })
+);
+```
+
+</Tab>
+</Tabs>
+
+### Rendering a Card Message
+
+`getCard()` returns the raw Card Schema JSON — turning it into UI is your app's job. Pass that JSON to the CometChat Cards renderer for your framework (see the note at the top of this page), and fall back to `getFallbackText()` — then `getText()` — when the card is absent or cannot be rendered.
+
+A card payload is arbitrary JSON. A typical shape looks like this — but treat the structure as opaque and render whatever fields your platform sends:
+
+```json
+{
+  "text": "Here is your order summary",
+  "card": {
+    "fallbackText": "Order #1234 — 2 items — $48.00",
+    "title": "Order #1234",
+    "components": []
+  }
+}
+```
+
+---
+
+## Inline Cards in AI Agent Replies
+
+When an [AI Agent](/sdk/javascript/ai-agents) produces a card, it is **not** delivered as a separate message. Instead it is embedded, in order, inside the agent's persisted reply — an [`AIAssistantMessage`](/sdk/reference/messages#aiassistantmessage) received through the existing **`onAIAssistantMessageReceived`** callback.
+
+The ordered content of an assistant reply is exposed through `getElements()`, which returns an array of [`AIAssistantElement`](/sdk/reference/messages#aiassistantelement) objects. Each element is a `{ type, value }` envelope:
+
+| Getter       | Return Type | Description                                                                                        |
+| ------------ | ----------- | ------------------------------------------------------------------------------------------------- |
+| `getType()`  | `string`    | The element type — `"text"`, `"card"`, or any other type your platform emits.                     |
+| `getData()`  | `any`       | The element's raw body. For `"text"` it is the text string; for `"card"` it is `{ card, cardId }`. |
+
+<Note>
+  When `getElements()` is non-empty, prefer it as the render source and walk the
+  blocks in order — a card-only reply may have an empty
+  `getAssistantMessageData().getText()`, so relying on the text alone can drop
+  content. `getElements()` returns an **empty array** only for messages that
+  predate this feature (or that carry no elements); in that case fall back to
+  `getAssistantMessageData().getText()`. The elements API is purely additive and
+  never breaks existing rendering.
+</Note>
+
+### Rendering an Assistant Reply with Elements
+
+Walk the elements in order and branch on `getType()`:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addMessageListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.MessageListener({
+    onAIAssistantMessageReceived: (message: CometChat.AIAssistantMessage) => {
+      const elements: CometChat.AIAssistantElement[] = message.getElements();
+
+      if (elements.length === 0) {
+        // Older message with no elements — fall back to the plain text reply.
+        console.log("Message text:", message.getAssistantMessageData().getText());
+        return;
+      }
+
+      elements.forEach((element: CometChat.AIAssistantElement) => {
+        switch (element.getType()) {
+          case "text":
+            console.log("Text block:", element.getData()); // a string
+            break;
+          case "card": {
+            const { card, cardId } = element.getData(); // { card, cardId }
+            console.log("Card block:", cardId);
+            // Pass the card to your card renderer.
+            break;
+          }
+          default:
+            console.log("Unknown element type:", element.getType());
+            break;
+        }
+      });
+    },
+  })
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.addMessageListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.MessageListener({
+    onAIAssistantMessageReceived: (message) => {
+      const elements = message.getElements();
+
+      if (elements.length === 0) {
+        // Older message with no elements — fall back to the plain text reply.
+        console.log("Message text:", message.getAssistantMessageData().getText());
+        return;
+      }
+
+      elements.forEach((element) => {
+        switch (element.getType()) {
+          case "text":
+            console.log("Text block:", element.getData()); // a string
+            break;
+          case "card": {
+            const { card, cardId } = element.getData(); // { card, cardId }
+            console.log("Card block:", cardId);
+            // Pass the card to your card renderer.
+            break;
+          }
+          default:
+            console.log("Unknown element type:", element.getType());
+            break;
+        }
+      });
+    },
+  })
+);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Real-Time Card Streaming Events
+
+While an AI Agent run is in progress, cards are streamed as real-time events over the [`AIAssistantListener`](/sdk/javascript/all-real-time-listeners#ai-assistant-listener) so you can render (or show a placeholder for) a card before the persisted `AIAssistantMessage` arrives. These events are delivered through **`onAIAssistantEventReceived`** alongside the other [AI Agent stream events](/sdk/javascript/ai-agents#real-time-events).
+
+There are three card events, emitted in order per card:
+
+| Order | Event type   | Object                                                                              | Meaning                                    |
+| ----- | ------------ | ----------------------------------------------------------------------------------- | ------------------------------------------ |
+| 1     | `card_start` | [`AIAssistantCardStartedEvent`](/sdk/reference/messages#aiassistantcardstartedevent)   | The agent began generating a card          |
+| 2     | `card`       | [`AIAssistantCardReceivedEvent`](/sdk/reference/messages#aiassistantcardreceivedevent) | The full card payload is available         |
+| 3     | `card_end`   | [`AIAssistantCardEndedEvent`](/sdk/reference/messages#aiassistantcardendedevent)       | The card is finalized                      |
+
+Every card event extends [`AIAssistantBaseEvent`](/sdk/reference/messages#aiassistantbaseevent) (so it carries `getType()`, `getConversationId()`, `getRunId()`, etc.) and adds these card-specific getters:
+
+| Event                          | Extra Getters                                            | Description                                                    |
+| ------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------- |
+| `AIAssistantCardStartedEvent`  | `getStreamMessageId()`, `getCardId()`, `getExecutionText()` | Stream/card IDs and the text shown while the card is generated |
+| `AIAssistantCardReceivedEvent` | `getStreamMessageId()`, `getCardId()`, `getCard()`      | Stream/card IDs and the raw card payload                       |
+| `AIAssistantCardEndedEvent`    | `getStreamMessageId()`, `getCardId()`                   | Stream/card IDs marking the end of the card                    |
+
+Use `getStreamMessageId()` / `getCardId()` to correlate the three events for the same card, and `getCard()` on the `card` event to obtain the payload to render.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const listenerID: string = "UNIQUE_LISTENER_ID";
+
+CometChat.addAIAssistantListener(listenerID, {
+  onAIAssistantEventReceived: (event: CometChat.AIAssistantBaseEvent) => {
+    switch (event.getType()) {
+      case "card_start": {
+        const started = event as CometChat.AIAssistantCardStartedEvent;
+        console.log("Card generation started:", started.getCardId());
+        console.log("Execution text:", started.getExecutionText());
+        break;
+      }
+      case "card": {
+        const received = event as CometChat.AIAssistantCardReceivedEvent;
+        console.log("Card received:", received.getCardId());
+        const cardPayload = received.getCard();
+        // Pass cardPayload to your card renderer.
+        break;
+      }
+      case "card_end": {
+        const ended = event as CometChat.AIAssistantCardEndedEvent;
+        console.log("Card generation ended:", ended.getCardId());
+        break;
+      }
+      default:
+        // Other agent stream events (run/tool/text) — handle as needed.
+        break;
+    }
+  },
+});
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+const listenerID = "UNIQUE_LISTENER_ID";
+
+CometChat.addAIAssistantListener(listenerID, {
+  onAIAssistantEventReceived: (event) => {
+    switch (event.getType()) {
+      case "card_start":
+        console.log("Card generation started:", event.getCardId());
+        console.log("Execution text:", event.getExecutionText());
+        break;
+      case "card": {
+        console.log("Card received:", event.getCardId());
+        const cardPayload = event.getCard();
+        // Pass cardPayload to your card renderer.
+        break;
+      }
+      case "card_end":
+        console.log("Card generation ended:", event.getCardId());
+        break;
+      default:
+        // Other agent stream events (run/tool/text) — handle as needed.
+        break;
+    }
+  },
+});
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+  Streaming card events are the live view of a card as it is produced. Once the
+  run finishes, the same card is persisted inside the assistant reply and
+  reaches you again as an element on the `AIAssistantMessage` (see [Inline Cards
+  in AI Agent Replies](#inline-cards-in-ai-agent-replies)). Correlate them by
+  `cardId` to avoid rendering the card twice.
+</Note>
+
+---
+
+## Removing Listeners
+
+Always remove listeners when they are no longer needed (for example, on component unmount or page navigation) to prevent memory leaks and duplicate handling.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.removeMessageListener("UNIQUE_LISTENER_ID");
+CometChat.removeAIAssistantListener("UNIQUE_LISTENER_ID");
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.removeMessageListener("UNIQUE_LISTENER_ID");
+CometChat.removeAIAssistantListener("UNIQUE_LISTENER_ID");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Receive a Message" icon="inbox" href="/sdk/javascript/receive-message">
+    Handle real-time, unread, and historical messages of every type
+  </Card>
+  <Card title="AI Agents" icon="robot" href="/sdk/javascript/ai-agents">
+    Handle AI Agent runs, streaming events, and persisted agent replies
+  </Card>
+  <Card title="Real-Time Listeners" icon="tower-broadcast" href="/sdk/javascript/all-real-time-listeners">
+    See every callback on the MessageListener and AIAssistantListener
+  </Card>
+  <Card title="Message Reference" icon="book" href="/sdk/reference/messages">
+    Full class reference for CardMessage, AIAssistantElement, and card events
+  </Card>
+</CardGroup>

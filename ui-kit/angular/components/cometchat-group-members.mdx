@@ -133,59 +133,11 @@ export class GroupMembersComponent implements OnInit {
 }
 ```
 
-## Usage Patterns
+## Usage Pattern
 
-CometChatGroupMembers supports two usage patterns. The default service-based approach uses
-`ChatStateService` to automatically wire the group context. Alternatively, you can
-pass data explicitly via `@Input()` bindings.
-
-<Tabs>
-<Tab title="Using Service">
-
-When a group is selected via `ChatStateService`, `cometchat-group-members` automatically subscribes to `ChatStateService.activeGroup` — no explicit `[group]` binding required. This is ideal when your app already uses `ChatStateService` to manage the active conversation.
-
-```typescript expandable
-import { Component } from '@angular/core';
-import {
-  CometChatGroupMembersComponent,
-  CometChatGroupsComponent,
-} from '@cometchat/chat-uikit-angular';
-
-@Component({
-  selector: 'app-group-members-service',
-  standalone: true,
-  imports: [CometChatGroupsComponent, CometChatGroupMembersComponent],
-  template: `
-    <div class="layout">
-      <!-- Selecting a group updates ChatStateService.activeGroup -->
-      <cometchat-groups
-        (itemClick)="onGroupClick($event)"
-      ></cometchat-groups>
-
-      <!-- Automatically subscribes to ChatStateService.activeGroup -->
-      <cometchat-group-members></cometchat-group-members>
-    </div>
-  `,
-})
-export class GroupMembersServiceComponent {
-  onGroupClick(group: any): void {
-    // ChatStateService is updated automatically —
-    // cometchat-group-members reacts to the active group change
-  }
-}
-```
-
-See the [ChatStateService API reference](/ui-kit/angular/api-reference/chat-state-service) for the full list of signals, observables, and setter methods.
-
-<Tip>
-  This is the recommended approach for most applications. It reduces boilerplate
-  and keeps components in sync automatically.
-</Tip>
-
-</Tab>
-<Tab title="Using Props">
-
-Pass `[group]` directly to override `ChatStateService` state for this component instance. This is useful when you manage group selection yourself or render multiple group member panels.
+`cometchat-group-members` requires an explicit `[group]` input. Pass a
+`CometChat.Group` object via the `@Input()` binding — the component does not
+subscribe to any global active-group state, so `[group]` must always be provided.
 
 ```typescript expandable
 import { Component, OnInit, signal } from '@angular/core';
@@ -198,18 +150,17 @@ import { CometChatGroupMembersComponent } from '@cometchat/chat-uikit-angular';
   imports: [CometChatGroupMembersComponent],
   template: `
     @if (group()) {
-      <cometchat-group-members
-        [group]="group()!"
-        (itemClick)="onMemberClick($event)"
-      ></cometchat-group-members>
+      <cometchat-group-members [group]="activeGroup"></cometchat-group-members>
     }
   `,
 })
 export class GroupMembersPropsComponent implements OnInit {
   group = signal<CometChat.Group | null>(null);
+  activeGroup!: CometChat.Group;
 
   ngOnInit(): void {
     CometChat.getGroup('your-group-guid').then((group: CometChat.Group) => {
+      this.activeGroup = group;
       this.group.set(group);
     });
   }
@@ -221,12 +172,9 @@ export class GroupMembersPropsComponent implements OnInit {
 ```
 
 <Note>
-  When the `[group]` `@Input()` binding is provided, it takes priority over
-  `ChatStateService` state for that component instance.
+  The `[group]` input (a `CometChat.Group`) is required. Fetch the group from the
+  SDK before rendering the component.
 </Note>
-
-</Tab>
-</Tabs>
 
 ## Properties
 
@@ -242,7 +190,7 @@ export class GroupMembersPropsComponent implements OnInit {
 | `hideScopeChangeOption` | `boolean` | `false` | Hide the scope change option from context menus |
 | `disableLoadingState` | `boolean` | `false` | Disable the shimmer loading state |
 | `showScrollbar` | `boolean` | `false` | Show/hide scrollbar in member list |
-| `disableDefaultContextMenu` | `boolean` | `true` | When true, prevents the browser's native context menu and shows the custom context menu instead |
+| `disableDefaultContextMenu` | `boolean` | `true` | When true, suppresses the browser's native context menu only. Visibility of the custom CometChat menu depends on the component's context-menu options and interaction (hover/focus) state |
 
 ### Data Configuration Properties
 
@@ -275,7 +223,7 @@ export class GroupMembersPropsComponent implements OnInit {
 | Event | Payload Type | Description |
 |-------|-------------|-------------|
 | `itemClick` | `CometChat.GroupMember` | Emitted when a member item is clicked |
-| `selectionChange` | `{member: CometChat.GroupMember, selected: boolean}` | Emitted when a member is selected/deselected |
+| `selectionChange` | `SelectionState` | Emitted when the selection changes. Payload: `{ mode: SelectionMode; selectedIds: Set<string>; lastSelectedId: string \| null }` |
 | `error` | `CometChat.CometChatException` | Emitted when an error occurs |
 | `empty` | `void` | Emitted when the member list is empty after initial fetch |
 
@@ -337,12 +285,17 @@ export class FilteredMembersComponent implements OnInit {
 
 Enable single or multiple member selection:
 
+The `selectionChange` event emits a `SelectionState` object. Read the currently
+selected member IDs from `state.selectedIds`. If you need the full member objects,
+map these IDs back to the currently loaded members.
+
 ```typescript expandable
 import { Component, OnInit, signal } from '@angular/core';
 import { CometChat } from '@cometchat/chat-sdk-javascript';
 import {
   CometChatGroupMembersComponent,
-  SelectionMode
+  SelectionMode,
+  SelectionState
 } from '@cometchat/chat-uikit-angular';
 
 @Component({
@@ -350,9 +303,9 @@ import {
   standalone: true,
   imports: [CometChatGroupMembersComponent],
   template: `
-    @if (selectedMembers.length > 0) {
+    @if (selectedMemberIds.length > 0) {
       <div class="toolbar">
-        <span>{{ selectedMembers.length }} members selected</span>
+        <span>{{ selectedMemberIds.length }} members selected</span>
         <button (click)="performAction()">Perform Action</button>
       </div>
     }
@@ -370,7 +323,7 @@ import {
 export class SelectableMembersComponent implements OnInit {
   group = signal<CometChat.Group | null>(null);
   selectionMode = SelectionMode.multiple;
-  selectedMembers: CometChat.GroupMember[] = [];
+  selectedMemberIds: string[] = [];
 
   ngOnInit(): void {
     CometChat.getGroup('your-group-guid').then((group) => {
@@ -378,14 +331,8 @@ export class SelectableMembersComponent implements OnInit {
     });
   }
 
-  onSelectionChange(event: { member: CometChat.GroupMember; selected: boolean }): void {
-    if (event.selected) {
-      this.selectedMembers.push(event.member);
-    } else {
-      this.selectedMembers = this.selectedMembers.filter(
-        m => m.getUid() !== event.member.getUid()
-      );
-    }
+  onSelectionChange(state: SelectionState): void {
+    this.selectedMemberIds = Array.from(state.selectedIds);
   }
 
   onMemberClick(member: CometChat.GroupMember): void {
@@ -393,7 +340,7 @@ export class SelectableMembersComponent implements OnInit {
   }
 
   performAction(): void {
-    console.log('Performing action on members:', this.selectedMembers);
+    console.log('Performing action on members:', this.selectedMemberIds);
   }
 }
 ```
@@ -808,6 +755,7 @@ import { CometChat } from '@cometchat/chat-sdk-javascript';
 import {
   CometChatGroupMembersComponent,
   SelectionMode,
+  SelectionState,
   CometChatOption
 } from '@cometchat/chat-uikit-angular';
 
@@ -817,9 +765,9 @@ import {
   imports: [CommonModule, CometChatGroupMembersComponent],
   template: `
     <div class="members-container">
-      @if (selectedMembers.length > 0) {
+      @if (selectedMemberIds.length > 0) {
         <div class="toolbar">
-          <span>{{ selectedMembers.length }} selected</span>
+          <span>{{ selectedMemberIds.length }} selected</span>
           <button (click)="clearSelection()">Clear</button>
         </div>
       }
@@ -875,7 +823,7 @@ export class GroupMembersDemoComponent implements OnInit {
   group = signal<CometChat.Group | null>(null);
   membersBuilder!: CometChat.GroupMembersRequestBuilder;
   selectionMode = SelectionMode.multiple;
-  selectedMembers: CometChat.GroupMember[] = [];
+  selectedMemberIds: string[] = [];
 
   ngOnInit(): void {
     CometChat.getGroup('your-group-guid').then((group) => {
@@ -907,14 +855,8 @@ export class GroupMembersDemoComponent implements OnInit {
     console.log('Member clicked:', member.getName());
   }
 
-  onSelectionChange(event: { member: CometChat.GroupMember; selected: boolean }): void {
-    if (event.selected) {
-      this.selectedMembers.push(event.member);
-    } else {
-      this.selectedMembers = this.selectedMembers.filter(
-        m => m.getUid() !== event.member.getUid()
-      );
-    }
+  onSelectionChange(state: SelectionState): void {
+    this.selectedMemberIds = Array.from(state.selectedIds);
   }
 
   messageMember(member: CometChat.GroupMember): void {
@@ -926,7 +868,7 @@ export class GroupMembersDemoComponent implements OnInit {
   }
 
   clearSelection(): void {
-    this.selectedMembers = [];
+    this.selectedMemberIds = [];
   }
 
   handleError(error: CometChat.CometChatException): void {

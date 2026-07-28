@@ -77,13 +77,16 @@ Events are received via `onAIAssistantEventReceived` as [`AIAssistantBaseEvent`]
 | 3 | Tool Call Arguments | Arguments being passed to the tool |
 | 4 | Tool Call End | Tool execution completed |
 | 5 | Tool Call Result | Tool's output is available |
-| 6 | Text Message Start | Agent started composing a reply |
-| 7 | Text Message Content | Streaming content chunks (multiple) |
-| 8 | Text Message End | Agent reply is complete |
-| 9 | Run Finished | Run finalized; persisted messages follow |
+| 6 | Card Start | Agent began producing a card |
+| 7 | Card | Full card payload is available |
+| 8 | Card End | Card stream is complete |
+| 9 | Text Message Start | Agent started composing a reply |
+| 10 | Text Message Content | Streaming content chunks (multiple) |
+| 11 | Text Message End | Agent reply is complete |
+| 12 | Run Finished | Run finalized; persisted messages follow |
 
 <Note>
-`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked. Text Message events are always emitted and carry the assistant's reply incrementally.
+`Run Start` and `Run Finished` are always emitted. Tool Call events only appear when tools are invoked. Card events (`Card Start` → `Card` → `Card End`) appear only when the agent produces a card, and repeat for each card. Text Message events are always emitted and carry the assistant's reply incrementally.
 </Note>
 
 <Tabs>
@@ -105,6 +108,43 @@ class AIAssistantEventHandler: AIAssistantEventsDelegate {
     
     func onAIAssistantEventReceived(_ event: AIAssistantBaseEvent) {
         print("Received AI Event: \(event.type) for Run ID: \(event.id)")
+    }
+}
+```
+</Tab>
+</Tabs>
+
+#### Card Streaming Events
+
+When an agent produces a card, it is delivered through three streaming events on `onAIAssistantEventReceived`. Each event is a subclass of [`AIAssistantBaseEvent`](/sdk/reference/messages#aiassistantbaseevent) — check the concrete type to handle it.
+
+| Event | Accessor | Description |
+| ----- | -------- | ----------- |
+| `AIAssistantCardStartedEvent` | `cardId` | Identifier for the card being generated. |
+| | `executionText` | Loading label shown while the card is built. |
+| | `streamMessageId` | Identifier of the streaming message that owns this card. |
+| `AIAssistantCardReceivedEvent` | `cardId` | Identifier matching the corresponding start event. |
+| | `getCard()` | The complete card payload (`[String: Any]?`) to render. |
+| `AIAssistantCardEndedEvent` | `cardId` | Signals the card stream for this `cardId` is complete. |
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import CometChatSDK
+
+func onAIAssistantEventReceived(_ event: AIAssistantBaseEvent) {
+    switch event {
+    case let started as AIAssistantCardStartedEvent:
+        let cardId = started.cardId
+        let label = started.executionText   // e.g. "Building card…"
+    case let received as AIAssistantCardReceivedEvent:
+        let cardId = received.cardId
+        let card = received.getCard()        // full card payload
+    case let ended as AIAssistantCardEndedEvent:
+        // card stream for ended.cardId is complete
+        break
+    default:
+        break
     }
 }
 ```
@@ -152,12 +192,51 @@ class MessageHandler: CometChatMessageDelegate {
 Always remove listeners when they're no longer needed (e.g., on view dismissal). Failing to remove listeners can cause memory leaks and duplicate event handling.
 </Warning>
 
+### AIAssistantMessage Elements
+
+Once a run completes, the assistant's reply is persisted as an `AIAssistantMessage`. Its content is exposed as an ordered list of blocks via `getElements()`, letting you render text and cards in the exact order the agent produced them. When `getElements()` is `nil` or empty, fall back to the plain `text` body.
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getElements()` | `[AIAssistantElement]?` | Ordered content blocks. `nil`/empty for plain-text replies. |
+| `text` | `String` | Plain-text body (fallback when there are no elements). |
+
+Each `AIAssistantElement` exposes:
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getType()` | `String` | Block type — `"text"` or `"card"`. |
+| `getData()` | `Any?` | The block body (text string, or card payload). |
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import CometChatSDK
+
+if let elements = message.getElements(), !elements.isEmpty {
+    for element in elements {
+        switch element.getType() {
+        case "text":
+            renderText(String(describing: element.getData() ?? ""))
+        case "card":
+            renderCard(element.getData())
+        default:
+            break
+        }
+    }
+} else {
+    renderText(message.text)
+}
+```
+</Tab>
+</Tabs>
+
 ---
 
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="AI Chatbots" icon="robot" href="/ai-chatbots/overview">
+  <Card title="AI Chatbots" icon="robot" href="https://assets.cometchat.io/legacy-docs/ai-chatbots/ai-bots/overview.html">
     Set up AI-powered chatbots for automated conversations
   </Card>
   <Card title="AI Moderation" icon="shield-check" href="/sdk/ios/ai-moderation">

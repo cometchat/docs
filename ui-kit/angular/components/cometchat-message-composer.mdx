@@ -16,7 +16,7 @@ The component follows a **Service-Based Architecture** where:
 ### Key Features
 
 - **Auto-Expanding Text Input**: Textarea that grows with content up to a configurable maximum height
-- **Multiple Attachments**: Support for images, videos, audio, and files with drag-and-drop
+- **Attachments**: Multi-attachment support for images, videos, audio, and files — staged in a tray and sent as a batch (see [Multiple Attachments](#multiple-attachments))
 - **Rich Text Editing**: Optional rich text formatting using custom RichTextEditorService (bold, italic, lists, code blocks, etc.)
 - **Emoji Picker**: Built-in emoji keyboard with category navigation
 - **Voice Recording**: Record and send audio messages with waveform visualization
@@ -115,17 +115,16 @@ export class GroupChatComponent {
 ></cometchat-message-composer>
 ```
 
-### With Attachments and Drag-Drop
+### With Attachments
+
+Attachments are enabled by default through the attachment button. With
+`enableMultipleAttachments` on (the default), selected files are staged in a tray
+below the input, where they can be reviewed, removed, or added to before being sent
+together as a single batch. See [Multiple Attachments](#multiple-attachments).
 
 ```typescript
 <cometchat-message-composer
   [user]="selectedUser"
-  [enableDragDrop]="true"
-  [maxAttachments]="5"
-  [maxFileSize]="10485760"
-  [showAttachmentPreview]="true"
-  (attachmentAdded)="onAttachmentAdded($event)"
-  (attachmentRemoved)="onAttachmentRemoved($event)"
 ></cometchat-message-composer>
 ```
 
@@ -304,11 +303,7 @@ Both layouts work seamlessly with rich text editing:
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `attachmentOptions` | `CometChatMessageComposerAction[]` | `undefined` | Custom attachment options for the attachment menu |
-| `maxAttachments` | `number` | `10` | Maximum number of attachments allowed |
-| `allowedFileTypes` | `string[]` | `undefined` | Allowed MIME types for attachments (e.g., `['image/*', 'application/pdf']`) |
-| `maxFileSize` | `number` | `undefined` | Maximum file size in bytes |
-| `showAttachmentPreview` | `boolean` | `true` | Show attachment preview thumbnails before sending |
-| `enableDragDrop` | `boolean` | `true` | Enable drag-and-drop file uploads |
+| `enableMultipleAttachments` | `boolean` | `true` | Enables the multi-attachment staging tray and batch send. When `true` (default), selecting attachments stages them in a tray for one batched send; when `false`, each attachment reverts to the legacy send-immediately behavior. See [Multiple Attachments](#multiple-attachments). |
 
 ### Hide Option Properties
 
@@ -343,10 +338,9 @@ Both layouts work seamlessly with rich text editing:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `enableRichText` | `boolean` | `true` | Enable rich text editing. When disabled, toolbar toggle button is hidden and pasting/adding content won't apply rich text formatting. Mentions and other formatters still work independently. |
-| `hideRichTextToolbar` | `boolean` | `false` | Hide the rich text formatting toolbar. When showToolbarToggle is enabled, the toggle overrides this setting. |
-| `showBubbleMenuOnSelection` | `boolean` | `true` | Show floating bubble menu when text is selected (Web/Desktop only) |
-| `showToolbarToggle` | `boolean` | `true` | Show a toggle button to show/hide the fixed toolbar. Emits toolbarToggleClick with 'active' or 'inactive' state. |
+| `enableRichText` | `boolean` | `true` | Enable rich text editing. When disabled, pasting/adding content won't apply rich text formatting. Mentions and other formatters still work independently. |
+| `hideRichTextToolbar` | `boolean` | `false` | Hide the rich text formatting toolbar. |
+| `showBubbleMenuOnSelection` | `boolean` | `false` | Show floating bubble menu when text is selected (Web/Desktop only) |
 
 ### Other Configuration Properties
 
@@ -354,12 +348,12 @@ Both layouts work seamlessly with rich text editing:
 |----------|------|---------|-------------|
 | `disableTypingEvents` | `boolean` | `false` | Disable sending typing indicator events |
 | `disableSoundForMessage` | `boolean` | `false` | Disable sound when sending messages |
-| `customSoundForMessage` | `string` | `undefined` | Custom sound URL for message sent notification |
+| `customSoundForMessage` | `string` | `''` | Custom sound URL for message sent notification. Empty string falls back to the global/default sound. |
 | `liveReactionIcon` | `string` | `undefined` | Custom icon for live reaction button |
 | `messageToEdit` | `CometChat.BaseMessage` | `undefined` | Message to edit (enables edit mode) |
 | `messageToReply` | `CometChat.BaseMessage` | `undefined` | Message to reply to (enables reply preview) |
 | `textFormatters` | `CometChatTextFormatter[]` | `undefined` | Array of text formatters to apply |
-| `showToolbarToggle` | `boolean` | `true` | Whether to show the toolbar toggle button for expanding/collapsing the action toolbar |
+| `hideError` | `boolean` | `false` | Hides the built-in composer error UI (useful when using `(error)` or a custom `errorView`). |
 
 
 ### Template Properties
@@ -383,8 +377,6 @@ Both layouts work seamlessly with rich text editing:
 | `sendButtonClick` | `CometChat.BaseMessage` | Emitted when a message is sent successfully |
 | `error` | `CometChat.CometChatException` | Emitted when an error occurs |
 | `closePreview` | `void` | Emitted when the reply/edit preview is closed |
-| `attachmentAdded` | `File` | Emitted when an attachment is added |
-| `attachmentRemoved` | `File` | Emitted when an attachment is removed |
 | `mentionSelected` | `CometChat.User \| CometChat.GroupMember` | Emitted when a mention is selected |
 
 ## Usage Patterns
@@ -416,9 +408,9 @@ import {
   ],
   template: `
     <div class="chat-layout">
-      <cometchat-conversations
-        (itemClick)="onConversationClick($event)"
-      ></cometchat-conversations>
+      <!-- Do NOT bind (itemClick) in state-service mode. The UI Kit only
+           auto-sets the active conversation when itemClick is not observed. -->
+      <cometchat-conversations></cometchat-conversations>
 
       <div class="chat-panel">
         <cometchat-message-header></cometchat-message-header>
@@ -429,10 +421,23 @@ import {
     </div>
   `,
 })
-export class ChatComponent {
-  onConversationClick(conversation: any): void {}
-}
+export class ChatComponent {}
 ```
+
+<Note>
+  If you need to observe `(itemClick)` yourself, you must set the active
+  conversation manually so the message components stay in sync:
+
+  ```typescript
+  import { ChatStateService } from '@cometchat/chat-uikit-angular';
+
+  constructor(private chatState: ChatStateService) {}
+
+  onConversationClick(conversation: any): void {
+    this.chatState.setActiveConversation(conversation);
+  }
+  ```
+</Note>
 
 <Tip>
   This is the recommended approach. The composer stays in sync with the conversation list without manual wiring.
@@ -483,9 +488,49 @@ For group conversations:
 
 ## Advanced Usage
 
-### Reply Mode (Threaded Messages)
+### Threaded Replies
 
-Enable reply mode by setting the `parentMessageId` to reply to a specific message:
+Set `parentMessageId` to make outgoing messages part of a thread. This controls
+the threaded **send** behavior (the thread parent for outgoing messages) — it does
+**not** render a quoted reply preview on its own.
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { CometChatMessageComposerComponent } from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-thread-composer',
+  standalone: true,
+  imports: [CometChatMessageComposerComponent],
+  template: `
+    <cometchat-message-composer
+      [user]="selectedUser"
+      [parentMessageId]="parentMessageId"
+      (sendButtonClick)="onReplySent($event)"
+    ></cometchat-message-composer>
+  `
+})
+export class ThreadComposerComponent {
+  selectedUser!: CometChat.User;
+  parentMessageId?: number;
+
+  openThread(message: CometChat.BaseMessage): void {
+    this.parentMessageId = message.getId();
+  }
+
+  onReplySent(message: CometChat.BaseMessage): void {
+    console.log('Threaded reply sent:', message);
+  }
+}
+```
+
+### Quoted Reply Preview
+
+To show the visible quoted reply preview UI, set `messageToReply`. This drives
+the preview and works with `(closePreview)`. Note that `parentMessageId` alone
+does not render the quoted preview — `messageToReply` is what drives the preview
+plus the `closePreview` event.
 
 ```typescript expandable
 import { Component } from '@angular/core';
@@ -499,27 +544,27 @@ import { CometChatMessageComposerComponent } from '@cometchat/chat-uikit-angular
   template: `
     <cometchat-message-composer
       [user]="selectedUser"
-      [parentMessageId]="replyToMessageId"
+      [messageToReply]="message"
       (sendButtonClick)="onReplySent($event)"
-      (closePreview)="cancelReply()"
+      (closePreview)="clearReply()"
     ></cometchat-message-composer>
   `
 })
 export class ReplyComposerComponent {
   selectedUser!: CometChat.User;
-  replyToMessageId?: number;
+  message?: CometChat.BaseMessage;
 
   replyToMessage(message: CometChat.BaseMessage): void {
-    this.replyToMessageId = message.getId();
+    this.message = message;
   }
 
   onReplySent(message: CometChat.BaseMessage): void {
     console.log('Reply sent:', message);
-    this.replyToMessageId = undefined;
+    this.clearReply();
   }
 
-  cancelReply(): void {
-    this.replyToMessageId = undefined;
+  clearReply(): void {
+    this.message = undefined;
   }
 }
 ```
@@ -593,7 +638,9 @@ export class RichTextComposerComponent {
 
   onMessageSent(message: CometChat.BaseMessage): void {
     console.log('Rich text message sent:', message);
-    // Message metadata will contain rich text formatting info
+    // Rich text formatting is serialized into the message text (as markdown-style
+    // content). Note: rich-text formatting is NOT attached as message metadata
+    // (there is no `message.getMetadata().richText`) in the current send path.
   }
 }
 ```
@@ -665,12 +712,13 @@ export class BubbleMenuComposerComponent {
 
 #### Always-Visible Toolbar
 
-Keep the formatting toolbar visible at all times for improved discoverability:
+Keep the formatting toolbar visible at all times for improved discoverability.
 
 ```typescript
 <cometchat-message-composer
   [user]="selectedUser"
   [enableRichText]="true"
+  [hideRichTextToolbar]="false"
   (sendButtonClick)="onMessageSent($event)"
 ></cometchat-message-composer>
 ```
@@ -696,7 +744,6 @@ Use all rich text enhancements together:
 
 This configuration provides:
 - Floating bubble menu for quick text selection formatting
-- Toolbar toggle button for showing/hiding the fixed toolbar
 - Full keyboard shortcut support
 
 ### @Mentions with Custom Request Builder
@@ -746,9 +793,35 @@ export class MentionsComposerComponent implements OnInit {
 }
 ```
 
-### File Attachments with Validation
+### Multiple Attachments
 
-Configure attachment handling with file type and size validation:
+`enableMultipleAttachments` is `true` by default. In this mode the composer opens a
+**staging tray** below the input instead of sending files immediately. Files begin
+uploading the moment they're staged — not when you press **Send** — so each tile shows
+live upload progress and, because the attachments are already uploaded by send time, the
+batch is delivered instantly.
+
+- **Stage** — picking files from an attachment option (or dragging and dropping them)
+  adds them to the tray as tiles that show upload progress. The user can keep adding
+  files across multiple picks, remove a tile, retry a failed upload, or preview an
+  image or video before sending.
+- **Batch send** — pressing send delivers the staged files as a batch. Files are
+  grouped **by type** and sent as one media message per type — for example, three
+  images and two files are sent as **two** messages (one image message with three
+  attachments and one file message with two), not five. Every message in the batch
+  shares a `metadata.batchId`, and the composer text is attached as the caption on the
+  **last** message only.
+- **Grouped rendering** — the message list renders each batched message with the
+  matching multi-attachment bubble — [Images](/ui-kit/angular/message-bubble-styling#image-bubble),
+  [Videos](/ui-kit/angular/message-bubble-styling#video-bubble),
+  [Audios](/ui-kit/angular/message-bubble-styling#audio-bubble), or
+  [Files](/ui-kit/angular/message-bubble-styling#file-bubble) — and groups messages that
+  share a `batchId` into one visual block.
+
+The maximum number of attachments per batch comes from your app's
+`CometChat.getMaxAttachmentCount()` setting (default `10`). If a selection would exceed
+the remaining slots, none of it is staged and a toast is shown. Use the `(error)`
+output to surface send or validation failures:
 
 ```typescript expandable
 import { Component } from '@angular/core';
@@ -762,44 +835,28 @@ import { CometChatMessageComposerComponent } from '@cometchat/chat-uikit-angular
   template: `
     <cometchat-message-composer
       [user]="selectedUser"
-      [enableDragDrop]="true"
-      [maxAttachments]="5"
-      [maxFileSize]="10485760"
-      [allowedFileTypes]="allowedTypes"
-      [showAttachmentPreview]="true"
-      (attachmentAdded)="onAttachmentAdded($event)"
-      (attachmentRemoved)="onAttachmentRemoved($event)"
+      [enableMultipleAttachments]="true"
       (error)="onError($event)"
     ></cometchat-message-composer>
   `
 })
 export class AttachmentsComposerComponent {
   selectedUser!: CometChat.User;
-  
-  // Allow images, PDFs, and common document types
-  allowedTypes = [
-    'image/jpeg',
-    'image/png',
-    'image/gif',
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  ];
-
-  onAttachmentAdded(file: File): void {
-    console.log('Attachment added:', file.name, file.size);
-  }
-
-  onAttachmentRemoved(file: File): void {
-    console.log('Attachment removed:', file.name);
-  }
 
   onError(error: CometChat.CometChatException): void {
-    // Handle file validation errors
     console.error('Error:', error.message);
   }
 }
 ```
+
+Set `enableMultipleAttachments` to `false` to restore the legacy behavior, where each
+selected file is sent immediately with no staging tray. This is a send-side setting only —
+incoming messages that carry several attachments still render with the multi-attachment
+bubbles. See [Media Message Rendering](/ui-kit/angular/components/cometchat-message-bubble#media-message-rendering).
+
+**Threaded replies** — multiple attachments work inside threads. Set `parentMessageId`
+on the composer and the staged uploads (and the resulting batch) are scoped to that
+thread. See [Threaded Replies](#threaded-replies).
 
 
 ### Voice Recording
@@ -820,6 +877,11 @@ When the microphone button is clicked:
 3. Recording duration is displayed
 4. User can cancel or complete the recording
 5. Completed recordings are sent as audio messages
+
+Completed recordings are tagged with `audioType: "voice_note"` and render as a
+[Voice Note Bubble](/ui-kit/angular/message-bubble-styling#voice-note-bubble), separately
+from attached audio files, which render as an
+[Audios Bubble](/ui-kit/angular/message-bubble-styling#audio-bubble).
 
 ## Customization with Templates
 

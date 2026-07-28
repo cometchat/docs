@@ -4,12 +4,15 @@ title: "Send A Message"
 
 
 
-Using CometChat, you can send three types of messages:
+Using CometChat, you can work with four types of messages. The first three you can send directly:
 
 1. A [Text Message](/sdk/android/v5/send-message#text-message), the most common and standard message type.
 2. A [Media Message](/sdk/android/v5/send-message#media-message), for sending photos, videos and files.
 3. A [Custom Message](/sdk/android/v5/send-message#custom-message), for sending completely custom data using JSON structures.
-4. A [Interactive Messages](/sdk/android/v5/interactive-messages), for sending end-user interactive messages of type form, card and custom Interactive
+
+The fourth is receive-only:
+
+4. A [Card Message](/sdk/android/v5/send-message#card-message), a structured, interactive card message created server-side via the REST API and delivered to clients.
 
 You can also send metadata along with a text or media message. Think, for example, if you'd want to share the user's location with every message, you can use the metadata field.
 
@@ -500,9 +503,15 @@ If you wish to send a caption or some text along with the Media Message, you can
 
 ## Multiple Attachments in a Media Message
 
-Starting version 3.0.9 & above the SDK supports sending of multiple attachments in a single media message. As in case for single attachment in a media message, there are two ways you can send Media Messages using the CometChat SDK:
+The SDK supports sending multiple attachments in a single media message. A media message can carry up to a configurable maximum number of attachments (default **10**, controlled by the `file.count.max` app setting). `sendMediaMessage()` calls back `onError` with `ERR_FILE_COUNT_EXCEEDED` if you exceed it — read the current limit at runtime with `CometChat.getMaxAttachmentCount()`.
 
-1. **By providing an array of files:** You can now share a List of files while creating an object of the MediaMessage class. When the media message is sent using the `sendMediaMessage()` method, the files are uploaded to the CometChat servers & the URL of the files are sent in the success response of the `sendMediaMessage()` method.
+<Tip>
+**Recommended: upload first, then send.** For a real composer — where you want a progress bar per file, and the ability to remove or retry individual files — create an upload request with [`CometChat.createUploadFileRequest()`](/sdk/android/v5/upload-files), upload your files through it, then collect the resulting `Attachment`s (`request.getAttachments()`) and attach them here with `setAttachments()`. This decouples the (slow, cancellable) upload from the (instant) send. See [Upload Files & Send Attachments](/sdk/android/v5/upload-files) for the full flow.
+</Tip>
+
+There are two ways to send a multi-attachment media message using the CometChat SDK:
+
+1. **By providing a list of files:** You can share a `List` of files while creating an object of the MediaMessage class. When the media message is sent using the `sendMediaMessage()` method, the files are uploaded to the CometChat servers & the URL of the files is sent in the success response of the `sendMediaMessage()` method. This is the simplest path, but it gives no upload progress and no per-file cancel/retry — for that, [upload first](/sdk/android/v5/upload-files).
 
 <Tabs>
 <Tab title="Java (User)">
@@ -615,7 +624,7 @@ The `MediaMessage` class constructor takes the following parameters:
 | **messageType**  | The type of the message that needs to be sent which in this case can be: <br />1. `CometChatConstants.MESSAGE_TYPE_IMAGE` <br />2. `CometChatConstants.MESSAGE_TYPE_VIDEO` <br />3. `CometChatConstants.MESSAGE_TYPE_AUDIO` <br />4. `CometChatConstants.MESSAGE_TYPE_FILE` |
 | **receiverType** | The type of the receiver to whom the message is to be sent. <br />1. `CometChatConstants.RECEIVER_TYPE_USER` <br />2. `CometChatConstants.RECEIVER_TYPE_GROUP`                                                                                                                                |
 
-2. **By providing the URL of the multiple files:** The second way to send multiple attachments using the CometChat SDK is to provide the SDK with the URL of multiple files that is hosted on your servers or any cloud storage. To achieve this you will have to make use of the `Attachment` class. For more information, you can refer to the below code snippet:
+2. **By providing the URL of the multiple files:** The second way to send multiple attachments using the CometChat SDK is to provide the SDK with `Attachment` objects that already point at files hosted on your servers or any cloud storage. This is also the path the [upload-then-send flow](/sdk/android/v5/upload-files) uses — the `Attachment`s from an upload request's `getAttachments()` are ready to pass straight to `setAttachments()`. For more information, you can refer to the below code snippet:
 
 <Tabs>
 <Tab title="Java (User)">
@@ -1146,8 +1155,132 @@ CometChat.sendCustomMessage(customMessage, object : CallbackListener<CustomMessa
 
 </Tabs>
 
+## Card Message
+
+*In other words, as a sender, how do I send a card message?*
+
+A `CardMessage` is a structured, interactive message rendered as a card bubble. It belongs to the `card` category and carries a block of card schema JSON that the CometChat Cards library draws.
+
 <Note>
 
-It is also possible to send interactive messages from CometChat , to know more [click here](/sdk/android/v5/interactive-messages)
+**Card Messages cannot be sent through the SDK.** The `CardMessage` class is **receive-only** — it has no public constructor and the SDK exposes no `sendCardMessage()` method. Card Messages are created server-side via the **Platform REST API** or the **Dashboard Bubble Builder**, and delivered to clients like any other message.
 
+To create and send a Card Message, use the REST API. See the [Send Message REST API reference](https://www.cometchat.com/docs/rest-api/messages/send-message) for the message creation flow.
+
+</Note>
+
+On the receiving end, the `CardMessage` object gives you access to the card payload and its related fields.
+
+<Tabs>
+<Tab title="Java">
+```java
+JSONObject card = cardMessage.getCard();             // raw card schema/payload
+String text = cardMessage.getText();                 // optional text shown alongside the card
+String fallbackText = cardMessage.getFallbackText(); // shown when the card cannot be rendered
+List<String> tags = cardMessage.getTags();           // tags associated with the message
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val card = cardMessage.card                 // raw card schema/payload
+val text = cardMessage.text                 // optional text shown alongside the card
+val fallbackText = cardMessage.fallbackText // shown when the card cannot be rendered
+val tags = cardMessage.tags                 // tags associated with the message
+```
+
+</Tab>
+
+</Tabs>
+
+The `CardMessage` class provides the following methods:
+
+| Method | Returns | Description |
+| ------ | ------- | ----------- |
+| `getCard()` | `JSONObject` | The raw card schema/payload passed to the Cards renderer. |
+| `getText()` | `String` | Optional text shown alongside the card. |
+| `getFallbackText()` | `String` | Text displayed when the card payload cannot be rendered. |
+| `getTags()` | `List<String>` | Tags associated with the message. |
+
+`CardMessage` extends `BaseMessage`, so it also exposes the standard message fields (`getId()`, `getSender()`, `getReceiverUid()`, `getSentAt()`, `getCategory()` = `card`, etc.).
+
+To handle incoming Card Messages on the client, implement [`onCardMessageReceived`](/sdk/android/v5/receive-messages#real-time-messages) on your `MessageListener`.
+
+### Render a Card Message
+
+A `CardMessage` carries raw card-schema JSON in `getCard()`. To draw it natively, use the **CometChat Cards** renderer library (`com.cometchat:cards-android`) — the same renderer the UI Kit's card bubble wraps. It is a pure renderer: you hand it the card JSON and an action callback, and you own all action behavior.
+
+#### Add the Cards dependency
+
+```groovy
+// settings.gradle (or project-level build.gradle)
+repositories {
+    maven { url "https://dl.cloudsmith.io/public/cometchat/cometchat/maven/" }
+}
+```
+
+```groovy
+// app/build.gradle
+dependencies {
+    implementation "com.cometchat:cards-android:1.0.0"
+}
+```
+
+<Note>
+Requires `minSdk 24`, Kotlin, and the internet permission in your `AndroidManifest.xml`.
+</Note>
+
+#### Render the card
+
+Pass the card JSON (`cardMessage.getCard().toString()`) to the renderer and handle actions through the callback.
+
+<Tabs>
+<Tab title="Jetpack Compose">
+```kotlin
+import com.cometchat.cards.CometChatCardComposable
+import com.cometchat.cards.models.CometChatCardThemeMode
+import com.cometchat.cards.models.*
+
+@Composable
+fun CardMessageContent(cardMessage: CardMessage) {
+    CometChatCardComposable(
+        cardJson = cardMessage.card.toString(),
+        themeMode = CometChatCardThemeMode.AUTO, // follows system light/dark
+        onAction = { event ->
+            when (val action = event.action) {
+                is CometChatCardOpenUrlAction -> openUrl(action.url)
+                is CometChatCardChatWithUserAction -> openUserChat(action.uid)
+                is CometChatCardCopyToClipboardAction -> copyToClipboard(action.value)
+                is CometChatCardCustomCallbackAction -> handleCallback(action.callbackId, action.payload)
+                else -> { /* handle the remaining action types */ }
+            }
+        }
+    )
+}
+```
+</Tab>
+<Tab title="XML Views">
+```kotlin
+import com.cometchat.cards.CometChatCardView
+import com.cometchat.cards.models.CometChatCardThemeMode
+
+val cardView = CometChatCardView(context)
+cardView.setCardSchema(cardMessage.card.toString())
+cardView.setThemeMode(CometChatCardThemeMode.AUTO)
+cardView.setActionCallback { event ->
+    // event.action    -> one of the 9 tagged action types
+    // event.elementId -> id of the tapped button/link
+    // event.cardJson  -> the raw card schema JSON
+    handleCardAction(event.action)
+}
+parentLayout.addView(cardView)
+```
+</Tab>
+</Tabs>
+
+<Note>
+The Cards library is a **pure renderer** — it never executes actions, it only emits them through the callback. You own all behavior (opening URLs, navigating to chats, API calls, etc.). The 9 action types (`CometChatCardOpenUrlAction`, `CometChatCardChatWithUserAction`, …) live in `com.cometchat.cards.models`, and `event` is a `com.cometchat.cards.actions.CometChatCardActionEvent` exposing `action`, `elementId`, and `cardJson`.
+
+When rendering directly, fallback is your responsibility: if the card JSON is empty or invalid, fall back to `cardMessage.getFallbackText()` (then `getText()`).
 </Note>

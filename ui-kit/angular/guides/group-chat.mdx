@@ -83,7 +83,10 @@ export class CreateGroupComponent {
 
   async handleSubmit(): Promise<void> {
     const guid = `group_${Date.now()}`;
-    const group = new CometChat.Group(guid, this.groupName, this.groupType, this.groupPassword);
+    const group = new CometChat.Group(guid, this.groupName, this.groupType as CometChat.GroupType);
+    if (this.groupType === CometChat.GROUP_TYPE.PASSWORD && this.groupPassword) {
+      group.setPassword(this.groupPassword);
+    }
 
     try {
       const created = await CometChat.createGroup(group);
@@ -134,13 +137,17 @@ export class JoinGroupComponent {
   async joinGroup(): Promise<void> {
     try {
       const joinedGroup = await CometChat.joinGroup(
-        this.group.getGuid(), this.group.getType(), this.password
+        this.group.getGuid(),
+        this.group.getType() as CometChat.GroupType,
+        this.password ?? ''
       );
       const loggedInUser = await CometChat.getLoggedinUser();
-      CometChatGroupEvents.ccGroupMemberJoined.next({
-        joinedGroup,
-        joinedUser: loggedInUser
-      });
+      if (loggedInUser) {
+        CometChatGroupEvents.ccGroupMemberJoined.next({
+          joinedGroup,
+          joinedUser: loggedInUser,
+        });
+      }
       this.groupJoined.emit(joinedGroup);
     } catch {
       this.error = true;
@@ -148,6 +155,10 @@ export class JoinGroupComponent {
   }
 }
 ```
+
+<Note>
+Private groups cannot be joined with `joinGroup`. They require an invitation or an admin to add the member.
+</Note>
 
 ---
 
@@ -173,21 +184,31 @@ onMemberClick(member: CometChat.GroupMember): void {
 ### 4. Add Members
 
 <Info>
-`cometchat-add-members` is a sample-app component. Use `CometChat.addMembersToGroup()` to build your own add-members UI.
+`cometchat-add-members` is a sample-app reference component driven by `ChatStateService.activeGroup`. It has no `[group]` input and no `(addMembersClick)` output — it reads the active group from the state service. Use `CometChat.addMembersToGroup()` to build your own add-members UI.
 </Info>
 
 Let admins select users and add them to the group.
 
 ```html
-<cometchat-add-members
-  [group]="selectedGroup"
-  (addMembersClick)="onMembersAdded($event)">
-</cometchat-add-members>
+<cometchat-add-members></cometchat-add-members>
 ```
 
+When you add members with a raw SDK call, emit the `ccGroupMemberAdded` UI Kit event so the rest of the UI stays in sync. Raw SDK calls alone will not produce UI Kit action-message synchronization.
+
 ```typescript
-onMembersAdded(members: CometChat.User[]): void {
-  console.log('Added members:', members.length);
+onMembersAdded(
+  members: CometChat.User[],
+  addedGroupMembers: CometChat.GroupMember[],
+  group: CometChat.Group
+): void {
+  const loggedInUser = CometChatUIKit.getLoggedInUser();
+  if (!loggedInUser) return;
+  CometChatGroupEvents.ccGroupMemberAdded.next({
+    messages: [],
+    usersAdded: members,
+    userAddedIn: group,
+    userAddedBy: loggedInUser,
+  });
 }
 ```
 
@@ -225,19 +246,19 @@ async changeMemberScope(
   group: CometChat.Group
 ): Promise<void> {
   try {
-    await CometChat.updateGroupMemberScope(
+    const oldScope = member.getScope();
+    const message = await CometChat.updateGroupMemberScope(
+      group.getGuid(),
       member.getUid(),
-      newScope,
-      group.getGuid()
+      newScope
     );
 
-    const loggedInUser = await CometChat.getLoggedinUser();
     CometChatGroupEvents.ccGroupMemberScopeChanged.next({
-      changedBy: loggedInUser!,
-      changedUser: member,
-      changedIn: group,
-      newScope,
-      oldScope: member.getScope()
+      message,
+      updatedUser: member,
+      scopeChangedTo: newScope,
+      scopeChangedFrom: oldScope,
+      group
     });
   } catch (error) {
     console.error('Failed to update member scope:', error);
@@ -245,26 +266,27 @@ async changeMemberScope(
 }
 ```
 
+<Note>
+The `ccGroupMemberScopeChanged` payload uses the Angular UI Kit event shape `{ message, updatedUser, scopeChangedTo, scopeChangedFrom, group }`. The `message` is the group action message for the scope change, and the actor is read from the message via `message.getActionBy()` — there is no top-level `changedBy` field.
+</Note>
+
 ---
 
 ### 7. Transfer Ownership
 
 <Info>
-`cometchat-transfer-ownership` is a sample-app component. Use `CometChat.transferGroupOwnership()` to build your own transfer-ownership UI.
+`cometchat-transfer-ownership` is a sample-app reference component driven by `ChatStateService.activeGroup`. It exposes only a `(closeClick)` output — there is no `[group]` input or `(transferOwnershipClick)` output. Use `CometChat.transferGroupOwnership()` to build your own transfer-ownership UI.
 </Info>
 
 Let the current owner select a member and transfer ownership.
 
 ```html
-<cometchat-transfer-ownership
-  [group]="selectedGroup"
-  (transferOwnershipClick)="onOwnershipTransferred($event)">
-</cometchat-transfer-ownership>
+<cometchat-transfer-ownership (closeClick)="onClose()"></cometchat-transfer-ownership>
 ```
 
 ```typescript
-onOwnershipTransferred(newOwner: CometChat.GroupMember): void {
-  console.log('Ownership transferred to:', newOwner.getName());
+onClose(): void {
+  console.log('Transfer ownership dialog closed');
 }
 ```
 

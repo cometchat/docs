@@ -185,9 +185,24 @@ export class InteractiveMessageComponent {
   MessageBubbleAlignment = MessageBubbleAlignment;
 
   messageOptions: CometChatActionsIcon[] = [
-    new CometChatActionsIcon({ id: 'reply', title: 'Reply', iconURL: 'assets/reply.svg' }),
-    new CometChatActionsIcon({ id: 'copy', title: 'Copy', iconURL: 'assets/copy.svg' }),
-    new CometChatActionsIcon({ id: 'delete', title: 'Delete', iconURL: 'assets/delete.svg' }),
+    new CometChatActionsIcon({
+      id: 'reply',
+      title: 'Reply',
+      iconURL: 'assets/reply.svg',
+      onClick: (messageId) => { console.log('Reply on message:', messageId); }
+    }),
+    new CometChatActionsIcon({
+      id: 'copy',
+      title: 'Copy',
+      iconURL: 'assets/copy.svg',
+      onClick: (messageId) => { console.log('Copy message:', messageId); }
+    }),
+    new CometChatActionsIcon({
+      id: 'delete',
+      title: 'Delete',
+      iconURL: 'assets/delete.svg',
+      onClick: (messageId) => { console.log('Delete message:', messageId); }
+    }),
   ];
 
   onOptionClick(option: any): void {
@@ -239,7 +254,9 @@ export class InteractiveMessageComponent {
 | `hideTimestamp` | `boolean` | `false` | Whether to hide the timestamp |
 | `showError` | `boolean` | `false` | Whether to show error state indicator |
 | `hideModerationView` | `boolean` | `false` | Whether to hide moderation status indicators |
-| `disableInteraction` | `boolean` | `false` | When true, disables all interactive elements within the bubble (context menu, reactions, etc.) |
+| `hideThreadView` | `boolean` | `false` | Whether to hide the thread-replies view |
+| `hideStatusInfoView` | `boolean` | `false` | Whether to hide the status-info view (timestamp, receipts) |
+| `disableInteraction` | `boolean` | `false` | When true, disables most interactive elements within the bubble (context menu, reactions, etc.). Note: this is not a fully-inert guarantee — some interaction paths remain, such as thread clicks (which still emit `threadRepliesClick`) and the keyboard Space media toggle on media messages (which can still emit `mediaToggle`) |
 
 ### Events
 
@@ -254,6 +271,23 @@ export class InteractiveMessageComponent {
 | `mediaToggle` | `CometChat.BaseMessage` | Emitted when Space key toggles media playback on audio/video bubbles |
 | `messageActionsOpen` | `CometChat.BaseMessage` | Emitted when message actions are triggered via keyboard |
 
+### Media Message Rendering
+
+Media messages always render with the multi-attachment bubbles. There is no flag to switch this off — a message can arrive carrying several attachments no matter how your own composer is configured, so the renderer always handles that case. `CometChatMessageBubble` routes by message type:
+
+| Message type | Bubble |
+| --- | --- |
+| `image` | [`CometChatImagesBubble`](/ui-kit/angular/message-bubble-styling#image-bubble) |
+| `video` | [`CometChatVideosBubble`](/ui-kit/angular/message-bubble-styling#video-bubble) |
+| `file` | [`CometChatFilesBubble`](/ui-kit/angular/message-bubble-styling#file-bubble) |
+| `audio` tagged as a voice note | [`CometChatVoiceNoteBubble`](/ui-kit/angular/message-bubble-styling#voice-note-bubble) |
+| `audio` (attached file) | [`CometChatAudiosBubble`](/ui-kit/angular/message-bubble-styling#audio-bubble) |
+
+Most of these delegate the media rendering to their single-attachment counterpart — Images to [`CometChatImageBubble`](/ui-kit/angular/components/cometchat-image-bubble), Videos to [`CometChatVideoBubble`](/ui-kit/angular/components/cometchat-video-bubble), Files to [`CometChatFileBubble`](/ui-kit/angular/components/cometchat-file-bubble), and Voice Note to [`CometChatAudioBubble`](/ui-kit/angular/components/cometchat-audio-bubble). Audios is the exception: it draws its own player rows rather than delegating. All of them add the batch-aware shared width and the `isFirstInBatch` / `isLastInBatch` grouping that makes a batch read as one visual block. The legacy bubbles stay exported for direct use; the message bubble no longer routes to them.
+
+<Note>
+[`CometChatMessageComposer`](/ui-kit/angular/components/cometchat-message-composer#multiple-attachments) has an `enableMultipleAttachments` input, but it governs only the **send** side — whether picking files stages them in a tray for one batched send. It has no effect on rendering.
+</Note>
 
 ## Bubble Parts Customization
 
@@ -1244,17 +1278,21 @@ export class GlobalCustomizationComponent implements AfterViewInit {
 
   ngAfterViewInit(): void {
     // Set global status info view for all message types
-    this.bubbleConfigService.setGlobalStatusInfoView(this.globalStatusInfo);
+    this.bubbleConfigService.setGlobalView('statusInfoView', this.globalStatusInfo);
+
+    // Set multiple global view parts at once
+    this.bubbleConfigService.setGlobalViews({
+      statusInfoView: this.globalStatusInfo
+    });
 
     // Set custom content view for text messages only
     this.bubbleConfigService.setBubbleView('text_message', {
       contentView: this.customTextContent
     });
 
-    // Set multiple message type customizations at once
-    this.bubbleConfigService.setMessageTemplates({
-      'text_message': { contentView: this.customTextContent },
-      'image_message': { statusInfoView: this.globalStatusInfo }
+    // Set customizations for additional message types
+    this.bubbleConfigService.setBubbleView('image_message', {
+      statusInfoView: this.globalStatusInfo
     });
   }
 }
@@ -1265,11 +1303,11 @@ export class GlobalCustomizationComponent implements AfterViewInit {
 | Method | Parameters | Description |
 |--------|------------|-------------|
 | `setBubbleView` | `messageType: string, map: BubblePartMap` | Set custom views for a specific message type |
-| `setGlobalStatusInfoView` | `view: TemplateRef<any>` | Set status info view for all message types |
-| `setGlobalLeadingView` | `view: TemplateRef<any>` | Set leading view for all message types |
-| `setGlobalHeaderView` | `view: TemplateRef<any>` | Set header view for all message types |
-| `setMessageTemplates` | `maps: Record<string, BubblePartMap>` | Set multiple message type customizations |
+| `setGlobalView` | `part: BubblePart, view: TemplateRef<any>` | Set a single view part (e.g. `'statusInfoView'`) for all message types |
+| `setGlobalViews` | `views: Partial<Record<BubblePart, TemplateRef<any>>>` | Set multiple view parts for all message types at once |
 | `getView` | `messageType: string, part: BubblePart` | Get the configured view for a message type and part |
+| `clearType` | `messageType: string` | Clear configured views for a specific message type |
+| `clearGlobalViews` | none | Clear all globally configured views |
 | `clearAll` | none | Clear all configured views |
 
 ### Scoping for Multiple Instances
@@ -1347,6 +1385,14 @@ The Message Bubble component uses CSS variables for consistent theming. Override
   --cometchat-radius-3: 12px;
 }
 ```
+
+### Component-Specific CSS Variables
+
+In addition to the global theme tokens above, the Message Bubble component exposes its own overridable CSS custom properties, prefixed with `--cometchat-message-bubble-`. Override these to customize appearance for this component specifically, independently of the global theme tokens.
+
+<Info>
+  The component exposes `--cometchat-message-bubble-` prefixed CSS custom properties that can be overridden. Inspect the rendered `.cometchat-message-bubble` element in your browser's developer tools to discover the exact variable names exposed by your installed version of the UI Kit.
+</Info>
 
 ### Dark Theme
 
@@ -1583,9 +1629,20 @@ The component provides meaningful announcements for:
 
 - [CometChatMessageList](/ui-kit/angular/components/cometchat-message-list) - Parent component that renders message bubbles
 - [CometChatTextBubble](/ui-kit/angular/components/cometchat-text-bubble) - Text message content component
+- [CometChatMessagePreview](/ui-kit/angular/components/cometchat-message-list) - Reply preview component
+- [CometChatThreadHeader](/ui-kit/angular/components/cometchat-thread-header) - Thread header component
+
+Media messages route to the multi-attachment bubbles — see [Media Message Rendering](#media-message-rendering):
+
+- [CometChatImagesBubble](/ui-kit/angular/message-bubble-styling#image-bubble) - Renders `image` messages
+- [CometChatVideosBubble](/ui-kit/angular/message-bubble-styling#video-bubble) - Renders `video` messages
+- [CometChatAudiosBubble](/ui-kit/angular/message-bubble-styling#audio-bubble) - Renders `audio` messages that are attached files
+- [CometChatFilesBubble](/ui-kit/angular/message-bubble-styling#file-bubble) - Renders `file` messages
+- [CometChatVoiceNoteBubble](/ui-kit/angular/message-bubble-styling#voice-note-bubble) - Renders `audio` messages tagged as voice notes
+
+All except `CometChatAudiosBubble` delegate to a single-attachment counterpart. The message bubble no longer routes to these directly, but they remain available for standalone use:
+
 - [CometChatImageBubble](/ui-kit/angular/components/cometchat-image-bubble) - Image message content component
 - [CometChatVideoBubble](/ui-kit/angular/components/cometchat-video-bubble) - Video message content component
 - [CometChatAudioBubble](/ui-kit/angular/components/cometchat-audio-bubble) - Audio message content component
 - [CometChatFileBubble](/ui-kit/angular/components/cometchat-file-bubble) - File message content component
-- [CometChatMessagePreview](/ui-kit/angular/components/cometchat-message-list) - Reply preview component
-- [CometChatThreadHeader](/ui-kit/angular/components/cometchat-thread-header) - Thread header component

@@ -51,9 +51,9 @@ description: "Rich text input with attachments, emoji, voice recording, mentions
       "attachmentOptions": { "type": "CometChatComposerAttachmentOption[]", "default": "undefined" },
       "hideAttachmentOptions": { "type": "CometChatAttachmentHideOptions", "default": "undefined" },
       "showAttachmentPreview": { "type": "boolean", "default": true },
-      "maxAttachments": { "type": "number", "default": 10 },
-      "allowedFileTypes": { "type": "string[]", "default": "undefined" },
-      "maxFileSize": { "type": "number", "default": "undefined" }
+      "enableMultipleAttachments": { "type": "boolean", "default": true, "note": "Enable multi-attachment staging tray and batch send. Set false for legacy single-select behavior." },
+      "disableDragAndDrop": { "type": "boolean", "default": false, "note": "Disable drag-and-drop file upload." },
+      "allowedFileTypes": { "type": "string[]", "default": "undefined" }
     },
     "hideButtons": {
       "hideAttachmentButton": { "type": "boolean", "default": false },
@@ -248,6 +248,71 @@ function ChatApp() {
   );
 }
 ```
+
+---
+
+## Multi-Attachment Staging Tray
+
+When `enableMultipleAttachments` is `true` (the default), picking a file does **not** send it immediately. Files are **staged in a tray** above the input, uploaded in the background, and sent together when the user hits send. This is the composer half of the end-to-end multi-attachment flow:
+
+1. **Pick** — choose files from the attachment (`+`) menu, drag-and-drop them onto the composer (unless [`disableDragAndDrop`](#disabledraganddrop) is set), or paste image/file data straight into the composer — pasted media stages into the tray just like a pick.
+2. **Stage & upload** — each file becomes a tile in the tray and begins uploading directly to storage right away, showing its own progress. The user can keep typing or add more files while uploads run. The voice-recording button hides while attachments are staged.
+3. **Review** — remove any tile, or retry one whose upload failed. A file that can't be accepted shows why on hover (see [Why a file is rejected](#why-a-file-is-rejected)).
+4. **Send** — on send, the staged files fan out into media messages that share a single batch, so the message list renders them as a connected group of [media bubbles](/ui-kit/react/components/image-bubble) (see [Batch send](#batch-send)).
+
+<Info>
+**Live Preview** — interact with the message composer staging tray.
+
+[Open in Storybook ↗](https://storybook.cometchat.io/react/?path=/story/components-messages-cometchat-message-composer-tray--success)
+</Info>
+
+<iframe
+  src="https://storybook.cometchat.io/react/iframe.html?id=components-messages-cometchat-message-composer-tray--success&viewMode=story&shortcuts=false&singleStory=true"
+  className="w-full rounded-xl"
+  loading="lazy"
+  style={{height: "360px", border: "1px solid #e0e0e0"}}
+  title="CometChat Message Composer — Staging Tray (Success States)"
+  allow="clipboard-write"
+></iframe>
+
+### Tray item states
+
+Each staged file is a tile with its own upload lifecycle:
+
+| State | Meaning | Tile UI | Retryable |
+| --- | --- | --- | --- |
+| `uploading` | Bytes are transferring | Progress ring with percentage | — |
+| `success` | Uploaded, ready to send | Thumbnail (image/video) or file card | — |
+| `failed` | Transfer failed (transient — e.g. network drop) | Retry control on the tile | Yes |
+| `rejected` | File not accepted (see below) | Rejected marker + hover tooltip | No |
+
+This mirrors the underlying SDK upload semantics: **failed** uploads are transient and can be retried, while **rejected** files must be swapped out.
+
+### Attachment limits
+
+- **Count** — a single batch can hold up to a configurable maximum (default **10**, from the `file.count.max` app setting, resolved at runtime). The limit is **all-or-nothing**: if a pick would push the tray past the maximum, the **entire new selection is rejected** — nothing is staged — and a validation banner is shown. The composer does **not** partially accept a subset of files to fill the remaining slots.
+- **Per-file size** — a file larger than the allowed size (`file.size.max`) is rejected as an individual tile.
+
+### Why a file is rejected
+
+A rejected tile explains itself on hover via a tooltip:
+
+| Reason | What the tooltip conveys |
+| --- | --- |
+| File exceeds the maximum size | The file is too large, including the configured size limit in MB. |
+| File type not permitted | The file's type is blocked by your app's role-based file-type permissions (RBAC/SBAC). |
+
+<Note>
+The per-file **size** and **type** rejections surface on the individual tile (with the hover tooltip above). The **count** limit is different — it rejects the whole over-limit pick at once and surfaces as a validation banner, not a per-tile tooltip.
+</Note>
+
+### Batch send
+
+On send, the staged files are grouped by media kind and sent as **one media message per kind**, in a fixed order — **images → videos → audio → files** — with all of the resulting messages sharing a single `batchId`. The composer's **text is sent as the batch caption**, carried on the **last** message of the batch; when you're replying, the **quoted message is attached to the first**. The [message list](/ui-kit/react/components/message-list#multi-attachment-batch-grouping) groups messages with the same `batchId` and renders them as one visually connected set, with shared avatar/sender on the first bubble and receipts on the last.
+
+### Disabling the tray
+
+Set [`enableMultipleAttachments`](#enablemultipleattachments) to `false` to revert to legacy single-select, send-immediately behavior: each attachment option sends one file straight away, with no staging tray. **Pasting or dropping files behaves the same way** — the first file is sent immediately, matching the attachment picker (whether you pick, paste, or drop, only a single attachment is sent).
 
 ---
 
@@ -671,14 +736,25 @@ Whether to show attachment preview thumbnails before sending.
 
 ---
 
-#### maxAttachments
+#### enableMultipleAttachments
 
-Maximum number of attachments allowed.
+Enable multi-attachment staging tray and batch send. When `true` (default), selecting an attachment option stages files in a tray for a single batched send. When `false`, each attachment option reverts to legacy single-select, send-immediately behavior.
 
 | | |
 | --- | --- |
-| Type | `number` |
-| Default | `10` |
+| Type | `boolean` |
+| Default | `true` |
+
+---
+
+#### disableDragAndDrop
+
+Disable drag-and-drop file upload on the composer.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
 
 ---
 
@@ -690,17 +766,6 @@ Allowed file MIME types for attachments.
 | --- | --- |
 | Type | `string[]` |
 | Default | `undefined` (all types allowed) |
-
----
-
-#### maxFileSize
-
-Maximum file size in bytes.
-
-| | |
-| --- | --- |
-| Type | `number` |
-| Default | `undefined` (no limit) |
 
 ---
 
@@ -1116,6 +1181,15 @@ Called when a mention is selected from the suggestions list.
 | Send button | `.cometchat-message-composer__send-button-wrapper` |
 | Sticker button | `.cometchat-message-composer__sticker-button-wrapper` |
 | AI button | `.cometchat-message-composer__ai-button-wrapper` |
+| Staging tray | `.cometchat-message-composer__tray` |
+| Tray overlay (upload status) | `.cometchat-message-composer__tray-overlay` |
+| Tray audio card body | `.cometchat-message-composer__tray-audio-body` |
+| Tray audio name | `.cometchat-message-composer__tray-audio-name` |
+| Tray audio slider | `.cometchat-message-composer__tray-audio-slider` |
+| Tray audio time | `.cometchat-message-composer__tray-audio-time` |
+| Tray retry button | `.cometchat-message-composer__tray-retry-button` |
+| Tray rejected icon | `.cometchat-message-composer__tray-rejected-icon` |
+| Drag-and-drop overlay | `.cometchat-message-composer__drop-zone` |
 
 ---
 
