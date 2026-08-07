@@ -1,0 +1,355 @@
+---
+title: "Upload Files & Send Attachments"
+sidebarTitle: "Upload Files"
+description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
+---
+
+`CometChat.createUploadFileRequest(receiverId:receiverType:)` returns an **`UploadFileRequest`** — the entry point for uploading files **directly to storage** with **per-file progress, success, and failure**. Upload is **decoupled from sending**: each uploaded file yields an `Attachment` (carrying a hosted URL), which you then attach to a `MediaMessage` and send with [`sendMediaMessage()`](/sdk/ios/send-message#media-message).
+
+A request object is scoped to **one destination** (`receiverId` / `receiverType`) and **one upload batch**. This is the recommended way to build a **multi-attachment composer**: create a request, upload a batch of files, show a progress bar per file, let the user remove or retry individual files, then send them as a single media message with multiple attachments (or split across several).
+
+<Info>
+**Why upload separately instead of passing files to `sendMediaMessage()`?**
+
+The classic path (passing a `File`, or an array of files, straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
+</Info>
+
+## The upload-then-send flow
+
+<Steps>
+  <Step title="Create a request">
+    Call `CometChat.createUploadFileRequest(receiverId:receiverType:)`. The **recipient** is required — the server uses it to apply role- and scope-based access control before issuing upload URLs.
+  </Step>
+  <Step title="Upload">
+    Call `request.uploadAttachments(_:listener:)`, where each `UploadFileItem` pairs a file with an **app-supplied `fileId`** (required) that is echoed back on every event, so you can map callbacks to your UI rows. Validation, presigning, and the byte transfer run asynchronously and report through the listener.
+  </Step>
+  <Step title="Track progress & handle failures">
+    Your `UploadFileListener` receives `onFileProgress` per file, then `onFileUploaded` (success), `onFileError` (rejected — not retryable), or `onFileFailure` (failed — retryable). Use `request.removeAttachment(fileId:)` or `request.retryAttachment(fileId:)` as the user acts.
+  </Step>
+  <Step title="Collect attachments">
+    Each `onFileUploaded` hands you an `Attachment` with a hosted URL. You can also read them from the request at any time with `request.getAttachments()` / `request.getAttachmentsByType(_:)`.
+  </Step>
+  <Step title="Build & send the message">
+    Put the attachments on a `MediaMessage` via its `attachments` property and call `sendMediaMessage()`. Because the attachments already have URLs, the message is sent as JSON — no re-upload.
+  </Step>
+  <Step title="Clean up">
+    Call `request.clearAll()` after a successful send (or to abandon the composer) to release the batch from memory.
+  </Step>
+</Steps>
+
+## Create an upload request
+
+```swift
+let receiverId = "cometchat-uid-1"
+
+let request = CometChat.createUploadFileRequest(
+    receiverId: receiverId,
+    receiverType: .user
+)
+```
+
+`createUploadFileRequest(receiverId:receiverType:)` accepts:
+
+| Parameter      | Type                     | Description                                                     | Required |
+| -------------- | ------------------------ | --------------------------------------------------------------- | -------- |
+| `receiverId`   | `String`                 | UID of the user or GUID of the group the files will be sent to. | Yes      |
+| `receiverType` | `CometChat.ReceiverType` | `.user` or `.group`.                                            | Yes      |
+
+<Warning>
+**The recipient must match the message you'll eventually send.** `receiverId` / `receiverType` are sent to the upload-authorization (presign) endpoint, which enforces the sender's **role- and scope-based access control** for that conversation *before* any bytes transfer. If the server declines a file (billing, plan, or content-type policy), it is **rejected** via `onFileError` — not retryable. Pass the same recipient you'll set on the `MediaMessage` at send time.
+</Warning>
+
+## Upload files
+
+Build an `UploadFileListener` and call `uploadAttachments(_:listener:)` (or `uploadAttachment(fileId:file:listener:)` for a single file). Each `UploadFileItem` pairs a `File` (a name plus its `Data`) with a **required, app-supplied `fileId`**:
+
+```swift
+// Pair each file with an id you own, so you can map events back to your UI.
+let items = [
+    UploadFileItem(fileId: UUID().uuidString, file: File(name: "photo-1.jpg", data: photo1Data)),
+    UploadFileItem(fileId: UUID().uuidString, file: File(name: "photo-2.jpg", data: photo2Data))
+]
+
+request.uploadAttachments(items, listener: self)
+```
+
+```swift
+extension MyComposer: UploadFileListener {
+
+    func onFileProgress(fileId: String, loaded: Int64, total: Int64, percent: Int) {
+        print("\(fileId): \(percent)%")
+    }
+
+    func onFileUploaded(fileId: String, attachment: Attachment) {
+        print("\(fileId) uploaded -> \(attachment.fileUrl)")
+    }
+
+    func onFileError(fileId: String, error: CometChatException) {
+        print("\(fileId) rejected (not retryable): \(error.errorCode)")
+    }
+
+    func onFileFailure(fileId: String, error: CometChatException) {
+        print("\(fileId) failed (retryable): \(error.errorCode)")
+    }
+
+    func onComplete(result: UploadResult) {
+        print("Batch settled: \(result)")
+    }
+}
+```
+
+| Method                                      | Description                                                                                  |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `uploadAttachments(_:listener:)`            | Upload multiple `UploadFileItem`s. `listener` receives events for these files.               |
+| `uploadAttachment(fileId:file:listener:)`   | Upload a single `File` under `fileId`.                                                       |
+
+<Note>
+**`fileId` is app-supplied and required.** The SDK does not generate one — you provide a stable id per file (echoed back unchanged on every event) so you can line each file up with its UI row. The app owns id uniqueness within the batch: re-using the `fileId` of a **failed** file re-uploads it (that is one of the [retry paths](#remove-retry--clear)); re-using the id of a file in any other live state is rejected via `onFileError` with `ERR_INVALID_FILE_OBJECT`.
+
+Validation, presigning, and the byte transfer all run **asynchronously** after `uploadAttachments` returns — track outcomes through the listener.
+</Note>
+
+## The UploadFileListener
+
+`UploadFileListener` is a protocol whose methods are all optional — implement only the callbacks you need. Unlike [`CometChatMessageDelegate`](/sdk/ios/receive-message), it is **not** registered globally with a string id; it lives for the duration of the upload batch, and the request holds it strongly until its files leave the batch.
+
+| Callback         | Signature                          | Fires when                                                                                         |
+| ---------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `onFileProgress` | `(fileId, loaded, total, percent)` | Transfer progress for a file. Throttled internally, so it is safe to update the UI on every event. |
+| `onFileUploaded` | `(fileId, attachment)`             | A file finished uploading. `attachment` is ready to set on a message's `attachments`.              |
+| `onFileError`    | `(fileId, error)`                  | A file was **rejected** — **not retryable** (fix the input or permissions).                        |
+| `onFileFailure`  | `(fileId, error)`                  | A file's transfer **failed** — **retryable** via `retryAttachment(fileId:)`.                       |
+| `onComplete`     | `(result)`                         | The batch drained (no files in flight). Delivers an aggregate [`UploadResult`](#uploadresult).     |
+
+<Warning>
+**Rejected vs. failed — the key distinction.** Exactly one of the two fires per non-successful file. `onFileError` (rejected) means the request itself is unacceptable — an invalid or empty file, the size or count limit breached, or a server-side authorization/policy denial at presign time. Retrying won't help; the user must remove or replace the file. `onFileFailure` (failed) means a transient transport problem — network drop, a storage error, an expired upload URL, or a stalled upload. These **can** be retried with `retryAttachment(fileId:)`.
+</Warning>
+
+### UploadResult
+
+`onComplete` receives the batch's settled state. It fires **each time** the batch drains — including after more files are added and it drains again — and always reflects the **whole batch's** current state, so treat it idempotently (recompute from `result`; *set* your Send-enabled flag, don't toggle it).
+
+| Property     | Type                   | Description                                                                                    |
+| ------------ | ---------------------- | ---------------------------------------------------------------------------------------------- |
+| `batchId`    | `String`               | The upload batch this result belongs to.                                                       |
+| `successful` | `[UploadSuccessEntry]` | Uploaded files — each pairs `fileId` with its ready `attachment`.                              |
+| `rejected`   | `[UploadErrorEntry]`   | Files reported via `onFileError` — each pairs `fileId` with `error`. **Not retryable.**        |
+| `failed`     | `[UploadErrorEntry]`   | Files reported via `onFileFailure` — **retryable** via `retryAttachment(fileId:)`.             |
+
+## Configuring the request
+
+Chainable setters let you configure the batch before (or between) uploads:
+
+```swift
+let request = CometChat.createUploadFileRequest(receiverId: receiverId, receiverType: .user)
+    .setConcurrency(3)                    // upload up to 3 files at once (default 1, sequential)
+    .setParentMessageId(parentId)         // mark this batch as belonging to a thread
+
+let batchId = request.getBatchId()        // auto-generated UUID unless you set one
+```
+
+| Method                        | Description                                                                                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `setConcurrency(_:)`          | How many files upload simultaneously. Default `1` (sequential). Applies to queued files from the next drain; uploads already in flight are never interrupted. |
+| `setBatchId(_:)`              | Set the batch id all files share. Optional — the request auto-generates a UUID. Set it before the first upload.                                              |
+| `getBatchId()`                | The effective batch id (app-set or auto-generated).                                                                                                          |
+| `setParentMessageId(_:)`      | Mark the batch as belonging to a thread — sent to the presign endpoint with every file. Omit for a top-level message.                                        |
+
+<Tip>
+Parallel uploads of large files over cellular data can saturate the connection and stall every file — raise `setConcurrency` only on known-fast networks (ideally network-aware: higher on Wi-Fi, `1` on cellular).
+</Tip>
+
+<Note>
+Each request owns exactly one batch. For separate destinations (e.g. a main conversation and a thread), create a **separate `UploadFileRequest`** for each — their file ids never cross.
+</Note>
+
+### Adding more files to the batch
+
+To add files incrementally (e.g. the user picks more while earlier uploads are still running), just call `uploadAttachments` again **on the same request** — they join the same batch, and `onComplete` refires when the batch next drains.
+
+## Per-call and global listeners
+
+There are two listener scopes, and events fire on **both** (per-call first):
+
+- **Per-call listener** — the `listener` you pass to `uploadAttachment` / `uploadAttachments`. It receives events only for the files in *that* call.
+- **Global batch listener** — registered with `request.addUploadListener(_:)`. It receives events for **every** file across all upload calls on the request. There is a **single global slot**: a later `addUploadListener` replaces the previous one; `removeUploadListener()` clears it.
+
+```swift
+// One listener for the whole batch, regardless of how many upload calls you make.
+request.addUploadListener(trayListener)   // e.g. drives the tray UI + the Send-enabled flag
+
+// Later (e.g. when the composer goes away):
+request.removeUploadListener()
+```
+
+## Reading the batch
+
+Query the request's current state at any time — useful when the user hits "send":
+
+| Method                       | Returns          | Notes                                                                                                                                          |
+| ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getAttachment(fileId:)`     | `Attachment?`    | The uploaded attachment for `fileId`, or `nil` if unknown or **not yet uploaded**.                                                             |
+| `getAttachments()`           | `[Attachment]`   | All **uploaded** attachments in the batch, in the order the files were added.                                                                  |
+| `getAttachmentsByType(_:)`   | `[Attachment]`   | Uploaded attachments of one kind (`"image"` / `"video"` / `"audio"` / `"file"`, derived from each attachment's mime type) — always an array.   |
+| `getAttachmentCount()`       | `Int`            | Total files in the batch in **any** state (in-progress, failed, rejected, or uploaded).                                                        |
+| `getStatus()`                | `UploadStatus`   | `.inProgress` while any file is still uploading, else `.idle` (an empty batch is `.idle`). `onComplete` fires exactly at the transition to `.idle`. |
+
+<Note>
+The attachment getters (`getAttachment`, `getAttachments`, `getAttachmentsByType`) return **only uploaded** files, so they're safe to hand straight to a message's `attachments`. `getAttachmentCount()` counts every file regardless of state, so you can compare it against `getAttachments().count` to see how many are still pending.
+</Note>
+
+## Remove, retry & clear
+
+```swift
+// Remove one file: aborts its in-flight upload (silently — no onFileFailure),
+// or drops it from the batch if it has already uploaded.
+request.removeAttachment(fileId: fileId)
+
+// Retry one FAILED file: the SDK retained its bytes, so the id is all you need.
+// The fresh attempt re-presigns automatically if the upload URL expired.
+request.retryAttachment(fileId: fileId)
+
+// Release the whole batch from memory, aborting anything still in flight.
+// Call this after a successful send, or to abandon the composer.
+request.clearAll()
+```
+
+| Action     | Call                        | Behavior                                                                                                                                                                                                                                        |
+| ---------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Remove** | `removeAttachment(fileId:)` | Removes one file from the batch. If it's still uploading, the transfer is aborted **silently** (no `onFileFailure`); if it already uploaded, it's dropped from the set (the unreferenced storage object is cleaned up server-side).              |
+| **Retry**  | `retryAttachment(fileId:)`  | Re-uploads a **failed** file from the bytes the SDK retained — no file object needed. Re-presigns automatically if the earlier upload URL expired; events keep flowing to the listeners already registered for that file. A no-op for unknown ids and for files not in the failed state — rejected files can't be retried (the same check would just fail again). |
+| **Clear**  | `clearAll()`                | Aborts any in-flight uploads and drops the whole batch from SDK memory.                                                                                                                                                                          |
+
+<Note>
+There is no auto-clear on send or logout — call `clearAll()` yourself after a successful send (or when abandoning the composer) so the batch doesn't linger in memory. Re-uploading a failed file's `fileId` through `uploadAttachment(fileId:file:listener:)` also works as a retry if you'd rather supply fresh bytes.
+</Note>
+
+## Send the uploaded files as a media message
+
+Once your files are uploaded, collect their `Attachment`s (from `request.getAttachments()` or from `result.successful` in `onComplete`), set them on a `MediaMessage` built with an **empty file URL and no `files`**, and send. One batch can go out as a single multi-attachment message, or you can split the attachments across several messages — e.g. one message per media type using `getAttachmentsByType(_:)`, stamping the same batch id on each send.
+
+```swift
+class MyComposer: NSObject, UploadFileListener {
+
+    let receiverId = "cometchat-uid-1"
+    lazy var request = CometChat.createUploadFileRequest(receiverId: receiverId, receiverType: .user)
+        .setConcurrency(3)
+
+    func upload(_ pickedFiles: [File]) {
+        let items = pickedFiles.map { file in
+            UploadFileItem(fileId: UUID().uuidString, file: file)
+        }
+        request.uploadAttachments(items, listener: self)
+    }
+
+    func onFileProgress(fileId: String, loaded: Int64, total: Int64, percent: Int) {
+        updateRow(fileId: fileId, percent: percent)
+    }
+
+    func onFileFailure(fileId: String, error: CometChatException) {
+        markRetryable(fileId: fileId, error: error) // offer Retry → retryAttachment(fileId:)
+    }
+
+    func onFileError(fileId: String, error: CometChatException) {
+        markRejected(fileId: fileId, error: error)  // offer Remove/Replace
+    }
+
+    func onComplete(result: UploadResult) {
+        let attachments = request.getAttachments()
+        guard !attachments.isEmpty else { return }
+
+        // No raw file — attachments already carry hosted URLs.
+        let mediaMessage = MediaMessage(
+            receiverUid: receiverId,
+            fileurl: "",
+            messageType: .image,
+            receiverType: .user
+        )
+        mediaMessage.attachments = attachments
+        mediaMessage.caption = "Trip photos"
+        mediaMessage.muid = UUID().uuidString                       // per-message id for optimistic-UI reconciliation
+        mediaMessage.metaData = ["batchId": request.getBatchId()]   // lets UIs group related sends as one batch
+
+        CometChat.sendMediaMessage(message: mediaMessage, onSuccess: { [weak self] message in
+            print("Media message sent successfully")
+            self?.request.clearAll() // release the batch
+        }, onError: { error in
+            print("Media message sending failed: \(error?.errorDescription ?? "")")
+        })
+    }
+}
+```
+
+<Warning>
+When sending pre-uploaded attachments, leave the message's `files` property **`nil`** — build the message with the `fileurl:` constructor and an empty string, and never assign an empty array to `files`. A non-nil-but-empty `files` array fails the send with an invalid-message error even though `attachments` is populated, and any `File` objects present are re-uploaded on send, which defeats the upload-first flow.
+</Warning>
+
+<Note>
+A message's attachments should all match the message's own type — send mixed picks as one message per kind (images → videos → audios → files) using `getAttachmentsByType(_:)`. If a batch has more successful uploads than the per-message limit allows (see [Limits](#limits)), split them across multiple `MediaMessage`s. See [Multiple Attachments in a Media Message](/sdk/ios/send-message#multiple-attachments-in-a-media-message).
+</Note>
+
+## Limits
+
+Two limits guard the flow, each read from your app settings (configured in the CometChat dashboard, with a built-in fallback):
+
+| Limit                       | Enforced in         | App setting      | Default | On breach                                                                                                                              |
+| --------------------------- | ------------------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Per-file size**           | `uploadAttachments` | `file.size.max`  | 100 MB  | That file is rejected via `onFileError` with `ERR_FILE_SIZE_EXCEEDED`.                                                                  |
+| **Attachments per message** | `uploadAttachments` | `file.count.max` | 10      | Files beyond the batch's remaining capacity are rejected via `onFileError` with `ERR_FILE_COUNT_EXCEEDED` (accepted in input order).     |
+
+Read the current limits at runtime — useful for capping your picker's selection and pre-validating file sizes before uploading:
+
+```swift
+let maxFiles = CometChat.getMaxFileCount()  // file.count.max — defaults to 10
+let maxBytes = CometChat.getMaxFileSize()   // file.size.max — defaults to 104857600 (100 MB)
+```
+
+<Note>
+An oversized or over-count file only rejects **that file** — the rest of the batch continues uploading. Removing a queued, failed, or uploaded file frees capacity for new uploads.
+</Note>
+
+## Reliability behavior
+
+The SDK handles a few transport edge cases for you:
+
+- **Stalled uploads** — if a file makes no progress for 30 seconds, its upload is aborted and reported through `onFileFailure` with `ERR_UPLOAD_STALLED`. Retry it with `retryAttachment(fileId:)`.
+- **Expired upload URLs** — each file's pre-signed upload URL has a limited validity. If it expires before the transfer starts (e.g. the file sat in the queue behind slow uploads), the file fails with `ERR_PRESIGNED_URL_EXPIRED`; retrying requests a fresh URL automatically, so retries keep working even after a long delay.
+- **Storage errors** — if storage rejects the upload or the network drops, the failure surfaces through `onFileFailure` with `ERR_S3_UPLOAD_FAILED` and, where available, the transport's own message.
+- **Batch presign isolation** — when a multi-file authorization call fails as a whole, the SDK re-requests each file individually, so one problematic file can't sink the rest of the batch.
+
+## Error handling
+
+Every error delivered to `onFileError` / `onFileFailure` is a `CometChatException` — read `errorCode` to branch:
+
+| Code                        | Surfaced via                        | Retryable | Meaning                                                                                                                     |
+| --------------------------- | ----------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `ERR_FILE_DATA_EMPTY`       | `onFileError`                       | No        | The `File` has no data.                                                                                                      |
+| `ERR_INVALID_FILE_OBJECT`   | `onFileError`                       | No        | The file is invalid — for example, its `fileId` is already in the batch in a non-failed state.                               |
+| `ERR_FILE_SIZE_EXCEEDED`    | `onFileError`                       | No        | The file is larger than `file.size.max`.                                                                                     |
+| `ERR_FILE_COUNT_EXCEEDED`   | `onFileError`                       | No        | More files than `file.count.max` allows — the batch's remaining capacity is filled in input order and the overflow rejected.  |
+| `ERR_PRESIGNED_URL_FAILED`  | `onFileError` / `onFileFailure`     | Depends   | Via `onFileError`: the server refused an upload URL for the file (billing, plan, or content-type policy) — final. Via `onFileFailure`: the authorization call itself failed in transport — retryable. |
+| `ERR_PRESIGNED_URL_EXPIRED` | `onFileFailure`                     | Yes       | The upload URL expired before the file started uploading (a retry re-presigns automatically).                                |
+| `ERR_S3_UPLOAD_FAILED`      | `onFileFailure`                     | Yes       | The file failed to upload to storage, or the transport errored.                                                              |
+| `ERR_UPLOAD_STALLED`        | `onFileFailure`                     | Yes       | No progress for 30s; the upload was aborted.                                                                                 |
+| `ERR_INVALID_URL`           | `onFileFailure`                     | Yes       | The upload URL returned by the server was malformed; a retry requests a fresh one.                                           |
+
+<Note>
+Server-side rejections at presign time (e.g. policy or plan denials) carry the server's own code and message where one is provided — `ERR_PRESIGNED_URL_FAILED` is the fallback classification. Files removed via `removeAttachment(fileId:)` / `clearAll()` are cancelled **silently** — they leave the batch without an error callback.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Send A Message" icon="paper-plane" href="/sdk/ios/send-message">
+    Send text, media, and custom messages
+  </Card>
+  <Card title="Multiple Attachments" icon="paperclip" href="/sdk/ios/send-message#multiple-attachments-in-a-media-message">
+    Send several attachments in one media message
+  </Card>
+  <Card title="Receive Messages" icon="inbox" href="/sdk/ios/receive-message">
+    Listen for incoming messages in real-time
+  </Card>
+  <Card title="Threaded Messages" icon="comments" href="/sdk/ios/threaded-messages">
+    Upload into a thread with setParentMessageId
+  </Card>
+</CardGroup>
