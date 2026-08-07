@@ -1,0 +1,350 @@
+---
+title: "Pin and Save Messages"
+sidebarTitle: "Pin & Save"
+description: "Pin messages for everyone in a conversation, save messages privately, and pin conversations to the top of the list with the CometChat Angular UIKit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-angular` |
+| Key components | `cometchat-message-list`, `cometchat-pinned-messages`, `cometchat-saved-messages`, `cometchat-conversations` |
+| Feature gate | App-level flags (`CometChat.isPinMessageEnabled()` / `isSaveMessageEnabled()`), overridable via `COMETCHAT_GLOBAL_CONFIG` |
+| Service | `PinSaveService` |
+| Events | `CometChatPinSaveEvents` — `ccMessagePinned`, `ccMessageUnpinned`, `ccMessageSaved`, `ccMessageUnsaved` |
+| State | `message.getPinnedAt()`, `getPinnedBy()`, `getSavedAt()`; `conversation.isPinned()` |
+| Related | [Pinned Messages](/ui-kit/angular/components/cometchat-pinned-messages), [Saved Messages](/ui-kit/angular/components/cometchat-saved-messages), [All Guides](/ui-kit/angular/guides/guides-overview) |
+
+</Accordion>
+
+The UI Kit ships three related but distinct actions:
+
+| Action | Scope | Who sees it |
+|:---|:---|:---|
+| **Pin message** | One conversation | Everyone in the conversation |
+| **Save message** | The acting user, across every conversation | Only that user |
+| **Pin conversation** | The acting user's conversation list | Only that user |
+
+That split drives everything below: a pin is a shared act and is permission-gated, while a save is private and is not.
+
+Before starting, complete the [Integration Guide](/ui-kit/angular/integration).
+
+---
+
+## Enabling the Feature
+
+Pin Message and Save Message are gated by **app-level feature flags** that CometChat provisions server-side. The UI Kit resolves them once per session through the Chat SDK:
+
+- `CometChat.isPinMessageEnabled()`
+- `CometChat.isSaveMessageEnabled()`
+
+While a flag is off, the SDK reports the feature disabled and none of the pin or save surfaces render.
+
+### Development override
+
+Because the flags are provisioned server-side, "flag off" is indistinguishable from "not built" during development. `COMETCHAT_GLOBAL_CONFIG` can force either surface on or off:
+
+```typescript expandable
+import { ApplicationConfig } from '@angular/core';
+import { COMETCHAT_GLOBAL_CONFIG, GlobalConfig } from '@cometchat/chat-uikit-angular';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    {
+      provide: COMETCHAT_GLOBAL_CONFIG,
+      useValue: {
+        enablePinMessage: true,
+        enableSaveMessage: true,
+      } as GlobalConfig,
+    },
+  ],
+};
+```
+
+<Warning>
+  Leave both unset in production. The SDK's app-level flags are the right source of truth; an explicit `true` here shows options the backend may still reject.
+</Warning>
+
+Pinning a **conversation** has no such flag. It renders whenever the installed Chat SDK exposes `pinConversation` / `unpinConversation`, and is hidden with `[hidePinConversation]="true"`.
+
+---
+
+## Pinning and Saving a Message
+
+Both actions live in the message context menu, gathered under an **Organise ▸** flyout so two related actions cost one row in an already long menu. The flyout is omitted entirely when neither action applies.
+
+```html expandable
+<cometchat-message-list
+  [group]="group"
+  [hidePinMessageOption]="false"
+  [hideUnpinMessageOption]="false"
+  [hideSaveMessageOption]="false"
+  [hideUnsaveMessageOption]="false">
+</cometchat-message-list>
+```
+
+| Input | Default | Hides |
+|:---|:---|:---|
+| `hidePinMessageOption` | `false` | **Pin message** on an unpinned message |
+| `hideUnpinMessageOption` | `false` | **Unpin message** on a pinned one |
+| `hideSaveMessageOption` | `false` | **Save message** on an unsaved message |
+| `hideUnsaveMessageOption` | `false` | **Unsave message** on a saved one |
+
+The menu shows Pin **or** Unpin — never a toggling third state — because the presence of `pinnedAt` *is* the boolean. The same holds for `savedAt`.
+
+### Eligibility
+
+A message can carry a pin or a save unless it is deleted, still in flight, held by moderation, or an `action` category message ("X joined the group" is not something anyone pins). Thread replies **are** eligible: the backend accepts them and returns the parent for context, so the option belongs inside the thread view too.
+
+### Permissions
+
+Pinning is conversation-wide, so it is scope-gated the same way deleting someone else's message is: in a group, a known **participant** is denied and everyone else is offered the option. In a one-on-one there is no scope to check, so the client assumes it is allowed and the server is the backstop — a refusal returns `ERR_ACTION_NOT_ALLOWED`, and the optimistic flip reverts with an explanatory toast.
+
+Saving has no scope gate at all: it is private to the acting user and changes nothing anyone else can see.
+
+<Note>
+  The client denies only a *known* participant rather than allow-listing the elevated scopes. `getScope()` is a membership property and is frequently undefined on a `Group` derived from a conversation, so an allow-list would hide Pin from admins whose scope simply has not loaded yet.
+</Note>
+
+### Confirmation
+
+Pinning and saving run immediately. **Unpinning and unsaving ask first** — unpinning acts for everyone in the chat, and an unsave can drop the only pointer the user had to a message buried far up the history.
+
+### Limits
+
+The server owns the pin and save caps. When one is hit, the rejection carries the limit and the toast names the real number ("You can pin up to 5 messages in a conversation."), so the copy never goes stale when the backend retunes the cap.
+
+---
+
+## Indicators
+
+Once a message is pinned or saved, the bubble marks it in its status-info footer:
+
+- **Pin marker** — shown to everyone, because `pinnedAt` is conversation-wide
+- **Bookmark marker** — shown only to the user who saved it; `savedAt` is simply not present in anyone else's copy
+
+A batched media message normally shows a footer on its last bubble only. A pinned or saved bubble keeps its footer regardless, since hiding it would hide the very badge that explains the mark.
+
+```css expandable
+/* Both markers */
+.cometchat-message-bubble__pinned-indicator,
+.cometchat-message-bubble__saved-indicator {
+  background-color: var(--cometchat-message-bubble-meta-indicator-color, var(--cometchat-text-color-secondary));
+}
+
+/* Outgoing bubbles invert them */
+.cometchat-message-bubble__wrapper--outgoing .cometchat-message-bubble__pinned-indicator {
+  background-color: var(--cometchat-message-bubble-meta-indicator-color-outgoing, var(--cometchat-text-color-white));
+}
+```
+
+---
+
+## Viewing Pinned and Saved Messages
+
+Two panels list what has been marked. They are separate components — see their own pages for the full API.
+
+### Pinned messages
+
+Conversation-scoped, shared, and permission-aware. Add the entry point to the message header:
+
+```html expandable
+<cometchat-message-header
+  [group]="group"
+  [showPinnedMessagesOption]="true"
+  (pinnedMessagesClick)="showPinnedPanel = true">
+</cometchat-message-header>
+
+@if (showPinnedPanel) {
+  <cometchat-pinned-messages
+    [group]="group"
+    (messageClick)="scrollToMessage($event)"
+    (closeClick)="showPinnedPanel = false">
+  </cometchat-pinned-messages>
+}
+```
+
+See [CometChatPinnedMessages](/ui-kit/angular/components/cometchat-pinned-messages).
+
+### Saved messages
+
+Per-user and cross-conversation, so it belongs in your app chrome rather than in a chat header — hanging it off one conversation would misrepresent what it contains.
+
+```html expandable
+<cometchat-saved-messages
+  (messageClick)="openSourceConversation($event)"
+  (closeClick)="showSavedPanel = false">
+</cometchat-saved-messages>
+```
+
+See [CometChatSavedMessages](/ui-kit/angular/components/cometchat-saved-messages).
+
+---
+
+## Pinning a Conversation
+
+`CometChatConversations` adds a **Pin conversation** / **Unpin conversation** entry to each row's context menu, above Delete — the safe, reversible action comes first.
+
+```html expandable
+<cometchat-conversations
+  [hidePinConversation]="false"
+  (itemClick)="onConversationClick($event)">
+</cometchat-conversations>
+```
+
+### Ordering
+
+Pinned conversations are lifted above unpinned ones. The partition is **stable**: recency still decides the order among pinned chats and among unpinned ones, so a pinned chat with a new message still rises to the top of its block, and one message in an unpinned chat can never push the pinned block down.
+
+### Reading the state
+
+```typescript
+const isPinned = conversation.isPinned?.();
+```
+
+The presence of `pinnedAt` is the boolean here too — an unpinned conversation carries no key at all. `isPinned()` covers both a personal pin and an app-wide one (`pinnedBy === "app_system"`).
+
+### Behavior
+
+- Pinning runs straight away; **unpinning asks for confirmation**, because a pin is a deliberate arrangement of the list and a misplaced click should not undo it
+- The row shows a pin marker, and the state reaches screen readers through the row's accessible label, since the marker itself is `aria-hidden`
+- The pin cap is server-owned; exceeding it shows "You can pin up to N conversations." with the real number from the rejection
+
+---
+
+## Reacting to Changes
+
+`CometChatPinSaveEvents` is the channel that keeps bubbles, both panels, and any surface of your own in agreement without a refetch.
+
+| Event | Reach | Description |
+|:---|:---|:---|
+| `ccMessagePinned` | Broadcast | A message was pinned — everyone in the conversation hears it |
+| `ccMessageUnpinned` | Broadcast | A message was unpinned |
+| `ccMessageSaved` | Private, multi-device | The logged-in user saved a message |
+| `ccMessageUnsaved` | Private, multi-device | The logged-in user unsaved a message |
+
+```typescript expandable
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { CometChatPinSaveEvents } from '@cometchat/chat-uikit-angular';
+import { Subscription } from 'rxjs';
+
+@Component({
+  selector: 'app-pin-listener',
+  standalone: true,
+  template: `<!-- your template -->`,
+})
+export class PinListenerComponent implements OnInit, OnDestroy {
+  private subscriptions = new Subscription();
+
+  ngOnInit(): void {
+    this.subscriptions.add(
+      CometChatPinSaveEvents.ccMessagePinned.subscribe(({ message, source }) => {
+        // Swap your copy of the message wholesale — do not patch fields.
+        this.replaceMessage(message);
+        console.log('came from', source); // "optimistic" | "sdk" | "revert"
+      })
+    );
+
+    this.subscriptions.add(
+      CometChatPinSaveEvents.ccMessageUnpinned.subscribe(({ message }) => {
+        this.replaceMessage(message);
+      })
+    );
+  }
+
+  ngOnDestroy(): void {
+    this.subscriptions.unsubscribe();
+  }
+
+  private replaceMessage(message: unknown): void {}
+}
+```
+
+<Warning>
+  Every payload carries the **full updated message**. Swap your copy rather than patching fields: `pinnedAt` and `savedAt` are present-only-when-set and are *cleared*, never zeroed, on unpin and unsave — so a partial patch leaves a stale timestamp behind and the marker never disappears.
+</Warning>
+
+The `source` field is an open string: `"optimistic"` for a local flip not yet acked, `"revert"` when a failure put it back, and `"sdk"` for a confirmed write or a realtime frame. An unrecognised value must never break a subscriber.
+
+---
+
+## Acting Programmatically
+
+`PinSaveService` is provided in root and owns the behavior for every surface.
+
+```typescript expandable
+import { Component, inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { PinSaveService } from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-custom-pin-button',
+  standalone: true,
+  template: `<button (click)="togglePin()">Pin</button>`,
+})
+export class CustomPinButtonComponent {
+  private readonly pinSave = inject(PinSaveService);
+  message!: CometChat.BaseMessage;
+
+  async togglePin(): Promise<void> {
+    const action = this.pinSave.isPinned(this.message) ? 'unpin' : 'pin';
+    const updated = await this.pinSave.run(action, this.message);
+    // `null` means the call failed; the service has already reverted and shown a toast.
+  }
+}
+```
+
+| Member | Returns | Description |
+|:---|:---|:---|
+| `isSupported()` | `boolean` | Whether the installed Chat SDK exposes the pin/save API at all |
+| `isPinEnabled()` | `Promise<boolean>` | The app-level pin flag, cached per session |
+| `isSaveEnabled()` | `Promise<boolean>` | The app-level save flag, cached per session |
+| `isPinned(message)` | `boolean` | Presence of `pinnedAt` |
+| `isSaved(message)` | `boolean` | Presence of `savedAt`, scoped to the viewer |
+| `pinnedBy(message)` | `string \| null` | Who pinned it. `app_system` means an admin or global pin |
+| `isSystemPin(message)` | `boolean` | Whether the pin came from the app rather than a person |
+| `run(action, message)` | `Promise<CometChat.BaseMessage \| null>` | Performs `'pin' \| 'unpin' \| 'save' \| 'unsave'`. Returns the updated message, or `null` when it failed |
+
+`run()` flips the message optimistically, reconciles against the authoritative copy the server returns, and restores the pre-call attributes on failure — so a rejected pin never leaves a pin showing. One request per message is on the wire at a time, so a double-tap cannot race itself.
+
+---
+
+## Localization
+
+| Key | English (US) |
+|:---|:---|
+| `message_list_option_organise` | Organise |
+| `message_list_option_pin_message` | Pin message |
+| `message_list_option_unpin_message` | Unpin message |
+| `message_list_option_save_message` | Save message |
+| `message_list_option_unsave_message` | Unsave message |
+| `message_pinned_toast` | Message pinned |
+| `message_unpinned_toast` | Message unpinned |
+| `message_saved_toast` | Message saved |
+| `message_unsaved_toast` | Message unsaved |
+| `pinned_messages_title` | `{count} Pinned Messages` |
+| `saved_messages_title` | `{count} Saved Messages` |
+| `pinned_by_system` | Pinned by the app |
+| `conversation_pin` | Pin conversation |
+| `conversation_unpin` | Unpin conversation |
+| `conversation_pinned_toast` | Conversation pinned |
+| `conversation_unpinned_toast` | Conversation unpinned |
+| `pin_message_limit_error` | `You can pin up to {limit} messages in a conversation.` |
+| `save_message_limit_error` | `You can save up to {limit} messages.` |
+| `conversation_pin_limit_error` | `You can pin up to {limit} conversations.` |
+| `pin_message_permission_error` | You don't have permission to pin messages here. |
+| `pin_save_generic_error` | Something went wrong. Please try again. |
+
+Override any of these through [Localization](/ui-kit/angular/customization/localization).
+
+---
+
+## Related
+
+- [CometChatPinnedMessages](/ui-kit/angular/components/cometchat-pinned-messages) — the conversation's pinned list
+- [CometChatSavedMessages](/ui-kit/angular/components/cometchat-saved-messages) — the user's saved list
+- [CometChatMessageList](/ui-kit/angular/components/cometchat-message-list) — where the actions live
+- [CometChatConversations](/ui-kit/angular/components/cometchat-conversations) — pinning a conversation
+- [Events](/ui-kit/angular/events#cometchatpinsaveevents) — the `CometChatPinSaveEvents` reference
+- [Global Configuration](/ui-kit/angular/customization/global-config) — the development overrides

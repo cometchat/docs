@@ -1,0 +1,287 @@
+---
+title: "Thread Subscription"
+sidebarTitle: "Thread Subscription"
+description: "Let users follow and unfollow message threads so they are notified about new replies, using the CometChat Angular UIKit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-angular` |
+| Key components | `cometchat-thread-header`, `cometchat-message-list` |
+| Feature gate | `COMETCHAT_GLOBAL_CONFIG` → `enableThreadSubscription: true` (default **off**) |
+| Service | `ThreadSubscriptionService` |
+| Events | `CometChatThreadEvents.ccThreadSubscriptionChanged` |
+| SDK requirement | A Chat SDK build exposing `CometChat.subscribeToThread` (4.1.14-beta-1 or later) |
+| Related | [Threaded Messages](/ui-kit/angular/guides/threaded-messages), [All Guides](/ui-kit/angular/guides/guides-overview) |
+
+</Accordion>
+
+Thread subscription lets a user say "tell me when someone answers this" about one specific thread. Following a thread opts the user into notifications for its replies; unfollowing opts back out. It is per-user and per-thread — following changes nothing anyone else sees.
+
+Before starting, complete the [Integration Guide](/ui-kit/angular/integration).
+
+---
+
+## Surfaces
+
+The UI Kit ships two entry points for the same action. Both read and write the same state, so toggling from one flips the other immediately.
+
+| Surface | Where | Label style |
+|:---|:---|:---|
+| Thread header control | Icon-only bell in the thread header's top bar | State-labelled — "Mute thread" / "Unmute thread" |
+| Message action sheet option | In the message context menu, right after **Reply in thread** | Action-labelled — "Notify me about replies" / "Stop reply notifications" |
+
+<Note>
+  The UI Kit ships **no threads list**. If your app needs an inbox of followed threads, build it against `CometChat.ThreadsRequest` and keep it current by subscribing to [`ccThreadSubscriptionChanged`](#reacting-to-changes).
+</Note>
+
+---
+
+## Enabling the Feature
+
+The feature is **off by default**. There is no capability flag on the app settings that a client can feature-detect, so only you know whether the threads endpoints are deployed for your app. Opt in through `COMETCHAT_GLOBAL_CONFIG`:
+
+```typescript expandable
+import { ApplicationConfig } from '@angular/core';
+import { COMETCHAT_GLOBAL_CONFIG, GlobalConfig } from '@cometchat/chat-uikit-angular';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    {
+      provide: COMETCHAT_GLOBAL_CONFIG,
+      useValue: {
+        enableThreadSubscription: true,
+      } as GlobalConfig,
+    },
+  ],
+};
+```
+
+With the gate off, neither surface renders and no thread request is ever made — whatever the per-component `hideThreadSubscription*` inputs say.
+
+<Warning>
+  The kit's peer range still admits Chat SDK builds that predate the thread API. `ThreadSubscriptionService` performs a runtime capability check for `subscribeToThread`, `unsubscribeFromThread`, and `getThreadSubscriptionState`; if any is missing, both surfaces stay hidden rather than rendering a button that throws.
+</Warning>
+
+---
+
+## Implementation Steps
+
+### 1. Turn the gate on
+
+Provide `enableThreadSubscription: true` as shown above. Nothing else is required — both surfaces appear on their own.
+
+### 2. Render the thread header
+
+The control lives in the thread header's top bar, beside the close button.
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatThreadHeaderComponent,
+  IThreadSubscriptionChange,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-thread-panel',
+  standalone: true,
+  imports: [CometChatThreadHeaderComponent],
+  template: `
+    <cometchat-thread-header
+      [parentMessage]="parentMessage"
+      (threadSubscriptionChange)="onSubscriptionChange($event)"
+      (closeClick)="closeThread()">
+    </cometchat-thread-header>
+  `,
+})
+export class ThreadPanelComponent {
+  parentMessage!: CometChat.BaseMessage;
+
+  /** Fires for every change to this thread, whoever caused it. */
+  onSubscriptionChange(event: IThreadSubscriptionChange): void {
+    console.log(event.parentMessageId, event.state);
+  }
+
+  closeThread(): void {}
+}
+```
+
+To keep the feature but drop this particular surface — for apps that want the action-sheet entry point only — set `[hideThreadSubscriptionToggle]="true"`.
+
+### 3. Keep or hide the action-sheet option
+
+The option is added to `cometchat-message-list`'s context menu automatically. Hide it with `[hideThreadSubscriptionOption]="true"`:
+
+```html expandable
+<cometchat-message-list
+  [group]="group"
+  [hideThreadSubscriptionOption]="false"
+  (threadSubscriptionChange)="onSubscriptionChange($event)">
+</cometchat-message-list>
+```
+
+The option is offered on messages with **zero replies** — following a message before anyone answers is the point — and on replies as well, where it toggles the thread the user is already reading.
+
+<Note>
+  On a reply, the action resolves to the reply's **parent**, never the reply's own ID. CometChat has no nested threads, and subscribing to a reply ID would write a thread-list row pointing at a thread that cannot be opened.
+</Note>
+
+---
+
+## Reacting to Changes
+
+`CometChatThreadEvents.ccThreadSubscriptionChanged` is the channel that keeps the two surfaces in agreement without a refetch — and the channel your own thread list should subscribe to.
+
+```typescript expandable
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { CometChatThreadEvents } from '@cometchat/chat-uikit-angular';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { Subscription } from 'rxjs';
+
+@Component({
+  selector: 'app-thread-inbox',
+  standalone: true,
+  template: `<!-- your own threads list -->`,
+})
+export class ThreadInboxComponent implements OnInit, OnDestroy {
+  private subscription?: Subscription;
+
+  ngOnInit(): void {
+    this.subscription = CometChatThreadEvents.ccThreadSubscriptionChanged.subscribe(
+      ({ parentMessageId, state, source }) => {
+        if (state === CometChat.ThreadSubscriptionState.SUBSCRIBED) {
+          this.addRow(parentMessageId);
+        } else {
+          // Unfollowing hard-deletes the row server-side — remove it,
+          // do not re-render it in an "unfollowed" style.
+          this.removeRow(parentMessageId);
+        }
+        console.log('change came from', source); // "local" or "sdk"
+      }
+    );
+  }
+
+  ngOnDestroy(): void {
+    this.subscription?.unsubscribe();
+  }
+
+  private addRow(id: number): void {}
+  private removeRow(id: number): void {}
+}
+```
+
+### Payload
+
+| Field | Type | Description |
+|:---|:---|:---|
+| `parentMessageId` | `number` | The root message ID of the thread whose state changed |
+| `state` | `CometChat.ThreadSubscriptionState` | `SUBSCRIBED`, `NOT_SUBSCRIBED`, or `UNKNOWN` |
+| `source` | `string` | `"local"` for an optimistic flip not yet acked; `"sdk"` for a confirmed write or a server-initiated change. Treat it as an open string — an unrecognised value must never break your subscriber |
+
+<Warning>
+  Unfollowing **hard-deletes** the thread-list row server-side. A list built on `ThreadsRequest` must remove the row, not re-render it.
+</Warning>
+
+---
+
+## Reading State Directly
+
+`ThreadSubscriptionService` is provided in root and can be injected wherever you need to read or toggle state yourself — for example, in a custom thread row.
+
+```typescript expandable
+import { Component, inject } from '@angular/core';
+import { ThreadSubscriptionService } from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-custom-thread-row',
+  standalone: true,
+  template: `
+    <button (click)="toggle()">
+      {{ isFollowing ? 'Unfollow' : 'Follow' }}
+    </button>
+  `,
+})
+export class CustomThreadRowComponent {
+  private readonly threads = inject(ThreadSubscriptionService);
+  parentMessageId!: number;
+
+  get isFollowing(): boolean {
+    return this.threads.isFollowing(this.parentMessageId);
+  }
+
+  toggle(): void {
+    this.threads.toggle(this.parentMessageId);
+  }
+}
+```
+
+| Method | Returns | Description |
+|:---|:---|:---|
+| `isSupported()` | `boolean` | Whether the installed Chat SDK exposes the thread API at all |
+| `getState(parentMessageId)` | `CometChat.ThreadSubscriptionState` | The state to render. Never throws and never blocks; an unknown thread reads `UNKNOWN` |
+| `isFollowing(parentMessageId)` | `boolean` | `true` only for `SUBSCRIBED`. `UNKNOWN` is deliberately not "following" |
+| `isUnavailable(parentMessageId)` | `boolean` | `true` once the server has said the thread is gone or off-limits |
+| `toggle(parentMessageId)` | `CometChat.ThreadSubscriptionState` | Flips the subscription and returns the state to show immediately |
+
+---
+
+## Behavior
+
+### Optimistic toggling
+
+The Chat SDK holds the authoritative state — an in-memory, per-login-session cache written only after the backend acks. Optimism lives in the UI Kit instead: the control flips instantly, the service holds the unacked value as an overlay, and the overlay is dropped — reverting to server truth — the moment the request settles either way.
+
+### Debounce and in-flight requests
+
+Rapid taps collapse into one request on a 400&nbsp;ms debounce, so the user's *last* intent is what reaches the server. At most one request per thread is on the wire at a time; a tap that lands mid-request is re-armed rather than dropped. An even number of taps lands back on the server's own value and sends nothing at all.
+
+### Auto-subscribe
+
+Replying to a thread auto-subscribes the user server-side. That arrives through the SDK's thread listener and is re-emitted on `ccThreadSubscriptionChanged` with `source: "sdk"`, so both surfaces update without a refetch.
+
+### Errors
+
+A failure reverts the flip and shows a toast. `ERR_MESSAGE_NO_ACCESS` and `ERR_MESSAGE_ID_NOT_FOUND` mean the thread is off-limits or deleted — retrying cannot help, so the thread is marked unavailable and the control is withdrawn rather than left as a button that always fails.
+
+### Sessions
+
+A login or logout ends the session: pending timers are cleared, and a response that lands afterwards carrying a stale session is dropped rather than written. One user's subscription state can never leak into the next session.
+
+---
+
+## Localization
+
+| Key | English (US) |
+|:---|:---|
+| `thread_mute` | Mute thread |
+| `thread_unmute` | Unmute thread |
+| `thread_followed_toast` | You'll be notified about new replies. |
+| `thread_unfollowed_toast` | You won't be notified about new replies in this thread. |
+| `thread_subscription_failed` | Couldn't update. Please try again. |
+| `thread_unavailable` | You no longer have access to this thread. |
+| `message_list_option_follow_thread` | Notify me about replies |
+| `message_list_option_unfollow_thread` | Stop reply notifications |
+
+Override any of these through [Localization](/ui-kit/angular/customization/localization).
+
+---
+
+## Accessibility
+
+- The header control is a `button` with `aria-pressed` reflecting the followed state
+- Its tooltip and accessible name are the **same string**, so a voice-control user can say what the tooltip showed them (WCAG 2.5.3)
+- Both states share one neutral icon color; the slash through the bell distinguishes them, so nothing rests on color alone
+- Toggling announces the **outcome** through a live region, not the button's label — the label names the next action, which reads backwards after the state has changed
+
+---
+
+## Related
+
+- [Threaded Messages](/ui-kit/angular/guides/threaded-messages) — building the thread view itself
+- [CometChatThreadHeader](/ui-kit/angular/components/cometchat-thread-header) — the header and its follow control
+- [CometChatMessageList](/ui-kit/angular/components/cometchat-message-list) — the action-sheet entry point
+- [Events](/ui-kit/angular/events#cometchatthreadevents) — the `ccThreadSubscriptionChanged` reference
+- [Global Configuration](/ui-kit/angular/customization/global-config) — where the feature gate lives
