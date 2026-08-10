@@ -1,0 +1,455 @@
+---
+title: "Saved Messages"
+description: "Display CometChat iOS UI Kit saved messages for the logged-in user across every conversation, with per-row unsave, source labels, and tap to open the chat."
+---
+
+`CometChatSavedMessages` is a full-screen list of the messages the logged-in user has saved, newest save first. Saves are **private to the user** and **span every conversation**, so each row is labelled with the chat it came from.
+
+<Accordion title="AI Integration Quick Reference">
+```json
+{
+  "component": "CometChatSavedMessages",
+  "package": "CometChatUIKitSwift",
+  "import": "import CometChatUIKitSwift\nimport CometChatSDK",
+  "description": "Full-screen, user-level list of saved messages spanning all conversations, newest save first",
+  "inherits": "CometChatListBase",
+  "primaryOutput": {
+    "callback": "onMessageClicked",
+    "type": "(BaseMessage) -> Void"
+  },
+  "props": {
+    "data": {
+      "requestBuilder": { "type": "MessagesRequest.MessageRequestBuilder", "note": "Must retain set(saved: true); takes no uid/guid" }
+    },
+    "callbacks": {
+      "onMessageClicked": "(BaseMessage) -> Void",
+      "onError": "(CometChatException) -> Void",
+      "onLoad": "([BaseMessage]) -> Void",
+      "onEmpty": "() -> Void",
+      "onBack": "() -> Void"
+    },
+    "visibility": {
+      "hideUnsaveOption": { "type": "Bool", "default": false }
+    },
+    "styling": {
+      "style": { "type": "SavedMessagesStyle" },
+      "dateStyle": { "type": "DateStyle" },
+      "avatarStyle": { "type": "AvatarStyle" }
+    },
+    "viewSlots": {
+      "titleView": "(BaseMessage?) -> UIView",
+      "subtitle": "(BaseMessage?) -> UIView",
+      "leadingView": "(BaseMessage?) -> UIView",
+      "trailingView": "(BaseMessage?) -> UIView",
+      "listItemView": "(BaseMessage?) -> UIView"
+    }
+  },
+  "events": ["onMessageSaved", "onMessageUnsaved", "ccMessageSaved"],
+  "sdkListeners": ["CometChatConnectionDelegate"],
+  "compositionExample": {
+    "description": "Opened from app chrome, not a conversation header, because saves are user-level",
+    "components": ["CometChatSavedMessages", "CometChatMessageList"],
+    "flow": "User opens Saved messages from the chats screen menu → taps a row → the source conversation opens"
+  }
+}
+```
+</Accordion>
+
+| Field | Value |
+|-------|-------|
+| Component | `CometChatSavedMessages` |
+| Package | `CometChatUIKitSwift` |
+| Inherits | `CometChatListBase` |
+
+---
+
+## Where It Fits
+
+<Note>
+This is a **user-level** screen, not a per-conversation one. It takes no `user` or `group` — it always shows the logged-in user's saves across every chat. Open it from your app's chrome (a tab, the chats-screen menu, a profile or settings entry), **not** from a conversation header.
+</Note>
+
+Contrast with [Pinned Messages](/ui-kit/ios/pinned-messages), which is scoped to one conversation and visible to everyone in it. Saves are private: only the saving user sees them, synced across that user's own devices.
+
+Pin and save are **off by default** — see the [Pin and Save Messages guide](/ui-kit/ios/guide-pin-save-message) to turn them on.
+
+This screen is read-only by design: opening it never marks anything as read, sends receipts, or changes the unread count.
+
+---
+
+## Minimal Render
+
+`CometChatSavedMessages` is a view controller with a no-argument initializer.
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+let savedVC = CometChatSavedMessages()
+navigationController?.pushViewController(savedVC, animated: true)
+```
+
+<Warning>
+If you push this screen from a tab that hides the navigation bar, set `hideNavigationBar = false` or the title and back button never appear.
+
+Do **not** also set `hideBackButton = false`. The component supplies its own back chevron as a left bar button item, so clearing that flag renders two back buttons side by side.
+</Warning>
+
+```swift lines
+let savedVC = CometChatSavedMessages()
+savedVC.hidesBottomBarWhenPushed = true
+savedVC.hideNavigationBar = false
+
+navigationController?.setNavigationBarHidden(false, animated: true)
+navigationController?.pushViewController(savedVC, animated: true)
+```
+
+---
+
+## Filtering
+
+The list is fetched with a `MessagesRequest.MessageRequestBuilder`. The default comes from `SavedMessagesBuilder`:
+
+```swift lines
+// The default builder used when you set nothing
+MessagesRequest.MessageRequestBuilder()
+    .set(limit: 100)
+    .set(saved: true)
+```
+
+Unlike the pinned builder there is no `uid` or `guid` to set — saved messages are a per-user collection spanning every conversation. The server caps saves at 100, so a limit of 100 fetches the entire list in one page.
+
+```swift lines
+// MARK: - Only saved text messages
+let requestBuilder = MessagesRequest.MessageRequestBuilder()
+    .set(limit: 100)
+    .set(saved: true)
+    .set(types: ["text"])
+
+let savedVC = CometChatSavedMessages()
+savedVC.set(requestBuilder: requestBuilder)
+```
+
+<Warning>
+A custom request builder **must keep `set(saved: true)`**. Without it the request returns every message the user can see and the screen lists them all as though they were saved.
+</Warning>
+
+---
+
+## Actions and Events
+
+### Callback Props
+
+#### onMessageClicked
+
+Fires when a row is tapped. Because a row can belong to any conversation, use it to open that message's own chat — see [Common Patterns](#common-patterns).
+
+```swift lines
+savedVC.set(onMessageClicked: { [weak self] message in
+    self?.openConversation(for: message)
+})
+```
+
+#### onError
+
+Fires when the fetch fails, and again when an unsave fails.
+
+```swift lines
+savedVC.set(onError: { error in
+    print("Saved messages error: \(error.errorCode)")
+})
+```
+
+#### onLoad
+
+Fires with the fetched messages each time the list reloads.
+
+```swift lines
+savedVC.set(onLoad: { messages in
+    print("Loaded \(messages.count) saved messages")
+})
+```
+
+#### onEmpty
+
+Fires when the fetch completes with nothing saved.
+
+#### onBack
+
+Inherited from `CometChatListBase`. The component ships a default that pops the navigation stack; set your own to replace it — useful when you also need to re-hide the navigation bar on the way out.
+
+```swift lines
+savedVC.set(onBack: { [weak self] in
+    self?.navigationController?.setNavigationBarHidden(true, animated: true)
+    self?.navigationController?.popViewController(animated: true)
+})
+```
+
+### Actions Reference
+
+| Action | Trigger | Default behavior |
+|--------|---------|------------------|
+| Row tap | User taps a saved message | Calls `onMessageClicked`; no default navigation |
+| Unsave | User swipes a row from the trailing edge | Unsaves the message, removes the row, shows a toast |
+| Back | User taps the back chevron | Pops the navigation stack |
+| Pull to refresh | User pulls the list down | Refetches the saved list |
+
+### Global UI Events
+
+| Event | Meaning |
+|-------|---------|
+| `ccMessageSaved` | The local user saved or unsaved a message. Read `message.savedAt` to tell which — non-zero means saved. |
+
+See [Events](/ui-kit/ios/events) for the full listener surface.
+
+---
+
+## Custom View Slots
+
+Each slot receives the row's `BaseMessage` and returns a view that replaces the default.
+
+### set(titleView:)
+
+Replaces the row title, which by default is the **source conversation** name rather than the sender.
+
+```swift lines
+savedVC.set(titleView: { message in
+    let label = UILabel()
+    label.text = message?.sender?.name ?? ""
+    return label
+})
+```
+
+### set(subtitle:)
+
+Replaces the message-preview line.
+
+### set(leadingView:)
+
+Replaces the leading slot, which holds the source conversation's avatar by default.
+
+### set(trailingView:)
+
+Replaces the trailing slot, which holds the timestamp by default.
+
+### set(listItemView:)
+
+Replaces the entire row.
+
+---
+
+## Styling
+
+### Style Hierarchy
+
+`SavedMessagesStyle` conforms to `ListBaseStyle` and `ListItemStyle`, so it carries the standard list properties plus two save-specific ones.
+
+### Global Level Styling
+
+```swift lines
+// MARK: - Apply global styling
+CometChatSavedMessages.style.backgroundColor = UIColor(hex: "#F76808")
+CometChatSavedMessages.style.unsaveActionBackgroundColor = UIColor(hex: "#D92D20")
+```
+
+### Instance Level Styling
+
+```swift lines
+// MARK: - Apply instance-level styling
+var customStyle = SavedMessagesStyle()
+customStyle.backgroundColor = UIColor(hex: "#F76808")
+customStyle.messageTypeImageTint = CometChatTheme.iconColorHighlight
+
+let savedVC = CometChatSavedMessages()
+savedVC.set(style: customStyle)
+```
+
+### Key Style Properties
+
+| Property | Description | Default |
+|----------|-------------|---------|
+| `messageTypeImageTint` | Tint of the message-type glyph leading the preview (photo, video, document). | `CometChatTheme.iconColorSecondary` |
+| `unsaveActionBackgroundColor` | Background of the unsave swipe action. | `CometChatTheme.errorColor` |
+| `backgroundColor` | Screen background. | `CometChatTheme.backgroundColor01` |
+| `titleColor` | Navigation title color. | `CometChatTheme.textColorPrimary` |
+| `listItemTitleTextColor` | Row title color. | `CometChatTheme.textColorPrimary` |
+| `listItemTitleFont` | Row title font. | `CometChatTypography.Heading4.medium` |
+| `listItemSubTitleTextColor` | Row preview color. | `CometChatTheme.textColorSecondary` |
+| `listItemSubTitleFont` | Row preview font. | `CometChatTypography.Body.regular` |
+| `emptyTitleTextColor` | Empty-state title color. | `CometChatTheme.textColorPrimary` |
+| `errorTitleTextColor` | Error-state title color. | `CometChatTheme.textColorPrimary` |
+
+### Customization Matrix
+
+| What to change | Where | Property/API |
+|----------------|-------|--------------|
+| Unsave swipe color | Style | `style.unsaveActionBackgroundColor` |
+| Hide unsave entirely | Prop | `set(hideUnsaveOption: true)` |
+| Media glyph tint | Style | `style.messageTypeImageTint` |
+| Row layout | View slot | `set(listItemView:)` |
+| Which messages appear | Filter | `set(requestBuilder:)` |
+| Row tap behavior | Callback | `set(onMessageClicked:)` |
+
+---
+
+## Props
+
+All props are optional. Sorted alphabetically.
+
+### avatarStyle
+
+Styling for the row avatar, which shows the source conversation.
+
+| | |
+|---|---|
+| Type | `AvatarStyle` |
+| Default | `CometChatAvatar.style` |
+
+### dateStyle
+
+Styling for the row timestamp.
+
+| | |
+|---|---|
+| Type | `DateStyle` |
+| Default | `CometChatDate.style`, flattened to bare text |
+
+### dateTimeFormatter
+
+Custom timestamp formatting.
+
+| | |
+|---|---|
+| Type | `CometChatDateTimeFormatter` |
+| Default | `CometChatUIKit.dateTimeFormatter` |
+
+### hideUnsaveOption
+
+Hides the per-row unsave swipe action.
+
+| | |
+|---|---|
+| Type | `Bool` |
+| Default | `false` |
+
+```swift lines
+savedVC.set(hideUnsaveOption: true)
+```
+
+### style
+
+The component's style object.
+
+| | |
+|---|---|
+| Type | `SavedMessagesStyle` |
+| Default | `SavedMessagesStyle()` |
+
+---
+
+## Methods
+
+### set(requestBuilder:)
+
+Replaces the request used to fetch the list. Must retain `set(saved: true)`.
+
+### set(textFormatters:)
+
+Applies custom text formatters to the message previews.
+
+```swift lines
+savedVC.set(textFormatters: [myCustomTextFormatter])
+```
+
+<Note>
+`SavedMessagesViewModel` is public in name only — every member except `setRequestBuilder(requestBuilder:)` is internal. Customize through the props and view slots above rather than the view model.
+</Note>
+
+---
+
+## Common Patterns
+
+### Open from the chats screen menu
+
+Saves are user-level, so the entry point belongs in app chrome rather than a conversation.
+
+```swift lines
+private func openSavedMessages() {
+    let savedVC = CometChatSavedMessages()
+    savedVC.hidesBottomBarWhenPushed = true
+
+    // The component supplies its own back chevron, so leave hideBackButton alone.
+    savedVC.hideNavigationBar = false
+
+    savedVC.set(onBack: { [weak self] in
+        self?.navigationController?.setNavigationBarHidden(true, animated: true)
+        self?.navigationController?.popViewController(animated: true)
+    })
+
+    savedVC.set(onMessageClicked: { [weak self] message in
+        self?.openConversation(for: message)
+    })
+
+    // The chats screen hides the bar; unhide it before pushing.
+    navigationController?.setNavigationBarHidden(false, animated: true)
+    navigationController?.pushViewController(savedVC, animated: true)
+}
+```
+
+### Open the conversation a row came from
+
+A saved row can belong to any chat, so resolve the conversation from the message before navigating. For a group, look it up by `receiverUid`. For one-to-one, a **received** message is addressed to the logged-in user, so the conversation is with its sender.
+
+```swift lines
+private func openConversation(for message: BaseMessage) {
+    let openMessages: (CometChatSDK.User?, Group?) -> Void = { [weak self] user, group in
+        guard let self = self, user != nil || group != nil else { return }
+        let messages = MessagesVC()
+        messages.user = user
+        messages.group = group
+        self.navigationController?.pushViewController(messages, animated: true)
+    }
+
+    if message.receiverType == .group {
+        CometChat.getGroup(GUID: message.receiverUid) { group in
+            DispatchQueue.main.async { openMessages(nil, group) }
+        } onError: { _ in }
+    } else {
+        // A received 1:1 message is addressed to the logged-in user, so the
+        // conversation is with its sender; one they sent is addressed to the other party.
+        let isReceived = message.receiverUid == CometChat.getLoggedInUser()?.uid
+        let uid = isReceived ? (message.sender?.uid ?? message.receiverUid) : message.receiverUid
+
+        CometChat.getUser(UID: uid) { user in
+            DispatchQueue.main.async { openMessages(user, nil) }
+        } onError: { _ in }
+    }
+}
+```
+
+### Custom empty state
+
+```swift lines
+let savedVC = CometChatSavedMessages()
+savedVC.emptyStateTitleText = "Nothing saved yet"
+savedVC.emptyStateSubTitleText = "Save messages to read them later."
+```
+
+---
+
+## Related Components
+
+- [Pinned Messages](/ui-kit/ios/pinned-messages) - The per-conversation pinned messages screen
+- [Message List](/ui-kit/ios/message-list) - Where messages are saved and unsaved
+- [Conversations](/ui-kit/ios/conversations) - The chats screen that hosts the entry point
+- [Events](/ui-kit/ios/events) - Pin and save event callbacks
+
+<CardGroup cols={2}>
+  <Card title="Pin and Save Messages Guide" icon="bookmark" href="/ui-kit/ios/guide-pin-save-message">
+    End-to-end setup for pinning and saving
+  </Card>
+  <Card title="Chat SDK: Pin and Save" icon="code" href="/sdk/ios/pin-save-message">
+    The underlying SDK methods and message fields
+  </Card>
+</CardGroup>
