@@ -152,7 +152,7 @@ The above snippet will return messages between the logged in user and `cometchat
 
 ## Thread Subscriptions
 
-Subscribing to (following) a thread lets the logged-in user be notified about new replies in that thread. Subscriptions are automatic where it matters — replying to a thread or being @-mentioned in one subscribes the user — and can also be toggled explicitly.
+Subscribing to (following) a thread lets the logged-in user be notified about new replies in that thread. The SDK exposes the server's answer on the message and two calls to change it — subscription state lives on the message, not in the SDK.
 
 ### Subscribe to a Thread
 
@@ -173,7 +173,7 @@ CometChat.subscribeToThread(parentMessageId, onSuccess: (String response) {
 </Tab>
 </Tabs>
 
-The call is idempotent — subscribing to an already-followed thread succeeds and is not an error.
+The call is idempotent — subscribing to an already-followed thread succeeds and is not an error. **The resolved call is the acknowledgement**: there is no follow-up event.
 
 ### Unsubscribe from a Thread
 
@@ -196,20 +196,18 @@ CometChat.unsubscribeFromThread(parentMessageId, onSuccess: (String response) {
 
 <Note>
 
-Unfollowing is not sticky: replying to the thread again, or being @-mentioned in it, re-subscribes the user.
+Unfollowing is not sticky: replying to the thread again, or being @-mentioned in it, re-subscribes the user. Do not promise otherwise in UI copy. Unsubscribing also hard-deletes the subscription server-side — if you are holding a fetched thread list, remove the row locally when the call resolves.
 
 </Note>
 
-### Check the Subscription State
+### Read the Subscription State
 
-You can read the logged-in user's cached subscription state for any thread using the synchronous `getThreadSubscriptionState()` method. It is safe to call at any time — before login or on an empty cache it returns `ThreadSubscriptionState.unknown` and never throws. Render `unknown` as the un-followed affordance; an unnecessary subscribe is harmless because the endpoint is idempotent.
+Subscription state lives **on the message**. Every message fetch opts in with `withThreadSubscribed=true` automatically, and the server returns the flag on the message payload — the SDK normalises it and exposes it as the `threadSubscribed` boolean on any fetched message. The flag is per-viewer: the same message yields different values for different users.
 
 <Tabs>
 <Tab title="Dart">
 ```dart
-ThreadSubscriptionState state = CometChat.getThreadSubscriptionState(103);
-
-if (state == ThreadSubscriptionState.subscribed) {
+if (message.threadSubscribed) {
   debugPrint("Following this thread");
 }
 ```
@@ -217,22 +215,29 @@ if (state == ThreadSubscriptionState.subscribed) {
 </Tab>
 </Tabs>
 
-When fetching a single message with `getMessageDetails()`, the returned message's `threadSubscribed` field also reflects the logged-in user's subscription state for its thread.
+Two rules to internalise:
 
-### Real-Time Subscription Events
+1. The flag is only populated on responses to requests that **asked** for it. A message delivered over the socket carries no flag and therefore reads `false` — meaning "the server did not tell me", not "the user is unsubscribed".
+2. **A message's author is subscribed to its thread by default.** A fetched message the logged-in user sent reading `false` is therefore not silence — it is an explicit unsubscribe, and nothing should override it.
 
-Subscription changes are delivered through the `ThreadListener` class. Register it using the `addThreadListener()` method and remove it with `removeThreadListener()` in `dispose()`. The `onThreadSubscriptionChanged()` callback receives a `ThreadSubscriptionEvent` carrying the `parentMessageId` and the new `subscriptionState`.
+Because subscribing is idempotent, rendering an un-told `false` as the un-followed affordance is safe — an unnecessary subscribe is harmless.
+
+### Reacting to Replies
+
+A thread reply is an ordinary message with `parentMessageId` set, delivered through the standard `MessageListener` alongside every other message — there is no thread-specific event channel. The same listener also delivers `onMessageEdited` and `onMessageDeleted` for replies, which a replies-only channel would miss.
 
 <Tabs>
 <Tab title="Dart">
 ```dart
-class Class_Name with ThreadListener {
+class Class_Name with MessageListener {
 
-  //CometChat.addThreadListener("listenerId", this);
+  //CometChat.addMessageListener("listenerId", this);
 
   @override
-  void onThreadSubscriptionChanged(ThreadSubscriptionEvent event) {
-    debugPrint("Thread ${event.parentMessageId} is now ${event.subscriptionState}");
+  void onTextMessageReceived(TextMessage textMessage) {
+    if (textMessage.parentMessageId != 0) {
+      debugPrint("A reply landed in thread ${textMessage.parentMessageId}");
+    }
   }
 }
 ```
@@ -240,9 +245,11 @@ class Class_Name with ThreadListener {
 </Tab>
 </Tabs>
 
+Your own replies do not arrive on a listener — update your UI from the send call's success callback.
+
 ### Fetch Participated Threads
 
-You can fetch the threads the logged-in user participates in by using the `ThreadsRequest` class. The `ThreadsRequestBuilder` builds the request using functions such as `setLimit()` and `setParticipatedByMe()`; once you have the `ThreadsRequest` object, call `fetchNext()` to get the next set of threads.
+You can fetch the threads the logged-in user participates in by using the `ThreadsRequest` class. The `ThreadsRequestBuilder` builds the request using functions such as `setLimit()` and `setParticipatedByMe()`; once you have the `ThreadsRequest` object, call `fetchNext()` to get the next set of threads. Presence in this list *is* a subscription — every row is subscribed.
 
 <Tabs>
 <Tab title="Dart">
@@ -257,9 +264,3 @@ debugPrint("Fetched ${threads.length} threads");
 
 </Tab>
 </Tabs>
-
-<Note>
-
-Unsubscribing removes the thread from the participated-threads list server-side — if you are holding a fetched list, remove the row locally as well.
-
-</Note>
