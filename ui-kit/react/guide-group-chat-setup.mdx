@@ -1,12 +1,12 @@
 ---
 title: "Group Chat Setup"
 sidebarTitle: "Group Chat Setup"
-description: "Create and join group conversations with a full messaging interface using CometChat UI Kit components."
+description: "Create public, password-protected, and private groups; add, remove, and manage members with role-based permissions; join, leave, and transfer ownership using the CometChat UI Kit."
 ---
 
 ## Goal
 
-By the end of this guide you will have a working group chat interface where users can create a new group, add members, and exchange messages in real time using the CometChat compound components.
+By the end of this guide you will have a working group chat where users can create a group of any type (public, password-protected, or private), add and remove members with role-based permissions, join or leave a group, transfer ownership, and exchange messages in real time using the CometChat components.
 
 ## Prerequisites
 
@@ -19,12 +19,17 @@ By the end of this guide you will have a working group chat interface where user
 | Component / API | Purpose |
 |:----------------|:--------|
 | `CometChatConversations` | Lists existing conversations including groups |
+| `CometChatGroupMembers` | Built-in member list with role-gated kick / ban / scope-change actions |
 | `CometChatMessageHeader` | Displays group name, avatar, and member count |
 | `CometChatMessageList` | Renders group messages in real time |
 | `CometChatMessageComposer` | Text input for sending messages to the group |
 | `CometChat.createGroup()` | SDK method to create a new group |
-| `CometChat.joinGroup()` | SDK method to join an existing group |
+| `CometChat.joinGroup()` | SDK method to join a public or password-protected group |
 | `CometChat.addMembersToGroup()` | SDK method to add members |
+| `CometChat.kickGroupMember()` / `banGroupMember()` | SDK methods to remove or ban a member |
+| `CometChat.updateGroupMemberScope()` | SDK method to change a member's role |
+| `CometChat.leaveGroup()` | SDK method to leave a group |
+| `CometChat.transferGroupOwnership()` | SDK method to hand ownership to another member |
 
 ## Step 1: Set up the app shell
 
@@ -47,16 +52,29 @@ function App() {
 export default App;
 ```
 
-## Step 2: Create a new group
+## Step 2: Create a group
 
-Use `CometChat.createGroup()` to programmatically create a group. You need a unique GUID, a name, and a group type (public, private, or password-protected).
+A group has one of three types, and the type decides how other users can get in. Choose the right one up front — it changes both the create call and how (or whether) users can join.
+
+| Type | Constant | How users get in |
+| --- | --- | --- |
+| **Public** | `CometChat.GROUP_TYPE.PUBLIC` | Anyone can join, no password. |
+| **Password-protected** | `CometChat.GROUP_TYPE.PASSWORD` | Users must supply the correct password to join. |
+| **Private** | `CometChat.GROUP_TYPE.PRIVATE` | **Add-only.** Users cannot join — not even with a password. An admin or moderator must add them. |
+
+Create a group with `CometChat.createGroup()`. The `CometChat.Group` constructor takes a **fourth `password` argument** — it is required for password-protected groups and ignored for the other two types.
 
 ```tsx
-async function createGroup() {
+async function createGroup(
+  name: string,
+  type: string,
+  password = "" // only used when type is PASSWORD
+) {
   const group = new CometChat.Group(
     "group-" + Date.now(), // unique GUID
-    "My Team Chat",        // group name
-    CometChat.GROUP_TYPE.PUBLIC // public, private, or password
+    name,
+    type,                  // PUBLIC | PASSWORD | PRIVATE
+    password
   );
 
   try {
@@ -69,13 +87,17 @@ async function createGroup() {
 }
 ```
 
+<Warning>
+For a password-protected group you **must** pass the password as the fourth argument. `new CometChat.Group(guid, name, CometChat.GROUP_TYPE.PASSWORD)` with no password creates a group nobody can join.
+</Warning>
+
 <Note>
 When a group is created through the UI Kit's built-in flow, it publishes the `ui:group/created` event on the [Event System](/ui-kit/react/event-system#user--group-actions). Subscribe with `useCometChatEvents` if other components need to react to new groups being created.
 </Note>
 
-## Step 3: Add members to the group
+## Step 3: Add members
 
-After creating a group, add members using `CometChat.addMembersToGroup()`. Each member needs a UID and a scope (admin, moderator, or participant).
+The creator becomes the group **owner** (with admin privileges). Add members with `CometChat.addMembersToGroup()` — each member is a `CometChat.GroupMember` with a UID and a scope (`ADMIN`, `MODERATOR`, or `PARTICIPANT`).
 
 ```tsx
 async function addMembers(guid: string, memberUids: string[]) {
@@ -93,23 +115,121 @@ async function addMembers(guid: string, memberUids: string[]) {
 }
 ```
 
-## Step 4: Join an existing group
+<Note>
+Adding members requires an **admin** or **moderator** scope in the target group — a **participant** cannot add members. Assign `PARTICIPANT` by default and only grant `ADMIN`/`MODERATOR` when a member needs management rights. For **private** groups this is the *only* way in — there is no join. To let a user pick who to add, render [`CometChatUsers`](/ui-kit/react/components/users) in selection mode and pass the chosen UIDs to `addMembersToGroup()`.
+</Note>
 
-For public groups, users can join without an invite using `CometChat.joinGroup()`.
+## Step 4: Join a group
+
+How a user joins depends on the group type:
 
 ```tsx
-async function joinGroup(guid: string) {
+async function joinGroup(group: CometChat.Group, password = "") {
+  const guid = group.getGuid();
+  const type = group.getType();
+
+  // Private groups cannot be joined — the user must be added (Step 3).
+  if (type === CometChat.GROUP_TYPE.PRIVATE) {
+    console.warn("Private groups are add-only; joining is not allowed.");
+    return;
+  }
+
   try {
-    const group = await CometChat.joinGroup(guid, CometChat.GROUP_TYPE.PUBLIC);
-    console.log("Joined group:", group.getName());
-    return group;
+    // Pass the password only for password-protected groups; "" for public.
+    const joined = await CometChat.joinGroup(guid, type, password);
+    console.log("Joined group:", joined.getName());
+    return joined;
   } catch (error) {
+    // A wrong password for a PASSWORD group rejects here.
     console.error("Failed to join group:", error);
   }
 }
 ```
 
-## Step 5: Display conversations and select a group
+<Note>
+Only **public** and **password-protected** groups can be joined. A **private** group is add-only — calling `joinGroup()` on it fails; add the user via [Step 3](#step-3-add-members) instead. The built-in [`CometChatGroups`](/ui-kit/react/components/groups) list surfaces a password prompt for password-protected groups automatically.
+</Note>
+
+## Step 5: Manage members — remove, ban, and change roles
+
+The `CometChatGroupMembers` component renders the member list with built-in **kick**, **ban**, and **change-scope** actions. It shows or hides those actions based on the **logged-in user's role**, so you don't have to gate them yourself.
+
+```tsx
+import { CometChatGroupMembers } from "@cometchat/chat-uikit-react";
+
+function GroupMembersPanel({ group }: { group: CometChat.Group }) {
+  return (
+    <CometChatGroupMembers
+      group={group}
+      onBack={() => {/* close the panel */}}
+    />
+  );
+}
+```
+
+Group actions are **scope-based** — a participant can never perform them:
+
+| Action | Participant | Moderator | Admin / Owner |
+| --- | :---: | :---: | :---: |
+| Send & receive messages | ✅ | ✅ | ✅ |
+| Add members | ❌ | ✅ | ✅ |
+| Kick / ban **participants** | ❌ | ✅ | ✅ |
+| Kick / ban admins & moderators | ❌ | ❌ | ✅ |
+| Change a member's scope | ❌ | participants only | ✅ |
+| Update / delete the group | ❌ | update only | ✅ |
+| Transfer ownership | ❌ | ❌ | Owner only |
+
+If you build your own controls instead of using the component's menu, the SDK methods are:
+
+```tsx
+// Remove a member from the group
+await CometChat.kickGroupMember(guid, uid);
+
+// Ban a member (kicked and blocked from rejoining)
+await CometChat.banGroupMember(guid, uid);
+
+// Promote / demote a member
+await CometChat.updateGroupMemberScope(
+  guid,
+  uid,
+  CometChat.GROUP_MEMBER_SCOPE.MODERATOR
+);
+```
+
+<Note>
+Calling these as a participant — or a moderator acting on an admin — rejects with a permission error. Let the acting user's scope drive which controls you render. The component already does this for its default kick/ban/scope menu.
+</Note>
+
+## Step 6: Leave a group and transfer ownership
+
+Any member can leave with `CometChat.leaveGroup()` — **except the owner**. An owner must hand ownership to another member with `CometChat.transferGroupOwnership()` *first*; leaving before transferring rejects with an error.
+
+```tsx
+async function leaveGroup(group: CometChat.Group, loggedInUid: string) {
+  const guid = group.getGuid();
+  const isOwner = group.getOwner() === loggedInUid;
+
+  try {
+    if (isOwner) {
+      // Owners cannot leave until ownership is transferred.
+      const newOwnerUid = await pickAnotherMember(guid); // your UI: choose a member
+      if (!newOwnerUid) return; // no one to hand off to — block the leave
+      await CometChat.transferGroupOwnership(guid, newOwnerUid);
+    }
+
+    await CometChat.leaveGroup(guid);
+    console.log("Left group:", group.getName());
+  } catch (error) {
+    console.error("Failed to leave group:", error);
+  }
+}
+```
+
+<Warning>
+Wiring "Leave Group" straight to `leaveGroup()` throws for the owner. Detect the owner (`group.getOwner() === loggedInUser.getUid()`), show an **ownership-transfer** step (a member picker — `CometChatGroupMembers` in selection mode works well), call `transferGroupOwnership()`, and only then `leaveGroup()`. See the SDK [Transfer Group Ownership](/sdk/javascript/transfer-group-ownership) and [Leave Group](/sdk/javascript/leave-group) references.
+</Warning>
+
+## Step 7: Display conversations and select a group
 
 Use `CometChatConversations` to show the user's conversations. When a group conversation is selected, pass the group object to the message components.
 
@@ -139,7 +259,7 @@ function GroupChat() {
 }
 ```
 
-## Step 6: Render the group message view
+## Step 8: Render the group message view
 
 Combine `CometChatMessageList` and `CometChatMessageComposer` to display messages and allow sending within the selected group.
 
@@ -165,9 +285,9 @@ function GroupMessageView({ group }: { group: CometChat.Group }) {
 }
 ```
 
-## Step 7: Add a create-group form
+## Step 9: Add a create-group form
 
-Provide a simple UI for users to create groups on the fly. Wire it to the `createGroup` function from Step 2.
+Provide a UI for users to create groups on the fly. Show a password field only when the selected type is password-protected, and pass it through to `createGroup` from Step 2.
 
 ```tsx
 import { useState } from "react";
@@ -176,21 +296,27 @@ import { CometChat } from "@cometchat/chat-sdk-javascript";
 function CreateGroupForm({ onCreate }: { onCreate: (group: CometChat.Group) => void }) {
   const [name, setName] = useState("");
   const [type, setType] = useState<string>(CometChat.GROUP_TYPE.PUBLIC);
+  const [password, setPassword] = useState("");
+
+  const isPasswordType = type === CometChat.GROUP_TYPE.PASSWORD;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (isPasswordType && !password) return; // password is required for this type
 
     const group = new CometChat.Group(
       "group-" + Date.now(),
       name.trim(),
-      type as typeof CometChat.GROUP_TYPE.PUBLIC
+      type,
+      isPasswordType ? password : ""
     );
 
     try {
       const createdGroup = await CometChat.createGroup(group);
       onCreate(createdGroup);
       setName("");
+      setPassword("");
     } catch (error) {
       console.error("Group creation failed:", error);
     }
@@ -210,9 +336,18 @@ function CreateGroupForm({ onCreate }: { onCreate: (group: CometChat.Group) => v
         style={{ width: "100%", marginBottom: "8px", padding: "8px" }}
       >
         <option value={CometChat.GROUP_TYPE.PUBLIC}>Public</option>
-        <option value={CometChat.GROUP_TYPE.PRIVATE}>Private</option>
+        <option value={CometChat.GROUP_TYPE.PRIVATE}>Private (add-only)</option>
         <option value={CometChat.GROUP_TYPE.PASSWORD}>Password Protected</option>
       </select>
+      {isPasswordType && (
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Group password"
+          style={{ width: "100%", marginBottom: "8px", padding: "8px" }}
+        />
+      )}
       <button type="submit" style={{ width: "100%", padding: "8px" }}>
         Create Group
       </button>
@@ -237,21 +372,27 @@ import {
 function CreateGroupForm({ onCreate }: { onCreate: (group: CometChat.Group) => void }) {
   const [name, setName] = useState("");
   const [type, setType] = useState<string>(CometChat.GROUP_TYPE.PUBLIC);
+  const [password, setPassword] = useState("");
+
+  const isPasswordType = type === CometChat.GROUP_TYPE.PASSWORD;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (isPasswordType && !password) return;
 
     const group = new CometChat.Group(
       "group-" + Date.now(),
       name.trim(),
-      type as typeof CometChat.GROUP_TYPE.PUBLIC
+      type,
+      isPasswordType ? password : ""
     );
 
     try {
       const createdGroup = await CometChat.createGroup(group);
       onCreate(createdGroup);
       setName("");
+      setPassword("");
     } catch (error) {
       console.error("Group creation failed:", error);
     }
@@ -271,9 +412,18 @@ function CreateGroupForm({ onCreate }: { onCreate: (group: CometChat.Group) => v
         style={{ width: "100%", marginBottom: "8px", padding: "8px" }}
       >
         <option value={CometChat.GROUP_TYPE.PUBLIC}>Public</option>
-        <option value={CometChat.GROUP_TYPE.PRIVATE}>Private</option>
+        <option value={CometChat.GROUP_TYPE.PRIVATE}>Private (add-only)</option>
         <option value={CometChat.GROUP_TYPE.PASSWORD}>Password Protected</option>
       </select>
+      {isPasswordType && (
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Group password"
+          style={{ width: "100%", marginBottom: "8px", padding: "8px" }}
+        />
+      )}
       <button type="submit" style={{ width: "100%", padding: "8px" }}>
         Create Group
       </button>
@@ -357,7 +507,8 @@ export default App;
 ## Next Steps
 
 - [Groups](/ui-kit/react/components/groups) — browse and join existing groups
-- [Group Members](/ui-kit/react/components/group-members) — manage group membership
+- [Group Members](/ui-kit/react/components/group-members) — manage group membership with role-based actions
+- [Kick / Ban Members](/sdk/javascript/group-kick-ban-members) · [Change Member Scope](/sdk/javascript/group-change-member-scope) · [Transfer Ownership](/sdk/javascript/transfer-group-ownership) — SDK references
 - [Message Header](/ui-kit/react/components/message-header) — customize the group header
 - [Event System](/ui-kit/react/event-system#user--group-actions) — react to `ui:group/created` and other group action events
 - [CometChatProvider](/ui-kit/react/cometchat-provider) — configure the root provider
