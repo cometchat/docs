@@ -1,0 +1,349 @@
+---
+title: "Thread Subscription"
+description: "Subscribe and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat JavaScript SDK."
+---
+
+Thread subscription gives users control over thread noise. A user can **subscribe** to a message thread to be notified of future replies, or **unsubscribe** to mute it.
+
+The server subscribes a user to a thread automatically when they start it, reply in it, or are @-mentioned in it — and they can explicitly subscribe to any parent message, even one that has no replies yet.
+
+<Note>
+  Thread subscription builds on [Threaded
+  Messages](/sdk/javascript/threaded-messages). A thread is identified by the ID
+  of its **parent message** — there is no separate thread ID.
+</Note>
+
+## How state works
+
+The SDK keeps **no subscription state of its own**. There is no cache and no listener to reconcile:
+
+- Every message fetch asks the server for the flag, and it arrives on the message — read it with `message.isThreadSubscribed()`.
+- `subscribeToThread()` and `unsubscribeFromThread()` resolve when the server has accepted the change. The resolved promise **is** the acknowledgement.
+
+Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
+
+## Subscribe to a Thread
+
+Use `subscribeToThread()` with the ID of the thread's parent message. The call is **idempotent** — subscribing to a thread the user already follows succeeds silently. Subscribing to a message with zero replies is allowed; the user is notified when the first reply arrives.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let parentMessageId: number = 100;
+
+    CometChat.subscribeToThread(parentMessageId).then(
+      (response: string) => {
+        // The server has accepted it — flip your toggle here.
+        console.log("Subscribed to thread:", response);
+      },
+      (error: CometChat.CometChatException) => {
+        console.log("Failed to subscribe:", error);
+      }
+    );
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let parentMessageId = 100;
+
+    CometChat.subscribeToThread(parentMessageId).then(
+      (response) => {
+        // The server has accepted it — flip your toggle here.
+        console.log("Subscribed to thread:", response);
+      },
+      (error) => {
+        console.log("Failed to subscribe:", error);
+      }
+    );
+    ```
+  </Tab>
+</Tabs>
+
+## Unsubscribe from a Thread
+
+Use `unsubscribeFromThread()`. This is idempotent too — unsubscribing from a thread the user does not follow succeeds silently.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    CometChat.unsubscribeFromThread(100).then(
+      (response: string) => {
+        console.log("Unsubscribed from thread:", response);
+      },
+      (error: CometChat.CometChatException) => {
+        console.log("Failed to unsubscribe:", error);
+      }
+    );
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.unsubscribeFromThread(100).then(
+      (response) => {
+        console.log("Unsubscribed from thread:", response);
+      },
+      (error) => {
+        console.log("Failed to unsubscribe:", error);
+      }
+    );
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Unsubscribing is **not sticky**. If the user replies in the thread again, or is
+  @-mentioned in it, the server re-subscribes them. Do not promise users that they
+  will never hear about the thread again.
+</Warning>
+
+Unsubscribing hard-deletes the subscription server-side, so a thread you are showing in a "following" list should be removed from that list when the call resolves.
+
+## Read the Subscription State
+
+The state rides the **parent message**. Read it with `isThreadSubscribed()`:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    if (parentMessage.isThreadSubscribed()) {
+      // Show the "Unfollow" affordance
+    } else {
+      // Show the "Follow" affordance
+    }
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    if (parentMessage.isThreadSubscribed()) {
+      // Show the "Unfollow" affordance
+    } else {
+      // Show the "Follow" affordance
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Every message fetch the SDK makes asks the server for this flag, so any message you obtained from `MessagesRequest` or `getMessageDetails()` carries it.
+
+<Note>
+  A message delivered over the **socket** carries no flag and therefore reads
+  `false`. That is not a claim that the user is unsubscribed — it means nobody
+  asked. When you need certainty for a thread you have not fetched (a deep link,
+  for instance), fetch the parent message with `CometChat.getMessageDetails()` and
+  read the flag off the result.
+</Note>
+
+### You are subscribed to your own messages
+
+Sending a message subscribes you to the thread it may later grow — there is nothing to call. The message comes back with `threadSubscribed: true`, both in the send response and on later fetches, and **only for you**: the flag is per-viewer, so the same message reads `false` for everybody else until they subscribe themselves.
+
+That default is what makes the flag meaningful on your own messages. Since it starts out `true`, a `false` on a message **you sent** — read from a fetch, not the socket — is not silence. It means you unsubscribed, and nothing should quietly put you back.
+
+This only holds for a message you sent and obtained from a fetch. On anyone else's message, or on anything socket-delivered, `false` still just means the server was not asked.
+
+### Keeping your own copies in sync
+
+The same thread can be represented by several message objects at once — a row in the message list, the header of an open thread view, an entry in a thread inbox. Because the SDK caches nothing, use `setThreadSubscribed()` to align the copies you hold once you know the answer:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    await CometChat.subscribeToThread(100);
+
+    // The server accepted it — bring the objects you are rendering into line.
+    parentMessage.setThreadSubscribed(true);
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.subscribeToThread(100).then(() => {
+      // The server accepted it — bring the objects you are rendering into line.
+      parentMessage.setThreadSubscribed(true);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  `setThreadSubscribed()` is **local only** — it changes the object in memory and
+  sends nothing to the server. Use `subscribeToThread()` /
+  `unsubscribeFromThread()` to change the actual subscription.
+</Warning>
+
+## Reacting to Replies
+
+A thread reply is an **ordinary message** with `parentMessageId` set, delivered through the standard `MessageListener` like any other message. There is no separate thread listener.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    CometChat.addMessageListener(
+      "UNIQUE_LISTENER_ID",
+      new CometChat.MessageListener({
+        onTextMessageReceived: (message: CometChat.TextMessage) => {
+          const parentMessageId = message.getParentMessageId();
+          if (parentMessageId) {
+            // A reply landed in a thread — bump your thread row here.
+          }
+        },
+      })
+    );
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.addMessageListener(
+      "UNIQUE_LISTENER_ID",
+      new CometChat.MessageListener({
+        onTextMessageReceived: (message) => {
+          const parentMessageId = message.getParentMessageId();
+          if (parentMessageId) {
+            // A reply landed in a thread — bump your thread row here.
+          }
+        },
+      })
+    );
+    ```
+  </Tab>
+</Tabs>
+
+Using `MessageListener` also gets you `onMessageEdited` and `onMessageDeleted` for replies, which a thread-only channel would not.
+
+Your own replies do not arrive on a listener — bump your thread row from the `sendMessage()` promise instead.
+
+## Fetch the Threads a User Participates In
+
+Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let threadsRequest: CometChat.ThreadsRequest =
+      new CometChat.ThreadsRequestBuilder()
+        .setParticipatedByMe(true)
+        .setLimit(30)
+        .build();
+
+    threadsRequest.fetchNext().then(
+      (threads: CometChat.MessageThread[]) => {
+        console.log("Threads fetched:", threads);
+      },
+      (error: CometChat.CometChatException) => {
+        console.log("Failed to fetch threads:", error);
+      }
+    );
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let threadsRequest = new CometChat.ThreadsRequestBuilder()
+      .setParticipatedByMe(true)
+      .setLimit(30)
+      .build();
+
+    threadsRequest.fetchNext().then(
+      (threads) => {
+        console.log("Threads fetched:", threads);
+      },
+      (error) => {
+        console.log("Failed to fetch threads:", error);
+      }
+    );
+    ```
+  </Tab>
+</Tabs>
+
+Call `fetchNext()` repeatedly on the same object to page through the list. Scope the list to one conversation with `setUid()` or `setGuid()` — the two are mutually exclusive.
+
+| Method                      | Description                                                         |
+| --------------------------- | ------------------------------------------------------------------- |
+| `setLimit(number)`          | Threads per page. Accepts 1–1000.                                     |
+| `setParticipatedByMe(bool)` | Restrict the list to threads the logged-in user participates in.      |
+| `setUid(string)`            | Only threads in the one-on-one conversation with this user.           |
+| `setGuid(string)`           | Only threads in this group.                                           |
+
+### The MessageThread Model
+
+Each row is a `MessageThread`:
+
+| Method                    | Returns                                                           |
+| ------------------------- | ----------------------------------------------------------------- |
+| `getParentMessageId()`    | The thread's identifier — the parent message's ID.                 |
+| `getParentMessage()`      | The parent `BaseMessage`, or `null` if it could not be parsed.     |
+| `getReplyCount()`         | Number of replies in the thread.                                   |
+| `getLastReply()`          | The most recent reply, or `null`.                                  |
+| `getUnreadReplyCount()`   | Unread replies, or `null` when the server did not send a count.    |
+| `isSubscribed()`          | Whether the user follows this thread. Always `true` for list rows. |
+| `getUpdatedAt()`          | When the thread last changed.                                      |
+| `getConversationId()`     | The conversation the thread belongs to.                            |
+| `getReceiverType()`       | `"user"` or `"group"`.                                             |
+| `getReceiverId()`         | The peer's UID or the group's GUID.                                |
+
+<Note>
+  Sort a thread inbox on `getLastReply()?.getSentAt()` falling back to the parent
+  message's `sentAt` — a thread with no replies has no last reply.
+</Note>
+
+## Error Handling
+
+Both `subscribeToThread()` and `unsubscribeFromThread()` reject with a `CometChatException`. The most common client-side failure is an invalid parent message ID.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    CometChat.subscribeToThread(0).then(
+      (response: string) => {
+        console.log("Subscribed:", response);
+      },
+      (error: CometChat.CometChatException) => {
+        // code: "INVALID_PARENT_MESSAGE_ID"
+        console.log(error.code, error.message);
+      }
+    );
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.subscribeToThread(0).then(
+      (response) => {
+        console.log("Subscribed:", response);
+      },
+      (error) => {
+        // code: "INVALID_PARENT_MESSAGE_ID"
+        console.log(error.code, error.message);
+      }
+    );
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Threaded Messages"
+    icon="comments"
+    href="/sdk/javascript/threaded-messages"
+  >
+    Send, receive and fetch messages inside a thread
+  </Card>
+  <Card
+    title="All Real Time Listeners"
+    icon="tower-broadcast"
+    href="/sdk/javascript/all-real-time-listeners"
+  >
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Mentions" icon="at" href="/sdk/javascript/mentions">
+    Mention users in messages and filter for your own mentions
+  </Card>
+  <Card
+    title="Additional Message Filtering"
+    icon="filter"
+    href="/sdk/javascript/message-filtering"
+  >
+    Filter messages by thread, type, tags and more
+  </Card>
+</CardGroup>
