@@ -8,7 +8,7 @@ description: "Implement threaded replies so users can respond to specific messag
 
 | Field | Value |
 | --- | --- |
-| Packages | `com.cometchat:chatuikit-kotlin` · `com.cometchat:chatuikit-jetpack` |
+| Packages | `com.cometchat:chatuikit-kotlin-android` · `com.cometchat:chatuikit-compose-android` |
 | Key components | `CometChatThreadHeader`, `CometChatMessageList`, `CometChatMessageComposer` |
 | Purpose | Implement threaded replies so users can respond to specific messages in a focused sub-conversation. |
 | Related | [Threaded Messages Header](/ui-kit/android/threaded-messages-header), [Message List](/ui-kit/android/message-list), [Message Composer](/ui-kit/android/message-composer), [All Guides](/ui-kit/android/guide-overview) |
@@ -30,7 +30,7 @@ Users tap a message → open thread screen → view parent message + replies →
 ## Prerequisites
 
 - Android project in Android Studio.  
-- CometChat Android UI Kit v6 (`com.cometchat:chatuikit-kotlin` or `com.cometchat:chatuikit-jetpack`) added to your `build.gradle`.  
+- CometChat Android UI Kit v6 (`com.cometchat:chatuikit-kotlin-android` or `com.cometchat:chatuikit-compose-android`) added to your `build.gradle`.  
 - Valid CometChat **App ID**, **Auth Key**, and **Region** initialized.  
 - `<uses-permission android:name="android.permission.INTERNET"/>` in `AndroidManifest.xml`.  
 - Logged-in user via `CometChatUIKit.login()`.  
@@ -43,8 +43,8 @@ Users tap a message → open thread screen → view parent message + replies →
 | `activity_thread_message.xml` | Defines thread UI: header, message list, composer, unblock. |
 | `ThreadMessageActivity`    | Hosts thread screen; initializes UI & ViewModel.             |
 | `ThreadMessageViewModel`   | Fetches parent message & thread replies; manages state.       |
-| `CometChatMessageList`     | Displays threaded replies when given parent message ID.      |
-| `CometChatMessageComposer` | Composes and sends replies with `parentMessageId`.           |
+| `CometChatMessageList`     | Displays threaded replies when given parent message ID **and** the conversation target (`user`/`group`). |
+| `CometChatMessageComposer` | Composes and sends replies with `parentMessageId` **and** the same target — without it replies never send. |
 | `CometChatThreadHeader`    | Displays the parent message context at the top of the thread.|
 
 ## Integration Steps
@@ -115,6 +115,10 @@ class ThreadMessageActivity : AppCompatActivity() {
         val unblock = findViewById<View>(R.id.unblockLayout)
 
         val rawMessage = intent.getStringExtra("raw_json")
+        // The thread screen needs the conversation TARGET as well as the parent id — carry the
+        // same user/group the message screen was bound to.
+        val user = intent.getParcelableExtra<User>("user")
+        val group = intent.getParcelableExtra<Group>("group")
         val viewModel = ViewModelProvider(this)[ThreadMessageViewModel::class.java]
         if (rawMessage != null) {
             val parentMessage = BaseMessage.processMessage(JSONObject(rawMessage))
@@ -125,8 +129,12 @@ class ThreadMessageActivity : AppCompatActivity() {
             viewModel.parentMessage.collect { msg ->
                 msg?.let {
                     header.setParentMessage(it)
-                    messageList.setParentMessage(it.id)
+                    messageList.setParentMessageId(it.id)
                     composer.setParentMessageId(it.id)
+                    // Required. With only the parent id the composer has no recipient, so replies
+                    // silently never send.
+                    user?.let { u -> messageList.setUser(u); composer.setUser(u) }
+                    group?.let { g -> messageList.setGroup(g); composer.setGroup(g) }
                 }
             }
         }
@@ -147,8 +155,16 @@ import com.cometchat.uikit.compose.presentation.threadheader.ui.CometChatThreadH
 import com.cometchat.uikit.compose.presentation.messagelist.ui.CometChatMessageList
 import com.cometchat.uikit.compose.presentation.messagecomposer.ui.CometChatMessageComposer
 
+// Host this on its OWN NavHost destination — see the warning below.
 @Composable
-fun ThreadMessageScreen(rawJson: String, isBlockedByMe: Boolean = false) {
+fun ThreadMessageScreen(
+    rawJson: String,
+    // The thread needs the conversation TARGET as well as the parent id — the same user/group
+    // the message screen was bound to.
+    user: User? = null,
+    group: Group? = null,
+    isBlockedByMe: Boolean = false,
+) {
     val parentMessage = remember {
         BaseMessage.processMessage(JSONObject(rawJson))
     }
@@ -158,17 +174,48 @@ fun ThreadMessageScreen(rawJson: String, isBlockedByMe: Boolean = false) {
 
         CometChatMessageList(
             parentMessageId = parentMessage.id,
+            // Required. With only the parent id there is no recipient, so replies silently
+            // never send.
+            user = user,
+            group = group,
             modifier = Modifier.weight(1f)
         )
 
         if (isBlockedByMe) {
             UnblockPrompt(onUnblock = { /* unblock logic */ })
         } else {
-            CometChatMessageComposer(parentMessageId = parentMessage.id)
+            CometChatMessageComposer(
+                parentMessageId = parentMessage.id,
+                user = user,
+                group = group,
+            )
         }
     }
 }
 ```
+
+<Warning>
+**Give the thread its own `NavHost` destination — this is correctness, not structure.**
+
+`CometChatMessageList` resolves its `CometChatMessageListViewModel` from the enclosing
+`ViewModelStoreOwner`. If the thread and the main chat share one composition scope — swapped with
+an `if`/`else` or a `when` inside the same Activity — the thread reuses the main chat's view
+model, `parentMessageId` is ignored, and the thread renders the **entire conversation** instead of
+the replies. There is no error and no warning; it simply shows the wrong messages.
+
+Each `NavHost` destination is its own `ViewModelStoreOwner`, which is what keeps the thread's
+scope. Add `androidx.navigation:navigation-compose` and route to the thread:
+
+```kotlin
+NavHost(navController = navController, startDestination = "messages") {
+    composable("messages") { MessageScreen(user = user, group = group, onThread = { navController.navigate("thread") }) }
+    composable("thread")   { ThreadMessageScreen(rawJson = rawJson, user = user, group = group) }
+}
+```
+
+Kotlin XML Views apps get this for free: each screen is its own `Activity`, so the view-model
+stores are already separate.
+</Warning>
 </Tab>
 </Tabs>
 
@@ -199,7 +246,8 @@ In your `MessagesActivity`, capture thread icon taps:
 <Tabs>
 <Tab title="Kotlin (XML Views)">
 ```kotlin lines
-messageList.setOnThreadRepliesClick { context, baseMessage, template ->
+messageList.setOnThreadRepliesClick { baseMessage ->
+    val context = messageList.context
     val intent = Intent(context, ThreadMessageActivity::class.java)
     intent.putExtra("raw_json", baseMessage.rawMessage.toString())
     intent.putExtra("reply_count", baseMessage.replyCount)
@@ -212,7 +260,7 @@ messageList.setOnThreadRepliesClick { context, baseMessage, template ->
 ```kotlin lines
 CometChatMessageList(
     user = user,
-    onThreadRepliesClick = { baseMessage, template ->
+    onThreadRepliesClick = { baseMessage ->
         navController.navigate("thread/${baseMessage.rawMessage}")
     },
     modifier = Modifier.weight(1f)
@@ -259,7 +307,11 @@ if (user.isBlockedByMe) {
 if (user.isBlockedByMe) {
     UnblockPrompt(onUnblock = { /* unblock logic */ })
 } else {
-    CometChatMessageComposer(parentMessageId = parentMessage.id)
+    CometChatMessageComposer(
+        parentMessageId = parentMessage.id,
+        user = user,          // the target travels with the parent id, always
+        group = group,
+    )
 }
 ```
 </Tab>
@@ -279,9 +331,10 @@ if (user.isBlockedByMe) {
 | Feature                   | Component / Method                                   |
 |---------------------------|------------------------------------------------------|
 | Show thread option        | `setOnThreadRepliesClick()`                          |
-| Display thread messages   | `messageList.setParentMessage(parentMessage.getId())`|
+| Display thread messages   | `messageList.setParentMessageId(...)` **+** `setUser(...)`/`setGroup(...)` |
 | Show parent message       | `header.setParentMessage(parentMessage)`             |
-| Compose reply             | `composer.setParentMessageId(parentMessage.getId())` |
+| Compose reply             | `composer.setParentMessageId(...)` **+** `setUser(...)`/`setGroup(...)` |
+| Scope the thread (Compose)| Own `NavHost` destination — a shared composition scope reuses the main chat's view model |
 | Handle blocked users      | `isBlockedByMe()`, hide composer + show unblock UI  |
 
 ## Next Steps & Further Reading
