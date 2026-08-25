@@ -1,0 +1,285 @@
+---
+title: "Upgrading from v6 to v7"
+sidebarTitle: "Overview"
+description: "Migration guide covering breaking changes, architecture shifts, and step-by-step upgrade path from CometChat React UI Kit v6 to v7."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react` v6 → v7 |
+| React minimum | `>=18.0.0 <21.0.0` |
+| New peer dep | `dompurify` 3.3.1 |
+| Removed dep | `rxjs` (no longer needed) |
+| Init change | Same as v6: `CometChatUIKit.init()` + `login()` imperatively, then wrap in `CometChatProvider` |
+| Extensibility | `DataSource`/`ChatConfigurator` → `CometChatMessagePlugin` interface |
+| Events | RxJS Subjects → `useCometChatEvents` hook |
+| Theming | Same CSS variables, simpler setup via `theme` prop on provider |
+
+</Accordion>
+
+## What's New in v7
+
+v7 is a ground-up rewrite that replaces global singletons with React-native patterns while keeping most component props compatible. The core shifts:
+
+| Area | v6 | v7 |
+| --- | --- | --- |
+| Initialization | `CometChatUIKit.init()` + `login()` (imperative) | Same: `CometChatUIKit.init()` + `login()` then wrap in `CometChatProvider` |
+| Extensibility | `DataSource` / `DataSourceDecorator` / `ChatConfigurator` | Plugin system (`CometChatMessagePlugin` interface) |
+| Events | Multiple RxJS Subject classes | Unified event bus (`useCometChatEvents` hook) |
+| Component API | Flat props only | Compound components (flat API still works) |
+| Message Bubbles | Presentational — receive pre-extracted props from parent | Self-extracting — accept SDK `message` and derive data internally |
+| Theming | CSS variables + manual `data-theme` setup | CSS variables + `theme` prop on provider (same tokens) |
+| Dependencies | `rxjs` required | No `rxjs` dependency |
+
+---
+
+## Step-by-Step Migration Checklist
+
+### 1. Update Dependencies
+
+```bash
+npm install @cometchat/chat-uikit-react@7 @cometchat/chat-sdk-javascript@^4.1.10 dompurify@3.3.1
+npm uninstall rxjs  # No longer needed for CometChat
+```
+
+| Package | v6 | v7 |
+| --- | --- | --- |
+| `@cometchat/chat-uikit-react` | `^6.x` | `^7.0.0` |
+| `@cometchat/chat-sdk-javascript` | `^4.x` | `^4.1.10` (peer dep) |
+| `react` | `>=18` | `>=18 <21` |
+| `dompurify` | — | `3.3.1` (new peer dep) |
+| `rxjs` | Required | Not needed |
+| `@cometchat/calls-sdk-javascript` | Optional | Optional (unchanged) |
+
+### 2. Update Initialization
+
+The initialization pattern is nearly identical between v6 and v7. The only addition in v7 is wrapping your app in `CometChatProvider`:
+
+```tsx title="v6"
+// main.tsx
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("us")
+  .setAuthKey("AUTH_KEY")
+  .build();
+
+CometChatUIKit.init(settings).then(async () => {
+  await CometChatUIKit.login("uid");
+  render(<App />);
+});
+```
+
+```tsx title="v7"
+// main.tsx — same init + login, just add CometChatProvider in your component tree
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("us")
+  .setAuthKey("AUTH_KEY")
+  .build();
+
+CometChatUIKit.init(settings).then(async () => {
+  await CometChatUIKit.login("uid");
+  render(<App />);
+});
+
+// App.tsx — wrap in CometChatProvider
+function App() {
+  return (
+    <CometChatProvider>
+      <MyChatApp />
+    </CometChatProvider>
+  );
+}
+```
+
+### 3. Replace DataSource/Decorator with Plugins
+
+```tsx title="v6"
+class MyDecorator extends DataSourceDecorator {
+  getTextMessageBubble() { ... }
+  getAttachmentOptions() { ... }
+}
+ChatConfigurator.enable(new MyDecorator());
+```
+
+```tsx title="v7"
+const MyPlugin: CometChatMessagePlugin = {
+  id: "my-plugin",
+  messageTypes: ["custom-type"],
+  messageCategories: ["custom"],
+  renderBubble(message, context) { return <MyBubble />; },
+  getOptions(message, context) { return [...]; },
+  getLastMessagePreview(message) { return "Preview text"; },
+};
+
+<CometChatProvider plugins={[MyPlugin]}>
+```
+
+See [Plugins Overview](/ui-kit/react/plugins/overview) for the full guide.
+
+### 4. Replace RxJS Event Subscriptions
+
+```tsx title="v6"
+import { CometChatMessageEvents } from "@cometchat/chat-uikit-react";
+
+CometChatMessageEvents.ccMessageSent.subscribe((data) => { ... });
+CometChatMessageEvents.ccMessageEdited.subscribe((data) => { ... });
+```
+
+```tsx title="v7"
+import { useCometChatEvents } from "@cometchat/chat-uikit-react";
+
+useCometChatEvents((event) => {
+  if (event.type === "ui:message/sent") { ... }
+  if (event.type === "message/edited") { ... }
+});
+```
+
+See [Event System](/ui-kit/react/event-system) for the full event catalog.
+
+### 5. Update Component Props
+
+Most component props are unchanged. Key patterns to watch for:
+
+| Pattern | v6 | v7 |
+| --- | --- | --- |
+| View props type | `JSX.Element` | `ReactNode` (compatible) |
+| Date format type | `CalendarObject` | `CometChatDateFormatConfig` (same shape) |
+| Error handling | `hideError` prop | `errorView` prop (pass custom error UI) |
+| Loading state | `disableLoadingState` prop | `loadingView` prop (pass custom loading UI) |
+| Templates | `templates` prop | Plugin system (removed from components) |
+| Text formatters on lists | `textFormatters` prop | Plugin system (removed from list components) |
+
+For the full prop-by-prop reference, see [Property Changes](/ui-kit/react/migration-property-changes).
+
+### 6. Update Theming (Minor)
+
+CSS variables are the same between v6 and v7. The only change is how you set the theme:
+
+```tsx title="v6"
+// Manual data-theme attribute
+<div className="cometchat-root" data-theme="dark">
+```
+
+```tsx title="v7"
+// theme prop on provider
+<CometChatProvider theme="dark">
+```
+
+Or use the `useTheme()` hook for runtime switching:
+```tsx
+const { theme, setTheme } = useTheme();
+```
+
+### 7. Enable Calling (If Used)
+
+Calling is now configured via `UIKitSettingsBuilder` rather than a provider prop:
+
+```tsx title="v7"
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("us")
+  .setAuthKey("AUTH_KEY")
+  .setCallingEnabled(true)
+  .build();
+
+await CometChatUIKit.init(settings);
+```
+
+Without `.setCallingEnabled(true)`, call buttons are hidden and the Calls SDK is not loaded.
+
+---
+
+## Architecture Changes
+
+### DataSource → Plugin System
+
+v6 used a decorator pattern (`DataSourceDecorator`) to customize message rendering. v7 replaces this with a simpler plugin interface:
+
+- Each plugin owns one or more message types
+- Plugins provide `renderBubble()`, `getOptions()`, `getLastMessagePreview()`
+- Default plugins are included automatically
+- Custom plugins are passed via the `plugins` prop on `CometChatProvider`
+
+### RxJS Subjects → Unified Event Bus
+
+v6 had separate RxJS Subject classes for each event category (`CometChatMessageEvents`, `CometChatGroupEvents`, `CometChatCallEvents`, etc.). v7 merges all events into a single typed pub/sub system:
+
+- Subscribe: `useCometChatEvents((event) => { ... })`
+- Publish: `const publish = usePublishEvent()`
+- SDK events (from network) and UI events (from components) flow through the same bus
+
+### Flat API → Compound Components
+
+v7 components support both flat API (same as v6) and compound composition:
+
+```tsx title="Flat API (works same as v6)"
+<CometChatConversations hideSearch onItemClick={handleClick} />
+```
+
+```tsx title="Compound (new in v7)"
+<CometChatConversations.Root onItemClick={handleClick}>
+  {/* Search omitted — just don't render it */}
+  <CometChatConversations.List />
+</CometChatConversations.Root>
+```
+
+The flat API is fully backward-compatible. Compound composition is optional for advanced customization.
+
+### Presentational Bubbles → Self-Extracting Bubbles
+
+In v6, message bubble components (TextBubble, ImageBubble, etc.) were **presentational** — they received pre-extracted props like `src`, `text`, `isSentByMe` from the parent. The DataSource/plugin layer did the extraction and passed data down.
+
+In v7, bubble components are **self-extracting** — they accept the SDK `message` object as their primary input and derive rendering state internally (attachments, text, sender info, alignment). Some bubbles retain optional override props (e.g., `text` and `isSentByMe` on `CometChatTextBubble`), but the standard usage is to pass only `message`.
+
+```tsx title="v6 — presentational (parent extracts data)"
+<CometChatImageBubble src={message.getURL()} isSentByMe={true} />
+```
+
+```tsx title="v7 — self-extracting (bubble handles it)"
+<CometChatImagesBubble message={message} />
+```
+
+This applies to all message bubbles: `CometChatTextBubble`, `CometChatImagesBubble`, `CometChatVideosBubble`, `CometChatAudiosBubble`, `CometChatVoiceNoteBubble`, `CometChatFilesBubble`, `CometChatPollBubble`, `CometChatStickerBubble`, `CometChatCallBubble`, `CometChatCollaborativeDocumentBubble`, `CometChatCollaborativeWhiteboardBubble`, `CometChatGroupActionBubble`, and `CometChatCallActionBubble`.
+
+<Note>
+In v7 the default rendering moves to the multi-attachment media bubbles: `CometChatImageBubble` → `CometChatImagesBubble`, `CometChatVideoBubble` → `CometChatVideosBubble`, `CometChatFileBubble` → `CometChatFilesBubble`, and `CometChatAudioBubble` → `CometChatAudiosBubble` (attached audio files) or `CometChatVoiceNoteBubble` (recorded voice notes). The singular `CometChat*Bubble` components still ship and can be used standalone — only the message list's default routing changed.
+</Note>
+
+---
+
+## Removed Concepts
+
+| v6 Concept | Replacement in v7 |
+| --- | --- |
+| `DataSource` / `DataSourceDecorator` | `CometChatMessagePlugin` interface |
+| `ChatConfigurator.enable()` | `plugins` prop on `CometChatProvider` |
+| `CometChatMessageEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatGroupEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatCallEvents` (RxJS) | `useCometChatEvents` hook |
+| `CometChatUIEvents` (RxJS) | `usePublishEvent` hook |
+| `CometChatMessageTemplate` | Plugin `renderBubble()` method |
+| `*Configuration` objects | Direct props on compound sub-components |
+| `MessagesDataSource.getAttachmentOptions()` | Composer handles attachments directly |
+| Presentational bubble props (`src`, `text`, etc.) as required inputs | Bubbles now accept `message` as the primary prop and self-extract data — optional overrides like `text` or `isSentByMe` still exist on some bubbles |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Property Changes" icon="list" href="/ui-kit/react/migration-property-changes">
+    Full prop-by-prop migration reference for every component
+  </Card>
+  <Card title="CometChatProvider" icon="box" href="/ui-kit/react/cometchat-provider">
+    Provider setup with all props explained
+  </Card>
+  <Card title="Plugins" icon="puzzle-piece" href="/ui-kit/react/plugins/overview">
+    The new plugin system that replaces DataSource
+  </Card>
+  <Card title="Event System" icon="bolt" href="/ui-kit/react/event-system">
+    Unified event bus replacing RxJS Subjects
+  </Card>
+</CardGroup>

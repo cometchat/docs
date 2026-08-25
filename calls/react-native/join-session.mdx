@@ -1,0 +1,319 @@
+---
+title: "Join Session"
+sidebarTitle: "Join Session"
+sdk_version: "5.x"
+description: "Join CometChat Calls SDK v5 sessions on React Native with session IDs, call tokens, participant setup, and in-call UI launch."
+---
+
+This guide covers generating call tokens and joining call sessions using the CometChat Calls SDK.
+
+## Generate Token
+
+Before joining a call, you need to generate a call token. The token authenticates the user for the specific call session.
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+const sessionId = 'UNIQUE_SESSION_ID';
+
+try {
+  const { token } = await CometChatCalls.generateToken(sessionId);
+  console.log('Call token generated:', token);
+} catch (error) {
+  console.error('Token generation failed:', error);
+}
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | Yes | Unique identifier for the call session |
+| `authToken` | string | No | User's auth token (uses logged-in user's token if not provided) |
+
+<Note>
+The `sessionId` should be unique for each call. You can use a UUID, a combination of user IDs, or any unique string that identifies the call session.
+</Note>
+
+## Join Session with Component
+
+The `CometChatCalls.Component` renders the call UI. Pass the generated token and a plain `sessionSettings` object to join the session. Subscribe to call events with `CometChatCalls.addEventListener` and unsubscribe on cleanup.
+
+```tsx
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet } from 'react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface CallScreenProps {
+  sessionId: string;
+  isAudioOnly?: boolean;
+}
+
+function CallScreen({ sessionId, isAudioOnly = false }: CallScreenProps) {
+  const [callToken, setCallToken] = useState<string | null>(null);
+
+  // Plain session settings object
+  const sessionSettings = {
+    sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+    layout: 'TILE',
+    hideLeaveSessionButton: false,
+    hideToggleAudioButton: false,
+    hideToggleVideoButton: isAudioOnly,
+  };
+
+  useEffect(() => {
+    async function initializeCall() {
+      try {
+        // Generate call token
+        const { token } = await CometChatCalls.generateToken(sessionId);
+        setCallToken(token);
+      } catch (error) {
+        console.error('Failed to initialize call:', error);
+      }
+    }
+
+    initializeCall();
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Subscribe to call events
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    CometChatCalls.addEventListener('onParticipantJoined', (participant) =>
+      console.log('Participant joined:', participant.name)
+    , { signal });
+
+    CometChatCalls.addEventListener('onParticipantLeft', (participant) =>
+      console.log('Participant left:', participant.name)
+    , { signal });
+
+    CometChatCalls.addEventListener('onSessionLeft', () =>
+      console.log('Session left')
+    , { signal });
+
+    return () => controller.abort();
+  }, []);
+
+  if (!callToken) {
+    return null; // Or show a loading indicator
+  }
+
+  return (
+    <View style={styles.container}>
+      <CometChatCalls.Component
+        callToken={callToken}
+        sessionSettings={sessionSettings}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+});
+
+export default CallScreen;
+```
+
+## Component Props
+
+| Prop | Type | Required | Description |
+|------|------|----------|-------------|
+| `callToken` | string | Yes | Token generated from `generateToken()` |
+| `sessionSettings` | object | No | Plain session settings object |
+
+## Complete Example
+
+```tsx
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, StyleSheet, ActivityIndicator, Text } from 'react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+interface CallScreenProps {
+  sessionId: string;
+  isAudioOnly?: boolean;
+  onCallEnd?: () => void;
+}
+
+function CallScreen({ sessionId, isAudioOnly = false, onCallEnd }: CallScreenProps) {
+  const [callToken, setCallToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const handleCallEnd = useCallback(() => {
+    console.log('Call ended');
+    onCallEnd?.();
+  }, [onCallEnd]);
+
+  // Plain session settings object
+  const sessionSettings = {
+    sessionType: isAudioOnly ? 'VOICE' : 'VIDEO',
+    layout: 'TILE',
+    hideLeaveSessionButton: false,
+    hideToggleAudioButton: false,
+    hideToggleVideoButton: isAudioOnly,
+    hideSwitchCameraButton: isAudioOnly,
+    hideAudioModeButton: false,
+    startAudioMuted: false,
+    startVideoPaused: false,
+    audioMode: 'SPEAKER',
+    hideRecordingButton: false,
+    idleTimeoutPeriodBeforePrompt: 180000,
+  };
+
+  useEffect(() => {
+    async function initializeCall() {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        // Generate call token
+        const { token } = await CometChatCalls.generateToken(sessionId);
+        setCallToken(token);
+      } catch (err: any) {
+        console.error('Failed to initialize call:', err);
+        setError(err.errorDescription || 'Failed to initialize call');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    initializeCall();
+  }, [sessionId]);
+
+  useEffect(() => {
+    // Subscribe to call events
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    CometChatCalls.addEventListener('onParticipantJoined', (participant) => {
+      console.log('Participant joined:', participant.name);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onParticipantLeft', (participant) => {
+      console.log('Participant left:', participant.name);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onParticipantListChanged', (participants) => {
+      console.log('Participants:', participants.length);
+    }, { signal });
+
+    CometChatCalls.addEventListener('onSessionLeft', () => {
+      handleCallEnd();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onLeaveSessionButtonClicked', () => {
+      console.log('Leave session button clicked');
+      CometChatCalls.leaveSession();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onSessionTimedOut', () => {
+      console.log('Session timed out');
+      handleCallEnd();
+    }, { signal });
+
+    CometChatCalls.addEventListener('onRecordingStarted', () => {
+      console.log('Recording started');
+    }, { signal });
+
+    CometChatCalls.addEventListener('onRecordingStopped', () => {
+      console.log('Recording stopped');
+    }, { signal });
+
+    return () => controller.abort();
+  }, [handleCallEnd]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" />
+        <Text style={styles.loadingText}>Joining call...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.errorText}>{error}</Text>
+      </View>
+    );
+  }
+
+  if (!callToken) {
+    return null;
+  }
+
+  return (
+    <View style={styles.container}>
+      <CometChatCalls.Component
+        callToken={callToken}
+        sessionSettings={sessionSettings}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
+  loadingText: {
+    color: '#fff',
+    marginTop: 16,
+    fontSize: 16,
+  },
+  errorText: {
+    color: '#ff4444',
+    fontSize: 16,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+});
+
+export default CallScreen;
+```
+
+## Error Handling
+
+Common errors when joining a session:
+
+| Error Code | Description |
+|------------|-------------|
+| `ERROR_SESSION_ID_MISSING` | Session ID is empty or not provided |
+| `ERROR_AUTH_TOKEN_MISSING` | User is not logged in or auth token is missing |
+| `ERROR_SDK_NOT_INITIALIZED` | SDK not initialized. Call `init()` first |
+
+```tsx
+try {
+  const { token } = await CometChatCalls.generateToken(sessionId);
+} catch (error: any) {
+  switch (error.errorCode) {
+    case 'ERROR_SESSION_ID_MISSING':
+      console.error('Please provide a valid session ID');
+      break;
+    case 'ERROR_AUTH_TOKEN_MISSING':
+      console.error('Please login before generating a token');
+      break;
+    case 'ERROR_SDK_NOT_INITIALIZED':
+      console.error('Please initialize the SDK first');
+      break;
+    default:
+      console.error('Error:', error.errorDescription);
+  }
+}
+```
+
+## Related Documentation
+
+- [Session Settings](/calls/react-native/session-settings) - Configure call settings
+- [Actions](/calls/react-native/actions) - Control the call programmatically
+- [Events](/calls/react-native/events) - Handle call events

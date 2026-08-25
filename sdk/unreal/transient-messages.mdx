@@ -1,0 +1,176 @@
+---
+title: "Transient Messages"
+description: "Send ephemeral messages that are delivered in real time but not persisted on the server."
+---
+
+Transient messages are fire-and-forget messages that are delivered to online recipients in real time but **never stored** on the CometChat server. They're ideal for ephemeral interactions like game state updates, cursor positions, or temporary notifications.
+
+---
+
+## When to Use Transient Messages
+
+| Use Case | Why Transient? |
+| -------- | -------------- |
+| Live game state (player position, health) | High frequency, no need to persist |
+| Cursor/pointer position in collaborative tools | Ephemeral by nature |
+| "User is looking at this" indicators | Temporary UI state |
+| Temporary notifications | No history needed |
+| Custom signaling between clients | Low-latency, no storage overhead |
+
+<Warning>
+Transient messages are **not delivered to offline users** and cannot be fetched from message history. If you need message persistence, use regular messages instead.
+</Warning>
+
+---
+
+## Send a Transient Message
+
+Use `SendTransientMessage` on the Subsystem. This is a fire-and-forget call — there's no success/failure callback.
+
+<Tabs>
+<Tab title="Blueprint">
+1. Create an `FCometChatTransientMessage` struct
+2. Set `ReceiverId` (user UID or group GUID), `ReceiverType` (`user` or `group`), and `Data` (your custom payload)
+3. Call **Send Transient Message** on the CometChat Subsystem
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::SendGameState(const FString& GroupGuid, const FString& StateJson)
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+
+    FCometChatTransientMessage Message;
+    Message.ReceiverId = GroupGuid;
+    Message.ReceiverType = TEXT("group");
+    Message.Data = StateJson; // e.g., {"type":"position","x":100,"y":200}
+
+    Chat->SendTransientMessage(Message);
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Receive Transient Messages
+
+Bind to the `OnTransientMessageReceived` delegate to receive transient messages from other users.
+
+<Tabs>
+<Tab title="Blueprint">
+1. Get a reference to the **CometChat Subsystem**
+2. Bind to **On Transient Message Received**
+3. The custom event receives an `FCometChatTransientMessage` with the sender, receiver info, and data payload
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+    Chat->OnTransientMessageReceived.AddDynamic(this, &AMyActor::HandleTransientMessage);
+}
+
+void AMyActor::HandleTransientMessage(const FCometChatTransientMessage& Message)
+{
+    UE_LOG(LogTemp, Log, TEXT("Transient from %s: %s"),
+        *Message.Sender.Name, *Message.Data);
+
+    // Parse the Data JSON and handle accordingly
+    // e.g., update another player's cursor position
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## FCometChatTransientMessage
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `ReceiverId` | `FString` | Receiver UID (1:1) or GUID (group) |
+| `ReceiverType` | `FString` | `"user"` or `"group"` |
+| `Data` | `FString` | Custom data payload (typically JSON) |
+| `Sender` | `FCometChatUser` | The user who sent the message (populated on receive) |
+
+---
+
+## Message Flow
+
+```mermaid
+sequenceDiagram
+    participant A as Sender
+    participant S as CometChat Cloud
+    participant B as Online Recipient
+    participant C as Offline User
+
+    A->>S: SendTransientMessage
+    S->>B: OnTransientMessageReceived
+    Note over S,C: NOT delivered (offline)
+    Note over S: NOT stored in history
+
+    style A fill:#333,stroke:#666,color:#fff
+    style S fill:#555,stroke:#999,color:#ccc
+    style B fill:#333,stroke:#666,color:#fff
+    style C fill:#333,stroke:#666,color:#fff
+```
+
+<Tip>
+**Data format**: The `Data` field is a free-form string. We recommend using JSON so receivers can parse it easily. Define a schema for your transient message types (e.g., `{"type":"cursor","x":100,"y":200}`) so handlers can route by type.
+</Tip>
+
+---
+
+## Example: Player Position Sync
+
+A common game pattern — broadcast player position to group members at high frequency:
+
+<Tabs>
+<Tab title="Blueprint">
+1. On a Timer (e.g., every 0.1s), get the player's world location
+2. Serialize to JSON: `{"type":"pos","x":...,"y":...,"z":...}`
+3. Call **Send Transient Message** to the game's group GUID
+4. On receive, parse the JSON and update the remote player's position
+</Tab>
+<Tab title="C++">
+```cpp
+// Send position every 100ms
+void AMyActor::BroadcastPosition()
+{
+    FVector Pos = GetActorLocation();
+    FString Json = FString::Printf(
+        TEXT("{\"type\":\"pos\",\"x\":%.1f,\"y\":%.1f,\"z\":%.1f}"),
+        Pos.X, Pos.Y, Pos.Z);
+
+    FCometChatTransientMessage Msg;
+    Msg.ReceiverId = GameGroupGuid;
+    Msg.ReceiverType = TEXT("group");
+    Msg.Data = Json;
+
+    GetGameInstance()->GetSubsystem<UCometChatSubsystem>()->SendTransientMessage(Msg);
+}
+
+// Receive and apply remote player position
+void AMyActor::HandleTransientMessage(const FCometChatTransientMessage& Message)
+{
+    // Parse JSON, update remote player actor position
+    // (implementation depends on your game's player management)
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Real-Time Events" icon="bolt" href="/sdk/unreal/real-time-events">
+    See all real-time delegates including transient messages.
+  </Card>
+  <Card title="Advanced Configuration" icon="gear" href="/sdk/unreal/advanced-configuration">
+    Control connection lifecycle for optimal performance.
+  </Card>
+</CardGroup>

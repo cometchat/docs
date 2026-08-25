@@ -1,0 +1,195 @@
+---
+title: "Card Bubble"
+sidebarTitle: "Card Bubble"
+description: "A render-only bubble that draws developer-defined card messages (category \"card\") with the prebuilt CometChatCardView renderer and forwards card actions to your app."
+---
+
+<Accordion title="AI Integration Quick Reference">
+```json
+{
+  "component": "CometChatCardBubble",
+  "package": "@cometchat/chat-uikit-react",
+  "import": "import { CometChatCardBubble } from \"@cometchat/chat-uikit-react\";",
+  "description": "Render-only bubble for developer card messages (category \"card\"). Stringifies the raw payload from message.getCard() and hands it to the prebuilt CometChatCardView renderer, then forwards user actions back to the app. It never parses, mutates, or acts on the card itself.",
+  "cssRootClass": ".cometchat-card-bubble",
+  "renderOnly": true,
+  "props": {
+    "data": {
+      "message": { "type": "CometChat.CardMessage", "required": true, "note": "The developer card message (category \"card\"). Drives message.getCard()." },
+      "themeMode": { "type": "CometChatCardThemeMode", "default": "\"auto\"", "note": "Theme mode forwarded to CometChatCardView." },
+      "themeOverride": { "type": "CometChatCardThemeOverride", "note": "Optional theme overrides forwarded to the renderer." },
+      "onCardAction": { "type": "(message: CometChat.BaseMessage, action: CometChatCardAction) => void", "note": "Direct callback for card actions, fired in addition to the ui:card/action event." }
+    }
+  }
+}
+```
+</Accordion>
+
+## Overview
+
+`CometChatCardBubble` renders a **card message** — a message with `category: "card"`. A card message carries a block of Card Schema JSON that is created and sent server-side (via the Platform (REST) API or the Dashboard Bubble Builder) and delivered to clients like any other message. Card messages are **receive-only**: the UI Kit renders them, it does not send them.
+
+<Tip>
+  **Design cards visually with [Card Builder](/card-builder/overview).** Build your card messages in the CometChat Dashboard and export the Card Schema JSON — instead of writing it by hand.
+</Tip>
+
+The bubble is **render-only**, mirroring `CometChatTextBubble`: the kit performs zero transformation. It stringifies the raw payload from `message.getCard()` and hands it to the prebuilt [`CometChatCardView`](https://www.npmjs.com/package/@cometchat/cards-react) renderer (`@cometchat/cards-react`), then forwards user actions back to your app. It never parses or mutates the card body, and never performs an action itself — your app owns all action behavior (opening URLs, navigating to chats, API calls, etc.).
+
+In the message list, card messages are routed to this bubble automatically by the built-in **Card plugin** — no configuration is required. See [Plugins → Built-in Plugins](/ui-kit/react/plugins/overview#built-in-plugins).
+
+### Where cards fit in the message hierarchy
+
+`card` is a top-level message category, alongside `message`, `custom`, `action`, and `call`.
+
+<Frame>
+  <img src="/images/message-structure-hierarchy-card.svg" />
+</Frame>
+
+---
+
+## Usage
+
+Card messages render automatically inside `CometChatMessageList`. To render one directly — for example in a custom layout — pass the SDK `CardMessage` to the bubble:
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatCardBubble } from "@cometchat/chat-uikit-react";
+
+function CardMessageItem({ message }: { message: CometChat.CardMessage }) {
+  return <CometChatCardBubble message={message} />;
+}
+```
+
+To receive card actions without going through the [event bus](/ui-kit/react/event-system), pass an `onCardAction` callback:
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatCardBubble,
+  type CometChatCardAction,
+} from "@cometchat/chat-uikit-react";
+
+function CardMessageItem({ message }: { message: CometChat.CardMessage }) {
+  const handleAction = (
+    msg: CometChat.BaseMessage,
+    action: CometChatCardAction
+  ) => {
+    // Your app owns the behavior — open a URL, start a call, call an API, etc.
+    console.log("Card action", action, "on message", msg.getId());
+  };
+
+  return <CometChatCardBubble message={message} onCardAction={handleAction} />;
+}
+```
+
+---
+
+## Props
+
+### message
+
+The developer card message (`category: "card"`). The bubble reads the raw card payload from `message.getCard()`. **Required.**
+
+| | |
+| --- | --- |
+| Type | `CometChat.CardMessage` |
+| Required | Yes |
+
+---
+
+### themeMode
+
+Theme mode forwarded to the `CometChatCardView` renderer.
+
+| | |
+| --- | --- |
+| Type | `CometChatCardThemeMode` |
+| Default | `"auto"` |
+
+---
+
+### themeOverride
+
+Optional theme overrides forwarded to the renderer.
+
+| | |
+| --- | --- |
+| Type | `CometChatCardThemeOverride` |
+| Default | `undefined` |
+
+---
+
+### onCardAction
+
+Direct callback for card actions. Fired **in addition to** the `ui:card/action` UI event, so an app embedding the bubble directly can receive actions without subscribing to the event bus. Receives the message and the clicked action.
+
+| | |
+| --- | --- |
+| Type | `(message: CometChat.BaseMessage, action: CometChatCardAction) => void` |
+| Default | `undefined` |
+
+---
+
+## Card Actions
+
+When a user clicks an action inside a card (a button, link, etc.), the bubble forwards the raw action to your app through **two** channels — it never handles the action itself:
+
+1. The optional [`onCardAction`](#oncardaction) prop, when provided.
+2. The [`ui:card/action`](/ui-kit/react/event-system#card-actions) UI event, published on the event bus with the `message` and the clicked `action`. This is the only channel that can reach a card rendered by the kit (e.g. a nested agent card) where no prop is reachable.
+
+Subscribe to the event anywhere in your app:
+
+```tsx
+import { useCometChatEvents } from "@cometchat/chat-uikit-react";
+
+function CardActionListener() {
+  useCometChatEvents((event) => {
+    if (event.type === "ui:card/action") {
+      // event.message, event.action
+      console.log("Card action clicked:", event.action);
+    }
+  });
+
+  return null;
+}
+```
+
+---
+
+## Fallback
+
+When `message.getCard()` is absent or empty, the renderer is **not** invoked. Instead the bubble renders a plain-text fallback, resolving the first available of:
+
+1. `message.getFallbackText()`
+2. `message.getText()`
+3. The localized `"Card Message"` string
+
+---
+
+## CSS Selectors
+
+| Target | Selector |
+| --- | --- |
+| Root | `.cometchat-card-bubble` |
+| Text fallback | `.cometchat-card-bubble__fallback` |
+
+The card body itself is styled by the `CometChatCardView` renderer; use `themeMode` / `themeOverride` to theme it.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Plugins" icon="puzzle-piece" href="/ui-kit/react/plugins/overview#built-in-plugins">
+    How the Card plugin routes card messages to this bubble
+  </Card>
+  <Card title="Event System" icon="bolt" href="/ui-kit/react/event-system#card-actions">
+    Subscribe to the ui:card/action event
+  </Card>
+  <Card title="Message Bubble" icon="comment" href="/ui-kit/react/components/message-bubble">
+    The wrapper that hosts bubble content
+  </Card>
+  <Card title="Theming" icon="paintbrush" href="/ui-kit/react/theming">
+    Customize colors, fonts, and spacing
+  </Card>
+</CardGroup>

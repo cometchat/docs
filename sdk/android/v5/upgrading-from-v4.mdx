@@ -1,0 +1,232 @@
+---
+title: "Upgrading from v4"
+sidebarTitle: "Upgrading from v4"
+description: "Migration guide for upgrading from CometChat Android SDK v4 to v5. Covers breaking changes to Gson removal, equals/hashCode behavior, and Parcelable support."
+---
+
+This guide covers the breaking changes in CometChat Android SDK v5 and what you need to update in your app.
+
+## Dependency Update
+
+Update your `build.gradle` dependency:
+
+```groovy
+dependencies {
+  implementation "com.cometchat:chat-sdk-android:5.0.0"
+}
+```
+
+---
+
+## Breaking Changes Overview
+
+SDK v5 removes the Gson dependency from all SDK model classes and changes `equals()` / `hashCode()` to structural (deep) equality. All SDK model classes now implement `Parcelable`.
+
+---
+
+## Must Do (will crash without these)
+
+### Replace Gson deserialization of SDK classes
+
+`Gson().fromJson(json, BaseMessage::class.java)` no longer works because SDK classes no longer have Gson annotations.
+
+**Before (v4):**
+```kotlin
+val message = Gson().fromJson(jsonString, BaseMessage::class.java)
+```
+
+**After (v5):**
+```kotlin
+val message = BaseMessage.processMessage(jsonObject)
+```
+
+For `Conversation`:
+
+**Before (v4):**
+```kotlin
+val conversation = Gson().fromJson(jsonString, Conversation::class.java)
+```
+
+**After (v5):**
+Use Parcelable to pass between components, or reconstruct from the SDK's fetch methods.
+
+### Replace Gson-based Intent/Bundle passing
+
+All SDK model classes (`User`, `Group`, `BaseMessage`, `Conversation`, etc.) now implement `Parcelable`. Use `putExtra()` / `IntentCompat.getParcelableExtra()` instead of Gson serialization.
+
+#### User
+
+**Before (v4):**
+```kotlin
+// Sending
+intent.putExtra("user", Gson().toJson(user))
+
+// Receiving
+val user = Gson().fromJson(intent.getStringExtra("user"), User::class.java)
+```
+
+**After (v5):**
+```kotlin
+// Sending
+intent.putExtra(getString(R.string.app_user), user)
+
+// Receiving
+val user = IntentCompat.getParcelableExtra(intent, getString(R.string.app_user), User::class.java)
+```
+
+#### BaseMessage
+
+**Before (v4):**
+```kotlin
+// Sending
+intent.putExtra("message", Gson().toJson(baseMessage))
+
+// Receiving
+val message = Gson().fromJson(intent.getStringExtra("message"), BaseMessage::class.java)
+```
+
+**After (v5):**
+```kotlin
+// Sending
+intent.putExtra(getString(R.string.app_message), baseMessage)
+
+// Receiving
+val message = IntentCompat.getParcelableExtra(intent, getString(R.string.app_message), BaseMessage::class.java)
+```
+
+#### Group
+
+**Before (v4):**
+```kotlin
+// Sending
+intent.putExtra("group", Gson().toJson(group))
+
+// Receiving
+val group = Gson().fromJson(intent.getStringExtra("group"), Group::class.java)
+```
+
+**After (v5):**
+```kotlin
+// Sending
+intent.putExtra(getString(R.string.app_group), group)
+
+// Receiving
+val group = IntentCompat.getParcelableExtra(intent, getString(R.string.app_group), Group::class.java)
+```
+
+#### Conversation
+
+**Before (v4):**
+```kotlin
+// Sending
+intent.putExtra("conversation", Gson().toJson(conversation))
+
+// Receiving
+val conversation = Gson().fromJson(intent.getStringExtra("conversation"), Conversation::class.java)
+```
+
+**After (v5):**
+```kotlin
+// Sending
+intent.putExtra(getString(R.string.app_conversation), conversation)
+
+// Receiving
+val conversation = IntentCompat.getParcelableExtra(intent, getString(R.string.app_conversation), Conversation::class.java)
+```
+
+<Note>
+This pattern applies to all SDK model classes — `Call`, `Action`, `MediaMessage`, `TextMessage`, `CustomMessage`, etc. They all implement `Parcelable` in v5.
+</Note>
+
+### Replace Gson clone hacks
+
+**Before (v4):**
+```kotlin
+val clone = Gson().fromJson(Gson().toJson(original), User::class.java)
+```
+
+**After (v5):**
+```kotlin
+val clone = original.clone()
+```
+
+---
+
+## Must Do (will cause silent bugs without these)
+
+### Update DiffUtil comparisons
+
+`equals()` now does deep structural comparison. Using it in `areItemsTheSame()` will cause incorrect diff results.
+
+**Before (v4):**
+```kotlin
+override fun areItemsTheSame(oldItem: User, newItem: User): Boolean {
+    return oldItem == newItem // worked because equals() compared by UID
+}
+```
+
+**After (v5):**
+```kotlin
+override fun areItemsTheSame(oldItem: User, newItem: User): Boolean {
+    return oldItem.uid == newItem.uid // explicit ID comparison
+}
+```
+
+### Replace list contains/remove with ID-based operations
+
+**Before (v4):**
+```kotlin
+if (userList.contains(user)) { ... }
+userList.remove(user)
+```
+
+**After (v5):**
+```kotlin
+if (userList.any { it.uid == user.uid }) { ... }
+userList.removeAll { it.uid == user.uid }
+```
+
+### Stop using SDK objects as HashMap/HashSet keys
+
+**Before (v4):**
+```kotlin
+val map = HashMap<User, SomeData>()
+map[user] = data
+```
+
+**After (v5):**
+```kotlin
+val map = HashMap<String, SomeData>() // use UID as key
+map[user.uid] = data
+```
+
+### Add ProGuard keep rules
+
+Add the following to your `proguard-rules.pro`:
+
+```proguard
+-keep class com.cometchat.** { *; }
+-keepclassmembers class com.cometchat.** {
+    public boolean contentEquals(**);
+}
+```
+
+---
+
+## Should Review
+
+These won't crash but may cause unexpected behavior if your code relied on the old identity-based equality:
+
+- Any code that relied on `user1.equals(user2)` meaning "same user" — it now means "identical in every field"
+- Any code that relied on `message1.equals(message2)` meaning "same message" — it now means "identical in every field including read receipts, reactions, etc."
+- Any code comparing Conversations via `equals()` — now does recursive deep comparison of `lastMessage` and `conversationWith`
+
+---
+
+## Safe — No Changes Needed
+
+These patterns continue to work without modification:
+
+- Gson usage for your own custom DTOs (not SDK classes)
+- `User.fromJson()`, `Group.fromJson()`, `BaseMessage.processMessage()` — these SDK methods still work
+- `user.toJson()`, `group.toMap()` — these SDK serialization methods still work
