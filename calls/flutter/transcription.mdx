@@ -1,0 +1,342 @@
+---
+title: "Transcription & Closed Captions"
+sidebarTitle: "Transcription"
+sdk_version: "5.x"
+description: "Use CometChat Calls SDK v5 transcription on Flutter to transcribe calls, show live closed captions, and retrieve transcripts after the call."
+---
+
+<Note>
+**Available since v5.0.7** — transcription and closed captions require CometChat Calls SDK v5.0.7 or later for Flutter. See [Setup](/calls/flutter/setup) to install or upgrade.
+</Note>
+
+Transcribe call sessions in real time and display live closed captions on screen. Transcripts are stored server-side and can be retrieved after the call using `TranscriptRequestBuilder`.
+
+<Warning>
+Transcription must be enabled for your CometChat app. Contact support if you need to enable this feature.
+</Warning>
+
+## How It Works
+
+Transcription and closed captions are two related but separate things:
+
+| Concept | What it does |
+|---------|--------------|
+| **Transcription** | Server-side speech-to-text for the session. Starting it brings a transcriber into the call, which produces the transcript that is stored for later retrieval. |
+| **Closed captions** | The on-screen overlay that renders the live transcript as it arrives. Captions are produced from the running transcription, so they only appear while transcription is active. |
+
+Starting transcription is a prerequisite for captions — toggling captions on without an active transcription shows nothing.
+
+## Starting Transcription
+
+### Auto-Start Transcription
+
+Configure transcription to start automatically when the session begins:
+
+```dart
+final sessionSettings = (SessionSettingsBuilder()
+    ..enableAutoStartTranscription(true))
+  .build();
+```
+
+**Default:** `false`
+
+### Manual Transcription Control
+
+#### Start Transcription
+
+Begin transcribing during an active call:
+
+```dart
+await CallSession.getInstance()?.startTranscription();
+```
+
+#### Stop Transcription
+
+Stop the current transcription. Any captions currently on screen are cleared:
+
+```dart
+await CallSession.getInstance()?.stopTranscription();
+```
+
+#### Check Transcription State
+
+`CallSession` exposes the local transcription state so you can drive a custom control:
+
+```dart
+final isTranscribing = CallSession.getInstance()?.isTranscribing ?? false;
+```
+
+Both actions throw a `CometChatCallsException` if the underlying call fails — `ERROR_START_TRANSCRIPTION` and `ERROR_STOP_TRANSCRIPTION` respectively:
+
+```dart
+try {
+  await CallSession.getInstance()?.startTranscription();
+} on CometChatCallsException catch (e) {
+  debugPrint("${e.code}: ${e.message}");
+}
+```
+
+## Built-in UI Controls
+
+### Transcription Button
+
+The transcription start/stop item in the control panel's **More** menu is hidden by default. To show it:
+
+```dart
+final sessionSettings = (SessionSettingsBuilder()
+    ..hideTranscriptionButton(false))
+  .build();
+```
+
+**Default:** `true`
+
+The menu item toggles between **Start Transcription** and **Stop Transcription** based on the current state.
+
+### Closed Caption Button
+
+The closed-caption (CC) button in the control panel is hidden by default. To show it:
+
+```dart
+final sessionSettings = (SessionSettingsBuilder()
+    ..hideClosedCaptionButton(false))
+  .build();
+```
+
+**Default:** `true`
+
+<Note>
+Even with `hideClosedCaptionButton(false)`, the CC button only appears once transcription is running for the session, because captions are generated from the live transcript.
+</Note>
+
+### Closed Caption Settings
+
+When the CC button is visible, the settings dialog gains a **Closed Caption** tab where the user can pick the caption language and enable or disable the on-screen captions. The gear icon on the captions overlay opens the dialog directly on that tab.
+
+## Caption Language
+
+**Method:** `setCaptionLanguage(String)`
+
+Sets the language used for transcription and captions.
+
+```dart
+final sessionSettings = (SessionSettingsBuilder()
+    ..setCaptionLanguage("en-US"))
+  .build();
+```
+
+**Default:** `en-US`
+
+<Accordion title="Supported Language Codes">
+| Code | Language |
+|------|----------|
+| `en-US` | English (United States) |
+| `de-DE` | German (Germany) |
+| `en-GB` | English (United Kingdom) |
+| `es-ES` | Spanish (Spain) |
+| `fr-FR` | French (France) |
+| `hi-IN` | Hindi (India) |
+| `hu-HU` | Hungarian (Hungary) |
+| `it-IT` | Italian (Italy) |
+| `ja-JP` | Japanese (Japan) |
+| `ko-KR` | Korean (South Korea) |
+| `lt-LT` | Lithuanian (Lithuania) |
+| `ms-MY` | Malay (Malaysia) |
+| `nl-NL` | Dutch (Netherlands) |
+| `pt-PT` | Portuguese (Portugal) |
+| `ru-RU` | Russian (Russia) |
+| `sv-SE` | Swedish (Sweden) |
+| `tr-TR` | Turkish (Turkey) |
+| `zh` | Chinese Mandarin (Simplified, China) |
+| `zh-TW` | Chinese Mandarin (Traditional, Taiwan) |
+</Accordion>
+
+## Retrieving Transcripts
+
+After a call, use `TranscriptRequestBuilder` to list the transcript artifacts for a session. Each record is a **pointer to a downloadable transcript file**, not the transcript text itself.
+
+<Note>
+The SDK must be initialized with `CometChatCalls.init()` and a user must be logged in. The auth token is read from the logged-in user at fetch time, so it automatically tracks re-logins — there is no auth token setter on the builder.
+</Note>
+
+### Building a Request
+
+```dart
+final request = (TranscriptRequestBuilder()
+    ..setSessionId("v1.us.2547167fe69871fd.alice") // required
+    ..setLimit(10))                                 // optional
+  .build();
+
+request.fetchNext(
+  onSuccess: (List<Transcript> transcripts) {
+    for (final transcript in transcripts) {
+      debugPrint("Transcript URL: ${transcript.transcriptUrl}");
+    }
+  },
+  onError: (CometChatCallsException e) {
+    debugPrint("Error: ${e.code} ${e.message}");
+  },
+);
+```
+
+| Method | Required | Description |
+|--------|----------|-------------|
+| `setSessionId(String)` | Yes | The session ID whose transcripts to fetch. A missing or blank value is reported to `onError` as `ERR_SESSION_ID_EMPTY`. |
+| `setLimit(int)` | No | Page size. Defaults to `30` and is clamped to a maximum of `1000`. A non-positive value is reported as `ERROR_NON_POSITIVE_LIMIT`. |
+| `build()` | Yes | Returns a `TranscriptRequest`. It never throws — all validation happens at fetch time and is delivered to `onError`. |
+
+<Note>
+Both builder methods have equivalent public fields, so `TranscriptRequestBuilder()..sessionId = "..."` works too.
+</Note>
+
+### Paginating
+
+A `TranscriptRequest` is a stateful cursor. Create one per session ID and drive it with `fetchNext()` and `fetchPrevious()`. Both also return a `Future` that resolves with the same page handed to `onSuccess`, so you can `await` them instead of nesting callbacks:
+
+```dart
+final request = (TranscriptRequestBuilder()
+    ..setSessionId(sessionId)
+    ..setLimit(10))
+  .build();
+
+var page = await request.fetchNext(
+  onSuccess: (transcripts) {},
+  onError: (e) => debugPrint("Error: ${e.message}"),
+);
+
+while (page.isNotEmpty) {
+  for (final transcript in page) {
+    debugPrint(transcript.transcriptUrl ?? "");
+  }
+  page = await request.fetchNext(
+    onSuccess: (transcripts) {},
+    onError: (e) => debugPrint("Error: ${e.message}"),
+  );
+}
+```
+
+- `fetchNext()` delivers the next page, or an empty list once the last page has been reached. A session with no transcripts delivers an empty list on the first call.
+- `fetchPrevious()` delivers the previous page, or an empty list when already on the first page. It never requests a page below `1`.
+- Only one fetch may be in flight at a time. Calling `fetchNext()` or `fetchPrevious()` while another request is pending reports `ERROR_REQUEST_IN_PROGRESS` to `onError`; the original call is unaffected and still completes.
+- The returned `Future` never completes with an error — failures always arrive through `onError` and the future resolves with an empty list, so a caller that does not `await` can never trip an unhandled async exception.
+
+### Transcript Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tid` | String? | Transcript ID |
+| `mid` | String? | Meeting ID |
+| `roomName` | String? | Room name of the meeting |
+| `startTime` | int? | Meeting start time, in epoch **seconds** |
+| `endTime` | int? | Meeting end time, in epoch **seconds** |
+| `url` | String? | Meeting URL |
+| `transcriptDate` | String? | Transcript date |
+| `transcriptUrl` | String? | URL of the downloadable transcript JSON |
+| `metaData` | Map\<String, dynamic\>? | The raw server record, so new or unknown keys are never lost |
+
+<Note>
+Every property is optional. The server omits keys whose value is empty, so sparse records are normal and should not be treated as an error. A malformed entry within a page is skipped rather than failing the whole page.
+</Note>
+
+### Reading the Transcript Content
+
+`transcriptUrl` points at the transcript file. Fetch it yourself — with `package:http` or any client of your choice — to read the actual utterances:
+
+```dart
+request.fetchNext(
+  onSuccess: (List<Transcript> transcripts) async {
+    for (final transcript in transcripts) {
+      final url = transcript.transcriptUrl;
+      if (url == null) continue;
+
+      final response = await http.get(Uri.parse(url));
+      debugPrint(response.body);
+    }
+  },
+  onError: (CometChatCallsException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+
+### Error Handling
+
+Every failure — pre-flight validation and server errors alike — is delivered to `onError` as a `CometChatCallsException` carrying a `code`, `message` and `details`:
+
+| Condition | Code |
+|-----------|------|
+| `init()` was not called | `ERR_SDK_NOT_INITIALIZED` |
+| No logged-in user / auth token | `USER_AUTH_TOKEN_NULL` |
+| `sessionId` missing or blank | `ERR_SESSION_ID_EMPTY` |
+| `limit` is zero or negative | `ERROR_NON_POSITIVE_LIMIT` |
+| A fetch is already in flight | `ERROR_REQUEST_IN_PROGRESS` |
+| Missing or malformed response | `ERROR_JSON_EXCEPTION` |
+| Server-side API error | The server's own code |
+
+## Transcripts in Call Logs
+
+Call logs can be filtered to transcribed calls, which also attaches each call's transcripts to the log:
+
+```dart
+CallLogRequest callLogRequest = CallLogRequest.CallLogRequestBuilder()
+    .setLimit(30)
+    .setHasTranscriptions(true)
+    .build();
+
+callLogRequest.fetchNext(
+  onSuccess: (List<CallLog> callLogs) {
+    for (CallLog callLog in callLogs) {
+      for (final transcript in callLog.getTranscriptions()) {
+        debugPrint("${transcript.tid}: ${transcript.transcriptUrl}");
+      }
+    }
+  },
+  onError: (CometChatCallsException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+
+`getTranscriptions()` returns an empty list when the server omitted transcripts, so it never needs a null check. Leaving the filter off sends no filter at all, so the list comes back unfiltered exactly as if it had never been set.
+
+## Complete Example
+
+```dart
+// 1. Join a session with transcription enabled
+final sessionSettings = (SessionSettingsBuilder()
+    ..setType(SessionType.video)
+    ..enableAutoStartTranscription(true)
+    ..hideTranscriptionButton(false)
+    ..hideClosedCaptionButton(false)
+    ..setCaptionLanguage("en-US"))
+  .build();
+
+// Pass sessionSettings to the CometChatCallsView / joinSession() call.
+
+// 2. Control transcription during the call
+await CallSession.getInstance()?.startTranscription();
+await CallSession.getInstance()?.stopTranscription();
+
+// 3. Retrieve transcripts after the call
+final request = (TranscriptRequestBuilder()
+    ..setSessionId(sessionId)
+    ..setLimit(10))
+  .build();
+
+request.fetchNext(
+  onSuccess: (List<Transcript> transcripts) {
+    for (final transcript in transcripts) {
+      debugPrint(transcript.transcriptUrl ?? "");
+    }
+  },
+  onError: (CometChatCallsException e) {
+    debugPrint("Error: ${e.message}");
+  },
+);
+```
+
+## Related Documentation
+
+- [SessionSettingsBuilder](/calls/flutter/session-settings)
+- [Actions](/calls/flutter/actions)
+- [Call Logs](/calls/flutter/call-logs)
+- [Recording](/calls/flutter/recording)

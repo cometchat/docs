@@ -1,0 +1,372 @@
+---
+title: "Transcription & Closed Captions"
+sidebarTitle: "Transcription"
+sdk_version: "5.x"
+description: "Use CometChat Calls SDK v5 transcription on React Native to transcribe calls, show live closed captions, and retrieve transcripts after the call."
+---
+
+<Note>
+**Available since v5.0.5** — transcription and closed captions require CometChat Calls SDK v5.0.5 or later for React Native. See [Setup](/calls/react-native/setup) to install or upgrade.
+</Note>
+
+Transcribe call sessions in real time and display live closed captions on screen. Transcripts are stored server-side and can be retrieved after the call using `TranscriptRequestBuilder`.
+
+<Warning>
+Transcription must be enabled for your CometChat app. Contact support if you need to enable this feature.
+</Warning>
+
+## How It Works
+
+Transcription and closed captions are two related but separate things:
+
+| Concept | What it does |
+|---------|--------------|
+| **Transcription** | Server-side speech-to-text for the session. Starting it brings a transcriber into the call, which produces the transcript that is stored for later retrieval. |
+| **Closed captions** | The on-screen overlay that renders the live transcript as it arrives. Captions are produced from the running transcription, so they only appear while transcription is active. |
+
+Starting transcription is a prerequisite for captions — toggling captions on without an active transcription shows nothing.
+
+## Starting Transcription
+
+### Auto-Start Transcription
+
+Configure transcription to start automatically when the session begins:
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+const sessionSettings = {
+  autoStartTranscription: true,
+  // ... other settings
+};
+
+<CometChatCalls.Component
+  callToken={callToken}
+  sessionSettings={sessionSettings}
+/>
+```
+
+**Default:** `false`
+
+### Manual Transcription Control
+
+#### Start Transcription
+
+Begin transcribing during an active call:
+
+```tsx
+CometChatCalls.startTranscription();
+```
+
+#### Stop Transcription
+
+Stop the current transcription. Any captions currently on screen are cleared:
+
+```tsx
+CometChatCalls.stopTranscription();
+```
+
+## Built-in UI Controls
+
+Both transcription controls live in the control panel's **More** menu and are hidden by default.
+
+### Transcription Menu Item
+
+Show the **Start Transcription** / **Stop Transcription** item:
+
+```tsx
+const sessionSettings = {
+  hideTranscriptionButton: false,
+  // ... other settings
+};
+```
+
+**Default:** `true`
+
+The item toggles between **Start Transcription** and **Stop Transcription** based on the current state.
+
+<Note>
+Even with `hideTranscriptionButton: false`, the item is hidden while another participant is running transcription for the session. Only the participant who started transcription can stop it from the menu.
+</Note>
+
+### Closed Captions Menu Item
+
+Show the **Show Captions** / **Hide Captions** item, which toggles the on-screen captions overlay:
+
+```tsx
+const sessionSettings = {
+  hideClosedCaptionButton: false,
+  // ... other settings
+};
+```
+
+**Default:** `true`
+
+<Note>
+Even with `hideClosedCaptionButton: false`, the item only appears once transcription is running for the session, because captions are generated from the live transcript.
+</Note>
+
+### Captions Overlay
+
+When captions are shown, the SDK renders a captions panel between the call stage and the control panel. Each caption shows the speaker's avatar, name, and text. The panel keeps the most recent captions, auto-scrolls to the newest one, and shows a jump-to-latest button when the user has scrolled up to read earlier captions. Until someone speaks, it displays *Waiting for people to speak…*.
+
+## Caption Language
+
+**Property:** `captionLanguage`
+
+Sets the language used for transcription and captions.
+
+```tsx
+const sessionSettings = {
+  captionLanguage: 'en-US',
+  // ... other settings
+};
+```
+
+**Default:** `en-US`
+
+<Note>
+On React Native there is no in-call language picker. Set `captionLanguage` in the session settings before joining.
+</Note>
+
+<Accordion title="Supported Language Codes">
+| Code | Language |
+|------|----------|
+| `en-US` | English (United States) |
+| `de-DE` | German (Germany) |
+| `en-GB` | English (United Kingdom) |
+| `es-ES` | Spanish (Spain) |
+| `fr-FR` | French (France) |
+| `hi-IN` | Hindi (India) |
+| `hu-HU` | Hungarian (Hungary) |
+| `it-IT` | Italian (Italy) |
+| `ja-JP` | Japanese (Japan) |
+| `ko-KR` | Korean (South Korea) |
+| `lt-LT` | Lithuanian (Lithuania) |
+| `ms-MY` | Malay (Malaysia) |
+| `nl-NL` | Dutch (Netherlands) |
+| `pt-PT` | Portuguese (Portugal) |
+| `ru-RU` | Russian (Russia) |
+| `sv-SE` | Swedish (Sweden) |
+| `tr-TR` | Turkish (Turkey) |
+| `zh` | Chinese Mandarin (Simplified, China) |
+| `zh-TW` | Chinese Mandarin (Traditional, Taiwan) |
+</Accordion>
+
+## Retrieving Transcripts
+
+After a call, use `TranscriptRequestBuilder` to list the transcript artifacts for a session. Each record is a **pointer to a downloadable transcript file**, not the transcript text itself.
+
+<Note>
+The SDK must be initialized with `CometChatCalls.init()` and a user must be logged in. The auth token is read from the logged-in user at fetch time, so it automatically tracks re-logins.
+</Note>
+
+### Building a Request
+
+```tsx
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+
+const request = new CometChatCalls.TranscriptRequestBuilder()
+  .setSessionId('v1.us.2547167fe69871fd.alice') // required
+  .setLimit(10)                                  // optional
+  .build();
+
+const transcripts = await request.fetchNext();
+```
+
+| Method | Required | Description |
+|--------|----------|-------------|
+| `setSessionId(sessionId: string)` | Yes | The session ID whose transcripts to fetch. An empty value throws `SESSION_ID_REQUIRED` at `build()`. |
+| `setLimit(limit: number)` | No | Page size. Defaults to `30` and is clamped to the range `1`–`1000`. |
+| `build()` | Yes | Returns a `TranscriptRequest`. Throws synchronously for pre-flight errors. |
+
+### Paginating
+
+A `TranscriptRequest` is a stateful cursor. Create one per session ID and drive it with `fetchNext()` and `fetchPrevious()`:
+
+```tsx
+const request = new CometChatCalls.TranscriptRequestBuilder()
+  .setSessionId(sessionId)
+  .setLimit(10)
+  .build();
+
+let page = await request.fetchNext(); // page 1
+
+while (page.length > 0) {
+  page.forEach((transcript) => console.log(transcript.transcriptUrl));
+  page = await request.fetchNext();   // page 2, 3, ... then [] at the end
+}
+```
+
+- `fetchNext()` resolves the next page, or `[]` when there are no more pages. A session with no transcripts resolves `[]`.
+- `fetchPrevious()` resolves the previous page, or `[]` when already on the first page. It never requests a page below `1`.
+- Only one fetch may be in flight at a time. Calling `fetchNext()` or `fetchPrevious()` while another request is pending rejects with `REQUEST_IN_PROGRESS`; the original call is unaffected and still completes.
+
+### Transcript Properties
+
+The `Transcript` type is exported from the package for TypeScript consumers:
+
+```tsx
+import type { Transcript } from '@cometchat/calls-sdk-react-native';
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tid` | string | Transcript ID |
+| `mid` | string | Meeting ID |
+| `roomName` | string | Room name of the meeting |
+| `startTime` | number | Meeting start time, in epoch **seconds** |
+| `endTime` | number | Meeting end time, in epoch **seconds** |
+| `url` | string | Meeting URL |
+| `transcriptDate` | string | Transcript date |
+| `transcriptUrl` | string | URL of the downloadable transcript JSON |
+| `metaData` | object | Arbitrary metadata |
+
+<Note>
+Every property is optional. The server omits keys whose value is empty, so sparse records are normal and should not be treated as an error.
+</Note>
+
+### Reading the Transcript Content
+
+`transcriptUrl` points at the transcript file. Fetch it yourself to read the actual utterances:
+
+```tsx
+const [transcript] = await request.fetchNext();
+
+if (transcript?.transcriptUrl) {
+  const response = await fetch(transcript.transcriptUrl);
+  const content = await response.json();
+  console.log(content);
+}
+```
+
+### Error Handling
+
+`build()` throws synchronously; `fetchNext()` and `fetchPrevious()` reject. Both surface a `CometChatCallsException` carrying a `code`:
+
+| Condition | Code | Raised by |
+|-----------|------|-----------|
+| `init()` was not called | `NOT_INITIALIZED` | `build()` |
+| `sessionId` missing or empty | `SESSION_ID_REQUIRED` | `build()` |
+| No logged-in user | `NOT_LOGGED_IN` | `fetchNext()` / `fetchPrevious()` |
+| A fetch is already in flight | `REQUEST_IN_PROGRESS` | `fetchNext()` / `fetchPrevious()` |
+| Network failure | `NETWORK_ERROR` | `fetchNext()` / `fetchPrevious()` |
+| Missing or malformed response | `BAD_RESPONSE` | `fetchNext()` / `fetchPrevious()` |
+| Server-side API error | The server's own code (e.g. `AUTH_ERR_EMPTY_APPID`) | `fetchNext()` / `fetchPrevious()` |
+
+```tsx
+try {
+  const transcripts = await request.fetchNext();
+} catch (error) {
+  console.error(error.code, error.message);
+}
+```
+
+## Transcripts in Call Logs
+
+Call logs can be filtered to transcribed calls, which also attaches each call's transcripts to the log:
+
+```tsx
+const callLogRequest = new CometChatCalls.CallLogRequestBuilder()
+  .setLimit(30)
+  .setHasTranscriptions(true)
+  .build();
+
+const callLogs = await callLogRequest.fetchNext();
+
+callLogs.forEach((callLog) => {
+  callLog.getTranscriptions().forEach((transcription) => {
+    console.log(transcription.getTid(), transcription.getTranscriptURL());
+  });
+});
+```
+
+`getTranscriptions()` returns an empty array when the server omitted transcripts, so it never needs a null check.
+
+<Accordion title="Transcription Methods">
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getTid()` | string | The transcript ID |
+| `getMid()` | string | The meeting ID |
+| `getRoomName()` | string | The room name of the meeting |
+| `getStartTime()` | number | Meeting start time, in epoch seconds |
+| `getEndTime()` | number | Meeting end time, in epoch seconds |
+| `getTranscriptDate()` | string | The transcript date |
+| `getTranscriptURL()` | string | URL of the downloadable transcript JSON |
+</Accordion>
+
+## Complete Example
+
+```tsx
+import React, { useEffect, useState } from 'react';
+import { View, TouchableOpacity, Text, StyleSheet } from 'react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+import type { Transcript } from '@cometchat/calls-sdk-react-native';
+
+// 1. Join a session with transcription enabled
+const sessionSettings = {
+  sessionType: 'VIDEO',
+  autoStartTranscription: true,
+  hideTranscriptionButton: false,
+  hideClosedCaptionButton: false,
+  captionLanguage: 'en-US',
+};
+
+function CallScreen({ callToken }: { callToken: string }) {
+  const [isTranscribing, setIsTranscribing] = useState(true);
+
+  // 2. Control transcription during the call
+  const toggleTranscription = () => {
+    if (isTranscribing) {
+      CometChatCalls.stopTranscription();
+    } else {
+      CometChatCalls.startTranscription();
+    }
+    setIsTranscribing(!isTranscribing);
+  };
+
+  return (
+    <View style={styles.container}>
+      <CometChatCalls.Component
+        callToken={callToken}
+        sessionSettings={sessionSettings}
+      />
+      <TouchableOpacity style={styles.button} onPress={toggleTranscription}>
+        <Text style={styles.buttonText}>
+          {isTranscribing ? 'Stop Transcription' : 'Start Transcription'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// 3. Retrieve transcripts after the call
+async function fetchTranscripts(sessionId: string): Promise<Transcript[]> {
+  const request = new CometChatCalls.TranscriptRequestBuilder()
+    .setSessionId(sessionId)
+    .setLimit(10)
+    .build();
+
+  return request.fetchNext();
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  button: {
+    backgroundColor: '#333',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignSelf: 'center',
+  },
+  buttonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+});
+
+export default CallScreen;
+```
+
+## Related Documentation
+
+- [Session Settings](/calls/react-native/session-settings) - Configure transcription options
+- [Actions](/calls/react-native/actions) - Start and stop transcription programmatically
+- [Call Logs](/calls/react-native/call-logs) - Transcripts attached to call history
