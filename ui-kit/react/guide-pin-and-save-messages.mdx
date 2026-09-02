@@ -153,6 +153,54 @@ Your app can cap how many messages may be pinned or saved. These caps are config
 
 When a user hits a cap, the UI Kit shows a toast explaining the limit — you don't need to handle the error yourself. The kit reads these settings at login so the toast can name the exact cap.
 
+## Custom UI
+
+The built-in components handle pin and save end to end — reach for this section only if you're building your **own** message or conversation UI and want the same behavior.
+
+Drive pin/save directly with the SDK calls, then publish an optimistic UI event so the built-in surfaces (the message list, the Pinned and Saved panels, the conversation list) stay in sync with your action:
+
+| Action | SDK call | Publish afterwards |
+| --- | --- | --- |
+| Pin a message | `CometChat.pinMessage(messageId)` | `ui:message/pin-changed` `{ message, pinned: true }` |
+| Unpin a message | `CometChat.unpinMessage(messageId)` | `ui:message/pin-changed` `{ message, pinned: false }` |
+| Save a message | `CometChat.saveMessage(messageId)` | `ui:message/save-changed` `{ message, saved: true }` |
+| Unsave a message | `CometChat.unsaveMessage(messageId)` | `ui:message/save-changed` `{ message, saved: false }` |
+| Pin a conversation | `CometChat.pinConversation(with, type)` | `ui:conversation/pin-changed` `{ conversation, pinned: true }` |
+| Unpin a conversation | `CometChat.unpinConversation(with, type)` | `ui:conversation/pin-changed` `{ conversation, pinned: false }` |
+
+For a conversation, `with`/`type` are the peer's UID (or the group's GUID) and `"user"` / `"group"` — not the `conversationId`.
+
+Read the current state off the message or conversation object: `isPinned()` and `isSaved()` return booleans, and `getPinnedAt()` / `getPinnedBy()` / `getSavedAt()` return the details (or `undefined` when unset). The *presence* of the value is what "pinned" / "saved" means, so branch on `isPinned()` / `isSaved()` rather than comparing timestamps.
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { usePublishEvent } from "@cometchat/chat-uikit-react";
+
+function PinButton({ message }: { message: CometChat.BaseMessage }) {
+  const publish = usePublishEvent();
+
+  const togglePin = async () => {
+    const id = message.getId();
+    try {
+      if (message.isPinned()) {
+        await CometChat.unpinMessage(id);
+        publish({ type: "ui:message/pin-changed", message, pinned: false });
+      } else {
+        await CometChat.pinMessage(id);
+        publish({ type: "ui:message/pin-changed", message, pinned: true });
+      }
+    } catch (error) {
+      // The server enforces permission and the per-app cap — surface a message here.
+      console.error("Pin failed", error);
+    }
+  };
+
+  return <button onClick={togglePin}>{message.isPinned() ? "Unpin" : "Pin"}</button>;
+}
+```
+
+Permission and the per-app caps are enforced by the **server**, so wrap the calls in `try/catch` and surface a message on rejection — see [Limits](#step-5-limits) and the permission behavior in [Step 1](#step-1-the-message-options). Publishing the `ui:` events above is what keeps the message list and the Pinned/Saved panels in step with your custom action. For the full event list, see the [Event System](/ui-kit/react/event-system#pin-and-save).
+
 ## Complete Example
 
 _File: App.tsx_
