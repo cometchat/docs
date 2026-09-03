@@ -7,16 +7,113 @@ description: "Configure picture-in-picture for CometChat Calls SDK v5 on iOS to 
 
 Enable Picture-in-Picture (PiP) mode to allow users to continue their call in a floating window while using other apps. PiP provides a seamless multitasking experience during calls.
 
+<Warning>
+  **`enablePictureInPictureLayout()` alone does nothing visible.** It only tells the call UI to
+  re-lay-out for a smaller window — it does not create, move or float a window. Something has to
+  provide the small window, and there are two different ways to do that. Pick one before you write
+  any code.
+</Warning>
+
+## Two kinds of Picture-in-Picture
+
+| | In-app PiP | System PiP |
+|---|---|---|
+| **What the user sees** | A small draggable call tile floating over **your own app** | A floating window over **other apps** and the Home Screen |
+| **Who provides the window** | **`PiPViewCoordinator`, shipped in the Calls SDK** | Apple's `AVPictureInPictureController` (AVKit) |
+| **Setup** | A few lines — see below | Background Modes + an `AVPictureInPictureVideoCallViewController` you host the call container in |
+| **Availability** | Any supported iOS version | iPhone iOS 15+, iPad iOS 9+ |
+
+In both cases you still call `enablePictureInPictureLayout()` / `disablePictureInPictureLayout()`
+so the SDK reshapes the call UI to match.
+
 <Note>
-Picture-in-Picture implementation is handled at the app level using iOS's PiP APIs. The Calls SDK only adjusts the call UI layout to fit the PiP window - it does not manage the PiP window itself.
+  The Calls SDK does **not** implement System PiP. If you need the call to float over *other* apps,
+  that part is Apple's API and yours to wire.
 </Note>
 
-## How It Works
+## In-app PiP with `PiPViewCoordinator`
 
-1. Your app enters PiP mode using iOS's AVPictureInPictureController API
+`PiPViewCoordinator` ships with the Calls SDK. Give it the same `UIView` you passed to
+`joinSession(container:)` and it turns that view into a draggable, tappable mini-call.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import CometChatCallsSDK
+
+final class PiPCallViewController: UIViewController, PiPViewCoordinatorDelegate {
+
+    private let callContainer = UIView()
+    private var pipCoordinator: PiPViewCoordinator?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        // The coordinator manages the SAME view the call is rendered into.
+        let coordinator = PiPViewCoordinator(withView: callContainer)
+        coordinator.delegate = self
+        coordinator.initialPositionInSuperView = .lowerRightCorner
+        coordinator.dragBoundInsets = UIEdgeInsets(top: 25, left: 8, bottom: 8, right: 8)
+
+        // Pass the parent explicitly — with no argument it falls back to the key window.
+        coordinator.configureAsStickyView(withParentView: view)
+        coordinator.show()
+        pipCoordinator = coordinator
+
+        // ...then join the session into `callContainer` as usual.
+    }
+
+    /// Shrink to the floating tile.
+    func enterPiP() {
+        pipCoordinator?.enterPictureInPicture()   // resize + enable dragging + exit button
+        CallSession.shared.enablePictureInPictureLayout()   // reshape the call UI to match
+    }
+
+    /// Called by the coordinator AFTER it has already restored the full-size view —
+    /// this is a notification that PiP ended, not a request to end it.
+    func exitPictureInPicture() {
+        CallSession.shared.disablePictureInPictureLayout()
+    }
+
+    /// Keep the tile inside the screen on rotation or a size change.
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate { [weak self] _ in
+            guard let self else { return }
+            self.pipCoordinator?.resetBounds(bounds: CGRect(origin: .zero, size: size))
+        }
+    }
+}
+```
+</Tab>
+</Tabs>
+
+### `PiPViewCoordinator` reference
+
+| Member | Purpose |
+|---|---|
+| `init(withView:)` | The view the call renders into — the same one given to `joinSession(container:)` |
+| `configureAsStickyView(withParentView:)` | Adds the view above everything in the parent. **Pass the parent explicitly**; with no argument it falls back to the key window |
+| `show(completion:)` / `hide(completion:)` | Fade in / out. `completion` is `AnimationCompletion` = `(Bool) -> Void` |
+| `enterPictureInPicture()` | Shrinks the view, enables the drag gesture, and adds a tap-to-reveal exit button |
+| `exitPictureInPicture()` | Restores full size, removes the drag gesture and exit button, then calls the delegate |
+| `resetBounds(bounds:)` | Call on rotation or any size change |
+| `stopDragGesture()` | Pin the tile in place |
+| `configureExitPiPButton(target:action:)` | Supply your own exit button |
+| `initialPositionInSuperView` | `.lowerRightCorner` (default) · `.upperRightCorner` · `.lowerLeftCorner` · `.upperLeftCorner` |
+| `dragBoundInsets` | How far the tile may be dragged toward each edge |
+| `delegate` | `PiPViewCoordinatorDelegate` — one method, `exitPictureInPicture()` |
+
+<Note>
+  The tile size is fixed at 150px. The `c` property that used to set it is deprecated and ignored.
+</Note>
+
+## How the SDK layout hook works
+
+1. Something provides the small window — `PiPViewCoordinator` (in-app) or `AVPictureInPictureController` (system)
 2. You notify the Calls SDK by calling `enablePictureInPictureLayout()`
-3. The SDK adjusts the call UI to fit the smaller PiP window (hides controls, optimizes layout)
-4. When exiting PiP, call `disablePictureInPictureLayout()` to restore the full UI
+3. The SDK adjusts the call UI to fit the smaller window (hides controls, optimizes layout)
+4. When exiting, call `disablePictureInPictureLayout()` to restore the full UI
 
 ## Enable Picture-in-Picture
 
@@ -125,9 +222,9 @@ class CallViewController: UIViewController, LayoutListener {
 </Tab>
 </Tabs>
 
-## iOS PiP Setup
+## System PiP setup (floating over other apps)
 
-To enable PiP in your iOS app:
+Only needed for System PiP — In-app PiP via `PiPViewCoordinator` requires none of this.
 
 **1. Enable Background Modes**
 
