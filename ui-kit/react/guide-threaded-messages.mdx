@@ -19,7 +19,7 @@ By the end of this guide you will have a chat interface where users can open a t
 | Component | Purpose |
 |:----------|:--------|
 | `CometChatThreadHeader` | Displays the parent message and reply count at the top of the thread panel |
-| `CometChatMessageList` | Renders threaded replies when given a `parentMessageId` |
+| `CometChatMessageList` | Renders threaded replies when given a `parentMessage` (the deprecated `parentMessageId` still works) |
 | `CometChatMessageComposer` | Sends replies into the thread with `parentMessageId`, `layout="compact"`, and `enableRichTextEditor` |
 
 ## Step 1: Thread State Management
@@ -59,7 +59,7 @@ import { CometChatMessageList } from "@cometchat/chat-uikit-react";
 
 ## Step 3: Build the Thread Panel
 
-When `threadedMessage` is set, render a side panel composing `CometChatThreadHeader` + `CometChatMessageList` (with `parentMessageId`) + `CometChatMessageComposer` (with `parentMessageId`, `layout="compact"`, and `enableRichTextEditor`). The `onClose` callback clears the state to dismiss the panel.
+When `threadedMessage` is set, render a side panel composing `CometChatThreadHeader` + `CometChatMessageList` (with `parentMessage`) + `CometChatMessageComposer` (with `parentMessageId`, `layout="compact"`, and `enableRichTextEditor`). The `onClose` callback clears the state to dismiss the panel.
 
 _File: ChatWithThreads.tsx_
 
@@ -80,7 +80,7 @@ import {
 
     <div style={{ flex: 1, overflow: "hidden" }}>
       <CometChatMessageList
-        parentMessageId={threadedMessage.getId()}
+        parentMessage={threadedMessage}
         user={user ?? undefined}
         group={group ?? undefined}
       />
@@ -178,7 +178,7 @@ function ChatWithThreads() {
           />
           <div style={{ flex: 1, overflow: "hidden" }}>
             <CometChatMessageList
-              parentMessageId={threadedMessage.getId()}
+              parentMessage={threadedMessage}
               user={user ?? undefined}
               group={group ?? undefined}
             />
@@ -206,6 +206,80 @@ function App() {
 
 export default App;
 ```
+
+## Thread Subscription
+
+In a **group** thread, users can *subscribe* to the thread to keep getting updates about new replies even when they aren't actively viewing it, and *unsubscribe* to stop. The UI Kit surfaces this in two places, both wired out of the box:
+
+- A **bell toggle** in `CometChatThreadHeader` (group threads only — it never appears in a 1:1 thread).
+- A **subscribe / unsubscribe option** in the message context menu of `CometChatMessageList`.
+
+Both reflect the current subscription state, flip it optimistically on click, and show a toast if the server rejects the change. No wiring is required to make them work.
+
+### Automatic subscription
+
+Beyond the manual bell and menu option, the UI Kit subscribes a user to a thread automatically in a few cases, so people keep getting updates on threads they're actually part of — without having to remember to follow them:
+
+- **Sending a message subscribes you to its thread.** When you send a message, you're subscribed to the thread on that message — so you keep hearing about replies to it — and sending a reply inside a thread subscribes you to that thread as well. This applies to every message type — text, media, stickers, polls, collaborative documents, and custom messages.
+- **Being @mentioned in a reply subscribes you.** If someone @mentions you in a threaded reply, you're subscribed — whether the mention is added on a fresh reply or introduced (or preserved) by an edit.
+- **A reply from someone else that doesn't mention you does not subscribe you.** You're only pulled in when you author something in the thread or you're mentioned.
+
+These rules apply in real time and across devices, and a change is mirrored to every surface — the bell in `CometChatThreadHeader` and the subscribe/unsubscribe option in `CometChatMessageList` — **whether or not the thread panel is open**.
+
+A deliberate **unsubscribe is remembered** and survives a reload, but sending another message in that thread, or being mentioned in it again, re-subscribes you.
+
+The labels and toasts are localizable — override the `thread_subscription_subscribe`, `thread_subscription_unsubscribe`, `thread_subscription_subscribed_toast`, `thread_subscription_unsubscribed_toast`, and `thread_subscription_failed` keys via [localization](/ui-kit/react/localization).
+
+### Reacting to changes
+
+Pass `onThreadSubscriptionChange` to the thread header to run your own logic when the user subscribes or unsubscribes:
+
+```tsx
+<CometChatThreadHeader
+  parentMessage={threadedMessage}
+  onClose={() => setThreadedMessage(null)}
+  onThreadSubscriptionChange={(subscribed) =>
+    console.log(subscribed ? "Subscribed to thread" : "Unsubscribed from thread")
+  }
+/>
+```
+
+### Hiding the controls
+
+- `hideThreadSubscriptionToggle` on [`CometChatThreadHeader`](/ui-kit/react/components/thread-header#hidethreadsubscriptiontoggle) removes the bell.
+- `hideThreadSubscriptionOption` on [`CometChatMessageList`](/ui-kit/react/components/message-list#hidethreadsubscriptionoption) removes the context-menu option.
+
+### Driving it yourself
+
+For custom UI, the `useThreadSubscription` hook exposes the same state and toggle. Pass an optional second argument to react when the subscription flips (from the toggle here, or from any automatic or manual change elsewhere):
+
+```tsx
+import { useThreadSubscription } from "@cometchat/chat-uikit-react";
+
+function SubscribeButton({ parentMessage }: { parentMessage: CometChat.BaseMessage }) {
+  const { isSubscribed, toggle } = useThreadSubscription(parentMessage, (subscribed) =>
+    console.log(subscribed ? "Subscribed" : "Unsubscribed")
+  );
+  return (
+    <button onClick={toggle}>
+      {isSubscribed ? "Subscribed" : "Subscribe to thread"}
+    </button>
+  );
+}
+```
+
+If you only need to read the state — for example, to render an indicator without a toggle — use `useThreadSubscriptionState`, which returns the boolean alone and stays in sync with every automatic and manual change:
+
+```tsx
+import { useThreadSubscriptionState } from "@cometchat/chat-uikit-react";
+
+function SubscribedDot({ parentMessage }: { parentMessage: CometChat.BaseMessage }) {
+  const isSubscribed = useThreadSubscriptionState(parentMessage);
+  return isSubscribed ? <span className="subscribed-dot" /> : null;
+}
+```
+
+Subscription changes are broadcast on the [event bus](/ui-kit/react/event-system) as `ui:thread/subscription-changed` — the single channel every open surface (the bell, the option, your custom UI) listens to, so a flip anywhere is reflected everywhere.
 
 ## Next Steps
 
