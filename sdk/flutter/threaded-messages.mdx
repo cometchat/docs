@@ -149,3 +149,118 @@ messageRequest.fetchNext(onSuccess: (List<BaseMessage> list) {
 </Tabs>
 
 The above snippet will return messages between the logged in user and `cometchat-uid-1` excluding all the threaded messages belonging to the same conversation.
+
+## Thread Subscriptions
+
+Subscribing to (following) a thread lets the logged-in user be notified about new replies in that thread. The SDK exposes the server's answer on the message and two calls to change it — subscription state lives on the message, not in the SDK.
+
+### Subscribe to a Thread
+
+In order to subscribe to a thread, you can use the `subscribeToThread()` method. This method takes the id of the thread's parent message. Subscribing is allowed even on a message that has no replies yet.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int parentMessageId = 103;
+
+CometChat.subscribeToThread(parentMessageId, onSuccess: (String response) {
+  debugPrint("Subscribed to thread successfully");
+}, onError: (CometChatException e) {
+  debugPrint("Thread subscription failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+The call is idempotent — subscribing to an already-followed thread succeeds and is not an error. **The resolved call is the acknowledgement**: there is no follow-up event.
+
+### Unsubscribe from a Thread
+
+In order to unsubscribe from a thread, you can use the `unsubscribeFromThread()` method.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int parentMessageId = 103;
+
+CometChat.unsubscribeFromThread(parentMessageId, onSuccess: (String response) {
+  debugPrint("Unsubscribed from thread successfully");
+}, onError: (CometChatException e) {
+  debugPrint("Thread unsubscription failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+
+Unfollowing is not sticky: replying to the thread again, or being @-mentioned in it, re-subscribes the user. Do not promise otherwise in UI copy. Unsubscribing also hard-deletes the subscription server-side — if you are holding a fetched thread list, remove the row locally when the call resolves.
+
+</Note>
+
+### Read the Subscription State
+
+Subscription state lives **on the message**. Every message fetch opts in with `withThreadSubscribed=true` automatically, and the server returns the flag on the message payload — the SDK normalises it and exposes it as the `threadSubscribed` boolean on any fetched message. The flag is per-viewer: the same message yields different values for different users.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (message.threadSubscribed) {
+  debugPrint("Following this thread");
+}
+```
+
+</Tab>
+</Tabs>
+
+Two rules to internalise:
+
+1. The flag is only populated on responses to requests that **asked** for it. A message delivered over the socket carries no flag and therefore reads `false` — meaning "the server did not tell me", not "the user is unsubscribed".
+2. **A message's author is subscribed to its thread by default.** A fetched message the logged-in user sent reading `false` is therefore not silence — it is an explicit unsubscribe, and nothing should override it.
+
+Because subscribing is idempotent, rendering an un-told `false` as the un-followed affordance is safe — an unnecessary subscribe is harmless.
+
+### Reacting to Replies
+
+A thread reply is an ordinary message with `parentMessageId` set, delivered through the standard `MessageListener` alongside every other message — there is no thread-specific event channel. The same listener also delivers `onMessageEdited` and `onMessageDeleted` for replies, which a replies-only channel would miss.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class Class_Name with MessageListener {
+
+  //CometChat.addMessageListener("listenerId", this);
+
+  @override
+  void onTextMessageReceived(TextMessage textMessage) {
+    if (textMessage.parentMessageId != 0) {
+      debugPrint("A reply landed in thread ${textMessage.parentMessageId}");
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Your own replies do not arrive on a listener — update your UI from the send call's success callback.
+
+### Fetch Participated Threads
+
+You can fetch the threads the logged-in user participates in by using the `ThreadsRequest` class. The `ThreadsRequestBuilder` builds the request using functions such as `setLimit()` and `setParticipatedByMe()`; once you have the `ThreadsRequest` object, call `fetchNext()` to get the next set of threads. Presence in this list *is* a subscription — every row is subscribed.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
+    ..setParticipatedByMe(true)
+    ..setLimit(30)).build();
+
+List<MessageThread> threads = await threadsRequest.fetchNext();
+debugPrint("Fetched ${threads.length} threads");
+```
+
+</Tab>
+</Tabs>
