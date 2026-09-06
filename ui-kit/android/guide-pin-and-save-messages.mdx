@@ -1,0 +1,166 @@
+---
+title: "Pin & Save Messages"
+sidebarTitle: "Pin & Save Messages"
+description: "Add pinned messages, saved messages, and pinned conversations to your app with the built-in options, indicators, and screens."
+---
+
+## Overview
+
+Three related features help users keep track of what matters:
+
+| Feature | Scope | Visible to | Surfaces |
+| --- | --- | --- | --- |
+| **Pin Message** | One conversation | Everyone in it | Action-sheet option, bubble indicator, [Pinned Messages](/ui-kit/android/pinned-messages) screen |
+| **Save Message** | All conversations | Only the acting user | Action-sheet option, bubble indicator, [Saved Messages](/ui-kit/android/saved-messages) screen |
+| **Pin Conversation** | Conversation list | Only the acting user | Long-press option + pin indicator in [Conversations](/ui-kit/android/conversations) |
+
+The options, confirmation dialogs, toasts and indicators are built into the UI Kit components. The only integration work is wiring the two full-screen views into your navigation.
+
+## Prerequisites
+
+- A working message view — see [Getting Started](/ui-kit/android/getting-started).
+- The features enabled for your app. Check at runtime with the flags on `CometChatUIKit`:
+
+```kotlin lines
+CometChatUIKit.isPinMessageEnabled()
+CometChatUIKit.isSaveMessageEnabled()
+CometChatUIKit.isPinConversationEnabled()
+```
+
+## Pin & Save in the Message List
+
+With the features enabled, [CometChatMessageList](/ui-kit/android/message-list) automatically adds **Pin message / Unpin message** and **Save message / Unsave message** to the long-press action sheet for text and media messages. The labels toggle with the message's current state.
+
+- **Pin** is role-gated in groups: the UI Kit shows the Pin/Unpin option only to participants with the **Admin** or **Moderator** scope, or the group **owner**. Everyone sees pinned indicators. In one-on-one chats both participants can pin. Note this gate is applied by the UI Kit — if you build custom pin UI directly on the SDK, apply your own role check.
+- **Save** has no role gating — every user can save any message.
+- **Pin** and **Save** apply immediately and show a toast (*Message pinned*, *Message saved*, …); **Unpin** and **Unsave** ask for confirmation first. If a pin or save limit is exceeded, the limit toast is generated from the server's response automatically.
+- Pinned and saved messages show **indicators in the bubble footer** (a filled pin / bookmark before the timestamp), updating live for all bubble types.
+
+## Step 1: Open Pinned Messages from the Chat Header
+
+[CometChatMessageHeader](/ui-kit/android/message-header) has a built-in **Pinned messages** menu item — enable it and handle the tap:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin MessagesActivity.kt lines
+messageHeader.setShowPinnedMessagesOption(true)
+
+messageHeader.setOnPinnedMessagesClickListener {
+    val intent = Intent(this, PinnedMessagesActivity::class.java)
+    user?.let { u -> intent.putExtra("uid", u.uid) }
+    group?.let { g -> intent.putExtra("guid", g.guid) }
+    pinnedMessagesLauncher.launch(intent)
+}
+```
+</Tab>
+</Tabs>
+
+Host [CometChatPinnedMessages](/ui-kit/android/pinned-messages) in that activity (or Compose destination), scoped with the same user/group as the chat.
+
+### Jump Back to a Pinned Message
+
+Return the tapped message's ID to the chat screen and scroll to it:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin PinnedMessagesActivity.kt lines
+pinnedMessages.setOnMessageClickListener { message ->
+    setResult(RESULT_OK, Intent().putExtra("goToMessageId", message.id))   // message.id is a Long
+    finish()
+}
+```
+
+```kotlin MessagesActivity.kt lines
+private val pinnedMessagesLauncher =
+    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val messageId = result.data?.getLongExtra("goToMessageId", 0L) ?: 0L
+        if (result.resultCode == RESULT_OK && messageId != 0L) {
+            messageList.gotoMessage(messageId)
+        }
+    }
+```
+</Tab>
+<Tab title="Jetpack Compose">
+```kotlin lines
+CometChatPinnedMessages(
+    user = user,
+    onMessageClick = { message ->
+        navController.navigate(MessagesRoute(goToMessageId = message.id)) {
+            popUpTo<MessagesRoute> { inclusive = true }
+        }
+    }
+)
+```
+</Tab>
+</Tabs>
+
+## Step 2: Open Saved Messages from Your App Chrome
+
+Saved messages are **user-level**, so the entry point belongs in app chrome — a profile/user menu on the conversations screen, a settings row, or a navigation tab — not inside a single chat:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin ChatsFragment.kt lines
+// e.g. a "Saved messages" row in the user menu of your conversations screen
+savedMessagesMenuItem.isVisible = CometChatUIKit.isSaveMessageEnabled()
+savedMessagesMenuItem.setOnClickListener {
+    startActivity(Intent(requireContext(), SavedMessagesActivity::class.java))
+}
+```
+</Tab>
+</Tabs>
+
+Host [CometChatSavedMessages](/ui-kit/android/saved-messages) there. Because rows span conversations, opening a tapped message means resolving its source conversation first:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin SavedMessagesActivity.kt lines
+savedMessages.setOnMessageClickListener { message ->
+    val me = CometChat.getLoggedInUser()?.uid
+    val intent = Intent(this, MessagesActivity::class.java)
+    if (message.receiverType == CometChatConstants.RECEIVER_TYPE_GROUP) {
+        intent.putExtra("guid", (message.receiver as Group).guid)
+    } else {
+        val peer = if (message.sender.uid == me) message.receiver as User else message.sender
+        intent.putExtra("uid", peer.uid)
+    }
+    intent.putExtra("goToMessageId", message.id)
+    startActivity(intent)
+    finish()
+}
+```
+</Tab>
+</Tabs>
+
+## Pin Conversations
+
+With the feature enabled, [CometChatConversations](/ui-kit/android/conversations) adds **Pin conversation / Unpin conversation** to the long-press menu, shows a pin indicator on pinned rows, and keeps pinned conversations at the top of the list — including when new messages arrive. No wiring is required; to hide the option:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin lines
+conversations.setPinConversationOptionVisibility(View.GONE)
+```
+</Tab>
+</Tabs>
+
+## Live Updates
+
+On the acting user's device, all surfaces stay in sync through the UI Kit event bus — pinning from the action sheet updates the bubble indicator and the Pinned Messages screen without a refetch. Delivery of pin/save events to other participants and to the user's other devices activates once server-side real-time delivery for these features is rolled out; until then, other clients pick the change up on their next fetch. If you build custom UI, observe the `MessagePinned` / `MessageUnpinned` / `MessageSaved` / `MessageUnsaved` events; see [Events](/ui-kit/android/events).
+
+## Summary / Feature Matrix
+
+| Capability | Built-in | Your wiring |
+| --- | --- | --- |
+| Action-sheet options, confirm dialogs, toasts | ✅ | — |
+| Bubble footer indicators | ✅ | — |
+| Pinned/Saved screens (list, unpin/unsave, empty states, live upkeep) | ✅ | Host + navigate |
+| Chat-header "Pinned messages" entry | ✅ (opt-in) | `setShowPinnedMessagesOption(true)` + click listener |
+| Saved messages entry point | — | An item in your app chrome |
+| Jump-to-message | — | `gotoMessage` / navigation |
+| Conversation pinning (option, indicator, ordering) | ✅ | — |
+
+## Next Steps & Further Reading
+
+- [Pinned Messages](/ui-kit/android/pinned-messages) · [Saved Messages](/ui-kit/android/saved-messages) — component references.
+- [Pin A Message](/sdk/android/v5/pin-message) · [Save A Message](/sdk/android/v5/save-message) · [Pin A Conversation](/sdk/android/v5/pin-conversation) — the SDK APIs underneath.
