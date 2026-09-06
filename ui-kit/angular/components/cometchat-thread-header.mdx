@@ -12,6 +12,7 @@ The Thread Header component provides:
 - **Media Icons**: Displays type-specific icons for image, video, audio, and file messages
 - **Reply Count**: Shows the number of replies with singular/plural localization
 - **Close Button**: Returns the user to the main chat view
+- **Follow / Unfollow Control**: An icon-only bell that subscribes the user to the thread's replies, when the feature is enabled
 - **Keyboard Navigation**: Supports Tab, Enter, Space, and Escape key interactions
 - **Full ARIA Support**: Includes `role="banner"`, descriptive labels, and accessible close button
 
@@ -153,18 +154,69 @@ export class ThreadHeaderPropsComponent {
 </Tab>
 </Tabs>
 
+## Thread Subscription
+
+When thread subscription is enabled, the header's top bar carries an icon-only bell that follows or unfollows the thread. Following opts the user into notifications for the thread's replies; it is per-user and changes nothing anyone else sees.
+
+The control renders only when **all** of the following hold:
+
+1. `enableThreadSubscription: true` is provided through [`COMETCHAT_GLOBAL_CONFIG`](/ui-kit/angular/customization/global-config#enablethreadsubscription) — the feature is **off by default**
+2. The installed Chat SDK exposes the thread API
+3. `hideThreadSubscriptionToggle` is `false`
+4. The server has not reported the thread as deleted or off-limits
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatThreadHeaderComponent,
+  IThreadSubscriptionChange,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-thread-header-subscription',
+  standalone: true,
+  imports: [CometChatThreadHeaderComponent],
+  template: `
+    <cometchat-thread-header
+      [parentMessage]="parentMessage"
+      (threadSubscriptionChange)="onSubscriptionChange($event)"
+      (closeClick)="onClose()">
+    </cometchat-thread-header>
+  `,
+})
+export class ThreadHeaderSubscriptionComponent {
+  parentMessage!: CometChat.BaseMessage;
+
+  onSubscriptionChange(event: IThreadSubscriptionChange): void {
+    console.log(event.parentMessageId, event.state);
+  }
+
+  onClose(): void {}
+}
+```
+
+<Note>
+  The label is **state-labelled** here ("Mute thread" / "Unmute thread"), unlike the action-sheet option in `cometchat-message-list`, which is action-labelled. A top-bar icon reads as a state; a menu row reads as what tapping it does.
+</Note>
+
+The control stays enabled in every state, including an unknown one — a disabled control on a deep-linked thread is a dead end, and following something you already follow is idempotent server-side. See the [Thread Subscription guide](/ui-kit/angular/guides/thread-subscription) for the full feature.
+
 ## Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `parentMessage` | `CometChat.BaseMessage` | **required** | The parent message of the thread. Used to display the message preview and media icon |
 | `replyCount` | `number` | `0` | The number of replies in the thread. Displayed with localized singular/plural text. When not provided, the count is automatically read from `parentMessage.getReplyCount()` |
+| `hideThreadSubscriptionToggle` | `boolean` | `false` | Hides the follow/unfollow control without turning the feature off — for apps that want the action-sheet entry point only |
+| `trailingView` | `TemplateRef<unknown>` | `undefined` | Renders in the top-bar action row **in place of** the follow control. The close button is unaffected and still renders after it |
 
 ## Events
 
 | Event | Payload Type | Description |
 |-------|-------------|-------------|
 | `closeClick` | `void` | Emitted when the close button is clicked, Enter/Space is pressed on the close button, or Escape is pressed while the header is focused |
+| `threadSubscriptionChange` | `IThreadSubscriptionChange` | Emitted on every change to this thread's subscription, whoever caused it — this user's tap, another surface, or a server-side auto-subscribe. Payload: `{ parentMessageId: number; state: CometChat.ThreadSubscriptionState }` |
 | `backClick` | `void` | **Deprecated.** Use `closeClick` instead. Emitted alongside `closeClick` for backward compatibility |
 
 ## Customization
@@ -210,7 +262,34 @@ The Thread Header component uses BEM-style CSS classes with CSS variable overrid
 .cometchat-thread-header__media-icon {
   background-color: var(--cometchat-thread-header-media-icon-color, var(--cometchat-icon-color-secondary));
 }
+
+/* Top-bar action row holding the follow control and close button */
+.cometchat-thread-header__top-bar-actions {
+  gap: var(--cometchat-thread-header-top-bar-actions-gap, var(--cometchat-spacing-1));
+}
+
+/* Follow / unfollow control */
+.cometchat-thread-header__subscription-button {
+  width: var(--cometchat-thread-header-subscription-button-width, 32px);
+  height: var(--cometchat-thread-header-subscription-button-height, 32px);
+  border-radius: var(--cometchat-thread-header-subscription-button-border-radius, var(--cometchat-radius-max));
+  background: var(--cometchat-thread-header-subscription-button-background, transparent);
+}
+
+.cometchat-thread-header__subscription-button:hover {
+  background: var(--cometchat-thread-header-subscription-button-background-hover, var(--cometchat-background-color-04));
+}
+
+.cometchat-thread-header__subscription-icon {
+  width: var(--cometchat-thread-header-subscription-icon-width, 24px);
+  height: var(--cometchat-thread-header-subscription-icon-height, 24px);
+  background-color: var(--cometchat-thread-header-subscription-icon-color, var(--cometchat-icon-color-primary));
+}
 ```
+
+<Note>
+  Both subscription states share the same neutral icon color — the slash through the bell is what distinguishes them, not a tint. State is also carried by `aria-label` and `aria-pressed`, so nothing rests on color alone.
+</Note>
 
 ### Responsive Behavior
 
@@ -220,8 +299,8 @@ The component adapts across breakpoints with dedicated CSS variables for tablet 
 
 ### Keyboard Navigation
 
-- **Tab**: Moves focus to the close button
-- **Enter / Space**: Activates the close button when focused
+- **Tab**: Moves focus through the follow control and the close button
+- **Enter / Space**: Activates the focused control
 - **Escape**: Closes the thread from anywhere within the header (via `@HostListener`)
 
 ### Screen Reader Support
@@ -229,13 +308,17 @@ The component adapts across breakpoints with dedicated CSS variables for tablet 
 - The header uses `role="banner"` for landmark navigation
 - An `aria-label` combines the parent message preview and reply count for context
 - The close button has a dedicated `aria-label` (e.g., "Close thread")
+- The follow control exposes `aria-pressed` for its state, and its tooltip and accessible name are the **same string**, so a voice-control user can say what the tooltip showed them (WCAG 2.5.3)
+- Toggling announces the resulting state through a live region, rather than re-reading the button label — the label names the *next* action, which reads backwards once the state has changed
 
 ### High Contrast & Reduced Motion
 
 - Supports `prefers-contrast: high` with stronger borders and focus outlines
 - Supports `prefers-reduced-motion: reduce` by disabling button transitions
 
-## Related Components
+## Related
 
+- [Thread Subscription](/ui-kit/angular/guides/thread-subscription) - Following and unfollowing threads, end to end
+- [Threaded Messages](/ui-kit/angular/guides/threaded-messages) - Building the thread view itself
 - [CometChatMessageList](/ui-kit/angular/components/cometchat-message-list) - Displays messages within the thread
 - [CometChatMessageBubble](/ui-kit/angular/components/cometchat-message-bubble) - Renders individual messages in the thread
