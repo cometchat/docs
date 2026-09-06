@@ -1,0 +1,283 @@
+---
+title: "Pin & Save Messages"
+sidebarTitle: "Pin & Save Messages"
+description: "Enable pin and save messages in the CometChat iOS UI Kit, wire the pinned and saved screens, gate pinning by role, and handle limit and permission errors."
+---
+
+Let users mark messages for later: **pin** a message so everyone in the conversation sees it, or **save** one privately for yourself.
+
+## Overview
+
+Pin and save look alike in the action sheet but behave differently:
+
+| | Pin | Save |
+|---|---|---|
+| Who sees it | Everyone in the conversation | Only you |
+| Scope | One conversation | All conversations |
+| Who can do it | Group owner, admin or moderator | Anyone |
+| Limit | 100 per conversation | 100 per user |
+| Confirmation | Asks first — it is public | Applies immediately |
+
+With the iOS UI Kit you get: the action-sheet options, pin and bookmark indicators on the bubble, and two full-screen list surfaces.
+
+## Prerequisites
+
+1. Completed [Getting Started](/ui-kit/ios/getting-started) setup
+2. CometChat UIKit v5+ installed
+3. User logged in with `CometChatUIKit.login()`
+4. Pin and save enabled for your app
+
+## Components
+
+| Component | Description |
+|-----------|-------------|
+| `CometChatMessageList` | Hosts the pin/save options and the bubble indicators |
+| `CometChatPinnedMessages` | Per-conversation list of pinned messages |
+| `CometChatSavedMessages` | User-level list of saved messages |
+| `CometChatMessageEvents` | Emits pin and save events to the rest of your app |
+
+## Integration Steps
+
+### Step 1: Turn the Features On
+
+Both features are **off by default**. Nothing appears in the action sheet until you opt in.
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+let messageListView = CometChatMessageList()
+messageListView.set(user: user)
+
+// Opt in — both default to false
+messageListView.enablePinMessage = true
+messageListView.enableSaveMessage = true
+```
+
+<Warning>
+Two switches must both be on. `enablePinMessage` is your app-side opt-in; the feature must **also** be enabled for your CometChat app, which the kit checks via `CometChat.isPinMessageEnabled()`. If the options do not appear, this is almost always why.
+</Warning>
+
+You can verify the server-side flag directly:
+
+```swift lines
+if CometChat.isPinMessageEnabled() {
+    messageListView.enablePinMessage = true
+}
+
+if CometChat.isSaveMessageEnabled() {
+    messageListView.enableSaveMessage = true
+}
+```
+
+### Step 2: Find the Options
+
+Long-press a message to open the action sheet. Pin and save sit behind a **"More…"** row, which keeps the sheet from overflowing on smaller screens. Tapping it swaps the list, and tapping it again goes back.
+
+To change which options live behind that row, edit `MessageOptionConstants.overflowOptionIds`:
+
+```swift lines
+// Show pin inline and keep only save behind "More…"
+MessageOptionConstants.overflowOptionIds = [
+    MessageOptionConstants.saveMessage,
+    MessageOptionConstants.unsaveMessage
+]
+
+// Or show everything inline
+MessageOptionConstants.overflowOptionIds = []
+```
+
+Pinning shows a confirmation first, because it changes what everyone in the conversation sees. Saving applies immediately — it is private and one tap to undo.
+
+### Step 3: Add the Pinned Messages Screen
+
+Pinned messages belong to one conversation, so open this from that conversation — typically the message header's overflow menu.
+
+```swift lines
+private func openPinnedMessages() {
+    let pinnedVC = CometChatPinnedMessages(user: user, group: group)
+
+    // Tapping a row returns here and jumps to the message.
+    pinnedVC.set(onMessageClicked: { [weak self] message in
+        guard let self = self else { return }
+        self.navigationController?.popViewController(animated: true)
+        self.messageListView.goToMessage(withId: message.id)
+    })
+
+    navigationController?.pushViewController(pinnedVC, animated: true)
+}
+```
+
+See [Pinned Messages](/ui-kit/ios/pinned-messages) for the full component reference.
+
+### Step 4: Add the Saved Messages Screen
+
+Saved messages span every conversation, so this one belongs in your app's chrome — a tab, the chats-screen menu, or a profile entry. It takes no user or group.
+
+```swift lines
+private func openSavedMessages() {
+    let savedVC = CometChatSavedMessages()
+    savedVC.hidesBottomBarWhenPushed = true
+
+    // The component supplies its own back chevron, so leave hideBackButton alone.
+    savedVC.hideNavigationBar = false
+
+    savedVC.set(onBack: { [weak self] in
+        self?.navigationController?.setNavigationBarHidden(true, animated: true)
+        self?.navigationController?.popViewController(animated: true)
+    })
+
+    savedVC.set(onMessageClicked: { [weak self] message in
+        self?.openConversation(for: message)
+    })
+
+    navigationController?.setNavigationBarHidden(false, animated: true)
+    navigationController?.pushViewController(savedVC, animated: true)
+}
+```
+
+<Warning>
+If you push this screen from a tab that hides the navigation bar, set `hideNavigationBar = false` or the title and back button never appear. Do **not** also set `hideBackButton = false` — the component supplies its own chevron, so clearing that flag renders two back buttons.
+</Warning>
+
+Because a saved row can come from any chat, `onMessageClicked` has to resolve the conversation — see [Saved Messages](/ui-kit/ios/saved-messages) for that snippet.
+
+### Step 5: Handle Errors
+
+Failures roll the change back automatically and show a message. To react yourself, listen for the error codes on `PinSaveErrorCodes`:
+
+```swift lines
+switch error.errorCode {
+case PinSaveErrorCodes.pinLimitReached:
+    // Read the real cap from the server rather than hard-coding it
+    let limit = error.errorParams?["limit"] as? Int
+    print("Pin limit reached: \(limit ?? 0)")
+case PinSaveErrorCodes.pinPermissionDenied:
+    print("This user cannot pin here")
+default:
+    break
+}
+```
+
+<Note>
+Always read the cap from `errorParams["limit"]`. The limit is server-owned and hard-coding it means your copy goes stale the moment it changes.
+</Note>
+
+## Customization Options
+
+### Who Can Pin
+
+Pinning is gated by role, not authorship — a moderator can pin someone else's message, and a participant cannot pin their own. The kit uses `GroupMembersUtils.allowPinMessage(group:)`:
+
+| Scope | Can pin |
+|-------|---------|
+| Group owner | Yes |
+| Admin | Yes |
+| Moderator | Yes |
+| Participant | No |
+| One-to-one (`nil` group) | Yes |
+
+Saving has no role gate — anyone can save anything they can see.
+
+Use the same check to hide the unpin action for users who cannot pin:
+
+```swift lines
+pinnedVC.set(hideUnpinOption: !GroupMembersUtils.allowPinMessage(group: group))
+```
+
+### Hiding Individual Options
+
+`enable*` turns the feature on; `hide*` suppresses one option independently.
+
+```swift lines
+// Feature on, but no save option in this screen's action sheet
+messageListView.enablePinMessage = true
+messageListView.enableSaveMessage = true
+messageListView.hideSaveMessageOption = true
+```
+
+### Styling
+
+Both screens take their own style object built from theme tokens:
+
+```swift lines
+CometChatPinnedMessages.style.unpinActionBackgroundColor = CometChatTheme.errorColor
+CometChatSavedMessages.style.messageTypeImageTint = CometChatTheme.iconColorHighlight
+```
+
+### Reacting to Pin and Save Elsewhere
+
+Conform to `CometChatMessageEventListener` to update your own UI when the local user pins or saves:
+
+```swift lines
+extension MyViewController: CometChatMessageEventListener {
+
+    func ccMessagePinned(message: BaseMessage, status: MessageStatus) {
+        // No separate unpinned event — read the field to tell which happened
+        let isPinned = message.pinnedAt != 0
+        print(isPinned ? "Pinned" : "Unpinned")
+    }
+
+    func ccMessageSaved(message: BaseMessage, status: MessageStatus) {
+        let isSaved = message.savedAt != 0
+        print(isSaved ? "Saved" : "Unsaved")
+    }
+}
+```
+
+All listener methods have default empty implementations, so you only implement the ones you need. See [Events](/ui-kit/ios/events).
+
+## Edge Cases
+
+| Scenario | Handling |
+|----------|----------|
+| Action messages (group joins, calls) | No pin or save options — they are system chrome |
+| Deleted message | Options hidden; a pinned message that is deleted is auto-unpinned |
+| Message still sending | No options until the server assigns an id |
+| Moderation pending | No options until the message is approved |
+| Thread replies | Pinnable and savable; the pinned list shows the parent for context |
+| Edited message | Keeps its pin |
+| Participant in a group | Sees the pinned list and indicators, but no pin option |
+
+## Error Handling
+
+| Error code | Solution |
+|------------|----------|
+| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | Prompt the user to unpin something. Read the cap from `errorParams["limit"]`. |
+| `ERR_SAVED_MESSAGES_LIMIT_EXCEEDED` | Prompt the user to unsave something. |
+| `ERR_PERMISSION_DENIED` | The user's scope does not allow pinning; hide the option for them. |
+| `ERR_MESSAGE_NO_ACCESS` | The user can no longer access the message. |
+| `ERR_MESSAGE_ACTION_NOT_ALLOWED` | The action is not allowed on this message. |
+| `ERR_FEATURE_NOT_ACCESSIBLE` | The feature is not enabled for your app. |
+
+## Feature Matrix
+
+| Feature | Implementation |
+|---------|----------------|
+| Enable pin | `CometChatMessageList.enablePinMessage` |
+| Enable save | `CometChatMessageList.enableSaveMessage` |
+| Hide an option | `hidePinMessageOption` / `hideSaveMessageOption` |
+| Overflow row contents | `MessageOptionConstants.overflowOptionIds` |
+| Role gate | `GroupMembersUtils.allowPinMessage(group:)` |
+| Pinned list | `CometChatPinnedMessages(user:group:)` |
+| Saved list | `CometChatSavedMessages()` |
+| Jump to a message | `CometChatMessageList.goToMessage(withId:)` |
+| Error codes | `PinSaveErrorCodes` |
+| Events | `ccMessagePinned` / `ccMessageSaved` |
+
+## Related Components
+
+- [Pinned Messages](/ui-kit/ios/pinned-messages) - Per-conversation pinned list
+- [Saved Messages](/ui-kit/ios/saved-messages) - User-level saved list
+- [Message List](/ui-kit/ios/message-list) - Hosts the options and indicators
+- [Events](/ui-kit/ios/events) - Pin and save event callbacks
+
+<CardGroup cols={2}>
+  <Card title="Chat SDK: Pin & Save" icon="code" href="/sdk/ios/pin-save-message">
+    The underlying SDK methods and message fields
+  </Card>
+  <Card title="Core Features" icon="star" href="/ui-kit/ios/core-features">
+    Overview of messaging features
+  </Card>
+</CardGroup>

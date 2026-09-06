@@ -1,0 +1,203 @@
+---
+title: "Thread Subscription"
+---
+
+Give users Slack-style control over thread noise. A user can **subscribe** to a message thread to be notified of future replies, or **unsubscribe** from it to mute it. Users are automatically subscribed to a thread when they start it, reply in it, or are @-mentioned in it — and they can explicitly subscribe to any parent message, even one that has no replies yet. The SDK also exposes the list of threads a user participates in, so you can build a thread inbox. Let's see how to work with thread subscriptions in CometChat's iOS SDK.
+
+<Note>
+
+Thread subscription builds on [Threaded Messages](/sdk/ios/threaded-messages). A thread is identified by the ID of its **parent message** — there is no separate thread ID.
+
+</Note>
+
+## Subscribe to a Thread
+
+To subscribe to a thread, use the `subscribeToThread` method with the ID of the thread's parent message. The call is **idempotent** — subscribing to a thread the user is already subscribed to succeeds silently. Subscribing to a message with zero replies is allowed; the user will be notified when the first reply arrives.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let parentMessageId = 1
+
+CometChat.subscribeToThread(parentMessageId: parentMessageId) { response in
+    print("Subscribed to thread: \(response)")
+} onError: { error in
+    print("Failed to subscribe: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+## Unsubscribe from a Thread
+
+To unsubscribe from a thread, use the `unsubscribeFromThread` method. This too is idempotent — unsubscribing from a thread the user is not subscribed to succeeds silently.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let parentMessageId = 1
+
+CometChat.unsubscribeFromThread(parentMessageId: parentMessageId) { response in
+    print("Unsubscribed from thread: \(response)")
+} onError: { error in
+    print("Failed to unsubscribe: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+<Warning>
+
+Unsubscribing is **not sticky**. If the user replies in the thread again, or is @-mentioned in it, they are automatically re-subscribed. Do not promise users "you won't be notified about this thread again".
+
+</Warning>
+
+## Get the Subscription State
+
+`threadSubscriptionState(forParentMessageId:)` returns the logged-in user's subscription state for a thread **synchronously** — it never makes a network call, never throws, and is safe to call from your UI while rendering.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+switch CometChat.threadSubscriptionState(forParentMessageId: parentMessageId) {
+case .SUBSCRIBED:     break // render "Unsubscribe from thread"
+case .NOT_SUBSCRIBED: break // render "Subscribe to thread"
+case .UNKNOWN:        break // render "Subscribe to thread"
+@unknown default:     break
+}
+```
+</Tab>
+</Tabs>
+
+The state is a deliberate tri-state, not a boolean:
+
+| Value            | Meaning                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------- |
+| `SUBSCRIBED`     | The user is subscribed to this thread and will be notified of replies.                        |
+| `NOT_SUBSCRIBED` | The user is known not to be subscribed to this thread.                                        |
+| `UNKNOWN`        | The state has not been learned yet (for example, the message arrived live over the websocket). |
+
+<Info>
+
+Render `UNKNOWN` as the unsubscribed state (an enabled "Subscribe" control) — never as a spinner or a disabled control. The state is kept in an in-memory, per-login-session cache; it is cleared on login and logout, and nothing is persisted to disk.
+
+</Info>
+
+## Fetch the Threads a User Participates In
+
+To build a thread inbox — one row per thread the user is part of — create a `ThreadsRequest` using the `ThreadsRequestBuilder`. The list is the union of threads the user started, replied in, was mentioned in, or explicitly subscribed to. Every returned row is, by definition, a thread the user is subscribed to: **participation is subscription**, and unsubscribing removes the row.
+
+| Setting                       | Description                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `set(limit:)`                 | Page size. Thread rows are heavy — each carries a root message and a last reply.             |
+| `set(uid:)`                   | Scope the list to threads in the one-on-one conversation with this user. Mutually exclusive with `set(guid:)`. |
+| `set(guid:)`                  | Scope the list to threads in this group. Mutually exclusive with `set(uid:)`.                |
+| `set(participatedByMe:)`      | Defaults to `true`. Only the threads the logged-in user participates in are returned.        |
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let threadsRequest = ThreadsRequest.ThreadsRequestBuilder()
+    .set(limit: 30)
+    .build()
+
+threadsRequest.fetchNext { threads in
+    for thread in threads {
+        print("Thread \(thread.parentMessageId) has \(thread.replyCount) replies")
+    }
+} onError: { error in
+    print("Threads fetch failed: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+Call `fetchNext` repeatedly to page forward; `hasMore()` tells you whether more pages exist. A `ThreadsRequest` is **single-use and forward-only** — there is no `fetchPrevious`. To refresh the list from the top, build a new request from the builder and replace your list with its results.
+
+### The MessageThread Model
+
+Each row is a `MessageThread`:
+
+| Property             | Description                                                                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `parentMessageId`    | The thread's identity — the ID of its root message.                                                                                    |
+| `parentMessage`      | The root message as a full `BaseMessage`.                                                                                              |
+| `replyCount`         | Number of replies in the thread.                                                                                                       |
+| `lastReply`          | The most recent reply as a `BaseMessage`. `nil` for a thread with no replies yet — expected, not an error.                              |
+| `conversationId`     | The ID of the conversation the thread belongs to.                                                                                      |
+| `receiverType`       | `user` or `group`.                                                                                                                     |
+| `receiverUid`        | The raw `UID`/`GUID` of the conversation. Resolve the display name and avatar yourself via `CometChat.getUser()` / `CometChat.getGroup()`. |
+| `subscriptionState`  | Always `SUBSCRIBED` for rows in this list.                                                                                             |
+| `unreadReplyCount`   | Reserved for future use — currently `nil` (unknown), which is not the same as `0`.                                                     |
+| `updatedAt`          | An internal pagination cursor. **Do not sort your UI on it.**                                                                          |
+
+<Warning>
+
+To order rows in your UI, sort on `lastReply?.sentAt`, falling back to `parentMessage?.sentAt` for zero-reply threads — not on `updatedAt`.
+
+</Warning>
+
+<Info>
+
+The list starts **empty** for every user when the feature launches — it fills up as users reply, get mentioned, and subscribe to threads. There is no historical backfill.
+
+</Info>
+
+## Real-time Thread Events
+
+Conform to `CometChatThreadDelegate` to keep your UI in sync as subscription state changes and replies arrive.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.threadDelegate = self
+
+extension ViewController: CometChatThreadDelegate {
+
+    func onThreadSubscriptionChanged(event: ThreadSubscriptionEvent) {
+        print("Thread \(event.parentMessageId) is now \(event.subscriptionState)")
+    }
+
+    func onThreadReplyReceived(event: ThreadReplyEvent) {
+        print("New reply in thread \(event.parentMessageId): \(event.reply.id)")
+    }
+}
+```
+</Tab>
+</Tabs>
+
+Both callbacks are optional. The events carry:
+
+| Event                     | Properties                                                          |
+| ------------------------- | --------------------------------------------------------------------- |
+| `ThreadSubscriptionEvent` | `parentMessageId`, `subscriptionState`, `source`                    |
+| `ThreadReplyEvent`        | `parentMessageId`, `reply`, `conversationId`, `source`              |
+
+- `onThreadSubscriptionChanged` fires when the logged-in user's subscription state for a thread changes on **this device** — after a successful subscribe/unsubscribe call, or after a threaded send auto-subscribes them.
+- `onThreadReplyReceived` fires for every incoming threaded message and for the user's own successful threaded sends. Use it to bump reply counts and re-sort your thread list.
+
+<Note>
+
+A subscribe or unsubscribe performed on the user's **other device** does not currently produce a real-time event on this one — the state self-corrects on the next message fetch, so refresh your thread list when the app returns to the foreground.
+
+</Note>
+
+## Notification Preferences
+
+The notification preference for replies gains a new value so users can be notified only for threads they are subscribed to: `SUBSCRIBE_TO_SUBSCRIBED_THREADS` in the replies options.
+
+| Value                             | Behavior                                                       |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `DONT_SUBSCRIBE`                  | No notifications for thread replies.                           |
+| `SUBSCRIBE_TO_ALL`                | Notifications for all thread replies.                          |
+| `SUBSCRIBE_TO_MENTIONS`           | Notifications only for replies that mention the user.          |
+| `SUBSCRIBE_TO_SUBSCRIBED_THREADS` | Notifications for replies in threads the user is subscribed to. |
+
+See [Notification Preferences](/notifications) for how to read and update a user's preferences.
+
+## Error Handling
+
+| Error                      | Meaning                                                                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ERR_MESSAGE_NO_ACCESS`    | The user no longer has access to the message's conversation (for example, they left or were banned from the group). Treat the thread as inaccessible and remove its row. |
+| `ERR_MESSAGE_ID_NOT_FOUND` | The parent message does not exist (for example, it was deleted).                                                                                                        |

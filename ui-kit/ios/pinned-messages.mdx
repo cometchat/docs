@@ -1,0 +1,521 @@
+---
+title: "Pinned Messages"
+description: "Display and manage CometChat iOS UI Kit pinned messages for a conversation with per-row unpin, jump-to-message, custom view slots, and styling."
+---
+
+`CometChatPinnedMessages` is a full-screen list of the messages pinned in a single conversation, newest pin first. Pins are conversation-wide: everyone in the chat sees the same list, and moderators can unpin from any row.
+
+<Accordion title="AI Integration Quick Reference">
+```json
+{
+  "component": "CometChatPinnedMessages",
+  "package": "CometChatUIKitSwift",
+  "import": "import CometChatUIKitSwift\nimport CometChatSDK",
+  "description": "Full-screen list of messages pinned in one conversation, ordered newest pin first",
+  "inherits": "CometChatListBase",
+  "primaryOutput": {
+    "callback": "onMessageClicked",
+    "type": "(BaseMessage) -> Void"
+  },
+  "props": {
+    "data": {
+      "user": { "type": "User?", "required": false, "note": "Pass user OR group, not both" },
+      "group": { "type": "Group?", "required": false },
+      "requestBuilder": { "type": "MessagesRequest.MessageRequestBuilder", "note": "Must retain set(pinned: true)" }
+    },
+    "callbacks": {
+      "onMessageClicked": "(BaseMessage) -> Void",
+      "onError": "(CometChatException) -> Void",
+      "onLoad": "([BaseMessage]) -> Void",
+      "onEmpty": "() -> Void",
+      "onBack": "() -> Void"
+    },
+    "visibility": {
+      "hideUnpinOption": { "type": "Bool", "default": false }
+    },
+    "styling": {
+      "style": { "type": "PinnedMessagesStyle" },
+      "messageBubbleStyle": { "type": "(incoming: MessageBubbleStyle, outgoing: MessageBubbleStyle)" },
+      "dateSeparatorStyle": { "type": "DateStyle" },
+      "avatarStyle": { "type": "AvatarStyle" }
+    },
+    "viewSlots": {
+      "titleView": "(BaseMessage?) -> UIView",
+      "subtitle": "(BaseMessage?) -> UIView",
+      "trailingView": "(BaseMessage?) -> UIView",
+      "listItemView": "(BaseMessage?) -> UIView"
+    }
+  },
+  "events": ["onMessagePinned", "onMessageUnpinned", "ccMessagePinned"],
+  "sdkListeners": ["CometChatConnectionDelegate"],
+  "compositionExample": {
+    "description": "Opened from the message header overflow menu, jumps the message list on row tap",
+    "components": ["CometChatMessageHeader", "CometChatPinnedMessages", "CometChatMessageList"],
+    "flow": "User taps ⋮ → Pinned messages → taps a row → returns to chat scrolled to that message"
+  }
+}
+```
+</Accordion>
+
+| Field | Value |
+|-------|-------|
+| Component | `CometChatPinnedMessages` |
+| Package | `CometChatUIKitSwift` |
+| Inherits | `CometChatListBase` |
+
+---
+
+## Where It Fits
+
+Pinned messages are scoped to one conversation, so this screen is opened from that conversation — typically the overflow menu in `CometChatMessageHeader`. Tapping a row takes the user back to the chat and scrolls to the message.
+
+Contrast with [Saved Messages](/ui-kit/ios/saved-messages), which is a user-level screen spanning every conversation and is reached from your app's chrome instead.
+
+<Note>
+Pin and save are **off by default**. Set `enablePinMessage` on your `CometChatMessageList` and enable the feature for your app, or no pin options appear and this screen stays empty. See the [Pin and Save Messages guide](/ui-kit/ios/guide-pin-save-message).
+</Note>
+
+This screen is read-only by design: opening it never marks anything as read, sends receipts, or changes the unread count.
+
+---
+
+## Minimal Render
+
+`CometChatPinnedMessages` is a view controller, so push it onto your navigation stack.
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+// For a group conversation
+let pinnedVC = CometChatPinnedMessages(group: group)
+navigationController?.pushViewController(pinnedVC, animated: true)
+
+// For a one-to-one conversation
+let pinnedVC = CometChatPinnedMessages(user: user)
+navigationController?.pushViewController(pinnedVC, animated: true)
+```
+
+Pass either `user` or `group` — they are mutually exclusive and scope the list to that conversation.
+
+---
+
+## Filtering
+
+The list is fetched with a `MessagesRequest.MessageRequestBuilder`. The default comes from `PinnedMessagesBuilder`:
+
+```swift lines
+// The default builder used when you set nothing
+MessagesRequest.MessageRequestBuilder()
+    .set(limit: 100)
+    .set(pinned: true)
+```
+
+The server caps pins at 100 per conversation, so a limit of 100 fetches the entire list in one page.
+
+To narrow the list further, supply your own builder:
+
+```swift lines
+// MARK: - Only pinned text messages
+let requestBuilder = MessagesRequest.MessageRequestBuilder()
+    .set(limit: 100)
+    .set(pinned: true)
+    .set(guid: group.guid)
+    .set(types: ["text"])
+
+let pinnedVC = CometChatPinnedMessages(group: group)
+pinnedVC.set(requestBuilder: requestBuilder)
+```
+
+<Warning>
+A custom request builder **must keep `set(pinned: true)`**. Without it the request returns every message in the conversation and the screen lists them all as though they were pinned.
+</Warning>
+
+---
+
+## Actions and Events
+
+### Callback Props
+
+#### onMessageClicked
+
+Fires when a row is tapped. Use it to return to the conversation and jump to the message.
+
+```swift lines
+pinnedVC.set(onMessageClicked: { [weak self] message in
+    self?.navigationController?.popViewController(animated: true)
+    self?.messageListView.goToMessage(withId: message.id)
+})
+```
+
+#### onError
+
+Fires when the fetch fails, and again when an unpin fails.
+
+```swift lines
+pinnedVC.set(onError: { error in
+    print("Pinned messages error: \(error.errorCode)")
+})
+```
+
+#### onLoad
+
+Fires with the fetched messages each time the list reloads.
+
+```swift lines
+pinnedVC.set(onLoad: { messages in
+    print("Loaded \(messages.count) pinned messages")
+})
+```
+
+#### onEmpty
+
+Fires when the fetch completes with no pinned messages.
+
+```swift lines
+pinnedVC.set(onEmpty: {
+    print("No pinned messages in this conversation")
+})
+```
+
+#### onBack
+
+Inherited from `CometChatListBase`. The component ships a default that pops the navigation stack; set your own to replace it.
+
+```swift lines
+pinnedVC.set(onBack: { [weak self] in
+    self?.navigationController?.popViewController(animated: true)
+})
+```
+
+### Actions Reference
+
+| Action | Trigger | Default behavior |
+|--------|---------|------------------|
+| Row tap | User taps a pinned message | Calls `onMessageClicked`; no default navigation |
+| Unpin | User swipes a row from the trailing edge | Unpins the message and removes the row |
+| Back | User taps the back chevron | Pops the navigation stack |
+| Pull to refresh | User pulls the list down | Refetches the pinned list |
+
+### Global UI Events
+
+Pin and unpin actions performed elsewhere in the kit emit on `CometChatMessageEvents`. See [Events](/ui-kit/ios/events).
+
+| Event | Meaning |
+|-------|---------|
+| `ccMessagePinned` | The local user pinned or unpinned a message. Read `message.pinnedAt` to tell which — non-zero means pinned. |
+
+---
+
+## Custom View Slots
+
+Each row is a `CometChatMessageBubble` built from the same message templates the message
+list uses, so pinned photos, videos and files render as real bubbles. Rows are left-aligned
+regardless of sender — including your own, which keep their outgoing bubble color but sit on
+the left with an avatar and name. Each slot below receives the row's `BaseMessage` and
+returns a view that replaces one part of that bubble.
+
+### set(titleView:)
+
+Replaces the bubble's header, which carries the sender name by default.
+
+```swift lines
+pinnedVC.set(titleView: { message in
+    let label = UILabel()
+    label.text = message?.sender?.name ?? ""
+    label.font = .systemFont(ofSize: 16, weight: .semibold)
+    return label
+})
+```
+
+### set(subtitle:)
+
+Replaces the bubble's content — the rendered message body.
+
+```swift lines
+pinnedVC.set(subtitle: { message in
+    let label = UILabel()
+    label.text = (message as? TextMessage)?.text ?? ""
+    label.textColor = .secondaryLabel
+    return label
+})
+```
+
+### set(trailingView:)
+
+Replaces the bubble's status-info slot, which holds the timestamp and read receipt.
+
+### set(listItemView:)
+
+Replaces the entire bubble. Use this when the slots above are not enough.
+
+```swift lines
+pinnedVC.set(listItemView: { message in
+    let container = UIView()
+    // Build your own row layout
+    return container
+})
+```
+
+### Message templates
+
+To change how one message *type* renders, override its template rather than a slot. This
+keeps every other type on its default bubble.
+
+```swift lines
+pinnedVC.add(template: myCustomTextTemplate)   // override a single category/type
+pinnedVC.set(templates: allMyTemplates)        // replace every default
+```
+
+---
+
+## Styling
+
+### Style Hierarchy
+
+`PinnedMessagesStyle` conforms to `ListBaseStyle`, so it carries the standard screen-level properties plus the pin-specific ones. Bubble appearance is separate — set it through `messageBubbleStyle`.
+
+### Global Level Styling
+
+Applies to every instance created afterwards.
+
+```swift lines
+// MARK: - Apply global styling
+CometChatPinnedMessages.style.backgroundColor = UIColor(hex: "#F76808")
+CometChatPinnedMessages.style.unpinActionBackgroundColor = UIColor(hex: "#D92D20")
+```
+
+### Instance Level Styling
+
+```swift lines
+// MARK: - Apply instance-level styling
+var customStyle = PinnedMessagesStyle()
+customStyle.backgroundColor = UIColor(hex: "#F76808")
+customStyle.bubbleHeaderTextColor = CometChatTheme.textColorPrimary
+customStyle.unpinIconTint = UIColor(hex: "#FFFFFF")
+
+let pinnedVC = CometChatPinnedMessages(group: group)
+pinnedVC.set(style: customStyle)
+```
+
+### Key Style Properties
+
+| Property | Description | Default |
+|----------|-------------|---------|
+| `unpinIconTint` | Tint for the per-row unpin control. | `CometChatTheme.iconColorSecondary` |
+| `unpinActionBackgroundColor` | Background of the unpin swipe action. | `CometChatTheme.errorColor` |
+| `backgroundColor` | Screen background. | `CometChatTheme.backgroundColor01` |
+| `titleColor` | Navigation title color. | `CometChatTheme.textColorPrimary` |
+| `bubbleHeaderTextColor` | Sender-name color inside the bubble. | `CometChatTheme.primaryColor` |
+| `bubbleHeaderFont` | Sender-name font inside the bubble. | `CometChatTypography.Caption1.medium` |
+| `previewTextColor` | Preview color used by the pinned banner. | `CometChatTheme.textColorSecondary` |
+| `previewFont` | Preview font used by the pinned banner. | `CometChatTypography.Body.regular` |
+| `emptyTitleTextColor` | Empty-state title color. | `CometChatTheme.textColorPrimary` |
+| `errorTitleTextColor` | Error-state title color. | `CometChatTheme.textColorPrimary` |
+
+Bubbles are styled through `messageBubbleStyle`, the date dividers through `dateSeparatorStyle`, and avatars through `avatarStyle`:
+
+```swift lines
+pinnedVC.messageBubbleStyle.incoming.backgroundColor = UIColor(hex: "#E9EAEB")
+pinnedVC.dateSeparatorStyle.textColor = CometChatTheme.textColorSecondary
+pinnedVC.avatarStyle.cornerRadius = CometChatCornerStyle(cornerRadius: 24)
+```
+
+Rows group under a date divider per day, ordered newest pin first. Hide the dividers with
+`set(hideDateSeparator: true)`.
+
+### Customization Matrix
+
+| What to change | Where | Property/API |
+|----------------|-------|--------------|
+| Unpin swipe color | Style | `style.unpinActionBackgroundColor` |
+| Hide unpin entirely | Prop | `set(hideUnpinOption: true)` |
+| Bubble appearance | Style | `messageBubbleStyle` |
+| One message type's bubble | Template | `add(template:)` |
+| Whole row layout | View slot | `set(listItemView:)` |
+| Hide date dividers | Prop | `set(hideDateSeparator: true)` |
+| Bubble alignment | Prop | `set(messageAlignment:)` |
+| Which messages appear | Filter | `set(requestBuilder:)` |
+| Timestamp format | Formatter | `dateTimeFormatter` |
+| Row tap behavior | Callback | `set(onMessageClicked:)` |
+
+---
+
+## Props
+
+All props are optional. Sorted alphabetically.
+
+### avatarStyle
+
+Styling for the sender avatar beside incoming bubbles.
+
+| | |
+|---|---|
+| Type | `AvatarStyle` |
+| Default | `CometChatAvatar.style` |
+
+### dateSeparatorStyle
+
+Styling for the per-day date divider above each group of rows.
+
+| | |
+|---|---|
+| Type | `DateStyle` |
+| Default | `CometChatDate.style` |
+
+### messageBubbleStyle
+
+Appearance of the incoming and outgoing bubbles.
+
+| | |
+|---|---|
+| Type | `(incoming: MessageBubbleStyle, outgoing: MessageBubbleStyle)` |
+| Default | `CometChatMessageBubble.style` |
+
+### messageAlignment
+
+Every pinned message is left-aligned by default, the logged-in user's included, so each row
+is attributed by its avatar and sender name rather than by position. Set `.standard` to
+mirror the message list and align your own messages right.
+
+| | |
+|---|---|
+| Type | `MessageListAlignment` |
+| Default | `.leftAligned` |
+
+### hideDateSeparator
+
+Hides the per-day date dividers.
+
+| | |
+|---|---|
+| Type | `Bool` |
+| Default | `false` |
+
+### dateTimeFormatter
+
+Custom timestamp formatting.
+
+| | |
+|---|---|
+| Type | `CometChatDateTimeFormatter` |
+| Default | `CometChatUIKit.dateTimeFormatter` |
+
+### group
+
+The group whose pinned messages to show. Mutually exclusive with `user`; pass it to the initializer.
+
+| | |
+|---|---|
+| Type | `Group?` |
+| Default | `nil` |
+
+### hideUnpinOption
+
+Hides the per-row unpin swipe action. Set this for users who cannot pin in this conversation.
+
+| | |
+|---|---|
+| Type | `Bool` |
+| Default | `false` |
+
+```swift lines
+pinnedVC.set(hideUnpinOption: true)
+```
+
+### style
+
+The component's style object.
+
+| | |
+|---|---|
+| Type | `PinnedMessagesStyle` |
+| Default | `PinnedMessagesStyle()` |
+
+### user
+
+The user whose pinned messages to show. Mutually exclusive with `group`; pass it to the initializer.
+
+| | |
+|---|---|
+| Type | `User?` |
+| Default | `nil` |
+
+---
+
+## Methods
+
+### set(requestBuilder:)
+
+Replaces the request used to fetch the list. Must retain `set(pinned: true)`.
+
+### set(textFormatters:)
+
+Applies custom text formatters to the message previews, matching the formatters used in your message list.
+
+```swift lines
+pinnedVC.set(textFormatters: [myCustomTextFormatter])
+```
+
+<Note>
+`PinnedMessagesViewModel` is public in name only — every member except `setRequestBuilder(requestBuilder:)` is internal. Customize through the props and view slots above rather than the view model.
+</Note>
+
+---
+
+## Common Patterns
+
+### Open from the message header and jump to the message
+
+The complete round trip: open the panel from the conversation, then return and scroll to the tapped message.
+
+```swift lines
+private func openPinnedMessages() {
+    let pinnedVC = CometChatPinnedMessages(user: user, group: group)
+
+    // Tapping a row returns to this conversation and jumps to the message.
+    pinnedVC.set(onMessageClicked: { [weak self] message in
+        guard let self = self else { return }
+        self.navigationController?.popViewController(animated: true)
+        self.messageListView.goToMessage(withId: message.id)
+    })
+
+    navigationController?.pushViewController(pinnedVC, animated: true)
+}
+```
+
+### Hide unpin for users without permission
+
+Pinning is restricted to group owners, admins and moderators. Hide the unpin action for everyone else so the swipe does not fail against the server.
+
+```swift lines
+let pinnedVC = CometChatPinnedMessages(group: group)
+pinnedVC.set(hideUnpinOption: !GroupMembersUtils.allowPinMessage(group: group))
+```
+
+### Custom empty state
+
+```swift lines
+let pinnedVC = CometChatPinnedMessages(group: group)
+pinnedVC.emptyStateTitleText = "Nothing pinned yet"
+pinnedVC.emptyStateSubTitleText = "Pin important messages to find them here."
+```
+
+---
+
+## Related Components
+
+- [Saved Messages](/ui-kit/ios/saved-messages) - The user-level saved messages screen
+- [Message List](/ui-kit/ios/message-list) - Where messages are pinned and unpinned
+- [Message Header](/ui-kit/ios/message-header) - Hosts the menu that opens this screen
+- [Events](/ui-kit/ios/events) - Pin and save event callbacks
+
+<CardGroup cols={2}>
+  <Card title="Pin and Save Messages Guide" icon="thumbtack" href="/ui-kit/ios/guide-pin-save-message">
+    End-to-end setup for pinning and saving
+  </Card>
+  <Card title="Chat SDK: Pin and Save" icon="code" href="/sdk/ios/pin-save-message">
+    The underlying SDK methods and message fields
+  </Card>
+</CardGroup>
