@@ -52,36 +52,51 @@ Unsubscribing is **not sticky**. If the user replies in the thread again, or is 
 
 </Warning>
 
-## Get the Subscription State
+## Read the Subscription State
 
-`threadSubscriptionState(forParentMessageId:)` returns the logged-in user's subscription state for a thread **synchronously** — it never makes a network call, never throws, and is safe to call from your UI while rendering.
+Every fetched message carries the logged-in user's subscription state for its own thread on `BaseMessage.threadSubscribed`. It arrives with the message fetch, so rendering a subscribe control needs **no extra network call** and no separate state cache.
 
 <Tabs>
 <Tab title="Swift">
 ```swift
-switch CometChat.threadSubscriptionState(forParentMessageId: parentMessageId) {
-case .SUBSCRIBED:     break // render "Unsubscribe from thread"
-case .NOT_SUBSCRIBED: break // render "Subscribe to thread"
-case .UNKNOWN:        break // render "Subscribe to thread"
-@unknown default:     break
+if message.threadSubscribed {
+    // render "Unsubscribe from thread"
+} else {
+    // render "Subscribe to thread"
 }
 ```
 </Tab>
 </Tabs>
 
-The state is a deliberate tri-state, not a boolean:
+Because it is a plain `Bool`, read it only off a message you actually fetched:
 
-| Value            | Meaning                                                                                       |
-| ---------------- | --------------------------------------------------------------------------------------------- |
-| `SUBSCRIBED`     | The user is subscribed to this thread and will be notified of replies.                        |
-| `NOT_SUBSCRIBED` | The user is known not to be subscribed to this thread.                                        |
-| `UNKNOWN`        | The state has not been learned yet (for example, the message arrived live over the websocket). |
+| Situation | `threadSubscribed` | How to treat it |
+| --- | --- | --- |
+| Message fetched via `MessagesRequest` | Authoritative | Render the state directly. |
+| Message that arrived live over the websocket | `false` | Means **"not reported"**, not "unsubscribed". |
+| Message you constructed locally | `false` | Not yet known. |
 
-<Info>
+<Warning>
 
-Render `UNKNOWN` as the unsubscribed state (an enabled "Subscribe" control) — never as a spinner or a disabled control. The state is kept in an in-memory, per-login-session cache; it is cleared on login and logout, and nothing is persisted to disk.
+A `false` on a message that was **not** fetched with the flag means "the server did not tell me", not "the user is unsubscribed". Only a fetched flag is authoritative. Render the unsubscribed state (an enabled "Subscribe" control) in the unknown case — never a spinner or a disabled control.
 
-</Info>
+</Warning>
+
+The property also has a setter, which is **local only and performs no network call**. It exists so you can align message objects you already hold with a truth you have just established — for example after a successful `subscribeToThread`:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.subscribeToThread(parentMessageId: parentMessageId) { _ in
+    message.threadSubscribed = true   // local only; keeps your held objects in step
+} onError: { error in
+    print("Failed to subscribe: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+To change the actual subscription, always use `subscribeToThread` / `unsubscribeFromThread`.
 
 ## Fetch the Threads a User Participates In
 
@@ -114,6 +129,8 @@ threadsRequest.fetchNext { threads in
 
 Call `fetchNext` repeatedly to page forward; `hasMore()` tells you whether more pages exist. A `ThreadsRequest` is **single-use and forward-only** — there is no `fetchPrevious`. To refresh the list from the top, build a new request from the builder and replace your list with its results.
 
+Paging is internally keyed on a compound **`(updatedAt, id)`** cursor, matching the JS and Android SDKs. `updatedAt` alone is second-granular, so threads updated within the same second could not be separated by it and a page boundary could only step past the whole second — skipping every unseen row in it. Carrying the boundary row's id makes the cursor address one exact row, so a block of same-second threads spills across pages instead of being dropped. You do not set this yourself; it matters only if you were previously working around duplicated or skipped rows.
+
 ### The MessageThread Model
 
 Each row is a `MessageThread`:
@@ -127,9 +144,9 @@ Each row is a `MessageThread`:
 | `conversationId`     | The ID of the conversation the thread belongs to.                                                                                      |
 | `receiverType`       | `user` or `group`.                                                                                                                     |
 | `receiverUid`        | The raw `UID`/`GUID` of the conversation. Resolve the display name and avatar yourself via `CometChat.getUser()` / `CometChat.getGroup()`. |
-| `subscriptionState`  | Always `SUBSCRIBED` for rows in this list.                                                                                             |
+| `isSubscribed`       | Always `true` for rows in this list — presence in the list *is* the subscription.                                                       |
 | `unreadReplyCount`   | Reserved for future use — currently `nil` (unknown), which is not the same as `0`.                                                     |
-| `updatedAt`          | An internal pagination cursor. **Do not sort your UI on it.**                                                                          |
+| `updatedAt`          | Part of the internal pagination cursor (paired with the row's id). Second-granular. **Do not sort your UI on it.**                      |
 
 <Warning>
 
@@ -143,44 +160,27 @@ The list starts **empty** for every user when the feature launches — it fills 
 
 </Info>
 
-## Real-time Thread Events
+## Keeping Your UI in Sync
 
-Conform to `CometChatThreadDelegate` to keep your UI in sync as subscription state changes and replies arrive.
+The SDK does **not** expose a thread listener or thread-subscription callbacks. It deliberately does not cache subscription state: the state it could not fully observe drifted, so the server's flag on the message is the single source of truth.
 
-<Tabs>
-<Tab title="Swift">
-```swift
-CometChat.threadDelegate = self
+Keep your UI in step yourself:
 
-extension ViewController: CometChatThreadDelegate {
-
-    func onThreadSubscriptionChanged(event: ThreadSubscriptionEvent) {
-        print("Thread \(event.parentMessageId) is now \(event.subscriptionState)")
-    }
-
-    func onThreadReplyReceived(event: ThreadReplyEvent) {
-        print("New reply in thread \(event.parentMessageId): \(event.reply.id)")
-    }
-}
-```
-</Tab>
-</Tabs>
-
-Both callbacks are optional. The events carry:
-
-| Event                     | Properties                                                          |
-| ------------------------- | --------------------------------------------------------------------- |
-| `ThreadSubscriptionEvent` | `parentMessageId`, `subscriptionState`, `source`                    |
-| `ThreadReplyEvent`        | `parentMessageId`, `reply`, `conversationId`, `source`              |
-
-- `onThreadSubscriptionChanged` fires when the logged-in user's subscription state for a thread changes on **this device** — after a successful subscribe/unsubscribe call, or after a threaded send auto-subscribes them.
-- `onThreadReplyReceived` fires for every incoming threaded message and for the user's own successful threaded sends. Use it to bump reply counts and re-sort your thread list.
+- **After your own subscribe/unsubscribe** — update the message you hold by setting `threadSubscribed` in the success callback (local only, no network). This is the normal case and needs nothing else.
+- **On the next fetch** — `threadSubscribed` arrives with every fetched message, so a refresh always corrects the state.
+- **For new replies** — use the regular message listener (`onTextMessageReceived` and friends) and check `parentMessageId` to spot a threaded reply.
 
 <Note>
 
-A subscribe or unsubscribe performed on the user's **other device** does not currently produce a real-time event on this one — the state self-corrects on the next message fetch, so refresh your thread list when the app returns to the foreground.
+A subscribe or unsubscribe performed on the user's **other device** produces no real-time event on this one. The state self-corrects on the next message fetch, so refresh when the app returns to the foreground.
 
 </Note>
+
+<Warning>
+
+Do not build a long-lived local cache of subscription state keyed by parent message id. That is exactly the design the SDK moved away from — it cannot observe every change, so it drifts. Read `threadSubscribed` off the message each time you render.
+
+</Warning>
 
 ## Notification Preferences
 
@@ -192,6 +192,31 @@ The notification preference for replies gains a new value so users can be notifi
 | `SUBSCRIBE_TO_ALL`                | Notifications for all thread replies.                          |
 | `SUBSCRIBE_TO_MENTIONS`           | Notifications only for replies that mention the user.          |
 | `SUBSCRIBE_TO_SUBSCRIBED_THREADS` | Notifications for replies in threads the user is subscribed to. |
+
+### Quoted replies are a separate preference
+
+A **quoted reply** (a reply to one specific message) and a **threaded reply** (a message posted into a thread) are configured independently, through two different enums. They are not interchangeable — the raw value `4` means something different on each.
+
+| Enum | Set with | Fourth option |
+| --- | --- | --- |
+| `RepliesOptions` | `set(repliesPreference:)` | `SUBSCRIBE_TO_SUBSCRIBED_THREADS` |
+| `QuotedRepliesOptions` | `set(quotedRepliesPreference:)` | `SUBSCRIBE_TO_QUOTES_ON_OWN_MESSAGES` |
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let groupPreferences = CometChatNotifications.GroupPreferences()
+
+// Threaded replies: only threads this user follows.
+groupPreferences.set(repliesPreference: .SUBSCRIBE_TO_SUBSCRIBED_THREADS)
+
+// Quoted replies: only quotes of this user's own messages.
+groupPreferences.set(quotedRepliesPreference: .SUBSCRIBE_TO_QUOTES_ON_OWN_MESSAGES)
+```
+</Tab>
+</Tabs>
+
+Both preferences exist on group and one-on-one preferences alike.
 
 See [Notification Preferences](/notifications) for how to read and update a user's preferences.
 
