@@ -1,6 +1,36 @@
 ---
 title: "Pin A Message"
+sidebarTitle: "Pin A Message"
+description: "Pin and unpin messages in a conversation, fetch the pinned list, and listen for pin events with the CometChat Android SDK."
 ---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Pin / unpin a message
+CometChat.pinMessage(messageId, callbackListener)      // -> BaseMessage
+CometChat.unpinMessage(messageId, callbackListener)    // -> BaseMessage
+
+// Fetch the pinned list for one conversation (UID or GUID is mandatory)
+val request = MessagesRequest.MessagesRequestBuilder()
+    .setUID("UID")            // or .setGUID("GUID")
+    .setPinned(true)
+    .setLimit(50)
+    .build()
+request.fetchNext(callbackListener)                    // List<BaseMessage>
+
+// Read pin state off a message
+val isPinned = message.isPinned                        // pinnedAt > 0
+val isSystemPinned = message.isSystemPinned            // pinnedBy == "app_system"
+
+// Caps and availability
+val limit = CometChat.getPinMessageLimit()             // -1 when unspecified
+val systemLimit = CometChat.getSystemPinMessageLimit() // -1 when unspecified
+val enabled = CometChat.isPinMessageEnabled()          // Boolean
+```
+
+</Accordion>
 
 Keep important messages easy to find by pinning them to a conversation. A pinned message is visible to **all participants** of the conversation, along with who pinned it and when. Users can pin messages, unpin them, and fetch all pinned messages of a conversation. You can also listen to pin events in real-time. Let's see how to work with pinned messages in CometChat's Android SDK.
 
@@ -53,9 +83,19 @@ CometChat.pinMessage(messageId, object : CometChat.CallbackListener<BaseMessage>
 
 </Tabs>
 
+Pinning is **idempotent**, and a message has a single pinner: re-pinning an already pinned message updates `getPinnedBy()` and `getPinnedAt()` to the most recent pinner rather than failing.
+
+<Warning>
+
+**A just-sent message may not be pinnable or savable yet.** On an app with moderation enabled, the server stamps a new message as moderation-pending and clears it a moment later. While it is pending, the call is rejected with `ERR_MESSAGE_NO_ACCESS` — the **same code returned for a genuine permission refusal**, so you cannot tell the two apart from the error alone.
+
+The window runs from **send**, not from the user's tap, and clears within a few seconds. Do not disable the control on this error: by the time someone opens a menu and taps, moderation has usually finished. Prefer a retry or a transient "not ready yet" message over telling the user they lack permission. Moderation is configured **per app**, so this never reproduces on an app that has it switched off. (The CometChat UI Kits already withhold the Pin/Save options on a moderation-pending, disapproved, deleted or not-yet-sent message; this only concerns custom UI built directly on the SDK.)
+
+</Warning>
+
 <Info>
 
-In a **group conversation**, the CometChat UI Kits show the Pin/Unpin option only to participants with the **Admin** or **Moderator** scope, or the group **owner**. This gate is applied client-side — the SDK does not currently enforce roles on the server, so apply your own role check if you build custom pin UI. Every participant can see pinned messages. In a **one-on-one conversation**, both participants can pin and unpin. Deleted messages cannot be pinned; deleting a pinned message automatically unpins it.
+Pinning is a moderation action and **the server is the authority**: a user without pin permission is rejected with `ERR_PERMISSION_DENIED`. There is no client-side role gate — the CometChat UI Kits show the Pin/Unpin option to every participant and surface a "you don't have permission" toast on that error, so build your own UI the same way rather than trying to predict the verdict. Every participant can see pinned messages. Deleted messages cannot be pinned; deleting a pinned message automatically unpins it.
 
 </Info>
 
@@ -205,6 +245,8 @@ messagesRequest.fetchNext(object : CometChat.CallbackListener<List<BaseMessage>>
 
 </Tabs>
 
+The list is ordered by **pin time, most recently pinned first** — not by when the messages were sent. Render it in the order the SDK returns it. Page it with `fetchNext()` until a call returns an empty list; the cursor rides on `pinnedAt` instead of `sentAt`, and the SDK swaps it for you.
+
 ## Check if a Message is Pinned
 
 Every fetched or received message carries its pin state on the `BaseMessage` itself.
@@ -214,6 +256,7 @@ Every fetched or received message carries its pin state on the `BaseMessage` its
 | `isPinned()`            | Returns `true` if the message is currently pinned in its conversation.                                                                           |
 | `getPinnedAt()`         | The timestamp at which the message was pinned. `0` when the message is not pinned.                                                               |
 | `getPinnedBy()`         | The `UID` of the user who most recently pinned the message. The value `app_system` indicates a pin applied by the app itself (a system pin).      |
+| `isSystemPinned()`      | Returns `true` when the message is pinned and `getPinnedBy()` is `app_system` — render it as a system pin, not as a user.                        |
 
 <Tabs>
 <Tab title="Java">
@@ -291,7 +334,38 @@ To stop listening, remove the listener with `CometChat.removeMessageListener(lis
 
 ## Pin Limit
 
-A conversation can hold a limited number of pinned messages (100 by default). When the limit is exceeded, the SDK surfaces the server error through `onError`, and the applicable limit can be read programmatically from the exception — never hard-code it.
+A conversation holds a capped number of pins, configurable per app. Read the cap rather than hard-coding it — it is tenant-overridable and will drift.
+
+<Tabs>
+<Tab title="Java">
+```java
+int limit = CometChat.getPinMessageLimit();
+int systemLimit = CometChat.getSystemPinMessageLimit();
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val limit = CometChat.getPinMessageLimit()
+val systemLimit = CometChat.getSystemPinMessageLimit()
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+</Tabs>
+
+Both are synchronous and never throw. They return `Settings.LIMIT_UNSPECIFIED` (`-1`) when the app settings carry no value or when they are called before `init()` completes — show generic copy in that case rather than guessing a number. `getSystemPinMessageLimit()` is the separate cap for admin/global pins: system pins do **not** consume a user's allowance, so the two budgets are enforced independently.
+
+When the limit is breached, the SDK surfaces the server error through `onError`, and the applicable limit is carried in the exception's `errorParams` so you can tell the user the actual number without a second call.
 
 <Tabs>
 <Tab title="Java">
@@ -321,6 +395,14 @@ override fun onError(e: CometChatException?) {
 
 </Tabs>
 
+## Error Handling
+
+| Error                                | Meaning                                                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `ERR_PERMISSION_DENIED`              | The user is not allowed to pin or unpin in this conversation. Surface a "you don't have permission" message.          |
+| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | The conversation's pin cap was reached. The cap is in `errorParams["limit"]` when the server includes it.             |
+| `ERR_MESSAGE_NO_ACCESS`              | The user cannot act on this message — either a genuine access refusal or a message still held by moderation (above).  |
+
 ## Feature Availability
 
 Check whether the Pin Message feature is enabled for your app before showing pin actions in your UI. The method is synchronous and safe to call from the UI layer.
@@ -345,3 +427,22 @@ if (CometChat.isPinMessageEnabled()) {
 </Tab>
 
 </Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/android/v5/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+  <Card title="Pin A Conversation" icon="thumbtack" href="/sdk/android/v5/pin-conversation">
+    Pin a conversation to the top of the list
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/android/v5/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Additional Message Filtering" icon="filter" href="/sdk/android/v5/additional-message-filtering">
+    Filter messages by pinned, saved, type, tags and more
+  </Card>
+</CardGroup>

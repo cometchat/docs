@@ -1,6 +1,33 @@
 ---
 title: "Save A Message"
+sidebarTitle: "Save A Message"
+description: "Save and unsave messages privately, fetch the cross-conversation saved list, and listen for save events with the CometChat Android SDK."
 ---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Save / unsave a message
+CometChat.saveMessage(messageId, callbackListener)     // -> BaseMessage
+CometChat.unsaveMessage(messageId, callbackListener)   // -> BaseMessage
+
+// Fetch the saved list — user-level, so do NOT set a UID or GUID
+val request = MessagesRequest.MessagesRequestBuilder()
+    .setSaved(true)
+    .setLimit(50)
+    .build()
+request.fetchNext(callbackListener)                    // List<BaseMessage>
+
+// Read save state off a message
+val isSaved = message.isSaved                          // savedAt > 0
+
+// Cap and availability
+val limit = CometChat.getSaveMessageLimit()            // -1 when unspecified
+val enabled = CometChat.isSaveMessageEnabled()         // Boolean
+```
+
+</Accordion>
 
 Let users bookmark messages for later. Saving a message is **private to the logged-in user** — nobody else in the conversation can see it — and works **across conversations**: a user's saved messages from all of their chats appear in one list, synced across all of their devices. Let's see how to work with saved messages in CometChat's Android SDK.
 
@@ -52,6 +79,16 @@ CometChat.saveMessage(messageId, object : CometChat.CallbackListener<BaseMessage
 </Tab>
 
 </Tabs>
+
+Saving is **idempotent** — saving an already saved message succeeds and refreshes `getSavedAt()` rather than failing.
+
+<Warning>
+
+**A just-sent message may not be pinnable or savable yet.** On an app with moderation enabled, the server stamps a new message as moderation-pending and clears it a moment later. While it is pending, the call is rejected with `ERR_MESSAGE_NO_ACCESS` — the **same code returned for a genuine permission refusal**, so you cannot tell the two apart from the error alone.
+
+The window runs from **send**, not from the user's tap, and clears within a few seconds. Do not disable the control on this error: by the time someone opens a menu and taps, moderation has usually finished. Prefer a retry or a transient "not ready yet" message over telling the user they lack permission. Moderation is configured **per app**, so this never reproduces on an app that has it switched off. (The CometChat UI Kits already withhold the Pin/Save options on a moderation-pending, disapproved, deleted or not-yet-sent message; this only concerns custom UI built directly on the SDK.)
+
+</Warning>
 
 <Info>
 
@@ -151,6 +188,8 @@ messagesRequest.fetchNext(object : CometChat.CallbackListener<List<BaseMessage>>
 
 </Tabs>
 
+The list is ordered by **save time, most recently saved first** — not by when the messages were sent. Page it with `fetchNext()` until a call returns an empty list; the cursor rides on `savedAt` instead of `sentAt`, and the SDK swaps it for you.
+
 <Info>
 
 If the user loses access to a conversation (for example, they are removed from a group), messages saved from it are cleaned up and no longer returned.
@@ -234,6 +273,74 @@ CometChat.addMessageListener(listenerID, object : CometChat.MessageListener() {
 
 To stop listening, remove the listener with `CometChat.removeMessageListener(listenerID)`.
 
+## Save Limit
+
+A user can save a capped number of messages, configurable per app. Read the cap rather than hard-coding it — it is tenant-overridable and will drift.
+
+<Tabs>
+<Tab title="Java">
+```java
+int limit = CometChat.getSaveMessageLimit();
+
+if (limit != Settings.LIMIT_UNSPECIFIED && savedCount >= limit) {
+    // Disable the save control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val limit = CometChat.getSaveMessageLimit()
+
+if (limit != Settings.LIMIT_UNSPECIFIED && savedCount >= limit) {
+    // Disable the save control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+</Tabs>
+
+The call is synchronous and never throws. It returns `Settings.LIMIT_UNSPECIFIED` (`-1`) when the app settings carry no value or when it is called before `init()` completes — show generic copy in that case rather than guessing a number. Unlike pinning, saving has no separate system cap.
+
+When the limit is breached, the SDK surfaces the server error through `onError`, and the applicable limit is carried in the exception's `errorParams`:
+
+<Tabs>
+<Tab title="Java">
+```java
+@Override
+public void onError(CometChatException e) {
+    Object limit = e.getErrorParams() != null ? e.getErrorParams().get("limit") : null;
+    if (limit != null) {
+        Log.e(TAG, "You can save up to " + limit + " messages.");
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+override fun onError(e: CometChatException?) {
+    val limit = e?.errorParams?.get("limit")
+    if (limit != null) {
+        Log.e(TAG, "You can save up to $limit messages.")
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## Error Handling
+
+| Error                               | Meaning                                                                                                              |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `ERR_SAVED_MESSAGES_LIMIT_EXCEEDED` | The user's save cap was reached. The cap is in `errorParams["limit"]` when the server includes it.                    |
+| `ERR_MESSAGE_NO_ACCESS`             | The user cannot act on this message — either a genuine access refusal or a message still held by moderation (above).  |
+
 ## Feature Availability
 
 Check whether the Save Message feature is enabled for your app before showing save actions in your UI. The method is synchronous and safe to call from the UI layer.
@@ -258,3 +365,22 @@ if (CometChat.isSaveMessageEnabled()) {
 </Tab>
 
 </Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Pin A Message" icon="thumbtack" href="/sdk/android/v5/pin-message">
+    Highlight a message for everyone in the conversation
+  </Card>
+  <Card title="Pin A Conversation" icon="list" href="/sdk/android/v5/pin-conversation">
+    Pin a conversation to the top of the list
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/android/v5/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Additional Message Filtering" icon="filter" href="/sdk/android/v5/additional-message-filtering">
+    Filter messages by pinned, saved, type, tags and more
+  </Card>
+</CardGroup>
