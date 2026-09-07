@@ -222,6 +222,25 @@ Two rules to internalise:
 
 Because subscribing is idempotent, rendering an un-told `false` as the un-followed affordance is safe — an unnecessary subscribe is harmless.
 
+### Re-read the State for One Message
+
+When you need an authoritative flag for a single message — after acting on a socket-delivered message, or to build a thread row without refetching a list — use `getMessageDetails()`. It takes a message id and carries the subscription opt-in, so the message it resolves with has `threadSubscribed` populated.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int messageId = 103;
+
+CometChat.getMessageDetails(messageId, onSuccess: (BaseMessage message) {
+  debugPrint("Thread subscribed: ${message.threadSubscribed}");
+}, onError: (CometChatException e) {
+  debugPrint("Message details fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
 ### Reacting to Replies
 
 A thread reply is an ordinary message with `parentMessageId` set, delivered through the standard `MessageListener` alongside every other message — there is no thread-specific event channel. The same listener also delivers `onMessageEdited` and `onMessageDeleted` for replies, which a replies-only channel would miss.
@@ -249,7 +268,7 @@ Your own replies do not arrive on a listener — update your UI from the send ca
 
 ### Fetch Participated Threads
 
-You can fetch the threads the logged-in user participates in by using the `ThreadsRequest` class. The `ThreadsRequestBuilder` builds the request using functions such as `setLimit()` and `setParticipatedByMe()`; once you have the `ThreadsRequest` object, call `fetchNext()` to get the next set of threads. Presence in this list *is* a subscription — every row is subscribed.
+You can fetch the threads the logged-in user participates in by using the `ThreadsRequest` class. The `ThreadsRequestBuilder` builds the request using `setLimit()` and `setParticipatedByMe()`; once you have the `ThreadsRequest` object, call `fetchNext()` to get the next set of threads. Presence in this list *is* a subscription — every row is subscribed.
 
 <Tabs>
 <Tab title="Dart">
@@ -258,9 +277,31 @@ ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
     ..setParticipatedByMe(true)
     ..setLimit(30)).build();
 
-List<MessageThread> threads = await threadsRequest.fetchNext();
-debugPrint("Fetched ${threads.length} threads");
+threadsRequest.fetchNext(onSuccess: (List<MessageThread> threads) {
+  debugPrint("Fetched ${threads.length} threads");
+}, onError: (CometChatException e) {
+  debugPrint("Thread fetching failed with exception: ${e.message}");
+});
 ```
 
 </Tab>
 </Tabs>
+
+To scope the list to a single conversation, add `setUid()` for a 1-1 counterpart or `setGuid()` for a group. The two are mutually exclusive — setting both is a validation error raised when you call `fetchNext()`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
+    ..setGuid("cometchat-guid-1")
+    ..setLimit(30)).build();
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+
+A `ThreadsRequest` is single-use and one-directional: it accumulates its paging state internally and has no reset. To refresh a list, build a new request from the builder and replace the list rather than re-running an exhausted one. This is the same contract as `ConversationsRequest` and `MessagesRequest`.
+
+</Note>
