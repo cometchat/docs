@@ -84,10 +84,28 @@ Events provide decoupled communication between UIKit components using a publish/
 | Field | Type | Description |
 | ----- | ---- | ----------- |
 | `parentMessageId` | `number` | The root message ID of the thread whose state changed. |
-| `state` | `CometChat.ThreadSubscriptionState` | `SUBSCRIBED`, `NOT_SUBSCRIBED`, or `UNKNOWN`. |
-| `source` | `string` | `"local"` for an optimistic flip not yet acked; `"sdk"` for a confirmed write or a server-initiated change. Treat it as an open string — an unrecognised value must never break a subscriber. |
+| `subscribed` | `boolean` | Whether the logged-in user now follows the thread. |
 
-This is the channel that keeps the thread header control and the message action sheet in agreement without a refetch. It is also the channel to subscribe to if you build your own threads list against `CometChat.ThreadsRequest`.
+Every emission originates in the UI Kit — a manual toggle, its revert on failure, or a mirror of an auto-subscribe the server performed. The Chat SDK emits no subscription events of its own, so this subject is the only channel.
+
+On a matching `parentMessageId`, re-render **and** stamp `subscribed` onto the message objects you hold, so your copy stays in step with the kit's.
+
+This is the channel that keeps the thread header control and the message action sheet in agreement without a refetch. It is also the channel to subscribe to if you build your own threads list against `CometChat.ThreadsRequestBuilder`.
+
+Prefer the typed helper over subscribing to the subject directly — pass a `DestroyRef` and it unsubscribes with the component:
+
+```typescript
+import { DestroyRef, inject } from '@angular/core';
+import { CometChatThreadEvents } from '@cometchat/chat-uikit-angular';
+
+private destroyRef = inject(DestroyRef);
+
+ngOnInit() {
+  CometChatThreadEvents.onThreadSubscriptionChanged(({ parentMessageId, subscribed }) => {
+    // re-render, and stamp `subscribed` onto your held copies
+  }, this.destroyRef);
+}
+```
 
 <Warning>
   Unfollowing hard-deletes the thread-list row server-side. A list of your own must **remove** the row rather than re-render it in an "unfollowed" style.
@@ -98,6 +116,13 @@ See the [Thread Subscription guide](/ui-kit/angular/guides/thread-subscription) 
 ## CometChatPinSaveEvents
 
 `CometChatPinSaveEvents` emits events when a message is pinned, unpinned, saved, or unsaved.
+
+It publishes on **two tiers**, and the split is the point:
+
+- **Server truth** — a confirmed write or a realtime frame. Authoritative.
+- **This client's optimism** — the flip a surface applied before the server answered, and its reversal if the write failed. Not authoritative.
+
+### Server truth
 
 | Event Name             | Reach                    | Description                                                              |
 | ---------------------- | ------------------------ | ------------------------------------------------------------------------ |
@@ -111,7 +136,54 @@ See the [Thread Subscription guide](/ui-kit/angular/guides/thread-subscription) 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
 | `message` | `CometChat.BaseMessage` | The full updated message. |
-| `source` | `string` | `"optimistic"` for a local flip not yet acked, `"revert"` when a failure put it back, `"sdk"` for a confirmed write or a realtime frame. Open string — handle unknown values gracefully. |
+
+### This client's optimism
+
+| Event Name                | Payload | Description |
+| ------------------------- | ------- | ----------- |
+| **ccMessagePinChanged**   | `IPinChanged` | This client's own pin flip before the server confirms it, and its revert if the write fails. |
+| **ccMessageSaveChanged**  | `ISaveChanged` | The same, for save. |
+
+**Payload (`IPinChanged` / `ISaveChanged`)**
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `message` | `CometChat.BaseMessage` | The message acted on. |
+| `pinned` / `saved` | `boolean` | The state this client is **claiming**. One channel covers both directions: an optimistic pin publishes `true`, its revert publishes `false`. |
+
+### Which to subscribe to
+
+A surface almost always wants **both** tiers — the optimism for immediate feedback, the truth for correctness. Four merged observables pair them per direction, so you subscribe once and cannot drift out of step:
+
+| Observable | Emits when |
+| ---------- | ---------- |
+| `pinned$` | Pinned, whether claimed locally or confirmed by the server |
+| `unpinned$` | Unpinned, either tier |
+| `saved$` | Saved, either tier |
+| `unsaved$` | Unsaved, either tier |
+
+Prefer these over the raw subjects. Each has a typed helper that takes an optional `DestroyRef` and unsubscribes with your component:
+
+```typescript
+import { DestroyRef, inject } from '@angular/core';
+import { CometChatPinSaveEvents } from '@cometchat/chat-uikit-angular';
+
+private destroyRef = inject(DestroyRef);
+
+ngOnInit() {
+  CometChatPinSaveEvents.onMessagePinned(({ message }) => {
+    // swap your copy of `message` wholesale
+  }, this.destroyRef);
+
+  CometChatPinSaveEvents.onMessageUnpinned(({ message }) => { /* ... */ }, this.destroyRef);
+  CometChatPinSaveEvents.onMessageSaved(({ message }) => { /* ... */ }, this.destroyRef);
+  CometChatPinSaveEvents.onMessageUnsaved(({ message }) => { /* ... */ }, this.destroyRef);
+}
+```
+
+<Note>
+  **No conversation pin events yet.** `CometChatConversations` re-orders itself on pin and unpin without publishing anything, so there is no event to subscribe to. To keep a list of your own in sync, read `conversation.isPinned()` when you render rather than waiting for an event.
+</Note>
 
 <Warning>
   Each payload carries the **full updated message**, so swap your copy wholesale rather than patching fields. `pinnedAt` and `savedAt` are present-only-when-set and are cleared — never zeroed — on unpin and unsave, so a partial patch leaves a stale timestamp behind and the indicator never disappears.

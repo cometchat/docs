@@ -10,7 +10,7 @@ description: "Pin messages for everyone in a conversation, save messages private
 | --- | --- |
 | Package | `@cometchat/chat-uikit-angular` |
 | Key components | `cometchat-message-list`, `cometchat-pinned-messages`, `cometchat-saved-messages`, `cometchat-conversations` |
-| Feature gate | App-level flags (`CometChat.isPinMessageEnabled()` / `isSaveMessageEnabled()`), overridable via `COMETCHAT_GLOBAL_CONFIG` |
+| Feature gate | App settings `features.ux.messages.pinned.enabled` / `features.ux.messages.saved.enabled` / `features.ux.conversations.pinned.enabled`, read via `CometChat.isPinMessageEnabled()` / `isSaveMessageEnabled()` / `isPinConversationEnabled()` and overridable via `COMETCHAT_GLOBAL_CONFIG` |
 | Service | `PinSaveService` |
 | Events | `CometChatPinSaveEvents` — `ccMessagePinned`, `ccMessageUnpinned`, `ccMessageSaved`, `ccMessageUnsaved` |
 | State | `message.getPinnedAt()`, `getPinnedBy()`, `getSavedAt()`; `conversation.isPinned()` |
@@ -34,12 +34,15 @@ Before starting, complete the [Integration Guide](/ui-kit/angular/integration).
 
 ## Enabling the Feature
 
-Pin Message and Save Message are gated by **app-level feature flags** that CometChat provisions server-side. The UI Kit resolves them once per session through the Chat SDK:
+Pin Message and Save Message are gated by **app settings** that CometChat provisions server-side. The UI Kit resolves them once per session through the Chat SDK:
 
-- `CometChat.isPinMessageEnabled()`
-- `CometChat.isSaveMessageEnabled()`
+| App setting | Chat SDK accessor |
+| --- | --- |
+| `features.ux.messages.pinned.enabled` | `CometChat.isPinMessageEnabled()` |
+| `features.ux.messages.saved.enabled` | `CometChat.isSaveMessageEnabled()` |
+| `features.ux.conversations.pinned.enabled` | `CometChat.isPinConversationEnabled()` |
 
-While a flag is off, the SDK reports the feature disabled and none of the pin or save surfaces render.
+While a setting is off, the SDK reports the feature disabled and none of that feature's surfaces render.
 
 ### Development override
 
@@ -63,10 +66,10 @@ export const appConfig: ApplicationConfig = {
 ```
 
 <Warning>
-  Leave both unset in production. The SDK's app-level flags are the right source of truth; an explicit `true` here shows options the backend may still reject.
+  Leave both unset in production. The app settings are the right source of truth; an explicit `true` here shows options the backend may still reject.
 </Warning>
 
-Pinning a **conversation** has no such flag. It renders whenever the installed Chat SDK exposes `pinConversation` / `unpinConversation`, and is hidden with `[hidePinConversation]="true"`.
+Pinning a **conversation** is gated the same way, on `features.ux.conversations.pinned.enabled`. It additionally requires the installed Chat SDK to expose `pinConversation` / `unpinConversation`, and is hidden with `[hidePinConversation]="true"`.
 
 ---
 
@@ -113,7 +116,23 @@ Pinning and saving run immediately. **Unpinning and unsaving ask first** — unp
 
 ### Limits
 
-The server owns the pin and save caps. When one is hit, the rejection carries the limit and the toast names the real number ("You can pin up to 5 messages in a conversation."), so the copy never goes stale when the backend retunes the cap.
+Each feature carries a cap, configured per app and read from app settings:
+
+| App setting | Caps | Chat SDK accessor |
+| --- | --- | --- |
+| `features.ux.messages.pinned.limit` | Pinned messages per conversation | `CometChat.getPinnedMessagesLimit()` |
+| `features.ux.messages.saved.limit` | Saved messages per user | `CometChat.getSavedMessagesLimit()` |
+| `features.ux.conversations.pinned.limit` | Pinned conversations per user | `CometChat.getPinnedConversationsLimit()` |
+
+Every accessor above resolves asynchronously — `await` it or use `.then()`.
+
+When a user reaches a cap, the UI Kit shows a toast naming the configured number ("You can only pin 5 messages. Unpin one to pin another."). You do not need to handle the rejection yourself. Where an app configures no cap, the toast falls back to generic copy rather than guessing a figure.
+
+<Note>
+  The caps are read once per session and cached, so the same number is available before a user reaches it — use `PinSaveService.getConfiguredLimit()` to disable a control ahead of the rejection. See [Acting Programmatically](#acting-programmatically).
+</Note>
+
+An app may also **system-pin** messages and conversations app-wide, capped separately through `features.ux.messages.pinned.system.limit` and `features.ux.conversations.pinned.system.limit` — read through `CometChat.getSystemPinnedMessagesLimit()` and `CometChat.getSystemPinnedConversationsLimit()`. System pins belong to no member: they sort above user pins and cannot be lifted from the UI.
 
 ---
 
@@ -298,13 +317,15 @@ export class CustomPinButtonComponent {
 | Member | Returns | Description |
 |:---|:---|:---|
 | `isSupported()` | `boolean` | Whether the installed Chat SDK exposes the pin/save API at all |
-| `isPinEnabled()` | `Promise<boolean>` | The app-level pin flag, cached per session |
-| `isSaveEnabled()` | `Promise<boolean>` | The app-level save flag, cached per session |
+| `isPinEnabled()` | `Promise<boolean>` | `features.ux.messages.pinned.enabled`, cached per session |
+| `isSaveEnabled()` | `Promise<boolean>` | `features.ux.messages.saved.enabled`, cached per session |
+| `isPinConversationEnabled()` | `Promise<boolean>` | `features.ux.conversations.pinned.enabled`, cached per session |
 | `isPinned(message)` | `boolean` | Presence of `pinnedAt` |
 | `isSaved(message)` | `boolean` | Presence of `savedAt`, scoped to the viewer |
 | `pinnedBy(message)` | `string \| null` | Who pinned it. `app_system` means an admin or global pin |
 | `isSystemPin(message)` | `boolean` | Whether the pin came from the app rather than a person |
 | `run(action, message)` | `Promise<CometChat.BaseMessage \| null>` | Performs `'pin' \| 'unpin' \| 'save' \| 'unsave'`. Returns the updated message, or `null` when it failed |
+| `getConfiguredLimit(action)` | `Promise<number \| null>` | The app's cap for that action, or `null` when none is configured. Read once and reused — use it to disable a control before the user reaches the cap |
 
 `run()` flips the message optimistically, reconciles against the authoritative copy the server returns, and restores the pre-call attributes on failure — so a rejected pin never leaves a pin showing. One request per message is on the wire at a time, so a double-tap cannot race itself.
 

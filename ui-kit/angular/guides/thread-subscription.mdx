@@ -62,7 +62,7 @@ export const appConfig: ApplicationConfig = {
 With the gate off, neither surface renders and no thread request is ever made — whatever the per-component `hideThreadSubscription*` inputs say.
 
 <Warning>
-  The kit's peer range still admits Chat SDK builds that predate the thread API. `ThreadSubscriptionService` performs a runtime capability check for `subscribeToThread`, `unsubscribeFromThread`, and `getThreadSubscriptionState`; if any is missing, both surfaces stay hidden rather than rendering a button that throws.
+  The kit's peer range still admits Chat SDK builds that predate the thread API. `ThreadSubscriptionService.isSupported()` checks for `CometChat.subscribeToThread` and `CometChat.unsubscribeFromThread`; if either is missing, both surfaces stay hidden rather than rendering a button that throws. The read side is not probed — follow state is read off the message itself, and what a *control* needs before it renders is the ability to change that state.
 </Warning>
 
 ---
@@ -151,15 +151,14 @@ export class ThreadInboxComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.subscription = CometChatThreadEvents.ccThreadSubscriptionChanged.subscribe(
-      ({ parentMessageId, state, source }) => {
-        if (state === CometChat.ThreadSubscriptionState.SUBSCRIBED) {
+      ({ parentMessageId, subscribed }) => {
+        if (subscribed) {
           this.addRow(parentMessageId);
         } else {
           // Unfollowing hard-deletes the row server-side — remove it,
           // do not re-render it in an "unfollowed" style.
           this.removeRow(parentMessageId);
         }
-        console.log('change came from', source); // "local" or "sdk"
       }
     );
   }
@@ -178,11 +177,16 @@ export class ThreadInboxComponent implements OnInit, OnDestroy {
 | Field | Type | Description |
 |:---|:---|:---|
 | `parentMessageId` | `number` | The root message ID of the thread whose state changed |
-| `state` | `CometChat.ThreadSubscriptionState` | `SUBSCRIBED`, `NOT_SUBSCRIBED`, or `UNKNOWN` |
-| `source` | `string` | `"local"` for an optimistic flip not yet acked; `"sdk"` for a confirmed write or a server-initiated change. Treat it as an open string — an unrecognised value must never break your subscriber |
+| `subscribed` | `boolean` | Whether the logged-in user now follows the thread |
+
+Every emission originates in the UI Kit — a manual toggle, its revert on failure, or a mirror of an
+auto-subscribe the server performed. The Chat SDK emits no subscription events of its own.
+
+`CometChatThreadEvents.onThreadSubscriptionChanged(cb, destroyRef)` is the same channel with automatic
+cleanup; prefer it over subscribing to the subject by hand.
 
 <Warning>
-  Unfollowing **hard-deletes** the thread-list row server-side. A list built on `ThreadsRequest` must remove the row, not re-render it.
+  Unfollowing **hard-deletes** the thread-list row server-side. A list built on `CometChat.ThreadsRequestBuilder` must remove the row, not re-render it.
 </Warning>
 
 ---
@@ -192,7 +196,8 @@ export class ThreadInboxComponent implements OnInit, OnDestroy {
 `ThreadSubscriptionService` is provided in root and can be injected wherever you need to read or toggle state yourself — for example, in a custom thread row.
 
 ```typescript expandable
-import { Component, inject } from '@angular/core';
+import { Component, Input, inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
 import { ThreadSubscriptionService } from '@cometchat/chat-uikit-angular';
 
 @Component({
@@ -206,25 +211,26 @@ import { ThreadSubscriptionService } from '@cometchat/chat-uikit-angular';
 })
 export class CustomThreadRowComponent {
   private readonly threads = inject(ThreadSubscriptionService);
-  parentMessageId!: number;
+
+  /** Both methods take the message, not an id — a reply resolves to its parent thread. */
+  @Input() message!: CometChat.BaseMessage;
 
   get isFollowing(): boolean {
-    return this.threads.isFollowing(this.parentMessageId);
+    return this.threads.isFollowing(this.message);
   }
 
   toggle(): void {
-    this.threads.toggle(this.parentMessageId);
+    this.threads.toggle(this.message);
   }
 }
 ```
 
 | Method | Returns | Description |
 |:---|:---|:---|
-| `isSupported()` | `boolean` | Whether the installed Chat SDK exposes the thread API at all |
-| `getState(parentMessageId)` | `CometChat.ThreadSubscriptionState` | The state to render. Never throws and never blocks; an unknown thread reads `UNKNOWN` |
-| `isFollowing(parentMessageId)` | `boolean` | `true` only for `SUBSCRIBED`. `UNKNOWN` is deliberately not "following" |
+| `isSupported()` | `boolean` | Whether the installed Chat SDK exposes the thread write API (`subscribeToThread` / `unsubscribeFromThread`) |
+| `isFollowing(message)` | `boolean` | Whether to render the followed affordance. Reads the flag off the message itself, so a reply bubble answers for its own thread without consulting the parent |
 | `isUnavailable(parentMessageId)` | `boolean` | `true` once the server has said the thread is gone or off-limits |
-| `toggle(parentMessageId)` | `CometChat.ThreadSubscriptionState` | Flips the subscription and returns the state to show immediately |
+| `toggle(message)` | `boolean` | Flips the subscription and returns the state to leave the control in. The only path that writes to the server |
 
 ---
 
@@ -232,11 +238,13 @@ export class CustomThreadRowComponent {
 
 ### Optimistic toggling
 
-The Chat SDK holds the authoritative state — an in-memory, per-login-session cache written only after the backend acks. Optimism lives in the UI Kit instead: the control flips instantly, the service holds the unacked value as an overlay, and the overlay is dropped — reverting to server truth — the moment the request settles either way.
+Follow state is read off the message itself. `toggle()` publishes the new value on `ccThreadSubscriptionChanged` before the request leaves, so every surface flips at once and stamps the value onto the message objects it holds. If the write fails, the service publishes the reverse — the surfaces flip back and re-stamp — and shows an error toast. A successful write confirms with a toast in both directions, because the icon alone is a subtle signal for something that governs whether the user hears about replies.
 
 ### Debounce and in-flight requests
 
-Rapid taps collapse into one request on a 400&nbsp;ms debounce, so the user's *last* intent is what reaches the server. At most one request per thread is on the wire at a time; a tap that lands mid-request is re-armed rather than dropped. An even number of taps lands back on the server's own value and sends nothing at all.
+The write leaves on the **first** tap. A tap within 400&nbsp;ms of it, or while its request is still on the wire, is swallowed whole — no publish, no request, nothing queued — and the control stays where the accepted toggle put it. That keeps an impatient double-tap from racing without deferring the request the user actually asked for, and it is the same guard the React UI Kit applies, so a double-tap lands on the same state on both platforms.
+
+A failed write clears the throttle stamp, so a deliberate retry straight after an error is not swallowed.
 
 ### Auto-subscribe
 
