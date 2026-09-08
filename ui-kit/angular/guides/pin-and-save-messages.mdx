@@ -14,6 +14,7 @@ description: "Pin messages for everyone in a conversation, save messages private
 | Service | `PinSaveService` |
 | Events | `CometChatPinSaveEvents` — `ccMessagePinned`, `ccMessageUnpinned`, `ccMessageSaved`, `ccMessageUnsaved` |
 | State | `message.getPinnedAt()`, `getPinnedBy()`, `getSavedAt()`; `conversation.isPinned()` |
+| SDK requirement | `@cometchat/chat-sdk-javascript` **4.2.0 or later** — the first release exposing the pin and save APIs |
 | Related | [Pinned Messages](/ui-kit/angular/components/cometchat-pinned-messages), [Saved Messages](/ui-kit/angular/components/cometchat-saved-messages), [All Guides](/ui-kit/angular/guides/guides-overview) |
 
 </Accordion>
@@ -102,12 +103,12 @@ A message can carry a pin or a save unless it is deleted, still in flight, held 
 
 ### Permissions
 
-Pinning is conversation-wide, so it is scope-gated the same way deleting someone else's message is: in a group, a known **participant** is denied and everyone else is offered the option. In a one-on-one there is no scope to check, so the client assumes it is allowed and the server is the backstop — a refusal returns `ERR_ACTION_NOT_ALLOWED`, and the optimistic flip reverts with an explanatory toast.
+Pinning is conversation-wide, and the **server is the sole authority** on who may do it. There is no client-side role gate: Pin is offered to every member, and a member without the permission is refused with `ERR_ACTION_NOT_ALLOWED` — the optimistic flip then reverts with an explanatory toast.
 
-Saving has no scope gate at all: it is private to the acting user and changes nothing anyone else can see.
+Saving has no gate at all: it is private to the acting user and changes nothing anyone else can see.
 
 <Note>
-  The client denies only a *known* participant rather than allow-listing the elevated scopes. `getScope()` is a membership property and is frequently undefined on a `Group` derived from a conversation, so an allow-list would hide Pin from admins whose scope simply has not loaded yet.
+  Do not rely on the UI to withhold Pin or Unpin from a participant — it does not. `getScope()` is a membership property and is frequently undefined on a `Group` derived from a conversation, so a client-side allow-list would hide Pin from admins whose scope simply has not loaded yet. The one action withheld on the client is Unpin on a system pin, which the server refuses for every member.
 </Note>
 
 ### Confirmation
@@ -228,7 +229,7 @@ The presence of `pinnedAt` is the boolean here too — an unpinned conversation 
 
 - Pinning runs straight away; **unpinning asks for confirmation**, because a pin is a deliberate arrangement of the list and a misplaced click should not undo it
 - The row shows a pin marker, and the state reaches screen readers through the row's accessible label, since the marker itself is `aria-hidden`
-- The pin cap is server-owned; exceeding it shows "You can pin up to N conversations." with the real number from the rejection
+- The pin cap is server-owned and read once per session through `CometChat.getPinnedConversationsLimit()`; exceeding it shows "You can only pin N chats. Unpin one to pin another." with that number
 
 ---
 
@@ -258,10 +259,9 @@ export class PinListenerComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.subscriptions.add(
-      CometChatPinSaveEvents.ccMessagePinned.subscribe(({ message, source }) => {
+      CometChatPinSaveEvents.ccMessagePinned.subscribe(({ message }) => {
         // Swap your copy of the message wholesale — do not patch fields.
         this.replaceMessage(message);
-        console.log('came from', source); // "optimistic" | "sdk" | "revert"
       })
     );
 
@@ -284,7 +284,7 @@ export class PinListenerComponent implements OnInit, OnDestroy {
   Every payload carries the **full updated message**. Swap your copy rather than patching fields: `pinnedAt` and `savedAt` are present-only-when-set and are *cleared*, never zeroed, on unpin and unsave — so a partial patch leaves a stale timestamp behind and the marker never disappears.
 </Warning>
 
-The `source` field is an open string: `"optimistic"` for a local flip not yet acked, `"revert"` when a failure put it back, and `"sdk"` for a confirmed write or a realtime frame. An unrecognised value must never break a subscriber.
+The payload carries the message and nothing else — there is no `source` discriminator. That distinction is what the two tiers are for: `ccMessagePinned` and its siblings are **server truth** (a confirmed write or a realtime frame), while `ccMessagePinChanged` and `ccMessageSaveChanged` are **this client's optimism** (a flip applied before the server answered, and its reversal if the write failed). Most surfaces want both, so subscribe to the merged `pinned$` / `unpinned$` / `saved$` / `unsaved$` observables rather than to the raw subjects.
 
 ---
 
@@ -345,15 +345,16 @@ export class CustomPinButtonComponent {
 | `message_saved_toast` | Message saved |
 | `message_unsaved_toast` | Message unsaved |
 | `pinned_messages_title` | `{count} Pinned Messages` |
+| `pinned_messages_menu` | Pinned messages |
 | `saved_messages_title` | `{count} Saved Messages` |
 | `pinned_by_system` | Pinned by the app |
 | `conversation_pin` | Pin conversation |
 | `conversation_unpin` | Unpin conversation |
 | `conversation_pinned_toast` | Conversation pinned |
 | `conversation_unpinned_toast` | Conversation unpinned |
-| `pin_message_limit_error` | `You can pin up to {limit} messages in a conversation.` |
-| `save_message_limit_error` | `You can save up to {limit} messages.` |
-| `conversation_pin_limit_error` | `You can pin up to {limit} conversations.` |
+| `pin_message_limit_error` | `You can only pin {limit} messages. Unpin one to pin another.` |
+| `save_message_limit_error` | `You can only save {limit} messages. Unsave one to save another.` |
+| `conversation_pin_limit_error` | `You can only pin {limit} chats. Unpin one to pin another.` |
 | `pin_message_permission_error` | You don't have permission to pin messages here. |
 | `pin_save_generic_error` | Something went wrong. Please try again. |
 
