@@ -1,0 +1,275 @@
+---
+title: "iOS Push Notifications SDK"
+description: "Drop-in push notifications and VoIP calling for iOS with CometChatPushNotifications — APNs and PushKit token registration, CallKit, foreground presentation, quick reply and badge counts."
+---
+
+<Note>
+  **This is the recommended way to add push notifications and VoIP calling to an iOS app.**
+  `CometChatPushNotifications` handles APNs and PushKit token registration, foreground
+  presentation, notification taps, quick reply, campaign receipts, badge counts and the whole
+  PushKit + CallKit incoming-call flow. You do not write a `PKPushRegistry` or a
+  `CXProviderDelegate`.
+
+  It works with **or without** the UI Kit. If you would rather wire APNs, PushKit and CallKit
+  yourself, see [iOS APNs Push Notifications](/notifications/ios-apns-push-notifications).
+</Note>
+
+## Requirements
+
+| | |
+|---|---|
+| Minimum iOS | **15.1** |
+| Chat SDK | `CometChatSDK` **4.1.5+** |
+| Calls SDK | `CometChatCallsSDK` **5.0.0+** (required for the VoIP/CallKit flow) |
+| Device | **A physical device.** VoIP pushes are not delivered to the Simulator |
+
+## Install
+
+<Tabs>
+<Tab title="Swift Package Manager">
+In Xcode, **File → Add Package Dependencies** and add:
+
+```
+https://github.com/cometchat/push-notifications-sdk-ios
+```
+
+Pick version **1.0.0** or later, and add the **`CometChatPushNotificationsSwift`** library to your
+app target.
+</Tab>
+<Tab title="CocoaPods">
+```ruby
+platform :ios, '15.1'
+
+target 'YourApp' do
+  use_frameworks!
+  pod 'CometChatPushNotifications', '1.0.0'
+end
+```
+
+Then `pod install`. The pod pulls `CometChatSDK` and `CometChatCallsSDK` automatically.
+</Tab>
+</Tabs>
+
+<Warning>
+  The module you import is **`CometChatPushNotificationsSwift`**, not `CometChatPushNotifications`.
+  The latter is the name of the class inside it.
+</Warning>
+
+## Before you start
+
+1. In the **CometChat dashboard**, enable Push Notifications and add your APNs credentials. Add an
+   **APNs Device** provider and an **APNs VoIP** provider, and copy the **Provider ID**.
+2. In Xcode, add these capabilities to your app target:
+   - **Push Notifications**
+   - **Background Modes** → **Voice over IP** and **Remote notifications**
+3. Add `NSMicrophoneUsageDescription` and `NSCameraUsageDescription` to your `Info.plist` — iOS
+   terminates the app at the first call permission request without them.
+
+## 1. Initialize
+
+Call this **after** `CometChat.init(...)`:
+
+```swift
+import CometChatPushNotificationsSwift
+
+CometChatPushNotifications.shared.initialize(config: .init(
+    providerId: "YOUR_PROVIDER_ID",
+    extensionGroupID: "group.com.yourcompany.yourapp"   // optional — see the extension section
+))
+CometChatPushNotifications.shared.delegate = self
+```
+
+That single call requests notification permission, registers for remote **and** VoIP pushes,
+listens for login and logout to re-register and unregister tokens, and takes over
+`UNUserNotificationCenter` handling.
+
+<Note>
+  You do **not** call `CometChatNotifications.registerPushToken(...)` yourself. The SDK does it on
+  every login, for both the APNs device token and the PushKit VoIP token.
+</Note>
+
+## 2. Forward the APNs token
+
+In your `AppDelegate`:
+
+```swift
+func application(_ application: UIApplication,
+                 didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    CometChatPushNotifications.shared.registerDeviceToken(deviceToken)
+}
+
+// Recommended — surfaces entitlement and provisioning problems during development.
+func application(_ application: UIApplication,
+                 didFailToRegisterForRemoteNotificationsWithError error: Error) {
+    CometChatPushNotifications.shared.handleRegistrationFailure(error)
+}
+
+// Optional — silent/background pushes (campaign receipts, badge updates).
+func application(_ application: UIApplication,
+                 didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                 fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    CometChatPushNotifications.shared.handleBackgroundNotification(userInfo: userInfo)
+    completionHandler(.newData)
+}
+```
+
+`registerDeviceToken` takes optional `onSuccess` / `onError` closures if you want the result.
+
+<Note>
+  The token can arrive before `initialize(config:)` runs. The SDK caches it and registers it
+  automatically once you initialize and the user logs in, so ordering is not your problem.
+</Note>
+
+That is the only `AppDelegate` code required. There is no `PKPushRegistryDelegate` and no
+`CXProviderDelegate` to write.
+
+## 3. Implement the delegate
+
+Every method has a default no-op implementation — override only what you need.
+
+```swift
+extension MyRootCoordinator: CometChatPushNotificationsDelegate {
+
+    // MARK: Navigation (notification taps)
+    func navigateToChat(for user: User)   { /* push your 1-1 chat screen */ }
+    func navigateToChat(for group: Group) { /* push your group chat screen */ }
+    func navigateToDefaultScreen()        { /* fallback destination */ }
+
+    // MARK: Calls
+    // The call is ALREADY accepted on the server when this fires. Present your call UI
+    // and start the session (generate a token, then join).
+    func presentCallScreen(for call: Call, sessionId: String) { }
+
+    // The SDK has already ended the call and the CallKit session — just dismiss your UI.
+    func onCallCleanupComplete() { }
+
+    // MARK: Optional observability
+    func onCallMissed(call: Call, reason: CometChatMissedCallReason) { }
+    func onCallMuteStateChanged(isMuted: Bool) { }
+    func onPushTokenRegistered(platform: CometChatPushTokenPlatform) { }
+    func onPushTokenRegistrationFailed(platform: CometChatPushTokenPlatform,
+                                       error: CometChatException) {
+        // Fires for automatic registrations too — the fastest way to catch a wrong Provider ID.
+    }
+}
+```
+
+| Type | Values |
+|---|---|
+| `CometChatPushTokenPlatform` | `.apns` · `.fcm` · `.voip` |
+| `CometChatMissedCallReason` | `.unanswered` · `.cancelled` |
+
+## Cold start: tell the SDK when the Calls SDK is ready
+
+A VoIP push can wake your app *before* your Calls SDK is ready. The SDK buffers the
+`presentCallScreen` callback until you tell it to release.
+
+Call `notifyCallsSDKReady()` once **login has resolved** — not merely when init succeeds:
+
+```swift
+CometChatCalls.init(callsAppSettings: settings, onSuccess: { _ in
+    CometChatCalls.login(authToken: token, onSuccess: { _ in
+        // Release the buffered call only now — joining needs an authenticated session.
+        CometChatPushNotifications.shared.notifyCallsSDKReady()
+    }, onError: { _ in })
+}, onError: { _ in })
+```
+
+<Warning>
+  **Release it after login, not after init.** `notifyCallsSDKReady()` only lifts the buffer — it
+  does not check whether anyone is logged in. Calling it at init success releases the call while
+  the session is still unauthenticated, and the `joinSession` that follows `presentCallScreen`
+  fails on auth.
+</Warning>
+
+<Note>
+  There is a **3-second safety timeout**: if `notifyCallsSDKReady()` has not been called by then,
+  the SDK fires the buffered `presentCallScreen` anyway so the call is never silently dropped. A
+  cold start whose login takes longer than 3 seconds will therefore reach `presentCallScreen`
+  before login completes — handle that in your call screen rather than assuming a live session.
+</Note>
+
+## Notification Service Extension
+
+Adds delivery receipts, sender avatars, campaign images and markdown-free notification text.
+
+<Steps>
+<Step title="Add the target">
+  **File → New → Target → Notification Service Extension.**
+</Step>
+<Step title="Share an App Group">
+  Add the same App Group (e.g. `group.com.yourcompany.yourapp`) to **both** the app target and the
+  extension target, and pass it as `extensionGroupID` when you initialize.
+</Step>
+<Step title="Subclass the base class">
+  Link `CometChatPushNotificationsSwift` to the extension target and replace the generated class:
+
+```swift
+import CometChatPushNotificationsSwift
+
+class NotificationService: CometChatNotificationServiceExtension {}
+```
+</Step>
+<Step title="Point the extension at the App Group">
+  Add a String entry `CometChatExtensionGroupID` set to your App Group ID in the **extension's**
+  `Info.plist`, or override the `extensionGroupID` property instead.
+</Step>
+</Steps>
+
+Optional overrides: `stripsMarkdown`, `attachesMedia`, and `finalizeContent(_:)` for last-chance
+content customization.
+
+## Configuration reference
+
+```swift
+CometChatPushNotificationsConfig(
+    providerId: String,                       // required — from the CometChat dashboard
+    callkitIconName: String? = nil,           // asset name for the CallKit icon
+    callkitRingtoneName: String? = nil,       // custom ringtone file
+    enableBadgeCount: Bool = true,
+    showInAppNotifications: Bool = true,      // foreground banners
+    extensionGroupID: String? = nil,          // must match the Notification Service Extension
+    foregroundCallPresentation: .callKit,     // .callKit | .inApp | .none
+    incomingCallStyle: CometChatIncomingCallStyle? = nil,
+    notificationContentModifier: ((UNMutableNotificationContent, CometChatNotificationInfo) -> UNMutableNotificationContent)? = nil
+)
+```
+
+`foregroundCallPresentation` decides what happens when a call arrives while the app is open:
+
+| Value | Behaviour |
+|---|---|
+| `.callKit` | Full-screen system CallKit UI (default) |
+| `.inApp` | The SDK's own `CometChatIncomingCallView`, stylable via `incomingCallStyle` |
+| `.none` | Nothing — you present your own UI from the delegate |
+
+## Other APIs
+
+| API | Use |
+|---|---|
+| `setActiveConversation(userId:)` / `setActiveConversation(groupId:)` | Suppress notifications for the chat the user is already looking at |
+| `clearActiveConversation()` | Call when that screen closes |
+| `clearBadgeCount()` | Reset the app badge |
+| `CometChatPushNotifications.parseNotificationInfo(from:)` | Read sender, receiver and body out of a raw payload |
+| `CometChatPushNotifications.isCampaignNotification(userInfo:)` | Distinguish campaign pushes from chat pushes |
+| `activeCallSessionId` | The session ID of the call currently in progress, if any |
+
+## Testing checklist
+
+- Run on a **physical device** — VoIP pushes never reach the Simulator.
+- Confirm both providers exist in the dashboard and that `providerId` matches the one you passed.
+- Watch `onPushTokenRegistrationFailed` — a wrong Provider ID shows up here first.
+- Test an incoming call in all three states: foreground, background, and app terminated
+  (cold start — this is what `notifyCallsSDKReady()` covers).
+
+## Related
+
+<Card title="Push Notifications Overview" href="/notifications/push-overview">
+  Dashboard setup, providers and templates.
+</Card>
+<Card title="Manual APNs + CallKit integration" href="/notifications/ios-apns-push-notifications">
+  The hand-wired alternative, if you need full control over PushKit and CallKit.
+</Card>
+<Card title="Calls: ringing" href="/calls/ios/ringing">
+  The in-app 1:1 call signaling this builds on.
+</Card>
