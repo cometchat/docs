@@ -73,22 +73,38 @@ Create or join a CometChat group using the session ID as the group GUID. This li
 
 ```dart
 Future<void> setupChatGroup(String sessionId, String meetingName) async {
-  try {
-    // Try to get existing group first
-    final group = await CometChat.getGroup(sessionId);
+  // getGroup reports through onError rather than throwing, so a missing group is a
+  // callback — not something a try/catch around the await would ever see.
+  CometChatException? failure;
+  final group = await CometChat.getGroup(
+    sessionId,
+    onSuccess: (Group group) {},
+    onError: (CometChatException e) => failure = e,
+  );
+
+  if (group != null) {
     if (!group.hasJoined) {
-      await CometChat.joinGroup(sessionId, group.groupType);
+      await CometChat.joinGroup(
+        sessionId,
+        group.type,
+        onSuccess: (Group joined) {},
+        onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+      );
     }
-  } catch (e) {
-    if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-      // Group doesn't exist, create it
-      final group = Group(
+    return;
+  }
+
+  if (failure?.code == "ERR_GUID_NOT_FOUND") {
+    // Group does not exist yet — create it.
+    await CometChat.createGroup(
+      group: Group(
         guid: sessionId,
         name: meetingName,
         type: CometChatGroupType.public,
-      );
-      await CometChat.createGroup(group);
-    }
+      ),
+      onSuccess: (Group created) {},
+      onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+    );
   }
 }
 ```
@@ -122,8 +138,7 @@ class _ButtonClickListener extends ButtonClickListeners {
 int unreadMessageCount = 0;
 
 void _setupChatButtonListener() {
-  _buttonListener = _ButtonClickListener(),
-  );
+  _buttonListener = _ButtonClickListener();
   CallSession.getInstance()?.addButtonClickListener(_buttonListener);
 }
 ```
@@ -203,30 +218,45 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadGroup() async {
-    try {
-      final fetchedGroup = await CometChat.getGroup(widget.sessionId);
+    CometChatException? failure;
+    final fetchedGroup = await CometChat.getGroup(
+      widget.sessionId,
+      onSuccess: (Group group) {},
+      onError: (CometChatException e) => failure = e,
+    );
+
+    if (fetchedGroup != null) {
       if (!fetchedGroup.hasJoined) {
-        await CometChat.joinGroup(widget.sessionId, fetchedGroup.groupType);
+        await CometChat.joinGroup(
+          widget.sessionId,
+          fetchedGroup.type,
+          onSuccess: (Group joined) {},
+          onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+        );
       }
       setState(() {
         group = fetchedGroup;
         isLoading = false;
       });
-    } catch (e) {
-      if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-        final newGroup = Group(
+      return;
+    }
+
+    if (failure?.code == "ERR_GUID_NOT_FOUND") {
+      final createdGroup = await CometChat.createGroup(
+        group: Group(
           guid: widget.sessionId,
           name: widget.meetingName,
           type: CometChatGroupType.public,
-        );
-        final createdGroup = await CometChat.createGroup(newGroup);
-        setState(() {
-          group = createdGroup;
-          isLoading = false;
-        });
-      } else {
-        setState(() => isLoading = false);
-      }
+        ),
+        onSuccess: (Group created) {},
+        onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+      );
+      setState(() {
+        group = createdGroup;
+        isLoading = false;
+      });
+    } else {
+      setState(() => isLoading = false);
     }
   }
 
@@ -245,7 +275,20 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
-    return CometChatMessages(group: group!);
+    final chatGroup = group!;
+    // Flutter has no single composed "messages" widget — the screen is these three parts.
+    // CometChatMessageList MUST sit in a bounded parent (Expanded here) or it collapses.
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            CometChatMessageHeader(group: chatGroup),
+            Expanded(child: CometChatMessageList(group: chatGroup)),
+            CometChatMessageComposer(group: chatGroup),
+          ],
+        ),
+      ),
+    );
   }
 }
 ```
@@ -305,26 +348,40 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _setupChatGroup() async {
-    try {
-      final group = await CometChat.getGroup(widget.sessionId);
+    CometChatException? failure;
+    final group = await CometChat.getGroup(
+      widget.sessionId,
+      onSuccess: (Group group) {},
+      onError: (CometChatException e) => failure = e,
+    );
+
+    if (group != null) {
       if (!group.hasJoined) {
-        await CometChat.joinGroup(widget.sessionId, group.groupType);
+        await CometChat.joinGroup(
+          widget.sessionId,
+          group.type,
+          onSuccess: (Group joined) {},
+          onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+        );
       }
-    } catch (e) {
-      if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-        final group = Group(
+      return;
+    }
+
+    if (failure?.code == "ERR_GUID_NOT_FOUND") {
+      await CometChat.createGroup(
+        group: Group(
           guid: widget.sessionId,
           name: widget.meetingName,
           type: CometChatGroupType.public,
-        );
-        await CometChat.createGroup(group);
-      }
+        ),
+        onSuccess: (Group created) {},
+        onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+      );
     }
   }
 
   void _setupChatButtonListener() {
-    _buttonListener = _ButtonClickListener2(),
-    );
+    _buttonListener = _ButtonClickListener2();
     CallSession.getInstance()?.addButtonClickListener(_buttonListener);
   }
 
