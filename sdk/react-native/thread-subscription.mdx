@@ -1,0 +1,347 @@
+---
+title: "Thread Subscription"
+sidebarTitle: "Thread Subscription"
+description: "Subscribe and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat React Native SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```javascript
+// Subscribe / unsubscribe — a thread is identified by its PARENT message id
+await CometChat.subscribeToThread(100);
+await CometChat.unsubscribeFromThread(100);
+
+// Read state off a fetched parent message
+const following = parentMessage.isThreadSubscribed();
+
+// Align local copies after the server accepts (LOCAL ONLY — sends nothing)
+parentMessage.setThreadSubscribed(true);
+
+// Thread inbox
+const request = new CometChat.ThreadsRequestBuilder()
+  .setParticipatedByMe(true)
+  .setLimit(30)
+  .build();
+const threads = await request.fetchNext();   // CometChat.MessageThread[]
+```
+
+</Accordion>
+
+Thread subscription gives users control over thread noise. A user can **subscribe** to a message thread to be notified of future replies, or **unsubscribe** to mute it.
+
+The server subscribes a user to a thread automatically when they start it, reply in it, or are @-mentioned in it — and they can explicitly subscribe to any parent message, even one that has no replies yet.
+
+<Note>
+  Thread subscription builds on [Threaded
+  Messages](/sdk/react-native/threaded-messages). A thread is identified by the ID
+  of its **parent message** — there is no separate thread ID.
+</Note>
+
+## How state works
+
+The SDK keeps **no subscription state of its own**. There is no cache and no listener to reconcile:
+
+- Every message fetch asks the server for the flag, and it arrives on the message — read it with `message.isThreadSubscribed()`.
+- `subscribeToThread()` and `unsubscribeFromThread()` resolve when the server has accepted the change. The resolved promise **is** the acknowledgement.
+
+Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
+
+## Subscribe to a Thread
+
+Use `subscribeToThread()` with the ID of the thread's parent message. The call is **idempotent** — subscribing to a thread the user already follows succeeds silently. Subscribing to a message with zero replies is allowed; the user is notified when the first reply arrives.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+let parentMessageId: number = 100;
+
+CometChat.subscribeToThread(parentMessageId).then(
+  (response: string) => {
+    // The server has accepted it — flip your toggle here.
+    console.log("Subscribed to thread:", response);
+  },
+  (error: CometChat.CometChatException) => {
+    console.log("Failed to subscribe:", error);
+  }
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+let parentMessageId = 100;
+
+CometChat.subscribeToThread(parentMessageId).then(
+  (response) => {
+    // The server has accepted it — flip your toggle here.
+    console.log("Subscribed to thread:", response);
+  },
+  (error) => {
+    console.log("Failed to subscribe:", error);
+  }
+);
+```
+
+</Tab>
+
+</Tabs>
+
+## Unsubscribe from a Thread
+
+Use `unsubscribeFromThread()`. This is idempotent too — unsubscribing from a thread the user does not follow succeeds silently.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.unsubscribeFromThread(100).then(
+  (response: string) => {
+    console.log("Unsubscribed from thread:", response);
+  },
+  (error: CometChat.CometChatException) => {
+    console.log("Failed to unsubscribe:", error);
+  }
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.unsubscribeFromThread(100).then(
+  (response) => {
+    console.log("Unsubscribed from thread:", response);
+  },
+  (error) => {
+    console.log("Failed to unsubscribe:", error);
+  }
+);
+```
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+  Unsubscribing **hard-deletes** the server row, so a thread inbox built with
+  `ThreadsRequest` must drop that row rather than mark it unfollowed. It is also
+  **not sticky**: replying in the thread, or being @-mentioned in it,
+  re-subscribes the user.
+</Warning>
+
+## Read the Subscription State
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+if (parentMessage.isThreadSubscribed()) {
+  // Show the "Unfollow" affordance
+} else {
+  // Show the "Follow" affordance
+}
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+if (parentMessage.isThreadSubscribed()) {
+  // Show the "Unfollow" affordance
+} else {
+  // Show the "Follow" affordance
+}
+```
+
+</Tab>
+
+</Tabs>
+
+Every message fetch the SDK makes asks the server for this flag, so any message you obtained from `MessagesRequest` or `getMessageDetails()` carries it.
+
+<Note>
+  A message delivered over the **socket** carries no flag and therefore reads
+  `false`. That is not a claim that the user is unsubscribed — it means nobody
+  asked. When you need certainty for a thread you have not fetched (a deep link,
+  for instance), fetch the parent message with `CometChat.getMessageDetails()`
+  and read the flag off the result.
+</Note>
+
+### You are subscribed to your own messages
+
+Sending a message subscribes you to the thread it may later grow — there is nothing to call. The message comes back with `threadSubscribed: true`, both in the send response and on later fetches, and **only for you**: the flag is per-viewer, so the same message reads `false` for everybody else until they subscribe themselves.
+
+That default is what makes the flag meaningful on your own messages. Since it starts out `true`, a `false` on a message **you sent** — read from a fetch, not the socket — is not silence. It means you unsubscribed, and nothing should quietly put you back.
+
+This only holds for a message you sent and obtained from a fetch. On anyone else's message, or on anything socket-delivered, `false` still just means the server was not asked.
+
+### Keeping your own copies in sync
+
+The same thread can be represented by several message objects at once — a row in the message list, the header of an open thread view, an entry in a thread inbox. Because the SDK caches nothing, use `setThreadSubscribed()` to align the copies you hold once you know the answer:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+await CometChat.subscribeToThread(100);
+// The server accepted it — bring the objects you are rendering into line.
+parentMessage.setThreadSubscribed(true);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.subscribeToThread(100).then(() => {
+  // The server accepted it — bring the objects you are rendering into line.
+  parentMessage.setThreadSubscribed(true);
+});
+```
+
+</Tab>
+
+</Tabs>
+
+<Warning>
+  `setThreadSubscribed()` is **local only** — it changes the object in memory and
+  sends nothing to the server. Use `subscribeToThread()` /
+  `unsubscribeFromThread()` to change the actual subscription.
+</Warning>
+
+## Reacting to Replies
+
+A thread reply is an **ordinary message** with `parentMessageId` set, delivered through the standard `MessageListener` like any other message. There is no separate thread listener.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addMessageListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.MessageListener({
+    onTextMessageReceived: (message: CometChat.TextMessage) => {
+      const parentMessageId = message.getParentMessageId();
+      if (parentMessageId) {
+        // A reply landed in a thread — bump your thread row here.
+      }
+    },
+  })
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.addMessageListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.MessageListener({
+    onTextMessageReceived: (message) => {
+      const parentMessageId = message.getParentMessageId();
+      if (parentMessageId) {
+        // A reply landed in a thread — bump your thread row here.
+      }
+    },
+  })
+);
+```
+
+</Tab>
+
+</Tabs>
+
+Using `MessageListener` also gets you `onMessageEdited` and `onMessageDeleted` for replies, which a thread-only channel would not.
+
+Your own replies do not arrive on a listener — bump your thread row from the `sendMessage()` promise instead.
+
+## Fetch the Threads a User Participates In
+
+Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+let threadsRequest: CometChat.ThreadsRequest =
+  new CometChat.ThreadsRequestBuilder()
+    .setParticipatedByMe(true)
+    .setLimit(30)
+    .build();
+
+threadsRequest.fetchNext().then(
+  (threads: CometChat.MessageThread[]) => {
+    console.log("Threads fetched:", threads);
+  },
+  (error: CometChat.CometChatException) => {
+    console.log("Failed to fetch threads:", error);
+  }
+);
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+let threadsRequest = new CometChat.ThreadsRequestBuilder()
+  .setParticipatedByMe(true)
+  .setLimit(30)
+  .build();
+
+threadsRequest.fetchNext().then(
+  (threads) => {
+    console.log("Threads fetched:", threads);
+  },
+  (error) => {
+    console.log("Failed to fetch threads:", error);
+  }
+);
+```
+
+</Tab>
+
+</Tabs>
+
+Scope the inbox to a single conversation with `setUid()` or `setGuid()`. Call `fetchNext()` again on the same object to page, and check `hasMore()` before doing so.
+
+<Warning>
+  `ThreadsRequestBuilder` spells these `setUid()` / `setGuid()` — **not** the
+  `setUID()` / `setGUID()` used by `MessagesRequestBuilder`. The two are
+  mutually exclusive; set at most one.
+</Warning>
+
+### Reading a thread row
+
+Each row is a `MessageThread` — enough to render an inbox without fetching the parent message separately.
+
+| Method                    | Returns                                                                 |
+| ------------------------- | ----------------------------------------------------------------------- |
+| `getParentMessageId()`    | The thread's ID — pass it to `subscribeToThread()`.                      |
+| `getParentMessage()`      | The parent message, hydrated.                                            |
+| `getLastReply()`          | The most recent reply, for the preview line.                             |
+| `getReplyCount()`         | Total replies in the thread.                                             |
+| `getUnreadReplyCount()`   | Replies the user has not read — the badge count.                         |
+| `getUpdatedAt()`          | When the thread last changed, for ordering the inbox.                    |
+| `getConversationId()`     | The conversation the thread lives in.                                    |
+| `getReceiverId()` / `getReceiverType()` | Where to route a tap on the row.                          |
+| `isSubscribed()`          | Always `true` for rows from a `setParticipatedByMe(true)` fetch — presence in the list *is* the subscription. |
+
+<Note>
+  `getUnreadReplyCount()` returns `null`, not `0`, when the count is unknown.
+  Treat `null` as "no badge" rather than as zero unread.
+</Note>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Threaded Messages" icon="comments" href="/sdk/react-native/threaded-messages">
+    Send and fetch replies inside a thread
+  </Card>
+  <Card title="Mentions" icon="at" href="/sdk/react-native/mentions">
+    @-mentions, which auto-subscribe a user to a thread
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/react-native/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/react-native/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+</CardGroup>
