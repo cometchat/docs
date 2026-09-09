@@ -60,6 +60,12 @@ Add the Calls SDK dependency to your **app level** `build.gradle` file:
 ```groovy
 dependencies {
   implementation "com.cometchat:calls-sdk-android:5.0.4"
+
+  // Required. The Calls SDK renders its call surface through an embedded React Native
+  // runtime, and your app must initialize its native loader (Step 4) - which only
+  // compiles if these two are on your compile classpath.
+  implementation "com.facebook.react:react-android:0.77.2"
+  implementation "com.facebook.soloader:soloader:0.12.1"
 }
 ```
 </Tab>
@@ -67,10 +73,22 @@ dependencies {
 ```kotlin
 dependencies {
   implementation("com.cometchat:calls-sdk-android:5.0.4")
+
+  // Required. The Calls SDK renders its call surface through an embedded React Native
+  // runtime, and your app must initialize its native loader (Step 4) - which only
+  // compiles if these two are on your compile classpath.
+  implementation("com.facebook.react:react-android:0.77.2")
+  implementation("com.facebook.soloader:soloader:0.12.1")
 }
 ```
 </Tab>
 </Tabs>
+
+<Warning>
+  **Set `minSdkVersion` to 26 or higher.** The Calls SDK's transitive dependencies declare `minSdk 26`, so a
+  lower value fails the build at the manifest merger:
+  `uses-sdk:minSdkVersion 24 cannot be smaller than version 26 declared in library [...react-native-svg...]`.
+</Warning>
 
 ### Step 3: Configure Java Version
 
@@ -98,6 +116,67 @@ android {
 ```
 </Tab>
 </Tabs>
+
+### Step 4: Initialize the Native Loader
+
+**Required.** The Calls SDK renders its call surface through an embedded React Native runtime. React Native
+0.76+ ships a single merged native library and resolves the individual library names through
+`OpenSourceMergedSoMapping`, which must be registered with SoLoader **before** the first call surface is
+created. Do it once, in your `Application.onCreate()`:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+import android.app.Application
+import com.facebook.react.soloader.OpenSourceMergedSoMapping
+import com.facebook.soloader.SoLoader
+
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        SoLoader.init(this, OpenSourceMergedSoMapping)
+        // ... CometChatCalls.init(...) can follow
+    }
+}
+```
+</Tab>
+<Tab title="Java">
+```java
+import android.app.Application;
+import com.facebook.react.soloader.OpenSourceMergedSoMapping;
+import com.facebook.soloader.SoLoader;
+
+public class MyApplication extends Application {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        SoLoader.init(this, OpenSourceMergedSoMapping.INSTANCE);
+        // ... CometChatCalls.init(...) can follow
+    }
+}
+```
+</Tab>
+</Tabs>
+
+Register the class in your `AndroidManifest.xml`:
+
+```xml
+<application android:name=".MyApplication">
+```
+
+<Warning>
+  Skipping this step does not fail the build - it crashes the app the first time a user joins a call:
+  `java.lang.UnsatisfiedLinkError: dlopen failed: library "libhermes_executor.so" not found`
+  (the exact library name varies by device). Verified on two emulators, API 36 and API 37.
+</Warning>
+
+<Note>
+  **Why this step exists.** The SDK already performs this initialization internally, but only on the
+  legacy `startSession()` path - it was not carried over to either `joinSession()` overload, which is
+  the v5 API this guide uses. Until a future 5.0.x moves it, the app has to do it. Integrations still
+  on `startSession()`, and some UI Kit setups, will not see the crash for that reason - do not rely on
+  it, since the recommended v5 flow does not take that path.
+</Note>
 
 ## Add Permissions
 
