@@ -31,12 +31,12 @@ description: "Understand CometChat iOS UI Kit component types, base components, 
     {"name": "CometChatMessageHeader", "purpose": "Chat header"},
     {"name": "CometChatCallLogs", "purpose": "Call history"}
   ],
-  "compositeComponents": [
-    {"name": "CometChatMessages", "contains": ["MessageHeader", "MessageList", "MessageComposer"]},
-    {"name": "CometChatUsersWithMessages", "contains": ["Users", "Messages"]},
-    {"name": "CometChatGroupsWithMessages", "contains": ["Groups", "Messages"]},
-    {"name": "CometChatConversationsWithMessages", "contains": ["Conversations", "Messages"]}
-  ]
+  "composition": {
+    "note": "v5 ships NO composite/all-in-one component. The host composes the chat screen itself.",
+    "chatScreen": ["CometChatMessageHeader", "CometChatMessageList", "CometChatMessageComposer"],
+    "listToChat": "CometChatConversations.set(onItemClick:) -> push your own messages view controller",
+    "recipe": "/ui-kit/ios/ios-conversation"
+  }
 }
 ```
 </Accordion>
@@ -123,33 +123,43 @@ messageList.set(user: user)
 
 ---
 
-### Composite Components
+### Composing a chat screen
 
-Combine multiple components into complete features.
+The UI Kit ships **no composite/all-in-one component** — you compose the chat screen yourself from
+the three message components, and drive navigation from the list's `onItemClick`. This keeps your
+navigation, layout, and presentation under your control.
 
-| Component | Contains |
+| You want | Compose |
 |-----------|----------|
-| `CometChatMessages` | MessageHeader + MessageList + MessageComposer |
-| `CometChatUsersWithMessages` | Users + Messages |
-| `CometChatGroupsWithMessages` | Groups + Messages |
-| `CometChatConversationsWithMessages` | Conversations + Messages |
+| A chat screen | `CometChatMessageHeader` + `CometChatMessageList` + `CometChatMessageComposer` |
+| Chat with user selection | `CometChatUsers` → push your chat screen |
+| Chat with group selection | `CometChatGroups` → push your chat screen |
+| Chat with recent conversations | `CometChatConversations` → push your chat screen |
 
 <Tabs>
 <Tab title="Swift">
 ```swift lines
 import CometChatUIKitSwift
 
-// Complete chat experience in one component
-let conversationsWithMessages = CometChatConversationsWithMessages()
-navigationController?.pushViewController(conversationsWithMessages, animated: true)
-
-// Or just the messages view
-let messages = CometChatMessages()
-messages.user = user  // or messages.group = group
-navigationController?.pushViewController(messages, animated: true)
+// Show recent conversations, then push YOUR chat screen on selection.
+let conversations = CometChatConversations()
+conversations.set(onItemClick: { [weak self] conversation, _ in
+    let messagesVC = MessagesVC()               // your view controller — see the recipe below
+    messagesVC.user  = conversation.conversationWith as? User
+    messagesVC.group = conversation.conversationWith as? Group
+    self?.navigationController?.pushViewController(messagesVC, animated: true)
+})
+navigationController?.pushViewController(conversations, animated: true)
 ```
 </Tab>
 </Tabs>
+
+<Note>
+  For the full `MessagesVC` — the three components laid out with safe-area constraints — follow
+  [Conversation List + Message View](/ui-kit/ios/ios-conversation). The same pattern with a users or
+  groups list is in [One-to-One / Group Chat](/ui-kit/ios/ios-one-to-one-chat), and inside a tab bar in
+  [Tab-Based Chat](/ui-kit/ios/ios-tab-based-chat).
+</Note>
 
 ---
 
@@ -291,61 +301,65 @@ class ChatManager {
 
 ---
 
-## Configurations
+## Configuring components
 
-Customize nested components within composite components:
+Because you compose the chat screen yourself, you configure **each component directly on its own
+instance** — there is no configuration object to pass down through a parent.
 
 <Tabs>
 <Tab title="Swift">
 ```swift lines
 import CometChatUIKitSwift
 
-// CometChatMessages contains: MessageHeader, MessageList, MessageComposer
-// You can configure each one:
-
-let messages = CometChatMessages()
-messages.user = user
-
-// Configure MessageHeader
-let headerConfig = MessageHeaderConfiguration()
-headerConfig.hideBackButton = false
-headerConfig.set(subtitleView: { user, group in
+// Header — set the target, then customize it directly
+let messageHeader = CometChatMessageHeader()
+messageHeader.set(user: user)
+messageHeader.set(controller: self)
+messageHeader.hideBackButton = false
+messageHeader.set(subtitleView: { user, group in
     let label = UILabel()
+    label.font = UIFont.systemFont(ofSize: 13)
+    label.textColor = .secondaryLabel
     label.text = user?.status == .online ? "Online" : "Offline"
-    label.textColor = user?.status == .online ? .systemGreen : .gray
     return label
 })
-messages.set(messageHeaderConfiguration: headerConfig)
 
-// Configure MessageList
-let listConfig = MessageListConfiguration()
-listConfig.set(emptyStateText: "No messages yet")
-listConfig.set(errorStateText: "Failed to load messages")
-messages.set(messageListConfiguration: listConfig)
+// Message list — same target, its own empty/error views
+let messageList = CometChatMessageList()
+messageList.set(user: user)
+messageList.set(controller: self)
+messageList.set(emptyView: myEmptyView)
+messageList.set(errorView: myErrorView)
 
-// Configure MessageComposer
-let composerConfig = MessageComposerConfiguration()
-composerConfig.set(placeholderText: "Type a message...")
-composerConfig.hideLiveReaction = true
-messages.set(messageComposerConfiguration: composerConfig)
+// Composer — same target
+let composer = CometChatMessageComposer()
+composer.set(user: user)
+composer.set(controller: self)
+composer.placeholderText = "Type a message..."
 ```
 </Tab>
 </Tabs>
+
+<Note>
+  Pass the **same** `user` (or `group`) to all three components — that shared target is what keeps the
+  header, list, and composer on the same conversation. Component-specific configuration objects do exist
+  for nested sub-features (for example `ReactionsConfiguration`, `StickerKeyboardConfiguration`,
+  `IncomingCallConfiguration`); see each component's own page for its full API.
+</Note>
 
 ---
 
 ## Component Hierarchy
 
 ```
-CometChatConversationsWithMessages
-├── CometChatConversations
-│   ├── CometChatListItem
-│   │   ├── CometChatAvatar
-│   │   ├── CometChatBadge
-│   │   ├── CometChatStatusIndicator
-│   │   └── CometChatDate
-│   └── CometChatListBase
-└── CometChatMessages
+YourNavigationController              // yours
+├── CometChatConversations            // list screen
+│   └── CometChatListItem
+│       ├── CometChatAvatar
+│       ├── CometChatBadge
+│       ├── CometChatStatusIndicator
+│       └── CometChatDate
+└── MessagesVC                        // YOUR view controller, pushed on selection
     ├── CometChatMessageHeader
     │   ├── CometChatAvatar
     │   └── CometChatStatusIndicator
@@ -358,6 +372,9 @@ CometChatConversationsWithMessages
         └── CometChatStickerKeyboard
 ```
 
+The two levels you own are the navigation controller and `MessagesVC`; everything below them is a
+UI Kit component.
+
 ---
 
 ## Quick Reference
@@ -368,25 +385,30 @@ CometChatConversationsWithMessages
 |------|-----|
 | Display user avatar | `CometChatAvatar` (Base) |
 | Show list of users | `CometChatUsers` (Component) |
-| Complete chat with user selection | `CometChatUsersWithMessages` (Composite) |
+| Complete chat with user selection | `CometChatUsers` → push your chat screen ([recipe](/ui-kit/ios/ios-one-to-one-chat)) |
+| Complete chat with recent conversations | `CometChatConversations` → push your chat screen ([recipe](/ui-kit/ios/ios-conversation)) |
 | Custom chat UI | Individual Components |
-| Quick integration | Composite Components |
 
 ### Common Patterns
 
 <Tabs>
 <Tab title="Swift">
 ```swift lines
-// Pattern 1: Quick integration with composite
-let chat = CometChatConversationsWithMessages()
-navigationController?.pushViewController(chat, animated: true)
+// Pattern 1: Recent conversations -> your chat screen
+let conversations = CometChatConversations()
+conversations.set(onItemClick: { [weak self] conversation, _ in
+    let messagesVC = MessagesVC()
+    messagesVC.user  = conversation.conversationWith as? User
+    messagesVC.group = conversation.conversationWith as? Group
+    self?.navigationController?.pushViewController(messagesVC, animated: true)
+})
 
-// Pattern 2: Custom flow with components
+// Pattern 2: User list -> your chat screen
 let users = CometChatUsers()
-users.set(onItemClick: { user, _ in
-    let messages = CometChatMessages()
-    messages.user = user
-    self.navigationController?.pushViewController(messages, animated: true)
+users.set(onItemClick: { [weak self] user, _ in
+    let messagesVC = MessagesVC()
+    messagesVC.user = user
+    self?.navigationController?.pushViewController(messagesVC, animated: true)
 })
 
 // Pattern 3: Fully custom with base components
