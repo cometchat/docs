@@ -274,6 +274,114 @@ if (user.isBlockedByMe) {
 | Blocked User              | Composer hidden; unblock layout shown.        |
 | Not in Group              | Show option to join group first.              |
 
+## Thread Subscription
+
+Thread subscription gives users Slack-style control over thread noise: they can **subscribe** to a thread to be notified about its replies, or **unsubscribe** from one to mute it. Users are automatically subscribed when they start a thread, reply in one, or are @-mentioned in one — subscribing explicitly is how they opt in to a conversation they haven't participated in yet.
+
+The UI Kit ships two surfaces for the same toggle, wired out of the box and kept in sync automatically:
+
+1. A **Subscribe to thread / Unsubscribe from thread** option in the message action sheet.
+2. A **subscription bell** on the thread view.
+
+### The Message Action Sheet Option
+
+[CometChatMessageList](/ui-kit/android/message-list) adds a **Subscribe to thread** / **Unsubscribe from thread** option to the long-press action sheet. The label reflects the current state, and the option appears on regular messages of every type (agent messages and moderation-blocked messages are excluded) — on a thread reply it targets the thread's root message, so subscribing from anywhere in the thread works.
+
+To hide the option while keeping the rest of the feature:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin lines
+messageList.setThreadSubscriptionOptionVisibility(View.GONE)
+```
+</Tab>
+</Tabs>
+
+### The Thread Header Bell
+
+[CometChatThreadHeader](/ui-kit/android/threaded-messages-header) renders a subscription bell as a trailing control on the reply-count bar. It flips optimistically on tap and reverts with a toast if the request fails.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin lines
+// Hide the bell (e.g. because you host your own — see below)
+threadHeader.setThreadSubscriptionVisibility(View.GONE)
+
+// Observe state changes (isSubscribed = the new state)
+threadHeader.setOnThreadSubscriptionChange { isSubscribed ->
+    Log.d(TAG, "Thread subscribed: $isSubscribed")
+}
+```
+
+The visibility can also be set in XML with the `app:cometchatThreadSubscriptionVisibility` attribute.
+
+</Tab>
+<Tab title="Jetpack Compose">
+```kotlin lines
+CometChatThreadHeader(
+    parentMessage = parentMessage,
+    hideThreadSubscription = false,       // hide the built-in bell when true
+    isSubscribed = null,                  // null = seed from parentMessage.isThreadSubscribed()
+    onSubscriptionToggle = { isSubscribed ->
+        Log.d(TAG, "Thread subscribed: $isSubscribed")
+    },
+    threadSubscriptionView = null         // or your own composable replacing the bell
+)
+```
+</Tab>
+</Tabs>
+
+#### Hosting the Bell in Your Own Top Bar
+
+Many apps (matching the CometChat sample apps and Figma) place the subscription bell in the thread screen's **top title bar** rather than the reply-count row. In Compose, the bell is available as a standalone public composable — hide the header's built-in one and host `ThreadSubscriptionBell` wherever you like:
+
+<Tabs>
+<Tab title="Jetpack Compose">
+```kotlin lines
+TopAppBar(
+    title = { Text(stringResource(R.string.thread)) },
+    actions = {
+        ThreadSubscriptionBell(parentMessage = parentMessage)
+    }
+)
+
+CometChatThreadHeader(
+    parentMessage = parentMessage,
+    hideThreadSubscription = true   // the bell lives in the top bar instead
+)
+```
+</Tab>
+<Tab title="Kotlin (XML Views)">
+```kotlin lines
+// Hide the kit header's bell and drive your own ImageView in the activity's title bar:
+threadHeader.setThreadSubscriptionVisibility(View.GONE)
+
+// On tap: flip your icon optimistically, then call the SDK
+CometChat.subscribeToThread(parentMessage.id, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(response: String?) { }
+    override fun onError(e: CometChatException?) {
+        // revert the icon and show a toast
+    }
+})
+```
+</Tab>
+</Tabs>
+
+### Subscription Behavior
+
+- **Optimistic with revert** — both surfaces flip instantly on tap, keep one request in flight per thread, and revert with a toast if the server rejects the change. An offline tap fails visibly and reverts; nothing is queued.
+- **Auto-subscribe on reply** — sending a reply in a thread subscribes the user, and every surface flips to the subscribed state automatically.
+- **Unsubscribing is not sticky** — replying again, or being @-mentioned, re-subscribes the user.
+- **Unknown state renders as unsubscribed** — a message whose subscription state hasn't been learned yet (for example, one that just arrived in real time) shows the enabled subscribe control, never a spinner.
+
+### Cross-Surface Sync
+
+Both surfaces observe the UI Kit event bus, so toggling in one place updates the other without a refetch. If you build your own subscription control, emit and collect `CometChatThreadEvent` through `CometChatEvents.threadEvents` — see [Events](/ui-kit/android/events).
+
+### Notifications
+
+Whether a subscribed thread actually produces a push notification is governed by the user's notification preferences: the replies preference supports notifying only for **threads the user is subscribed to** (`SUBSCRIBE_TO_SUBSCRIBED_THREADS`). See [Thread Subscription (SDK)](/sdk/android/v5/thread-subscription#notification-preferences).
+
 ## Summary / Feature Matrix
 
 | Feature                   | Component / Method                                   |
@@ -283,12 +391,13 @@ if (user.isBlockedByMe) {
 | Show parent message       | `header.setParentMessage(parentMessage)`             |
 | Compose reply             | `composer.setParentMessageId(parentMessage.getId())` |
 | Handle blocked users      | `isBlockedByMe()`, hide composer + show unblock UI  |
+| Subscribe / unsubscribe   | Action-sheet option + `CometChatThreadHeader` bell    |
 
 ## Next Steps & Further Reading
 
 <CardGroup>
-  <Card title="Thread Subscription" href="/ui-kit/android/guide-thread-subscription">
-    Let users subscribe to or unsubscribe from a thread to control whether its replies notify them.
+  <Card title="Thread Subscription (SDK)" href="/sdk/android/v5/thread-subscription">
+    The underlying APIs, including fetching the threads a user participates in to build a thread inbox.
   </Card>
   <Card title="Android Sample App (Kotlin)">
     Explore this feature in the CometChat SampleApp:
