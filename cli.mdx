@@ -1,0 +1,264 @@
+---
+title: "CometChat CLI"
+sidebarTitle: "CLI"
+description: "Authenticate against the CometChat dashboard, provision app credentials, toggle features, and manage the AI agent skills — all from your terminal, with JSON output for scripting and CI."
+canonical: "https://www.cometchat.com/docs/cli"
+---
+
+CometChat ships two complementary command-line tools:
+
+| Tool | Package | What it does |
+| --- | --- | --- |
+| **Credentials CLI** (`cometchat`) | `@cometchat/skills-cli` | Dashboard authentication + app-credential provisioning + feature toggles |
+| **Skills installer** | `@cometchat/skills` | Install, list, and verify the [AI Agent Skills](/agent-skills) |
+
+<Note>
+Despite its package name, `@cometchat/skills-cli` is the **credentials** tool —
+it doesn't install skills. It provides a `cometchat` command, so the CLI's own
+messages (for example *"Run `cometchat auth login`"*) use that short form. This
+page runs it through `npx`; `cometchat auth login` and
+`npx @cometchat/skills-cli auth login` are the same command. The skills
+themselves are installed by `@cometchat/skills`.
+</Note>
+
+<Note>
+The credentials CLI is **standalone** — use it on its own, in a script, or in CI.
+It's a pure dashboard/API client: it authenticates, fetches your app credentials
+(App ID / Region / Auth Key), and writes a neutral `.cometchat/config.json`. By
+design it does **not** detect your framework, write env files, or generate code,
+so it stays framework-agnostic and works with any stack. The
+[agent skills](/agent-skills) are one consumer that can run it for you — but the
+CLI doesn't require them.
+</Note>
+
+Both run through `npx` with no global install, and most commands accept `--json`
+for machine-readable output (the exceptions are `config set` and `config path`,
+which print plain text).
+
+## Prerequisites
+
+- **Node.js 18+** — both CLIs run through `npx`.
+- A **CometChat account** — [sign up free](https://app.cometchat.com). `auth login` opens the dashboard in your browser to authenticate.
+
+---
+
+## Credentials CLI — `@cometchat/skills-cli`
+
+Its only job is authenticating against the CometChat dashboard and fetching your
+**App ID / Region / Auth Key**, then writing a neutral `.cometchat/config.json`
+that any tool — your own scripts, a CI job, or the agent skills — can read.
+
+### Quick start
+
+```bash
+# 1. Authenticate against the dashboard (opens your browser)
+npx @cometchat/skills-cli auth login
+
+# 2. List the apps on your account
+npx @cometchat/skills-cli provision list --json
+
+# 3. Select an app, fetch its creds, write .cometchat/config.json
+npx @cometchat/skills-cli provision run
+
+# 4. Inspect the local config you just wrote
+npx @cometchat/skills-cli config show --json
+```
+
+### Authenticate
+
+```bash
+npx @cometchat/skills-cli auth login
+```
+
+Opens your browser at the CometChat dashboard for device authentication and
+stores the bearer token in your OS keychain (falling back to a `chmod 600` file).
+
+| Command | Purpose |
+| --- | --- |
+| `auth login` | Sign in via the dashboard (device auth) |
+| `auth status` | Show whether you're signed in |
+| `auth me` | Print the authenticated account |
+| `auth logout` | Clear the stored token |
+| `auth signup` | Create a CometChat account |
+
+### Provision credentials
+
+```bash
+npx @cometchat/skills-cli provision run
+```
+
+Fetches the app's **App ID / Region / Auth Key** and writes a neutral
+`.cometchat/config.json`, then prints the selected app (`✓ App <id> (<region>)`)
+and the config path. Add `--json` to get the credentials as JSON instead. It
+writes **no** framework env file — read `config.json` and set your framework's
+env vars (`.env` / `VITE_` / `NEXT_PUBLIC_` …) yourself, or let the agent skills
+do it.
+
+Which app it uses depends on how many your account has:
+
+- **One app** — it uses that app.
+- **Several apps** — it lists them and asks you to pick one, or to enter `n` to
+  create a new app. This needs an interactive terminal; in a script, use
+  `provision list` and then `provision use --app-id <id>`.
+- **No apps** — it exits with an error. Create one first with
+  `provision create --name <name>`.
+
+| Command | Purpose |
+| --- | --- |
+| `provision run` | Select an app (see above), fetch its creds, write config |
+| `provision list` | List the apps on your account |
+| `provision create --name <name>` | Create a new app (`--name` required) |
+| `provision use --app-id <id>` | Select a specific app by id |
+
+Create a new app non-interactively — `--name` is required, `--region` and
+`--industry` are optional:
+
+```bash
+npx @cometchat/skills-cli provision create --name "My Chat" --region us
+```
+
+The config file `provision` writes:
+
+```json
+{
+  "$schema": "https://cometchat.com/schemas/config.json",
+  "version": 1,
+  "appId": "…",
+  "region": "us",
+  "authKey": "…",
+  "appName": "My Chat",
+  "plan": "…",
+  "industry": "…"
+}
+```
+
+<Warning>
+`.cometchat/config.json` contains your **Auth Key**. The CLI writes it readable
+by your user only (`chmod 600`) and adds it to `.gitignore` for you. If the file
+is **already tracked** by git, the CLI warns you — a `.gitignore` entry doesn't
+untrack it, so run `git rm --cached .cometchat/config.json` and commit. The Auth
+Key is for **development only**; in production, mint a per-user **auth token** on
+your backend and log in with `loginWithAuthToken()` instead of shipping the Auth
+Key to a client.
+</Warning>
+
+### Manage config
+
+Read and edit the local `.cometchat/config.json` (credential/app state only):
+
+| Command | Purpose |
+| --- | --- |
+| `config init [--app-id <id>] [--region <region>] [--auth-key <key>]` | Create or update the config from the given values — no dashboard login needed |
+| `config get <key>` | Read a single value |
+| `config set <key> <value>` | Write a single value |
+| `config show` | Print the full config |
+| `config path` | Print the config file location |
+
+<Note>
+`config show` prints the **Auth Key** in clear text, with or without `--json`,
+and so do `config get authKey` and `provision run --json`. Avoid running them
+while screen-sharing or anywhere the output is logged.
+</Note>
+
+### Toggle features
+
+Enable or disable app features from the terminal. These commands call the
+dashboard, so run `auth login` first:
+
+| Command | Purpose |
+| --- | --- |
+| `features list` | List available features and their state |
+| `features enable <feature>` | Turn a feature on |
+| `features disable <feature>` | Turn a feature off |
+| `features ai-key <openai-key>` | Set the app's OpenAI key that AI features need |
+
+Every `features` command targets the app in `.cometchat/config.json`. Pass
+`--app-id <id>` to target a different app:
+
+```bash
+npx @cometchat/skills-cli features list --app-id "$COMETCHAT_APP_ID" --json
+```
+
+AI features need an OpenAI key before they can run. The key is a required
+argument — pass it from an environment variable so it doesn't land in your shell
+history:
+
+```bash
+npx @cometchat/skills-cli features ai-key "$OPENAI_API_KEY"
+```
+
+---
+
+## Skills CLI — `@cometchat/skills`
+
+Installs and manages the [AI Agent Skills](/agent-skills) that let your coding
+agent build with CometChat.
+
+```bash
+npx @cometchat/skills add
+```
+
+| Command | Purpose |
+| --- | --- |
+| `detect` | Probe the current project (framework, UI Kit, version conflicts) |
+| `add [--ide <agent>] [--no-mcp]` | Install the skills for an AI agent (default: Claude Code) and connect the CometChat Docs MCP (`--no-mcp` skips it) |
+| `list` | List the skills this pack ships |
+| `info <skill>` | Show a skill's triggers + compatibility |
+| `verify [tier]` | Run the skill quality gates |
+| `catalog` | Refresh the component catalog from the installed UI Kit |
+| `doctor` | Environment health check |
+
+`add` doesn't prompt: with no `--ide` it installs for Claude Code. See
+[Agent Skills](/agent-skills) for the supported agents and their `--ide` values,
+`--global`, and the prompt-driven workflow.
+
+---
+
+## Scripting and CI
+
+`auth login` is interactive: it opens a browser and waits for you to approve the
+sign-in, so on a CI runner it times out (`TIMEOUT`). In CI, skip the dashboard
+login and write the config straight from your pipeline secrets with
+`config init`, which needs no login:
+
+```bash
+# Write .cometchat/config.json from CI secrets, then install the skills for Claude Code
+npx @cometchat/skills-cli config init --app-id "$COMETCHAT_APP_ID" --region "$COMETCHAT_REGION" --auth-key "$COMETCHAT_AUTH_KEY"
+npx @cometchat/skills add --ide claude
+```
+
+<Warning>
+Don't add `--json` to `config init` in CI — its JSON output includes the Auth
+Key, which would end up in your build logs. Store the App ID, Region, and Auth
+Key as masked CI secrets.
+</Warning>
+
+The commands that call the dashboard — `provision` and `features` — need
+`auth login`, so run them from your own machine rather than in CI. Everywhere
+else, most commands support `--json` (the exceptions are `config set` and
+`config path`, which print plain text).
+
+Commands **exit non-zero on failure** and surface dashboard errors verbatim (for
+example `ACCESS_DENIED`, `EXPIRED`, `TIMEOUT`, `ABORTED`), so a broken auth or
+provisioning step fails the CI job loudly instead of continuing with empty
+credentials.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Agent Skills" icon="robot" href="/agent-skills">
+    Install the skills and build CometChat from natural-language prompts
+  </Card>
+  <Card title="MCP Integration" icon="plug" href="/mcp-server">
+    Connect CometChat to any Model Context Protocol–compatible agent
+  </Card>
+  <Card title="React Integration" icon="react" href="/ui-kit/react/integration-react">
+    The manual React UI Kit setup, credentials and all
+  </Card>
+  <Card title="Angular Integration" icon="angular" href="/ui-kit/angular/integration">
+    The manual Angular UI Kit setup, credentials and all
+  </Card>
+  <Card title="Get your credentials" icon="key" href="https://app.cometchat.com">
+    Open the CometChat dashboard
+  </Card>
+</CardGroup>
