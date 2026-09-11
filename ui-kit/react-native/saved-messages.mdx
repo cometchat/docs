@@ -95,45 +95,48 @@ import { CometChatSavedMessages } from "@cometchat/chat-uikit-react-native";
 
 </Tabs>
 
-## Props
+## Actions and Events
 
-| Property | Type | Default | Description |
-| --- | --- | --- | --- |
-| `limit` | `number` | `30` | Page size for the fetch. The SDK rejects a value above 100. |
-| `onBack` | `() => void` | — | Called when the back affordance is pressed. |
-| `onItemPress` | `(message, source) => void` | — | Called when a row is pressed. `source` identifies which conversation the message belongs to. |
-| `hideUnsaveMessageOption` | `boolean` | `false` | Hides Unsave in the row menu. |
-| `ItemView` | `(message) => JSX.Element` | — | Replaces the default row entirely. |
-| `title` | `string` | localized | Panel title. |
-| `style` | `DeepPartial<SavedMessagesStyle>` | — | Style overrides. |
+### Callback Props
 
-## Routing a tap back to its conversation
+#### onItemPress
 
-Because the rows come from different conversations, `onItemPress` hands you a `source` alongside the
-message. If you build a custom `ItemView`, the message itself carries the same context.
+Fires when a saved row is tapped. Because the rows come from different conversations, it hands you a `source` alongside the message so you can open the right chat.
 
-<Tabs>
-<Tab title="TypeScript">
-```tsx
-<CometChatSavedMessages
-  onItemPress={(message: CometChat.BaseMessage) => {
-    const conversationId = message.getConversationId();
-    const receiverType = message.getReceiverType(); // "user" or "group"
-    const receiverId = message.getReceiverId();
+```tsx lines
+import { CometChatSavedMessages } from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
 
-    navigateToConversation({ receiverType, receiverId, conversationId });
-  }}
-/>
+function SavedWithRouting() {
+  const handleItemPress = (message: CometChat.BaseMessage, source) => {
+    navigation.navigate("Messages", {
+      receiverType: source?.receiverType, // "user" | "group"
+      receiverId: source?.receiverId,
+      messageId: String(message.getId()),
+    });
+  };
+
+  return <CometChatSavedMessages onItemPress={handleItemPress} />;
+}
 ```
 
-</Tab>
+`source` is `null` when the conversation could not be resolved. Otherwise it carries:
 
-<Tab title="JavaScript">
-```jsx
+| Field | Type | Description |
+| --- | --- | --- |
+| `receiverType` | `string` | `"user"` or `"group"` — drives the open-conversation call |
+| `receiverId` | `string` | The GUID, or the UID of the other party in a 1-1 |
+| `name` | `string` | Plain display name — what the row title shows |
+| `label` | `string` | Display text with its sigil, e.g. `#engineering` or `@alice` |
+| `avatar` | `string?` | Group icon or user avatar, when the payload carries a hydrated party |
+
+You can also read the routing off the message itself:
+
+```tsx lines
 <CometChatSavedMessages
-  onItemPress={(message) => {
+  onItemPress={(message: CometChat.BaseMessage) => {
     navigateToConversation({
-      receiverType: message.getReceiverType(),
+      receiverType: message.getReceiverType(), // "user" or "group"
       receiverId: message.getReceiverId(),
       conversationId: message.getConversationId(),
     });
@@ -141,16 +144,15 @@ message. If you build a custom `ItemView`, the message itself carries the same c
 />
 ```
 
-</Tab>
+#### onBack
 
-</Tabs>
+Fires when the back affordance in the header is pressed.
 
-<Note>
-  A save is **per-viewer**. The same message reads saved for the user who saved it and unsaved for
-  everybody else — it is never a property of the message globally.
-</Note>
+```tsx lines
+<CometChatSavedMessages onBack={() => navigation.goBack()} />
+```
 
-## Actions and Events
+### Events
 
 | Event | Fires when |
 | --- | --- |
@@ -162,13 +164,59 @@ message. If you build a custom `ItemView`, the message itself carries the same c
   user's tablet on its own.
 </Note>
 
+<Note>
+  A save is **per-viewer**. The same message reads saved for the user who saved it and unsaved for
+  everybody else — it is never a property of the message globally.
+</Note>
+
+---
+
+## Custom View Slots
+
+| Slot | Signature | Replaces |
+| --- | --- | --- |
+| `ItemView` | `(message: CometChat.BaseMessage) => JSX.Element` | Entire saved row |
+
+The empty, error and loading states are not view slots on this component. Restyle them through `style.emptyStateStyle` and `style.errorStateStyle` instead — see [Styling](#styling).
+
+### ItemView
+
+Replace the whole row. The default row is a conversation row — avatar, source conversation name, and a one-line preview — so a replacement usually wants the same three pieces.
+
+```tsx lines
+import { CometChatSavedMessages, useTheme } from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import { View, Text } from "react-native";
+
+function CustomSavedRow() {
+  const theme = useTheme();
+
+  const getItemView = (message: CometChat.BaseMessage) => (
+    <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
+      <Text style={{ ...theme.typography.body.medium, color: theme.color.textPrimary }}>
+        {message.getReceiverId()}
+      </Text>
+      <Text
+        numberOfLines={1}
+        style={{ ...theme.typography.caption1.regular, color: theme.color.textSecondary }}>
+        {(message as CometChat.TextMessage).getText?.()}
+      </Text>
+    </View>
+  );
+
+  return <CometChatSavedMessages ItemView={getItemView} />;
+}
+```
+
+---
+
 ## Common Patterns
 
 ### A saved-messages tab
 
-<Tabs>
-<Tab title="TypeScript">
-```tsx
+Because the list is account-wide, a tab or drawer entry is the natural home for it.
+
+```tsx lines
 <Tab.Screen
   name="Saved"
   children={() => (
@@ -179,40 +227,156 @@ message. If you build a custom `ItemView`, the message itself carries the same c
 />
 ```
 
-</Tab>
+### Read-only list
 
-<Tab title="JavaScript">
-```jsx
-<Tab.Screen
-  name="Saved"
-  children={() => (
-    <CometChatSavedMessages onItemPress={(message) => openConversation(message)} />
-  )}
+```tsx lines
+<CometChatSavedMessages hideUnsaveMessageOption />
+```
+
+### A custom title and close icon
+
+```tsx lines
+<CometChatSavedMessages
+  title="Bookmarks"
+  style={{ closeButtonIcon: require("./assets/chevron-left.png") }}
 />
 ```
 
-</Tab>
+---
 
-</Tabs>
+## Styling
 
-### Read-only list
+The component uses the theme system from `CometChatThemeProvider`. Pass a `style` prop to customize the appearance. Every default value resolves from a semantic theme token, so retheming the kit restyles this panel without touching it.
 
-<Tabs>
-<Tab title="TypeScript">
-```tsx
-<CometChatSavedMessages hideUnsaveMessageOption />
+```tsx lines
+import { CometChatSavedMessages } from "@cometchat/chat-uikit-react-native";
+
+function StyledSavedMessages() {
+  return (
+    <CometChatSavedMessages
+      style={{
+        containerStyle: {
+          backgroundColor: "#FEEDE1",
+        },
+        titleStyle: {
+          color: "#F76808",
+        },
+        previewIconStyle: {
+          tintColor: "#F76808",
+        },
+      }}
+    />
+  );
+}
 ```
 
-</Tab>
+<Note>
+  `SavedMessagesStyle` deliberately has **no `itemStyle`**. The rows are conversation rows and take
+  their chrome from `theme.conversationStyles.itemStyle` — the same tokens the conversation list
+  uses — so the two surfaces cannot drift apart. Restyle the rows there and both update together.
+</Note>
 
-<Tab title="JavaScript">
-```jsx
-<CometChatSavedMessages hideUnsaveMessageOption />
-```
+### Style Properties
 
-</Tab>
+| Property | Type | Description |
+| --- | --- | --- |
+| `containerStyle` | `ViewStyle` | Root container |
+| `headerContainerStyle` | `ViewStyle` | Header row holding the back control and title |
+| `titleStyle` | `TextStyle` | Header title text |
+| `closeButtonIconStyle` | `ImageStyle` | Size and tint of the back control |
+| `closeButtonIcon` | `ImageSourcePropType \| JSX.Element` | Replaces the back icon itself |
+| `previewIconStyle` | `ImageStyle` | Type glyph in the row subtitle — image, video, audio, file, sticker |
+| `previewIconContainerStyle` | `ViewStyle` | Wrapper around that glyph |
+| `menuIconStyle` | `ImageStyle` | Glyph in the long-press menu (Unsave) |
+| `emptyStateStyle` | `object` | `containerStyle`, `titleStyle`, `subTitleStyle`, `iconStyle` |
+| `errorStateStyle` | `object` | `containerStyle`, `titleStyle`, `subTitleStyle`, `iconStyle` |
 
-</Tabs>
+---
+
+## Props
+
+All props are optional. There is deliberately no `user` or `group` prop — see [Minimal Render](#minimal-render).
+
+### limit
+
+Page size for the fetch.
+
+| | |
+| --- | --- |
+| Type | `number` |
+| Default | `30` |
+
+The server rejects a value above 100.
+
+---
+
+### onBack
+
+Called when the back affordance is pressed.
+
+| | |
+| --- | --- |
+| Type | `() => void` |
+| Default | — |
+
+---
+
+### onItemPress
+
+Called when a row is pressed. `source` identifies which conversation the message belongs to.
+
+| | |
+| --- | --- |
+| Type | `(message: CometChat.BaseMessage, source: SavedMessageSource \| null) => void` |
+| Default | — |
+
+The `source` fields are listed under [Callback Props](#onitempress).
+
+---
+
+### hideUnsaveMessageOption
+
+Hides **Unsave** in the row's long-press menu.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### ItemView
+
+Replaces the default row entirely.
+
+| | |
+| --- | --- |
+| Type | `(message: CometChat.BaseMessage) => JSX.Element` |
+| Default | — |
+
+---
+
+### title
+
+Panel title.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | Localized "Saved Messages" |
+
+---
+
+### style
+
+Per-instance style overrides, merged over the theme's `savedMessagesStyles`.
+
+| | |
+| --- | --- |
+| Type | `DeepPartial<SavedMessagesStyle>` |
+| Default | — |
+
+See [Styling](#styling).
 
 ---
 
