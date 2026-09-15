@@ -377,8 +377,8 @@ Each action's `onClick` receives a **`CometChatComposerInput`** — a live handl
 | `insertAtCaret(_:)` | Insert at the caret, replacing any selection; the caret lands after the inserted text. |
 | `setAttributedText(_:preservingSelection:)` | Replace the contents, keeping the selection by default. |
 | `setSelectedRange(_:)` | Move the caret or change the selection, clamped to the current length. |
-| `applyAttributes(_:to:skippingMentions:)` / `removeAttributes(_:from:skippingMentions:)` | Add or strip attributes over a range. |
-| `applyAttributesToSelection(_:skippingMentions:)` / `removeAttributesFromSelection(_:skippingMentions:)` | The same over the current selection; each returns whether there was a selection to act on. |
+| `applyAttributes(_:to:protectingKitRuns:)` / `removeAttributes(_:from:protectingKitRuns:)` | Add or strip attributes over a range. |
+| `applyAttributesToSelection(_:protectingKitRuns:)` / `removeAttributesFromSelection(_:protectingKitRuns:)` | The same over the current selection; each returns whether there was a selection to act on. |
 | `commit()` | Resync the toolbar and send button partway through a long edit. |
 
 <Tabs>
@@ -407,31 +407,38 @@ The trailing section lives **inside** the rich-text toolbar — it is not render
 
 The `CometChatComposerInput` is valid only for the duration of the `onClick` call; don't retain it. The action itself is retained by the toolbar, so capture `self` weakly.
 
-The composer serializes to markdown on send. The built-in formats survive, and so does text colour — see [Colour that survives send](#colour-that-survives-send). Any other attribute you apply is composer-local: markdown has no representation for it, so it is dropped from the sent message. Use those for affordances that are meant to be transient, such as highlighting the range an action is about to operate on.
+The composer serializes to markdown on send. The built-in formats survive, and so does text colour — see [Colour that survives send](#colour-that-survives-send). Any other attribute you apply is composer-local: markdown has no representation for it, so it is dropped from the sent message. Use those for affordances that are meant to be transient, such as marking a range while the action's own picker or sheet is open.
 
 </Note>
 
 Mutations apply immediately, but composer state that derives from the text — the toolbar's active formats and the send button — resyncs once when `onClick` returns rather than per mutation, so a multi-step edit resyncs once. Call `commit()` to resync earlier.
 
-#### Leaving mentions alone
+#### Leaving Kit-owned runs alone
 
-An action that restyles a range will happily run over a mention, which should keep the styling the mentions formatter gives it. The mutating methods take `skippingMentions`, which defaults to `true`, so mention ranges inside the target range are left untouched without any work on your part.
+An action that restyles a range will happily run over a mention or a link, which the Kit repaints on its own schedule — so your attribute is reverted on the next repaint anyway, and removing one of the Kit's attributes deletes it rather than restoring the Kit's value.
 
-Pass `skippingMentions: false` to opt out. To make the decision yourself, read `mentionRanges` — the ranges are read at call time, so re-read them after a mutation rather than caching, as they shift with the text.
+The mutating methods therefore take `protectingKitRuns`, which defaults to `true`. With it on, the following are carved out of the target range and left untouched:
+
+- mentions
+- links, including a URL still being typed
+- inline code and code blocks, and any monospaced run
+- fully transparent runs, so an action cannot repaint hidden text into view
+
+Pass `protectingKitRuns: false` to opt out and write over the whole range. To make a narrower decision yourself, read `mentionRanges` — the ranges are read at call time, so re-read them after a mutation rather than caching, as they shift with the text. Note that `mentionRanges` covers mentions only; the other carve-outs above have no public accessor.
 
 <Tabs>
 <Tab title="Swift">
 ```swift
 CometChatRichTextToolbarAction(
-    id: "highlight",
-    icon: UIImage(systemName: "highlighter")?.withRenderingMode(.alwaysTemplate),
-    accessibilityLabel: "Highlight"
+    id: "red_text",
+    icon: UIImage(systemName: "paintpalette")?.withRenderingMode(.alwaysTemplate),
+    accessibilityLabel: "Red text"
 ) { input in
-    // Highlighting applies to a selection; with only a caret there is nothing
+    // Colouring applies to a selection; with only a caret there is nothing
     // to restyle, so leave the text alone rather than guessing at a range.
     guard input.hasSelection else { return }
 
-    // Mentions are skipped by default and keep their own styling.
+    // Kit-owned runs are protected by default and keep their own styling.
     input.applyAttributesToSelection([
         .foregroundColor: UIColor.systemRed,
         RichTextFormatterManager.textColorKey: UIColor.systemRed
@@ -468,7 +475,9 @@ input.removeAttributesFromSelection([
 
 <Note>
 
-Only `#rgb` and `#rrggbb` are valid on the wire. Eight-digit `#rrggbbaa` is rejected deliberately — a fully transparent run would be an invisible message — so a colour that cannot be sent is not applied locally either.
+Use opaque colours. Only `#rgb` and `#rrggbb` are valid on the wire — eight-digit `#rrggbbaa` is rejected deliberately, since a fully transparent run would be an invisible message.
+
+A translucent `UIColor` is **not** rejected locally: it renders in the composer, then is dropped on send, because a colour with alpha below 1 has no wire representation. That is the silent loss this section exists to prevent, so pass a fully opaque colour.
 
 </Note>
 
