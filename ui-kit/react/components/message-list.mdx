@@ -27,10 +27,15 @@ description: "Scrollable message feed with plugin-based bubble rendering, reacti
         "default": "undefined",
         "note": "For group chat. Mutually exclusive with user."
       },
+      "parentMessage": {
+        "type": "CometChat.BaseMessage",
+        "default": "undefined",
+        "note": "Enables thread mode — fetches replies to this message. Preferred over parentMessageId; holding the whole parent also lets the list reflect live thread-subscription state on realtime replies."
+      },
       "parentMessageId": {
         "type": "number",
         "default": "undefined",
-        "note": "Enables thread mode — fetches replies to this message."
+        "note": "Deprecated — pass parentMessage instead. Still honoured (as the parent's id) when parentMessage is absent."
       }
     },
     "data": {
@@ -82,6 +87,11 @@ description: "Scrollable message feed with plugin-based bubble rendering, reacti
     "optionToggles": {
       "hideReplyOption": { "type": "boolean", "default": false },
       "hideReplyInThreadOption": { "type": "boolean", "default": false },
+      "hidePinMessageOption": { "type": "boolean", "default": false },
+      "hideUnpinMessageOption": { "type": "boolean", "default": false },
+      "hideSaveMessageOption": { "type": "boolean", "default": false },
+      "hideUnsaveMessageOption": { "type": "boolean", "default": false },
+      "hideThreadSubscriptionOption": { "type": "boolean", "default": false },
       "hideEditMessageOption": { "type": "boolean", "default": false },
       "hideDeleteMessageOption": { "type": "boolean", "default": false },
       "hideCopyMessageOption": { "type": "boolean", "default": false },
@@ -327,7 +337,7 @@ function ChatApp() {
           <CometChatMessageList
             user={user}
             group={group}
-            parentMessageId={threadMessage.getId()}
+            parentMessage={threadMessage}
           />
           <CometChatMessageComposer
             user={user}
@@ -420,7 +430,7 @@ Pass a `CometChat.MessagesRequestBuilder` to `messagesRequestBuilder` to control
 
 | Prop | Signature | Fires when |
 | --- | --- | --- |
-| `onThreadRepliesClick` | `(message: CometChat.BaseMessage) => void` | User clicks the thread reply indicator |
+| `onThreadRepliesClick` | `(message: CometChat.BaseMessage) => void` | User clicks the thread reply indicator — wire this to open a thread panel ([Threaded Messages guide](/ui-kit/react/guide-threaded-messages)) |
 | `onAvatarClick` | `(user: CometChat.User) => void` | User clicks an avatar on an incoming message |
 | `onEditMessage` | `(message: CometChat.BaseMessage) => void` | User selects "Edit" from context menu |
 | `onReplyMessage` | `(message: CometChat.BaseMessage) => void` | User selects "Reply" from context menu |
@@ -444,6 +454,7 @@ UI events this component publishes:
 | `ui:active-chat/changed` | `{ user?, group?, message?, unreadMessageCount? }` | Active chat context set on initial load |
 | `ui:conversation/read` | `{ conversationId }` | Conversation marked as read (on init or scroll-to-bottom) |
 | `ui:conversation/updated` | `{ conversation }` | Conversation updated (e.g., mark-as-unread) |
+| `ui:thread/subscription-changed` | `{ parentMessageId, subscribed }` | The user toggles the subscribe/unsubscribe option, or an auto-subscription fires (the user sends a reply, or is @mentioned in one) — mirrored to the parent whether or not the thread panel is open |
 
 <Note>
 The "Edit" and "Reply" context menu options publish `ui:compose/edit` and `ui:compose/reply` events respectively. These are emitted by the message options system (plugins), not by the MessageList component directly. The MessageComposer subscribes to these events to enter edit/reply mode.
@@ -451,7 +462,7 @@ The "Edit" and "Reply" context menu options publish `ui:compose/edit` and `ui:co
 
 ### Events Received
 
-UI events this component subscribes to (published by other components):
+UI events this component subscribes to (published by other components) — part of the UI Kit's [Event System](/ui-kit/react/event-system). These let group/call/composer actions elsewhere in your app update the list automatically:
 
 | Event | Payload | Behavior |
 | --- | --- | --- |
@@ -482,6 +493,30 @@ These SDK listeners are attached internally. The component updates its state aut
 ---
 
 ## Customization
+
+### Pin and Save Options
+
+When pinning and saving are enabled for your app (the `features.ux.messages.pinned.enabled` and `features.ux.messages.saved.enabled` app settings), `CometChatMessageList` automatically adds **Pin**, **Unpin**, **Save**, and **Unsave** to the message context menu — no props required. The **Pin/Unpin option is shown to every member** — the client does not gate it by role. The **server** enforces who may pin or unpin in that conversation; a denied attempt is rejected and surfaces a permission toast (localized via the `action_permission_denied` key). Saving is per-user and always available.
+
+Use the `hide*` props to remove any of these options:
+
+```tsx
+<CometChatMessageList
+  group={group}
+  hideSaveMessageOption   // drop Save/Unsave from the menu
+  hideUnsaveMessageOption
+/>
+```
+
+| Prop | Removes |
+| --- | --- |
+| `hidePinMessageOption` | Pin |
+| `hideUnpinMessageOption` | Unpin |
+| `hideSaveMessageOption` | Save |
+| `hideUnsaveMessageOption` | Unsave |
+| `hideThreadSubscriptionOption` | Subscribe / unsubscribe thread |
+
+See the [Pin & Save Messages guide](/ui-kit/react/guide-pin-and-save-messages) for the full screen, and [Core Features → Pin & Save](/ui-kit/react/core-features#pin-and-save-messages) for enabling the features.
 
 ### View Props
 
@@ -684,6 +719,10 @@ View slot props (`bubbleView`, `headerView`, `footerView`, `loadingView`, `empty
 
 ### Entity
 
+<Note>
+The message list requires exactly one entity — a `user` (1:1) or a `group` — to know which conversation to render. Without either prop it shows nothing. For how to derive the active entity from a conversation/user/group selection and mount the list, see the [New Chat Creation guide](/ui-kit/react/guide-new-chat-creation).
+</Note>
+
 ---
 
 ### user
@@ -708,14 +747,29 @@ The group entity for a group conversation. Mutually exclusive with `user`.
 
 ---
 
+### parentMessage
+
+Enables thread mode. When set, the component fetches and displays replies to this parent message instead of the main conversation feed. Prefer this over [`parentMessageId`](#parentmessageid): holding the whole parent message lets the list read the thread's live subscription state and stamp it onto realtime-arriving replies (a socket-delivered reply carries no flag of its own). Re-pass it when the parent updates in real time.
+
+| | |
+| --- | --- |
+| Type | `CometChat.BaseMessage` |
+| Default | `undefined` |
+
+---
+
 ### parentMessageId
 
-Enables thread mode. When set, the component fetches and displays replies to the specified parent message instead of the main conversation feed.
+**Deprecated — pass [`parentMessage`](#parentmessage) instead.** Enables thread mode by id. Still honoured (as the parent's id) when `parentMessage` is absent, so existing integrations keep working; new code should pass the whole `parentMessage`.
 
 | | |
 | --- | --- |
 | Type | `number` |
 | Default | `undefined` |
+
+<Note>
+Thread replies require wiring: capture the parent from `onThreadRepliesClick`, then mount a **second** `CometChatMessageList` + `CometChatMessageComposer` with this `parentMessageId` (usually alongside a `CometChatThreadHeader`) in a thread panel. See the [Threaded Messages guide](/ui-kit/react/guide-threaded-messages) for the full pattern.
+</Note>
 
 ---
 
@@ -776,6 +830,10 @@ Jump to a specific message by ID (e.g., from search results or a deep link). The
 | Type | `number` |
 | Default | `undefined` |
 
+<Note>
+This is how in-conversation search "jump to result" and deep links work: take the message ID from `CometChatSearch` (or your deep link) and pass it here. See the [Search Messages guide](/ui-kit/react/guide-search-messages) for the end-to-end wiring.
+</Note>
+
 ---
 
 ### startFromUnreadMessages
@@ -792,6 +850,10 @@ When `true`, the list scrolls to the first unread message on open instead of the
 ### loadLastAgentConversation
 
 When `true`, loads the last agent conversation on initial render. Used for AI agent chat flows.
+
+<Note>
+Agent chat props (`loadLastAgentConversation`, `isAgentChat`) require an **AI Agent configured in the CometChat Dashboard** — the conversation entity must be that agent user. For a purpose-built agent experience, use the [AI Assistant Chat](/ui-kit/react/components/ai-assistant-chat) component, which wraps this list. See [AI Features](/ui-kit/react/ai-features) for the broader AI capabilities.
+</Note>
 
 | | |
 | --- | --- |
@@ -868,6 +930,10 @@ Hide the moderation footer beneath disapproved messages.
 | Type | `boolean` |
 | Default | `false` |
 
+<Note>
+The moderation footer only appears when messages are actually moderated, which requires **Moderation rules configured in the CometChat Dashboard**. See [Moderation overview](/moderation/overview) to set up rules. This prop only controls whether the UI Kit renders the footer for already-moderated messages.
+</Note>
+
 ---
 
 ### showScrollbar
@@ -885,6 +951,10 @@ Show the native scrollbar on the message list. When `false`, the scrollbar is hi
 
 Show AI-generated smart reply suggestions in the footer when the last received message matches keyword criteria.
 
+<Note>
+This requires the **Smart Replies** AI feature to be enabled for your app in the CometChat Dashboard. With the feature disabled, no suggestions are generated even when `showSmartReplies` is `true`. See [AI Features](/ui-kit/react/ai-features#smart-replies).
+</Note>
+
 | | |
 | --- | --- |
 | Type | `boolean` |
@@ -895,6 +965,10 @@ Show AI-generated smart reply suggestions in the footer when the last received m
 ### showConversationStarters
 
 Show AI-generated conversation starters in the footer when the message list is empty.
+
+<Note>
+This requires the **Conversation Starter** AI feature to be enabled for your app in the CometChat Dashboard. With the feature disabled, no starters are generated even when `showConversationStarters` is `true`. See [AI Features](/ui-kit/react/ai-features#conversation-starter).
+</Note>
 
 | | |
 | --- | --- |
@@ -954,6 +1028,61 @@ Hide the "Reply" option from the message context menu.
 ### hideReplyInThreadOption
 
 Hide the "Reply in Thread" option from the message context menu.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hidePinMessageOption
+
+Hide the "Pin" option from the message context menu. Pinning must also be enabled for your app (the `features.ux.messages.pinned.enabled` app setting).
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hideUnpinMessageOption
+
+Hide the "Unpin" option from the message context menu.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hideSaveMessageOption
+
+Hide the "Save" option from the message context menu. Saving must also be enabled for your app (the `features.ux.messages.saved.enabled` app setting).
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hideUnsaveMessageOption
+
+Hide the "Unsave" option from the message context menu.
+
+| | |
+| --- | --- |
+| Type | `boolean` |
+| Default | `false` |
+
+---
+
+### hideThreadSubscriptionOption
+
+Hide the thread subscription (subscribe/unsubscribe) option from the message context menu. See [Threaded Messages → Thread Subscription](/ui-kit/react/guide-threaded-messages#thread-subscription).
 
 | | |
 | --- | --- |
@@ -1026,6 +1155,10 @@ Hide the "Flag/Report" option from the message context menu.
 | Type | `boolean` |
 | Default | `false` |
 
+<Note>
+Flagging/reporting a message feeds CometChat **Moderation**. Flagged messages are reviewed in the [Moderation dashboard](/moderation/overview), and custom report reasons are configured there. See [Moderation overview](/moderation/overview).
+</Note>
+
 ---
 
 ### hideMessagePrivatelyOption
@@ -1047,6 +1180,10 @@ Hide the "Translate" option from the message context menu.
 | --- | --- |
 | Type | `boolean` |
 | Default | `false` |
+
+<Note>
+The "Translate" option only works when the **Message Translation extension is enabled** in the CometChat Dashboard. Without it, the option has nothing to call. Enable it from [Extensions](/ui-kit/react/extensions) — see the [Message Translation guide](/fundamentals/message-translation).
+</Note>
 
 ---
 

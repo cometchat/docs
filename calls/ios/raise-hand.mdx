@@ -122,37 +122,74 @@ class CallViewController: UIViewController, ParticipantEventListener {
 </Tab>
 </Tabs>
 
-## Check Raised Hand Status
+## Track Raised Hands
 
-The `Participant` object includes a `raisedHandTimestamp` property to check if a participant has their hand raised:
+`Participant` carries **no** raised-hand property, and the SDK exposes no getter for one. Keep an
+ordered list of your own, driven by the `onParticipantHandRaised` / `onParticipantHandLowered`
+callbacks.
+
+<Warning>
+  These callbacks fire only when a hand goes **up or down**. A client that joins mid-call cannot
+  discover hands that were already raised before it joined.
+</Warning>
 
 <Tabs>
 <Tab title="Swift">
 ```swift
-func onParticipantListChanged(participants: [Participant]) {
-    let raisedHands = participants
-        .filter { $0.raisedHandTimestamp > 0 }
-        .sorted { $0.raisedHandTimestamp < $1.raisedHandTimestamp }
-    
-    // Display participants with raised hands in order
-    updateRaisedHandsList(raisedHands)
+// Raised hands, oldest first. Keyed by uid, because that is the only identifier
+// `Participant` actually carries.
+private var raisedHands: [(uid: String, name: String, at: Date)] = []
+
+func onParticipantHandRaised(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async {
+        guard !self.raisedHands.contains(where: { $0.uid == uid }) else { return }
+        self.raisedHands.append((uid, participant.name ?? uid, Date()))
+        self.updateRaisedHandsList(self.raisedHands)
+    }
+}
+
+func onParticipantHandLowered(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async {
+        self.raisedHands.removeAll { $0.uid == uid }
+        self.updateRaisedHandsList(self.raisedHands)
+    }
+}
+
+// Someone who leaves should not stay in the queue.
+func onParticipantLeft(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async {
+        self.raisedHands.removeAll { $0.uid == uid }
+        self.updateRaisedHandsList(self.raisedHands)
+    }
 }
 ```
 </Tab>
 <Tab title="Objective-C">
 ```objectivec
-- (void)onParticipantListChangedWithParticipants:(NSArray<Participant *> *)participants {
-    NSMutableArray *raisedHands = [NSMutableArray array];
-    for (Participant *p in participants) {
-        if (p.raisedHandTimestamp > 0) {
-            [raisedHands addObject:p];
+// NSMutableArray of uid strings, oldest first.
+@property (nonatomic, strong) NSMutableArray<NSString *> *raisedHandUIDs;
+
+- (void)onParticipantHandRaisedWithParticipant:(Participant *)participant {
+    NSString *uid = participant.uid;
+    if (!uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![self.raisedHandUIDs containsObject:uid]) {
+            [self.raisedHandUIDs addObject:uid];
+            [self updateRaisedHandsList:self.raisedHandUIDs];
         }
-    }
-    // Sort by timestamp and display
-    [raisedHands sortUsingComparator:^NSComparisonResult(Participant *a, Participant *b) {
-        return [@(a.raisedHandTimestamp) compare:@(b.raisedHandTimestamp)];
-    }];
-    [self updateRaisedHandsList:raisedHands];
+    });
+}
+
+- (void)onParticipantHandLoweredWithParticipant:(Participant *)participant {
+    NSString *uid = participant.uid;
+    if (!uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.raisedHandUIDs removeObject:uid];
+        [self updateRaisedHandsList:self.raisedHandUIDs];
+    });
 }
 ```
 </Tab>

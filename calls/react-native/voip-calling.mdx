@@ -5,6 +5,33 @@ sdk_version: "5.x"
 description: "Set up CometChat Calls SDK v5 VoIP calling on React Native for call notifications, incoming call handling, and app wake flows."
 ---
 
+<Info>
+  **Quick Reference for AI Agents & Developers**
+
+  ```tsx theme={null}
+  import { Platform } from 'react-native';
+  import { CometChatNotifications } from '@cometchat/chat-sdk-react-native';
+
+  const { PushPlatforms } = CometChatNotifications;
+
+  // Register AFTER login. iOS VoIP is its OWN platform, distinct from ordinary iOS push.
+  // providerId is the Provider ID from Dashboard → Notifications.
+  await CometChatNotifications.registerPushToken(
+    token,
+    Platform.OS === 'ios' ? PushPlatforms.APNS_REACT_NATIVE_VOIP
+                          : PushPlatforms.FCM_REACT_NATIVE_ANDROID,
+    PROVIDER_ID,
+  );
+
+  await CometChatNotifications.unregisterPushToken();   // on logout
+  ```
+
+  * **Not code-only.** iOS needs a VoIP `.p12` certificate + a native PushKit/CallKit module; Android needs Firebase + a self-managed `ConnectionService`
+  * On iOS you **must** call `reportNewIncomingCall` for every VoIP push — the OS terminates an app that does not
+  * Skipping the logout unregister leaves the next user on that device receiving the previous user's calls
+  * **Prerequisite** → [Ringing](/calls/react-native/ringing) covers the foreground half
+</Info>
+
 Implement VoIP push notifications to receive incoming calls even when your app is in the background or terminated. This requires platform-specific configuration for iOS CallKit and Android ConnectionService.
 
 ## iOS VoIP Configuration
@@ -221,23 +248,51 @@ Add to `AndroidManifest.xml`:
 
 ## Register Push Token
 
-Register the VoIP/FCM token with CometChat:
+Register the VoIP/FCM token with CometChat using `CometChatNotifications.registerPushToken`. iOS VoIP is
+its own platform — `APNS_REACT_NATIVE_VOIP`, distinct from the `APNS_REACT_NATIVE_DEVICE` used for ordinary
+message notifications — so an app that both rings and notifies registers **two** tokens.
 
 ```tsx
-import { CometChat } from '@cometchat/chat-sdk-react-native';
+import { CometChatNotifications } from '@cometchat/chat-sdk-react-native';
+
+const { PushPlatforms } = CometChatNotifications;
 
 async function registerPushToken(token: string, platform: 'ios' | 'android') {
   try {
-    if (platform === 'ios') {
-      await CometChat.registerTokenForPushNotification(token, {
-        voip: true,
-      });
-    } else {
-      await CometChat.registerTokenForPushNotification(token);
-    }
+    await CometChatNotifications.registerPushToken(
+      token,
+      platform === 'ios'
+        ? PushPlatforms.APNS_REACT_NATIVE_VOIP     // the PushKit token
+        : PushPlatforms.FCM_REACT_NATIVE_ANDROID,
+      PROVIDER_ID,                                 // Dashboard → Notifications → Provider ID
+    );
     console.log('Push token registered');
   } catch (error) {
     console.error('Error registering push token:', error);
+  }
+}
+```
+
+<Note>
+  Register the token **after** the user logs in — a token registered with no logged-in user is attached to
+  nobody. Re-register when the token refreshes.
+
+  `providerId` is the **Provider ID** you configured in **Dashboard → Notifications → Push Notifications**
+  (for example `APNS_PROVIDER_ID`). Pass it so the token is bound to the right provider.
+</Note>
+
+### Unregister on Logout
+
+Release the token when the user logs out, or the next user on that device receives their calls:
+
+```tsx
+import { CometChatNotifications } from '@cometchat/chat-sdk-react-native';
+
+async function unregisterPushToken() {
+  try {
+    await CometChatNotifications.unregisterPushToken();
+  } catch (error) {
+    console.error('Error unregistering push token:', error);
   }
 }
 ```

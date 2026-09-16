@@ -1,0 +1,448 @@
+---
+title: "Pin A Message"
+sidebarTitle: "Pin A Message"
+description: "Pin and unpin messages in a conversation, fetch the pinned list, and listen for pin events with the CometChat Android SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Pin / unpin a message
+CometChat.pinMessage(messageId, callbackListener)      // -> BaseMessage
+CometChat.unpinMessage(messageId, callbackListener)    // -> BaseMessage
+
+// Fetch the pinned list for one conversation (UID or GUID is mandatory)
+val request = MessagesRequest.MessagesRequestBuilder()
+    .setUID("UID")            // or .setGUID("GUID")
+    .setPinned(true)
+    .setLimit(50)
+    .build()
+request.fetchNext(callbackListener)                    // List<BaseMessage>
+
+// Read pin state off a message
+val isPinned = message.isPinned                        // pinnedAt > 0
+val isSystemPinned = message.isSystemPinned            // pinnedBy == "app_system"
+
+// Caps and availability
+val limit = CometChat.getPinMessageLimit()             // -1 when unspecified
+val systemLimit = CometChat.getSystemPinMessageLimit() // -1 when unspecified
+val enabled = CometChat.isPinMessageEnabled()          // Boolean
+```
+
+</Accordion>
+
+Keep important messages easy to find by pinning them to a conversation. A pinned message is visible to **all participants** of the conversation, along with who pinned it and when. Users can pin messages, unpin them, and fetch all pinned messages of a conversation. You can also listen to pin events in real-time. Let's see how to work with pinned messages in CometChat's Android SDK.
+
+<Note>
+
+Pinning a message with the SDK requires the Pin Message feature to be enabled for your app. You can check its availability at runtime using the [feature flag](#feature-availability).
+
+</Note>
+
+## Pin a Message
+
+To pin a message, use the `pinMessage` method and pass the ID of the message to be pinned. On success, the callback returns the updated `BaseMessage` with its pin attributes set.
+
+<Tabs>
+<Tab title="Java">
+```java
+long messageId = 1;
+
+CometChat.pinMessage(messageId, new CometChat.CallbackListener<BaseMessage>() {
+  @Override
+  public void onSuccess(BaseMessage message) {
+      Log.d(TAG, "Message pinned at: " + message.getPinnedAt());
+  }
+
+  @Override
+  public void onError(CometChatException e) {
+      Log.e(TAG, "Failed to pin message: " + e.getMessage());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val messageId = 1L
+
+CometChat.pinMessage(messageId, object : CometChat.CallbackListener<BaseMessage>() {
+  override fun onSuccess(message: BaseMessage?) {
+      Log.d(TAG, "Message pinned at: ${message?.pinnedAt}")
+  }
+
+  override fun onError(e: CometChatException?) {
+      Log.e(TAG, "Failed to pin message: ${e?.message}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+Pinning is **idempotent**, and a message has a single pinner: re-pinning an already pinned message updates `getPinnedBy()` and `getPinnedAt()` to the most recent pinner rather than failing.
+
+<Warning>
+
+**A just-sent message may not be pinnable or savable yet.** On an app with moderation enabled, the server stamps a new message as moderation-pending and clears it a moment later. While it is pending, the call is rejected with `ERR_MESSAGE_NO_ACCESS` — the **same code returned for a genuine permission refusal**, so you cannot tell the two apart from the error alone.
+
+The window runs from **send**, not from the user's tap, and clears within a few seconds. Do not disable the control on this error: by the time someone opens a menu and taps, moderation has usually finished. Prefer a retry or a transient "not ready yet" message over telling the user they lack permission. Moderation is configured **per app**, so this never reproduces on an app that has it switched off. (The CometChat UI Kits already withhold the Pin/Save options on a moderation-pending, disapproved, deleted or not-yet-sent message; this only concerns custom UI built directly on the SDK.)
+
+</Warning>
+
+<Info>
+
+Pinning is a moderation action and **the server is the authority**: a user without pin permission is rejected with `ERR_PERMISSION_DENIED`. There is no client-side role gate — the CometChat UI Kits show the Pin/Unpin option to every participant and surface a "you don't have permission" toast on that error, so build your own UI the same way rather than trying to predict the verdict. Every participant can see pinned messages. Deleted messages cannot be pinned; deleting a pinned message automatically unpins it.
+
+</Info>
+
+## Unpin a Message
+
+To unpin a message, use the `unpinMessage` method. Any participant with pin permission can unpin a message — not just the user who originally pinned it. On success, the callback returns the updated `BaseMessage` with its pin attributes cleared.
+
+<Tabs>
+<Tab title="Java">
+```java
+long messageId = 1;
+
+CometChat.unpinMessage(messageId, new CometChat.CallbackListener<BaseMessage>() {
+  @Override
+  public void onSuccess(BaseMessage message) {
+      Log.d(TAG, "Message unpinned. isPinned: " + message.isPinned());
+  }
+
+  @Override
+  public void onError(CometChatException e) {
+      Log.e(TAG, "Failed to unpin message: " + e.getMessage());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val messageId = 1L
+
+CometChat.unpinMessage(messageId, object : CometChat.CallbackListener<BaseMessage>() {
+  override fun onSuccess(message: BaseMessage?) {
+      Log.d(TAG, "Message unpinned. isPinned: ${message?.isPinned}")
+  }
+
+  override fun onError(e: CometChatException?) {
+      Log.e(TAG, "Failed to unpin message: ${e?.message}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Fetch Pinned Messages
+
+To fetch all pinned messages of a conversation, create a `MessagesRequest` with the `setPinned(true)` filter of the `MessagesRequestBuilder`. Setting a `UID` (for a one-on-one conversation) or a `GUID` (for a group) is **mandatory** — exactly one of the two. The returned list is sorted by the time of pinning, most recently pinned first.
+
+<Tabs>
+<Tab title="Java (User)">
+```java
+String UID = "cometchat-uid-1";
+
+MessagesRequest messagesRequest = new MessagesRequest.MessagesRequestBuilder()
+  .setPinned(true)
+  .setLimit(50)
+  .setUID(UID)
+  .build();
+
+messagesRequest.fetchNext(new CometChat.CallbackListener<List<BaseMessage>>() {
+  @Override
+  public void onSuccess(List<BaseMessage> messages) {
+      Log.d(TAG, "Pinned messages: " + messages.size());
+  }
+
+  @Override
+  public void onError(CometChatException e) {
+      Log.e(TAG, "Pinned messages fetch failed: " + e.getMessage());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Java (Group)">
+```java
+String GUID = "cometchat-guid-1";
+
+MessagesRequest messagesRequest = new MessagesRequest.MessagesRequestBuilder()
+  .setPinned(true)
+  .setLimit(50)
+  .setGUID(GUID)
+  .build();
+
+messagesRequest.fetchNext(new CometChat.CallbackListener<List<BaseMessage>>() {
+  @Override
+  public void onSuccess(List<BaseMessage> messages) {
+      Log.d(TAG, "Pinned messages: " + messages.size());
+  }
+
+  @Override
+  public void onError(CometChatException e) {
+      Log.e(TAG, "Pinned messages fetch failed: " + e.getMessage());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin (User)">
+```kotlin
+val UID = "cometchat-uid-1"
+
+val messagesRequest = MessagesRequest.MessagesRequestBuilder()
+  .setPinned(true)
+  .setLimit(50)
+  .setUID(UID)
+  .build()
+
+messagesRequest.fetchNext(object : CometChat.CallbackListener<List<BaseMessage>>() {
+  override fun onSuccess(messages: List<BaseMessage>?) {
+      Log.d(TAG, "Pinned messages: ${messages?.size}")
+  }
+
+  override fun onError(e: CometChatException?) {
+      Log.e(TAG, "Pinned messages fetch failed: ${e?.message}")
+  }
+})
+```
+
+</Tab>
+
+<Tab title="Kotlin (Group)">
+```kotlin
+val GUID = "cometchat-guid-1"
+
+val messagesRequest = MessagesRequest.MessagesRequestBuilder()
+  .setPinned(true)
+  .setLimit(50)
+  .setGUID(GUID)
+  .build()
+
+messagesRequest.fetchNext(object : CometChat.CallbackListener<List<BaseMessage>>() {
+  override fun onSuccess(messages: List<BaseMessage>?) {
+      Log.d(TAG, "Pinned messages: ${messages?.size}")
+  }
+
+  override fun onError(e: CometChatException?) {
+      Log.e(TAG, "Pinned messages fetch failed: ${e?.message}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+The list is ordered by **pin time, most recently pinned first** — not by when the messages were sent. Render it in the order the SDK returns it. Page it with `fetchNext()` until a call returns an empty list; the cursor rides on `pinnedAt` instead of `sentAt`, and the SDK swaps it for you.
+
+## Check if a Message is Pinned
+
+Every fetched or received message carries its pin state on the `BaseMessage` itself.
+
+| Method                  | Description                                                                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isPinned()`            | Returns `true` if the message is currently pinned in its conversation.                                                                           |
+| `getPinnedAt()`         | The timestamp at which the message was pinned. `0` when the message is not pinned.                                                               |
+| `getPinnedBy()`         | The `UID` of the user who most recently pinned the message. The value `app_system` indicates a pin applied by the app itself (a system pin).      |
+| `isSystemPinned()`      | Returns `true` when the message is pinned and `getPinnedBy()` is `app_system` — render it as a system pin, not as a user.                        |
+
+<Tabs>
+<Tab title="Java">
+```java
+if (message.isPinned()) {
+    Log.d(TAG, "Pinned by " + message.getPinnedBy() + " at " + message.getPinnedAt());
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+if (message.isPinned) {
+    Log.d(TAG, "Pinned by ${message.pinnedBy} at ${message.pinnedAt}")
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Info>
+
+Editing a message preserves its pin. A message stores only its most recent pinner in `getPinnedBy()`.
+
+</Info>
+
+## Real-time Pin Events
+
+Register a `MessageListener` and override the pin callbacks. Each event delivers the full updated `BaseMessage`, so you can directly replace the message in your list.
+
+Today these callbacks fire on the **acting user's device** when a pin or unpin succeeds. Delivery to other participants activates once server-side real-time delivery for pin events is rolled out — until then, other clients pick up pin changes on their next message fetch.
+
+<Tabs>
+<Tab title="Java">
+```java
+private String listenerID = "UNIQUE_LISTENER_ID";
+
+CometChat.addMessageListener(listenerID, new CometChat.MessageListener() {
+  @Override
+  public void onMessagePinned(BaseMessage message) {
+      Log.d(TAG, "Message pinned: " + message.getId());
+  }
+
+  @Override
+  public void onMessageUnpinned(BaseMessage message) {
+      Log.d(TAG, "Message unpinned: " + message.getId());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val listenerID = "UNIQUE_LISTENER_ID"
+
+CometChat.addMessageListener(listenerID, object : CometChat.MessageListener() {
+  override fun onMessagePinned(message: BaseMessage) {
+      Log.d(TAG, "Message pinned: ${message.id}")
+  }
+
+  override fun onMessageUnpinned(message: BaseMessage) {
+      Log.d(TAG, "Message unpinned: ${message.id}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+To stop listening, remove the listener with `CometChat.removeMessageListener(listenerID)`.
+
+## Pin Limit
+
+A conversation holds a capped number of pins, configurable per app. Read the cap rather than hard-coding it — it is tenant-overridable and will drift.
+
+<Tabs>
+<Tab title="Java">
+```java
+int limit = CometChat.getPinMessageLimit();
+int systemLimit = CometChat.getSystemPinMessageLimit();
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val limit = CometChat.getPinMessageLimit()
+val systemLimit = CometChat.getSystemPinMessageLimit()
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+</Tabs>
+
+Both are synchronous and never throw. They return `Settings.LIMIT_UNSPECIFIED` (`-1`) when the app settings carry no value or when they are called before `init()` completes — show generic copy in that case rather than guessing a number. `getSystemPinMessageLimit()` is the separate cap for admin/global pins: system pins do **not** consume a user's allowance, so the two budgets are enforced independently.
+
+When the limit is breached, the SDK surfaces the server error through `onError`, and the applicable limit is carried in the exception's `errorParams` so you can tell the user the actual number without a second call.
+
+<Tabs>
+<Tab title="Java">
+```java
+@Override
+public void onError(CometChatException e) {
+    Object limit = e.getErrorParams() != null ? e.getErrorParams().get("limit") : null;
+    if (limit != null) {
+        Log.e(TAG, "You can pin up to " + limit + " messages in a conversation.");
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+override fun onError(e: CometChatException?) {
+    val limit = e?.errorParams?.get("limit")
+    if (limit != null) {
+        Log.e(TAG, "You can pin up to $limit messages in a conversation.")
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## Error Handling
+
+| Error                                | Meaning                                                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `ERR_PERMISSION_DENIED`              | The user is not allowed to pin or unpin in this conversation. Surface a "you don't have permission" message.          |
+| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | The conversation's pin cap was reached. The cap is in `errorParams["limit"]` when the server includes it.             |
+| `ERR_MESSAGE_NO_ACCESS`              | The user cannot act on this message — either a genuine access refusal or a message still held by moderation (above).  |
+
+## Feature Availability
+
+Check whether the Pin Message feature is enabled for your app before showing pin actions in your UI. The method is synchronous and safe to call from the UI layer.
+
+<Tabs>
+<Tab title="Java">
+```java
+if (CometChat.isPinMessageEnabled()) {
+    // show the Pin option
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+if (CometChat.isPinMessageEnabled()) {
+    // show the Pin option
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/android/v5/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+  <Card title="Pin A Conversation" icon="thumbtack" href="/sdk/android/v5/pin-conversation">
+    Pin a conversation to the top of the list
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/android/v5/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Additional Message Filtering" icon="filter" href="/sdk/android/v5/additional-message-filtering">
+    Filter messages by pinned, saved, type, tags and more
+  </Card>
+</CardGroup>

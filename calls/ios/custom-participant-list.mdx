@@ -59,6 +59,10 @@ class ParticipantListViewController: UIViewController {
     private let searchBar = UISearchBar()
     private var participants: [Participant] = []
     private var filteredParticipants: [Participant] = []
+    /// Per-participant state the app maintains itself, keyed by `Participant.uid`, because
+    /// `Participant` carries no such flags. Starts empty — anything that happened before this
+    /// client joined is not recoverable.
+    fileprivate var statuses: [String: ParticipantStatus] = [:]
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -116,12 +120,16 @@ class ParticipantListViewController: UIViewController {
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) NSArray<Participant *> *participants;
 @property (nonatomic, strong) NSArray<Participant *> *filteredParticipants;
+/// Per-participant state the app maintains itself, keyed by uid — `Participant` carries no
+/// such flags. Starts empty; state from before this client joined is not recoverable.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, ParticipantStatus *> *statuses;
 @end
 
 @implementation ParticipantListViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.statuses = [NSMutableDictionary dictionary];
     [self setupUI];
     [self setupParticipantListener];
 }
@@ -177,11 +185,29 @@ class ParticipantListViewController: UIViewController {
 
 ## Step 3: Create Participant Cell
 
-Build a custom table view cell to display participant information:
+Build a custom table view cell to display participant information.
+
+<Warning>
+  `Participant` carries **only** identity and timing fields — `uid`, `name`, `avatar`, `mid`,
+  `state`, `isJoined`, `joinedAt`, `leftAt`, `deviceID` and the `total*Minutes` counters. It has
+  **no** mute / video / screen-share / hand-raise / pin flags, and the SDK exposes no getter for
+  them. Accumulate that state in your own app from the [participant events](/calls/ios/events),
+  as below. Because those events fire only on change, a client that joins mid-call cannot recover
+  state that was already in effect.
+</Warning>
 
 <Tabs>
 <Tab title="Swift">
 ```swift
+/// Per-participant state the app maintains itself, keyed by `Participant.uid`.
+struct ParticipantStatus {
+    var isAudioMuted = false
+    var isVideoPaused = false
+    var isPresenting  = false
+    var isHandRaised  = false
+    var isPinned      = false
+}
+
 class ParticipantCell: UITableViewCell {
     
     private let avatarImageView = UIImageView()
@@ -257,23 +283,23 @@ class ParticipantCell: UITableViewCell {
         ])
     }
     
-    func configure(with participant: Participant) {
+    func configure(with participant: Participant, status: ParticipantStatus) {
         self.participant = participant
         nameLabel.text = participant.name
-        
-        // Build status text
+
+        // Build status text from the app's own state, not from `participant`.
         var statusParts: [String] = []
-        if participant.isAudioMuted { statusParts.append("🔇 Muted") }
-        if participant.isVideoPaused { statusParts.append("📹 Video Off") }
-        if participant.isPresenting { statusParts.append("🖥️ Presenting") }
-        if participant.raisedHandTimestamp > 0 { statusParts.append("✋ Hand Raised") }
-        if participant.isPinned { statusParts.append("📌 Pinned") }
-        
+        if status.isAudioMuted  { statusParts.append("🔇 Muted") }
+        if status.isVideoPaused { statusParts.append("📹 Video Off") }
+        if status.isPresenting  { statusParts.append("🖥️ Presenting") }
+        if status.isHandRaised  { statusParts.append("✋ Hand Raised") }
+        if status.isPinned      { statusParts.append("📌 Pinned") }
+
         statusLabel.text = statusParts.isEmpty ? "Active" : statusParts.joined(separator: " • ")
-        
+
         // Update button states
-        muteButton.alpha = participant.isAudioMuted ? 0.5 : 1.0
-        pinButton.tintColor = participant.isPinned ? .systemBlue : .systemGray
+        muteButton.alpha = status.isAudioMuted ? 0.5 : 1.0
+        pinButton.tintColor = status.isPinned ? .systemBlue : .systemGray
     }
     
     @objc private func muteButtonTapped() {
@@ -290,11 +316,23 @@ class ParticipantCell: UITableViewCell {
 </Tab>
 <Tab title="Objective-C">
 ```objectivec
+/// Per-participant state the app maintains itself, keyed by `Participant.uid`.
+@interface ParticipantStatus : NSObject
+@property (nonatomic, assign) BOOL isAudioMuted;
+@property (nonatomic, assign) BOOL isVideoPaused;
+@property (nonatomic, assign) BOOL isPresenting;
+@property (nonatomic, assign) BOOL isHandRaised;
+@property (nonatomic, assign) BOOL isPinned;
+@end
+
+@implementation ParticipantStatus
+@end
+
 @interface ParticipantCell : UITableViewCell
 @property (nonatomic, strong) Participant *participant;
 @property (nonatomic, copy) void (^onMuteAction)(Participant *);
 @property (nonatomic, copy) void (^onPinAction)(Participant *);
-- (void)configureWithParticipant:(Participant *)participant;
+- (void)configureWithParticipant:(Participant *)participant status:(ParticipantStatus *)status;
 @end
 
 @implementation ParticipantCell {
@@ -372,23 +410,23 @@ class ParticipantCell: UITableViewCell {
     ]];
 }
 
-- (void)configureWithParticipant:(Participant *)participant {
+- (void)configureWithParticipant:(Participant *)participant status:(ParticipantStatus *)status {
     self.participant = participant;
     _nameLabel.text = participant.name;
-    
-    // Build status text
+
+    // Build status text from the app's own state, not from `participant`.
     NSMutableArray *statusParts = [NSMutableArray array];
-    if (participant.isAudioMuted) [statusParts addObject:@"🔇 Muted"];
-    if (participant.isVideoPaused) [statusParts addObject:@"📹 Video Off"];
-    if (participant.isPresenting) [statusParts addObject:@"🖥️ Presenting"];
-    if (participant.raisedHandTimestamp > 0) [statusParts addObject:@"✋ Hand Raised"];
-    if (participant.isPinned) [statusParts addObject:@"📌 Pinned"];
-    
+    if (status.isAudioMuted)  [statusParts addObject:@"🔇 Muted"];
+    if (status.isVideoPaused) [statusParts addObject:@"📹 Video Off"];
+    if (status.isPresenting)  [statusParts addObject:@"🖥️ Presenting"];
+    if (status.isHandRaised)  [statusParts addObject:@"✋ Hand Raised"];
+    if (status.isPinned)      [statusParts addObject:@"📌 Pinned"];
+
     _statusLabel.text = statusParts.count == 0 ? @"Active" : [statusParts componentsJoinedByString:@" • "];
-    
+
     // Update button states
-    _muteButton.alpha = participant.isAudioMuted ? 0.5 : 1.0;
-    _pinButton.tintColor = participant.isPinned ? [UIColor systemBlueColor] : [UIColor systemGrayColor];
+    _muteButton.alpha = status.isAudioMuted ? 0.5 : 1.0;
+    _pinButton.tintColor = status.isPinned ? [UIColor systemBlueColor] : [UIColor systemGrayColor];
 }
 
 - (void)muteButtonTapped {
@@ -437,22 +475,37 @@ extension ParticipantListViewController: ParticipantEventListener {
     }
     
     func onParticipantJoined(participant: Participant) {
-        print("\(participant.name) joined")
+        print("\(participant.name ?? "") joined")
     }
-    
+
     func onParticipantLeft(participant: Participant) {
-        print("\(participant.name) left")
+        guard let uid = participant.uid else { return }
+        DispatchQueue.main.async {
+            self.statuses.removeValue(forKey: uid)   // don't leak state for someone who left
+            self.tableView.reloadData()
+        }
     }
-    
-    func onParticipantAudioMuted(participant: Participant) {
-        // Table will update via onParticipantListChanged
+
+    // `onParticipantListChanged` carries no flags, so every status below comes from these
+    // transition events. Each one mutates the app's own `statuses` map and redraws.
+    func onParticipantAudioMuted(participant: Participant)      { update(participant) { $0.isAudioMuted = true } }
+    func onParticipantAudioUnmuted(participant: Participant)    { update(participant) { $0.isAudioMuted = false } }
+    func onParticipantVideoPaused(participant: Participant)     { update(participant) { $0.isVideoPaused = true } }
+    func onParticipantVideoResumed(participant: Participant)    { update(participant) { $0.isVideoPaused = false } }
+    func onParticipantHandRaised(participant: Participant)      { update(participant) { $0.isHandRaised = true } }
+    func onParticipantHandLowered(participant: Participant)     { update(participant) { $0.isHandRaised = false } }
+    func onParticipantStartedScreenShare(participant: Participant) { update(participant) { $0.isPresenting = true } }
+    func onParticipantStoppedScreenShare(participant: Participant) { update(participant) { $0.isPresenting = false } }
+
+    private func update(_ participant: Participant, _ change: @escaping (inout ParticipantStatus) -> Void) {
+        guard let uid = participant.uid else { return }
+        DispatchQueue.main.async {
+            var status = self.statuses[uid] ?? ParticipantStatus()
+            change(&status)
+            self.statuses[uid] = status
+            self.tableView.reloadData()
+        }
     }
-    
-    func onParticipantAudioUnmuted(participant: Participant) {}
-    func onParticipantVideoPaused(participant: Participant) {}
-    func onParticipantVideoResumed(participant: Participant) {}
-    func onParticipantHandRaised(participant: Participant) {}
-    func onParticipantHandLowered(participant: Participant) {}
 }
 ```
 </Tab>
@@ -483,7 +536,49 @@ extension ParticipantListViewController: ParticipantEventListener {
 }
 
 - (void)onParticipantLeftWithParticipant:(Participant *)participant {
-    NSLog(@"%@ left", participant.name);
+    if (!participant.uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.statuses removeObjectForKey:participant.uid];   // don't leak state
+        [self.tableView reloadData];
+    });
+}
+
+// `onParticipantListChanged` carries no flags, so every status below comes from these
+// transition events. self.statuses is an NSMutableDictionary<NSString *, ParticipantStatus *>.
+- (void)updateParticipant:(Participant *)participant change:(void (^)(ParticipantStatus *))change {
+    NSString *uid = participant.uid;
+    if (!uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ParticipantStatus *status = self.statuses[uid] ?: [ParticipantStatus new];
+        change(status);
+        self.statuses[uid] = status;
+        [self.tableView reloadData];
+    });
+}
+
+- (void)onParticipantAudioMutedWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isAudioMuted = YES; }];
+}
+- (void)onParticipantAudioUnmutedWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isAudioMuted = NO; }];
+}
+- (void)onParticipantVideoPausedWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isVideoPaused = YES; }];
+}
+- (void)onParticipantVideoResumedWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isVideoPaused = NO; }];
+}
+- (void)onParticipantHandRaisedWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isHandRaised = YES; }];
+}
+- (void)onParticipantHandLoweredWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isHandRaised = NO; }];
+}
+- (void)onParticipantStartedScreenShareWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isPresenting = YES; }];
+}
+- (void)onParticipantStoppedScreenShareWithParticipant:(Participant *)p {
+    [self updateParticipant:p change:^(ParticipantStatus *s) { s.isPresenting = NO; }];
 }
 ```
 </Tab>
@@ -506,18 +601,26 @@ extension ParticipantListViewController: UITableViewDelegate, UITableViewDataSou
         let cell = tableView.dequeueReusableCell(withIdentifier: "ParticipantCell", for: indexPath) as! ParticipantCell
         let participant = filteredParticipants[indexPath.row]
         
-        cell.configure(with: participant)
-        
-        cell.onMuteAction = { [weak self] participant in
-            CallSession.shared.muteParticipant(participant.uid)
+        let status = participant.uid.flatMap { statuses[$0] } ?? ParticipantStatus()
+        cell.configure(with: participant, status: status)
+
+        cell.onMuteAction = { participant in
+            guard let uid = participant.uid else { return }
+            CallSession.shared.muteParticipant(participantId: uid)
         }
-        
+
         cell.onPinAction = { [weak self] participant in
-            if participant.isPinned {
+            guard let self, let uid = participant.uid else { return }
+            if self.statuses[uid]?.isPinned == true {
                 CallSession.shared.unpinParticipant()
+                self.statuses[uid]?.isPinned = false
             } else {
-                CallSession.shared.pinParticipant(participantId: participant.uid, type: "pin")
+                // Only one participant can be pinned at a time — `unpinParticipant()` takes no id.
+                for key in Array(self.statuses.keys) { self.statuses[key]?.isPinned = false }
+                CallSession.shared.pinParticipant(participantId: uid, type: "pin")
+                self.statuses[uid, default: ParticipantStatus()].isPinned = true
             }
+            self.tableView.reloadData()
         }
         
         return cell
@@ -531,7 +634,7 @@ extension ParticipantListViewController: UISearchBarDelegate {
             filteredParticipants = participants
         } else {
             filteredParticipants = participants.filter {
-                $0.name.localizedCaseInsensitiveContains(searchText)
+                ($0.name ?? "").localizedCaseInsensitiveContains(searchText)
             }
         }
         tableView.reloadData()
@@ -549,19 +652,30 @@ extension ParticipantListViewController: UISearchBarDelegate {
     ParticipantCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ParticipantCell" forIndexPath:indexPath];
     Participant *participant = self.filteredParticipants[indexPath.row];
     
-    [cell configureWithParticipant:participant];
-    
+    ParticipantStatus *status = participant.uid ? self.statuses[participant.uid] : nil;
+    [cell configureWithParticipant:participant status:(status ?: [ParticipantStatus new])];
+
     __weak typeof(self) weakSelf = self;
     cell.onMuteAction = ^(Participant *p) {
-        [[CallSession shared] muteParticipant:p.uid];
+        if (!p.uid) { return; }
+        [[CallSession shared] muteParticipantWithParticipantId:p.uid];
     };
-    
+
     cell.onPinAction = ^(Participant *p) {
-        if (p.isPinned) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || !p.uid) { return; }
+        if (self.statuses[p.uid].isPinned) {
             [[CallSession shared] unpinParticipant];
+            self.statuses[p.uid].isPinned = NO;
         } else {
+            // Only one participant can be pinned at a time — unpinParticipant takes no id.
+            for (NSString *key in self.statuses) { self.statuses[key].isPinned = NO; }
             [[CallSession shared] pinParticipantWithParticipantId:p.uid type:@"pin"];
+            ParticipantStatus *s = self.statuses[p.uid] ?: [ParticipantStatus new];
+            s.isPinned = YES;
+            self.statuses[p.uid] = s;
         }
+        [self.tableView reloadData];
     };
     
     return cell;

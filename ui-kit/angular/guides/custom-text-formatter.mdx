@@ -278,6 +278,101 @@ override reset(): void {
 
 ---
 
+## Giving Users a Way to Author It
+
+A formatter has two halves. Everything above is the **rendering** half — turning a marker in the raw message text into styled output wherever the message is displayed. The other half is **authoring**: giving users a way to produce that marker in the first place.
+
+The composer's [`toolbarTrailingView`](/ui-kit/angular/components/cometchat-message-composer#toolbar-trailing-view) is where that control goes. It renders at the trailing end of the rich-text formatting toolbar, after the built-in groups and an automatically inserted separator, and its template context carries the composer itself so your button can write into the editor.
+
+### 1. The formatter
+
+Say the marker is `{color=VALUE}…{/color}`. The formatter turns it into a colored `<span>`:
+
+_File: src/app/formatters/color-formatter.ts_
+
+```typescript expandable
+import { CometChatTextFormatter } from '@cometchat/chat-uikit-angular';
+
+/** Matches {color=#e5484d}text{/color} — a CSS color, then the wrapped text. */
+const COLOR_REGEX = /\{color=(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\}([\s\S]*?)\{\/color\}/g;
+
+export class ColorFormatter extends CometChatTextFormatter {
+  readonly id = 'color-formatter';
+  override priority = 30; // after the URL (10) and mentions (20) formatters
+
+  getRegex(): RegExp {
+    return COLOR_REGEX;
+  }
+
+  format(text: string): string {
+    this.originalText = text ?? '';
+    this.formattedText = this.originalText.replace(
+      this.getRegex(),
+      (_match, color: string, inner: string) => `<span style="color: ${color}">${inner}</span>`,
+    );
+    return this.formattedText;
+  }
+}
+```
+
+<Note>
+  `format()` must store `originalText`, set `formattedText`, and return the formatted string — the pipeline reads those fields. Keep it fast: it runs on every text message render.
+</Note>
+
+### 2. The toolbar button
+
+Put the button in `toolbarTrailingView` and let it write the marker through the `composer` handle the template context provides.
+
+_File: src/app/chat/chat.component.html_
+
+```html expandable
+<cometchat-message-composer
+  [group]="group"
+  [enableRichText]="true"
+  [hideRichTextToolbar]="false"
+  [textFormatters]="formatters"
+  [toolbarTrailingView]="colorButton">
+</cometchat-message-composer>
+
+<ng-template #colorButton let-composer="composer">
+  <button
+    type="button"
+    class="my-color-button"
+    aria-label="Color selected text"
+    (mousedown)="$event.preventDefault()"
+    (click)="composer.insertTextIntoRichTextEditor('{color=#e5484d}text{/color}')">
+    🎨
+  </button>
+</ng-template>
+```
+
+<Note>
+  `(mousedown)="$event.preventDefault()"` is the detail that matters. Without it, clicking the button moves focus out of the editor and clears the selection before your handler runs.
+</Note>
+
+The toolbar — and therefore the trailing view — renders only while the rich-text editor and its toolbar are enabled, so pass `[enableRichText]="true"` with `[hideRichTextToolbar]="false"`.
+
+### 3. Register it on every surface
+
+The marker only becomes color where a surface actually runs the formatter. Register the same formatter everywhere the message can appear:
+
+```html expandable
+<cometchat-message-list [group]="group" [textFormatters]="formatters"></cometchat-message-list>
+<cometchat-conversations [textFormatters]="formatters"></cometchat-conversations>
+<cometchat-pinned-messages [group]="group" [textFormatters]="formatters"></cometchat-pinned-messages>
+<cometchat-saved-messages [textFormatters]="formatters"></cometchat-saved-messages>
+```
+
+<Warning>
+A formatter applies only where it is registered. Add `textFormatters` to the composer but not the message list and the author sees color while readers see raw `{color=…}` text. To set one list app-wide instead of per component, use `textFormatters` in [Global Configuration](/ui-kit/angular/customization/global-config) — every component falls back to it when its own input is unset.
+</Warning>
+
+### How it round-trips
+
+The marker is plain text on the message, so it survives storage and delivery untouched. Each display surface turns it into color independently, through the formatter you registered there.
+
+---
+
 ## Next Steps
 
 <CardGroup cols={2}>

@@ -95,29 +95,63 @@ class CallViewController: UIViewController, ParticipantEventListener {
 </Tab>
 </Tabs>
 
-## Check Screen Share Status
+## Track Who Is Sharing
 
-Use the `isPresenting` property on the `Participant` object to check if someone is sharing their screen:
+`Participant` carries **no** screen-share property, and the SDK exposes no getter for one. Track the
+current presenter yourself from the start/stop callbacks.
+
+<Warning>
+  These callbacks fire only when a share **starts or stops**. A client that joins mid-call cannot
+  discover a share that was already in progress before it joined.
+</Warning>
 
 <Tabs>
 <Tab title="Swift">
 ```swift
-func onParticipantListChanged(participants: [Participant]) {
-    if let presenter = participants.first(where: { $0.isPresenting }) {
-        print("\(presenter.name ?? "") is currently sharing their screen")
+// uids of participants currently sharing.
+private var presenterUIDs = Set<String>()
+
+func onParticipantStartedScreenShare(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async {
+        self.presenterUIDs.insert(uid)
+        print("\(participant.name ?? uid) started sharing their screen")
     }
+}
+
+func onParticipantStoppedScreenShare(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async {
+        self.presenterUIDs.remove(uid)
+    }
+}
+
+// A participant who leaves while sharing never sends a stop event.
+func onParticipantLeft(participant: Participant) {
+    guard let uid = participant.uid else { return }
+    DispatchQueue.main.async { self.presenterUIDs.remove(uid) }
 }
 ```
 </Tab>
 <Tab title="Objective-C">
 ```objectivec
-- (void)onParticipantListChangedWithParticipants:(NSArray<Participant *> *)participants {
-    for (Participant *p in participants) {
-        if (p.isPresenting) {
-            NSLog(@"%@ is currently sharing their screen", p.name);
-            break;
-        }
-    }
+@property (nonatomic, strong) NSMutableSet<NSString *> *presenterUIDs;
+
+- (void)onParticipantStartedScreenShareWithParticipant:(Participant *)participant {
+    NSString *uid = participant.uid;
+    if (!uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.presenterUIDs addObject:uid];
+        NSLog(@"%@ started sharing their screen", participant.name ?: uid);
+    });
+}
+
+- (void)onParticipantStoppedScreenShareWithParticipant:(Participant *)participant {
+    NSString *uid = participant.uid;
+    if (!uid) { return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.presenterUIDs removeObject:uid];
+    });
 }
 ```
 </Tab>

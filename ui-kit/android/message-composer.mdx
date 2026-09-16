@@ -107,8 +107,8 @@ Fires when the send button is tapped. Override to intercept or replace the defau
 <Tab title="Kotlin (XML Views)">
 
 ```kotlin lines
-messageComposer.setOnSendButtonClick { context, baseMessage ->
-    // Custom send logic
+messageComposer.setOnSendButtonClick { text ->
+    // Custom send logic — `text` is the composed message text
 }
 ```
 
@@ -330,30 +330,33 @@ Replace the auxiliary button area (stickers, AI).
 </Frame>
 
 <Note>
-If you override the auxiliary button with `setAuxiliaryButtonView()`, retrieve the default auxiliary buttons via `CometChatUIKit.getDataSource().getAuxiliaryOption()` and include them in your custom layout to preserve sticker/AI buttons.
+If you override the auxiliary button with `setAuxiliaryButtonViewListener()`, your view REPLACES the kit's default auxiliary buttons (stickers / AI / extensions). V6 exposes no API to retrieve and re-add those defaults — `CometChatUIKit.getDataSource()` existed in V5 and was removed — so override this slot only when you want to own it completely.
 </Note>
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
 
 ```kotlin lines
-val linearLayout = LinearLayout(this)
-linearLayout.orientation = LinearLayout.HORIZONTAL
+// The auxiliary slot takes a ViewHolder LISTENER, not a View — the kit calls
+// createView() with the current chat target so the slot can react to it.
+messageComposer.setAuxiliaryButtonViewListener(object : MessageComposerViewHolderListener {
+    override fun createView(context: Context, user: User?, group: Group?): View {
+        val linearLayout = LinearLayout(context)
+        linearLayout.orientation = LinearLayout.HORIZONTAL
 
-// Preserve default auxiliary buttons
-val defaultView = CometChatUIKit.getDataSource().getAuxiliaryOption(
-    this, user, group,
-    messageComposer.composerViewModel.getIdMap(),
-    messageComposer.additionParameter
-)
-linearLayout.addView(defaultView)
+        // NOTE: this REPLACES the auxiliary slot — the kit's default auxiliary buttons
+        // (stickers / AI / extensions) are not rendered while an override is set. There is no
+        // V6 API to fetch them (`CometChatUIKit.getDataSource()` was removed after V5), so
+        // override this slot only when you intend to own it entirely.
 
-// Add custom button
-val customButton = ImageView(this)
-customButton.setImageResource(R.drawable.save_icon)
-linearLayout.addView(customButton)
+        // Add your custom button
+        val customButton = ImageView(context)
+        customButton.setImageResource(R.drawable.save_icon)
+        linearLayout.addView(customButton)
 
-messageComposer.setAuxiliaryButtonView(linearLayout)
+        return linearLayout
+    }
+})
 ```
 
 </Tab>
@@ -375,6 +378,77 @@ CometChatMessageComposer(
 
 </Tab>
 </Tabs>
+
+### Rich-Text Toolbar Trailing Buttons
+
+Append your own buttons at the trailing end of the rich-text formatting toolbar — for snippet inserters, template pickers, AI actions, or custom styling. The UI Kit renders its own divider between the built-in formatting buttons and your content; your buttons join the toolbar's horizontal scroll and follow RTL automatically.
+
+Your button receives a **`ComposerInputController`** — a live handle to read and mutate the composer input:
+
+| Member | Description |
+| --- | --- |
+| `text: String` | Current plain text of the input. |
+| `selection: IntRange` | Current selection; `start == end` means a collapsed caret. |
+| `isCursorCollapsed: Boolean` | `true` when there is no selected range. |
+| `insertAtCursor(textToInsert)` | Insert at the caret (replacing any active selection); the caret moves to the end of the insert. |
+| `replaceSelection(replacement)` | Replace the selection; degrades to insert when the caret is collapsed. |
+| `toggleFormat(format)` | Toggle one of the built-in `RichTextFormat` values over the selection. |
+| `mentionRanges(): List<IntRange>` | Ranges occupied by mentions, so custom logic can skip them. |
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+messageComposer.setRichTextToolbarTrailingViewListener(
+    object : RichTextToolbarTrailingViewListener {
+        override fun createView(
+            context: Context,
+            user: User?,
+            group: Group?,
+            input: ComposerInputController
+        ): View {
+            return ImageButton(context).apply {
+                setImageResource(R.drawable.ic_snippet)
+                setOnClickListener {
+                    input.insertAtCursor("Thanks for reaching out! ")
+                }
+            }
+        }
+    }
+)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatMessageComposer(
+    user = user,
+    trailingToolbarContent = { input ->
+        IconButton(onClick = {
+            input.insertAtCursor("Thanks for reaching out! ")
+        }) {
+            Icon(painterResource(R.drawable.ic_snippet), contentDescription = "Snippet")
+        }
+        IconButton(onClick = {
+            input.toggleFormat(RichTextFormat.BOLD)
+        }) {
+            Icon(painterResource(R.drawable.ic_bold), contentDescription = "Bold")
+        }
+    }
+)
+```
+
+The slot is a `RowScope` lambda, so you can emit multiple buttons.
+
+</Tab>
+</Tabs>
+
+<Note>
+
+The trailing section lives **inside** the rich-text toolbar — it is not rendered when the toolbar is hidden or the rich-text editor is disabled. The `ComposerInputController` is live only while the composer is mounted; don't retain it beyond your button's lifecycle.
+
+</Note>
 
 ### Attachment Options
 

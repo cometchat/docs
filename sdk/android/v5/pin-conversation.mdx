@@ -1,0 +1,401 @@
+---
+title: "Pin A Conversation"
+sidebarTitle: "Pin A Conversation"
+description: "Pin and unpin conversations, fetch the pinned conversation list, and keep it in sync with the CometChat Android SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Pin / unpin — address the conversation by peer id + type, not by conversation id
+CometChat.pinConversation(UID, CometChatConstants.CONVERSATION_TYPE_USER, callbackListener)
+CometChat.unpinConversation(GUID, CometChatConstants.CONVERSATION_TYPE_GROUP, callbackListener)
+
+// Fetch pinned conversations only ("me", "system", or "system,me")
+val request = ConversationsRequest.ConversationsRequestBuilder()
+    .setPinnedBy("system,me")
+    .setLimit(30)
+    .build()
+request.fetchNext(callbackListener)                        // List<Conversation>
+
+// Read pin state off a conversation
+val isPinned = conversation.isPinned                       // pinnedAt > 0
+val isSystemPinned = conversation.isSystemPinned           // pinnedBy == "app_system"
+
+// Caps and availability
+val limit = CometChat.getPinConversationLimit()            // -1 when unspecified
+val systemLimit = CometChat.getSystemPinConversationLimit()
+val enabled = CometChat.isPinConversationEnabled()         // Boolean
+```
+
+</Accordion>
+
+Let users keep their most important chats at the top of the list. Pinning a conversation is **per-user** — it changes the order of the acting user's own conversation list and is synced across their devices. A conversation can also be pinned globally for everyone by the app itself (a system pin). Let's see how to work with pinned conversations in CometChat's Android SDK.
+
+<Note>
+
+Pinning a conversation with the SDK requires the Pin Conversation feature to be enabled for your app. You can check its availability at runtime using the [feature flag](#feature-availability).
+
+</Note>
+
+## Pin a Conversation
+
+To pin a conversation, use the `pinConversation` method. Pass the `UID` of the other user (for a one-on-one conversation) or the `GUID` of the group, along with the matching conversation type. On success, the callback returns the updated `Conversation` with its pin attributes set.
+
+<Tabs>
+<Tab title="Java (User)">
+```java
+String UID = "cometchat-uid-1";
+
+CometChat.pinConversation(UID, CometChatConstants.CONVERSATION_TYPE_USER,
+    new CometChat.CallbackListener<Conversation>() {
+      @Override
+      public void onSuccess(Conversation conversation) {
+          Log.d(TAG, "Conversation pinned at: " + conversation.getPinnedAt());
+      }
+
+      @Override
+      public void onError(CometChatException e) {
+          Log.e(TAG, "Failed to pin conversation: " + e.getMessage());
+      }
+});
+```
+
+</Tab>
+
+<Tab title="Java (Group)">
+```java
+String GUID = "cometchat-guid-1";
+
+CometChat.pinConversation(GUID, CometChatConstants.CONVERSATION_TYPE_GROUP,
+    new CometChat.CallbackListener<Conversation>() {
+      @Override
+      public void onSuccess(Conversation conversation) {
+          Log.d(TAG, "Conversation pinned at: " + conversation.getPinnedAt());
+      }
+
+      @Override
+      public void onError(CometChatException e) {
+          Log.e(TAG, "Failed to pin conversation: " + e.getMessage());
+      }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin (User)">
+```kotlin
+val UID = "cometchat-uid-1"
+
+CometChat.pinConversation(UID, CometChatConstants.CONVERSATION_TYPE_USER,
+    object : CometChat.CallbackListener<Conversation>() {
+      override fun onSuccess(conversation: Conversation?) {
+          Log.d(TAG, "Conversation pinned at: ${conversation?.pinnedAt}")
+      }
+
+      override fun onError(e: CometChatException?) {
+          Log.e(TAG, "Failed to pin conversation: ${e?.message}")
+      }
+})
+```
+
+</Tab>
+
+<Tab title="Kotlin (Group)">
+```kotlin
+val GUID = "cometchat-guid-1"
+
+CometChat.pinConversation(GUID, CometChatConstants.CONVERSATION_TYPE_GROUP,
+    object : CometChat.CallbackListener<Conversation>() {
+      override fun onSuccess(conversation: Conversation?) {
+          Log.d(TAG, "Conversation pinned at: ${conversation?.pinnedAt}")
+      }
+
+      override fun onError(e: CometChatException?) {
+          Log.e(TAG, "Failed to pin conversation: ${e?.message}")
+      }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Unpin a Conversation
+
+To unpin a conversation, use the `unpinConversation` method with the same parameters. On success, the callback returns the updated `Conversation` with its pin attributes cleared.
+
+<Tabs>
+<Tab title="Java">
+```java
+String UID = "cometchat-uid-1";
+
+CometChat.unpinConversation(UID, CometChatConstants.CONVERSATION_TYPE_USER,
+    new CometChat.CallbackListener<Conversation>() {
+      @Override
+      public void onSuccess(Conversation conversation) {
+          Log.d(TAG, "Conversation unpinned. isPinned: " + conversation.isPinned());
+      }
+
+      @Override
+      public void onError(CometChatException e) {
+          Log.e(TAG, "Failed to unpin conversation: " + e.getMessage());
+      }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val UID = "cometchat-uid-1"
+
+CometChat.unpinConversation(UID, CometChatConstants.CONVERSATION_TYPE_USER,
+    object : CometChat.CallbackListener<Conversation>() {
+      override fun onSuccess(conversation: Conversation?) {
+          Log.d(TAG, "Conversation unpinned. isPinned: ${conversation?.isPinned}")
+      }
+
+      override fun onError(e: CometChatException?) {
+          Log.e(TAG, "Failed to unpin conversation: ${e?.message}")
+      }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+<Info>
+
+A user cannot unpin a **system pin** (a conversation pinned globally by the app). Use `isSystemPinned()` to detect this case and hide the unpin action.
+
+</Info>
+
+## Fetch Pinned Conversations
+
+The default conversations list already orders pinned conversations at the top. To fetch **only** pinned conversations, use the `setPinnedBy()` filter of the `ConversationsRequestBuilder`.
+
+| Value           | Description                                             |
+| --------------- | -------------------------------------------------------- |
+| `"me"`          | Conversations pinned by the logged-in user.              |
+| `"system"`      | Conversations pinned globally by the app (system pins).  |
+| `"system,me"`   | Both.                                                    |
+
+<Tabs>
+<Tab title="Java">
+```java
+ConversationsRequest conversationsRequest = new ConversationsRequest.ConversationsRequestBuilder()
+  .setPinnedBy("system,me")
+  .setLimit(30)
+  .build();
+
+conversationsRequest.fetchNext(new CometChat.CallbackListener<List<Conversation>>() {
+  @Override
+  public void onSuccess(List<Conversation> conversations) {
+      Log.d(TAG, "Pinned conversations: " + conversations.size());
+  }
+
+  @Override
+  public void onError(CometChatException e) {
+      Log.e(TAG, "Fetch failed: " + e.getMessage());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val conversationsRequest = ConversationsRequest.ConversationsRequestBuilder()
+  .setPinnedBy("system,me")
+  .setLimit(30)
+  .build()
+
+conversationsRequest.fetchNext(object : CometChat.CallbackListener<List<Conversation>>() {
+  override fun onSuccess(conversations: List<Conversation>?) {
+      Log.d(TAG, "Pinned conversations: ${conversations?.size}")
+  }
+
+  override fun onError(e: CometChatException?) {
+      Log.e(TAG, "Fetch failed: ${e?.message}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Check if a Conversation is Pinned
+
+Every fetched `Conversation` carries its pin state.
+
+| Method             | Description                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------ |
+| `isPinned()`       | Returns `true` if the conversation is pinned for the logged-in user (or globally).               |
+| `isSystemPinned()` | Returns `true` if the conversation was pinned globally by the app (`pinnedBy` is `app_system`).  |
+| `getPinnedAt()`    | The timestamp at which the conversation was pinned. `0` when it is not pinned.                   |
+| `getPinnedBy()`    | The `UID` of the pinner, or `app_system` for a system pin.                                       |
+
+## Real-time Conversation Pin Events
+
+Register a `ConversationListener` to be notified when a conversation is pinned or unpinned, so your list can reorder without a refetch.
+
+Today these callbacks fire on the **acting user's device** when a pin or unpin succeeds. Delivery to the user's other devices activates once server-side real-time delivery for conversation-pin events is rolled out — until then, other sessions pick up the change on their next conversations fetch.
+
+<Tabs>
+<Tab title="Java">
+```java
+private String listenerID = "UNIQUE_LISTENER_ID";
+
+CometChat.addConversationListener(listenerID, new CometChat.ConversationListener() {
+  @Override
+  public void onConversationPinned(Conversation conversation) {
+      Log.d(TAG, "Conversation pinned: " + conversation.getConversationId());
+  }
+
+  @Override
+  public void onConversationUnpinned(Conversation conversation) {
+      Log.d(TAG, "Conversation unpinned: " + conversation.getConversationId());
+  }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val listenerID = "UNIQUE_LISTENER_ID"
+
+CometChat.addConversationListener(listenerID, object : CometChat.ConversationListener() {
+  override fun onConversationPinned(conversation: Conversation) {
+      Log.d(TAG, "Conversation pinned: ${conversation.conversationId}")
+  }
+
+  override fun onConversationUnpinned(conversation: Conversation) {
+      Log.d(TAG, "Conversation unpinned: ${conversation.conversationId}")
+  }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+To stop listening, remove the listener with `CometChat.removeConversationListener(listenerID)`.
+
+## Pin Limit
+
+A user can pin a capped number of conversations, configurable per app. Read the cap rather than hard-coding it — it is tenant-overridable and will drift.
+
+<Tabs>
+<Tab title="Java">
+```java
+int limit = CometChat.getPinConversationLimit();
+int systemLimit = CometChat.getSystemPinConversationLimit();
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val limit = CometChat.getPinConversationLimit()
+val systemLimit = CometChat.getSystemPinConversationLimit()
+
+if (limit != Settings.LIMIT_UNSPECIFIED && pinnedCount >= limit) {
+    // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+
+</Tabs>
+
+Both are synchronous and never throw. They return `Settings.LIMIT_UNSPECIFIED` (`-1`) when the app settings carry no value or when they are called before `init()` completes — show generic copy in that case rather than guessing a number. `getSystemPinConversationLimit()` is the separate cap for admin/global pins: system pins do **not** consume a user's allowance, so the two budgets are enforced independently.
+
+When the limit is breached, the SDK surfaces the server error through `onError`, and the applicable limit is carried in the exception's `errorParams`:
+
+<Tabs>
+<Tab title="Java">
+```java
+@Override
+public void onError(CometChatException e) {
+    Object limit = e.getErrorParams() != null ? e.getErrorParams().get("limit") : null;
+    if (limit != null) {
+        Log.e(TAG, "You can pin up to " + limit + " conversations.");
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+override fun onError(e: CometChatException?) {
+    val limit = e?.errorParams?.get("limit")
+    if (limit != null) {
+        Log.e(TAG, "You can pin up to $limit conversations.")
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## Error Handling
+
+| Error                             | Meaning                                                                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ERROR_INVALID_CONVERSATION_WITH` | The `conversationWith` argument was null or empty. The SDK rejects this locally, before any network call.                      |
+| `ERROR_INVALID_CONVERSATION_TYPE` | The conversation type was neither `CONVERSATION_TYPE_USER` nor `CONVERSATION_TYPE_GROUP`. Also rejected locally.               |
+
+## Feature Availability
+
+Check whether the Pin Conversation feature is enabled for your app before showing pin actions in your UI. The method is synchronous and safe to call from the UI layer.
+
+<Tabs>
+<Tab title="Java">
+```java
+if (CometChat.isPinConversationEnabled()) {
+    // show the Pin conversation option
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+if (CometChat.isPinConversationEnabled()) {
+    // show the Pin conversation option
+}
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Pin A Message" icon="thumbtack" href="/sdk/android/v5/pin-message">
+    Highlight a message for everyone in the conversation
+  </Card>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/android/v5/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+  <Card title="Retrieve Conversations" icon="comments" href="/sdk/android/v5/retrieve-conversations">
+    Every filter the conversations list supports
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/android/v5/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+</CardGroup>

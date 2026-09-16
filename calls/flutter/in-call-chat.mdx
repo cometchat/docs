@@ -61,8 +61,9 @@ dependencies:
 Configure session settings to show the chat button:
 
 ```dart
-final sessionSettings = CometChatCalls.SessionSettingsBuilder()
-    ..hideChatButton(false);  // Show the chat button
+final sessionSettings = (SessionSettingsBuilder()
+    ..hideChatButton(false))
+    .build();  // Show the chat button
 ```
 
 ---
@@ -73,22 +74,38 @@ Create or join a CometChat group using the session ID as the group GUID. This li
 
 ```dart
 Future<void> setupChatGroup(String sessionId, String meetingName) async {
-  try {
-    // Try to get existing group first
-    final group = await CometChat.getGroup(sessionId);
+  // getGroup reports through onError rather than throwing, so a missing group is a
+  // callback — not something a try/catch around the await would ever see.
+  CometChatException? failure;
+  final group = await CometChat.getGroup(
+    sessionId,
+    onSuccess: (Group group) {},
+    onError: (CometChatException e) => failure = e,
+  );
+
+  if (group != null) {
     if (!group.hasJoined) {
-      await CometChat.joinGroup(sessionId, group.groupType);
+      await CometChat.joinGroup(
+        sessionId,
+        group.type,
+        onSuccess: (Group joined) {},
+        onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+      );
     }
-  } catch (e) {
-    if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-      // Group doesn't exist, create it
-      final group = Group(
+    return;
+  }
+
+  if (failure?.code == "ERR_GUID_NOT_FOUND") {
+    // Group does not exist yet — create it.
+    await CometChat.createGroup(
+      group: Group(
         guid: sessionId,
         name: meetingName,
         type: CometChatGroupType.public,
-      );
-      await CometChat.createGroup(group);
-    }
+      ),
+      onSuccess: (Group created) {},
+      onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+    );
   }
 }
 ```
@@ -100,12 +117,9 @@ Future<void> setupChatGroup(String sessionId, String meetingName) async {
 Listen for the chat button click and navigate to your chat screen:
 
 ```dart
-int unreadMessageCount = 0;
-
-void _setupChatButtonListener() {
-  CallSession.getInstance()?.addButtonClickListener(
-    ButtonClickListener(
-      onChatButtonClicked: () {
+class _ButtonClickListener extends ButtonClickListeners {
+  @override
+  void onChatButtonClicked() {
         // Reset unread count when opening chat
         unreadMessageCount = 0;
         CallSession.getInstance()?.setChatButtonUnreadCount(0);
@@ -119,9 +133,14 @@ void _setupChatButtonListener() {
             ),
           ),
         );
-      },
-    ),
-  );
+      }
+}
+
+int unreadMessageCount = 0;
+
+void _setupChatButtonListener() {
+  _buttonListener = _ButtonClickListener();
+  CallSession.getInstance()?.addButtonClickListener(_buttonListener);
 }
 ```
 
@@ -191,6 +210,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Group? group;
   bool isLoading = true;
 
+  late final ButtonClickListeners _buttonListener;
+
   @override
   void initState() {
     super.initState();
@@ -198,30 +219,45 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadGroup() async {
-    try {
-      final fetchedGroup = await CometChat.getGroup(widget.sessionId);
+    CometChatException? failure;
+    final fetchedGroup = await CometChat.getGroup(
+      widget.sessionId,
+      onSuccess: (Group group) {},
+      onError: (CometChatException e) => failure = e,
+    );
+
+    if (fetchedGroup != null) {
       if (!fetchedGroup.hasJoined) {
-        await CometChat.joinGroup(widget.sessionId, fetchedGroup.groupType);
+        await CometChat.joinGroup(
+          widget.sessionId,
+          fetchedGroup.type,
+          onSuccess: (Group joined) {},
+          onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+        );
       }
       setState(() {
         group = fetchedGroup;
         isLoading = false;
       });
-    } catch (e) {
-      if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-        final newGroup = Group(
+      return;
+    }
+
+    if (failure?.code == "ERR_GUID_NOT_FOUND") {
+      final createdGroup = await CometChat.createGroup(
+        group: Group(
           guid: widget.sessionId,
           name: widget.meetingName,
           type: CometChatGroupType.public,
-        );
-        final createdGroup = await CometChat.createGroup(newGroup);
-        setState(() {
-          group = createdGroup;
-          isLoading = false;
-        });
-      } else {
-        setState(() => isLoading = false);
-      }
+        ),
+        onSuccess: (Group created) {},
+        onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+      );
+      setState(() {
+        group = createdGroup;
+        isLoading = false;
+      });
+    } else {
+      setState(() => isLoading = false);
     }
   }
 
@@ -240,7 +276,20 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
-    return CometChatMessages(group: group!);
+    final chatGroup = group!;
+    // Flutter has no single composed "messages" widget — the screen is these three parts.
+    // CometChatMessageList MUST sit in a bounded parent (Expanded here) or it collapses.
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            CometChatMessageHeader(group: chatGroup),
+            Expanded(child: CometChatMessageList(group: chatGroup)),
+            CometChatMessageComposer(group: chatGroup),
+          ],
+        ),
+      ),
+    );
   }
 }
 ```
@@ -252,6 +301,23 @@ class _ChatScreenState extends State<ChatScreen> {
 Here's the complete call screen with in-call chat integration:
 
 ```dart
+class _ButtonClickListener2 extends ButtonClickListeners {
+  @override
+  void onChatButtonClicked() {
+          unreadMessageCount = 0;
+          CallSession.getInstance()?.setChatButtonUnreadCount(0);
+
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ChatScreen(
+                sessionId: widget.sessionId,
+                meetingName: widget.meetingName,
+              ),
+            ),
+          );
+        }
+}
+
 import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
 import 'package:flutter/material.dart';
 
@@ -283,41 +349,41 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _setupChatGroup() async {
-    try {
-      final group = await CometChat.getGroup(widget.sessionId);
+    CometChatException? failure;
+    final group = await CometChat.getGroup(
+      widget.sessionId,
+      onSuccess: (Group group) {},
+      onError: (CometChatException e) => failure = e,
+    );
+
+    if (group != null) {
       if (!group.hasJoined) {
-        await CometChat.joinGroup(widget.sessionId, group.groupType);
+        await CometChat.joinGroup(
+          widget.sessionId,
+          group.type,
+          onSuccess: (Group joined) {},
+          onError: (CometChatException e) => debugPrint("Join failed: ${e.message}"),
+        );
       }
-    } catch (e) {
-      if (e is CometChatException && e.code == "ERR_GUID_NOT_FOUND") {
-        final group = Group(
+      return;
+    }
+
+    if (failure?.code == "ERR_GUID_NOT_FOUND") {
+      await CometChat.createGroup(
+        group: Group(
           guid: widget.sessionId,
           name: widget.meetingName,
           type: CometChatGroupType.public,
-        );
-        await CometChat.createGroup(group);
-      }
+        ),
+        onSuccess: (Group created) {},
+        onError: (CometChatException e) => debugPrint("Create failed: ${e.message}"),
+      );
     }
   }
 
   void _setupChatButtonListener() {
-    CallSession.getInstance()?.addButtonClickListener(
-      ButtonClickListener(
-        onChatButtonClicked: () {
-          unreadMessageCount = 0;
-          CallSession.getInstance()?.setChatButtonUnreadCount(0);
-
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => ChatScreen(
-                sessionId: widget.sessionId,
-                meetingName: widget.meetingName,
-              ),
-            ),
-          );
-        },
-      ),
-    );
+    _buttonListener = _ButtonClickListener2();
+    CallSession.getInstance()?.addButtonClickListener(_buttonListener);
   }
 
   void _setupMessageListener() {
@@ -337,13 +403,14 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   void _joinCall() {
-    final sessionSettings = CometChatCalls.SessionSettingsBuilder()
+    final sessionSettings = (SessionSettingsBuilder()
         ..setTitle(widget.meetingName)
-        ..hideChatButton(false);
+        ..hideChatButton(false))
+        .build();
 
     CometChatCalls.joinSession(
       sessionId: widget.sessionId,
-      sessionSettings: sessionSettings.build(),
+      sessionSettings: sessionSettings,
       onSuccess: (Widget? widget) {
         setState(() => callWidget = widget);
       },
@@ -356,7 +423,7 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void dispose() {
     CometChat.removeMessageListener("call_chat_listener");
-    CallSession.getInstance()?.removeButtonClickListener();
+    CallSession.getInstance()?.removeButtonClickListener(_buttonListener);
     super.dispose();
   }
 

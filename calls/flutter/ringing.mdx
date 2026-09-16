@@ -33,16 +33,34 @@ sequenceDiagram
     Receiver->>CallsSDK: joinSession()
 ```
 
+<Warning>
+**Ringing imports BOTH SDKs, and both declare `User`.** `cometchat_calls_sdk` and `cometchat_sdk`
+each export a `User` class, so importing both barrels makes the name ambiguous and the file will
+not compile. Hide it from one import:
+
+```dart
+import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart' hide User;
+import 'package:cometchat_sdk/cometchat_sdk.dart';
+```
+
+Pick whichever side your code actually uses; the Chat SDK's `User` is the one the signalling
+callbacks hand you.
+</Warning>
+
 ## Initiate a Call
 
 Use the Chat SDK to initiate a call to a user or group:
 
 ```dart
 String receiverID = "USER_ID";
-String receiverType = CometChatConstants.receiverTypeUser;
-String callType = CometChatConstants.callTypeVideo;
+String receiverType = CometChatReceiverType.user;
+String callType = CometChatCallType.video;
 
-Call call = Call(receiverID, receiverType, callType);
+Call call = Call(
+  receiverUid: receiverID,
+  receiverType: receiverType,
+  type: callType,
+);
 
 CometChat.initiateCall(call,
   onSuccess: (Call call) {
@@ -58,46 +76,20 @@ CometChat.initiateCall(call,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `receiverID` | String | UID of the user or GUID of the group to call |
-| `receiverType` | String | `CometChatConstants.receiverTypeUser` or `receiverTypeGroup` |
-| `callType` | String | `CometChatConstants.callTypeVideo` or `callTypeAudio` |
-| `timeout` | int | Optional. The timeout duration in seconds for the call to be answered before it's automatically cancelled. Defaults to 45 seconds. |
+| `receiverType` | String | `CometChatReceiverType.user` or `CometChatReceiverType.group` |
+| `callType` | String | `CometChatCallType.video` or `CometChatCallType.audio` |
 
 ## Call Timeout
 
-By default, if the receiver does not answer within **45 seconds**, the call is automatically marked as `unanswered` and the caller receives the `onOutgoingCallRejected` callback. You can customize this duration by passing a `timeout` parameter (in seconds) when initiating the call.
+If the receiver does not answer, the call is eventually marked `unanswered` and the caller
+receives the `onOutgoingCallRejected` callback.
 
-```dart
-String receiverID = "USER_ID";
-String receiverType = CometChatConstants.receiverTypeUser;
-String callType = CometChatConstants.callTypeVideo;
-
-Call call = Call(receiverID, receiverType, callType);
-
-// Set a custom timeout of 30 seconds
-CometChat.initiateCall(call,
-  timeout: 30,
-  onSuccess: (Call call) {
-    debugPrint("Call initiated: ${call.sessionId}");
-  },
-  onError: (CometChatException e) {
-    debugPrint("Call initiation failed: ${e.message}");
-  },
-);
-```
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `call` | Call | The call object with receiver and call type details |
-| `timeout` | int | Time in seconds to wait before marking the call as unanswered. Defaults to `45`. Values ≤ 0 fall back to the default `45` seconds. |
-
-When the timeout expires without the call being accepted, the SDK automatically:
-1. Sends an `unanswered` call status to the server.
-2. Triggers the `onOutgoingCallRejected` callback on the caller's side with the call status set to `unanswered`.
-3. Cleans up the call session.
-
-<Note>
-If the call is accepted, rejected, or cancelled before the timeout expires, the timer is automatically stopped and the timeout has no effect.
-</Note>
+<Warning>
+**The timeout is server-side and cannot be set from the client.** `CometChat.initiateCall` takes
+only the `Call` object plus `onSuccess` / `onError` — there is no `timeout` parameter in the
+Flutter SDK. To end an unanswered call earlier than the server does, cancel it yourself with
+`CometChat.rejectCall(sessionId, CometChatCallStatus.cancelled)` on a timer you own.
+</Warning>
 
 ## Listen for Incoming Calls
 
@@ -106,27 +98,39 @@ Register a call listener to receive incoming call notifications:
 ```dart
 String listenerID = "UNIQUE_LISTENER_ID";
 
-CometChat.addCallListener(listenerID, CallListener(
-  onIncomingCallReceived: (Call call) {
-    debugPrint("Incoming call from: ${call.callInitiator?.name}");
+class _AppCallListener with CallListener {
+  @override
+  void onIncomingCallReceived(Call call) {
+    debugPrint("Incoming call from: ${(call.callInitiator as User?)?.name}");
     // Show incoming call UI with accept/reject options
-  },
-  onOutgoingCallAccepted: (Call call) {
+  }
+
+  @override
+  void onOutgoingCallAccepted(Call call) {
     debugPrint("Call accepted, joining session...");
-    joinCallSession(call.sessionId!);
-  },
-  onOutgoingCallRejected: (Call call) {
+    final sessionId = call.sessionId;
+    if (sessionId != null) joinCallSession(sessionId);
+  }
+
+  @override
+  void onOutgoingCallRejected(Call call) {
     debugPrint("Call rejected");
     // Dismiss outgoing call UI
-  },
-  onIncomingCallCancelled: (Call call) {
+  }
+
+  @override
+  void onIncomingCallCancelled(Call call) {
     debugPrint("Incoming call cancelled");
     // Dismiss incoming call UI
-  },
-  onCallEndedMessageReceived: (Call call) {
+  }
+
+  @override
+  void onCallEndedMessageReceived(Call call) {
     debugPrint("Call ended");
-  },
-));
+  }
+}
+
+CometChat.addCallListener(listenerID, _AppCallListener());
 ```
 
 | Callback | Description |
@@ -153,7 +157,8 @@ void acceptIncomingCall(String sessionId) {
   CometChat.acceptCall(sessionId,
     onSuccess: (Call call) {
       debugPrint("Call accepted");
-      joinCallSession(call.sessionId!);
+      final sessionId = call.sessionId;
+      if (sessionId != null) joinCallSession(sessionId);
     },
     onError: (CometChatException e) {
       debugPrint("Accept call failed: ${e.message}");
@@ -168,7 +173,7 @@ Reject an incoming call:
 
 ```dart
 void rejectIncomingCall(String sessionId) {
-  String status = CometChatConstants.callStatusRejected;
+  String status = CometChatCallStatus.rejected;
 
   CometChat.rejectCall(sessionId, status,
     onSuccess: (Call call) {
@@ -188,7 +193,7 @@ Cancel an outgoing call before it's answered:
 
 ```dart
 void cancelOutgoingCall(String sessionId) {
-  String status = CometChatConstants.callStatusCancelled;
+  String status = CometChatCallStatus.cancelled;
 
   CometChat.rejectCall(sessionId, status,
     onSuccess: (Call call) {
@@ -208,7 +213,7 @@ After accepting a call (or when your outgoing call is accepted), join the call s
 
 ```dart
 void joinCallSession(String sessionId) {
-  SessionSettings sessionSettings = CometChatCalls.SessionSettingsBuilder()
+  SessionSettings sessionSettings = SessionSettingsBuilder()
       .setType(SessionType.video)
       .build();
 
@@ -251,18 +256,20 @@ sequenceDiagram
     OtherParticipant->>CallsSDK: leaveSession()
 ```
 
-When using the default call UI, listen for the end call button click using `ButtonClickListener` and call `endCall()`:
+When using the default call UI, listen for the end call button click using `ButtonClickListeners` and call `endCall()`:
 
 ```dart
+class _ButtonClickListener extends ButtonClickListeners {
+  @override
+  void onLeaveSessionButtonClicked() {
+    endCall(currentSessionId);
+  }
+}
+
 CallSession? callSession = CallSession.getInstance();
 
 // Listen for end call button click
-callSession?.addButtonClickListener(ButtonClickListener(
-  onLeaveSessionButtonClicked: () {
-    endCall(currentSessionId);
-  },
-  // Other callbacks...
-));
+callSession?.addButtonClickListener(_ButtonClickListener());
 
 void endCall(String sessionId) {
   // 1. Leave the call session (Calls SDK)

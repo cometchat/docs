@@ -1,0 +1,159 @@
+---
+title: "Custom Text Formatter"
+sidebarTitle: "Custom Text Formatter"
+description: "Build a minimal color formatter, bind it to a toolbar button in the composer, and render the result in read-only message bubbles."
+---
+
+## Goal
+
+By the end of this guide you will have a **color formatter**: a toolbar button in the composer that wraps the selected text in a color marker, and a formatter that renders that marker as colored text everywhere the message appears — in the composer, in the message list, conversation subtitle, pinned and saved messages.
+
+A text formatter has two jobs, and this guide covers both:
+
+1. **Rendering** — turn a marker in the raw message text into styled HTML wherever the message is displayed (`format()`).
+2. **Authoring** — give users a way to produce that marker. Here, a button in the composer's `toolbarTrailingView` wraps the current selection.
+
+<Note>
+For the full formatter reference — the built-in Markdown, Mentions, and URL formatters and the complete `CometChatTextFormatter` API — see [Text Formatters](/ui-kit/react/plugins/text-formatters). This guide is the minimal, task-focused version.
+</Note>
+
+## Prerequisites
+
+- Completed the [Integration Guide](/ui-kit/react/integration-react)
+- A chat screen using `CometChatMessageList` and `CometChatMessageComposer`
+
+## Step 1: The Formatter
+
+Extend `CometChatTextFormatter`. The one method that matters for rendering is `format()`: it receives the raw message text and returns HTML. Our marker is `{color=VALUE}...{/color}`, and we turn it into a colored `<span>`.
+
+_File: src/formatters/ColorFormatter.ts_
+
+```typescript
+import { CometChatTextFormatter } from "@cometchat/chat-uikit-react";
+
+/** Matches {color=#e5484d}text{/color} — a CSS color, then the wrapped text. */
+const COLOR_REGEX = /\{color=(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\}([\s\S]*?)\{\/color\}/g;
+
+export class ColorFormatter extends CometChatTextFormatter {
+  readonly id = "color-formatter";
+  override priority = 20; // after markdown (10), before mentions/URLs
+
+  getRegex(): RegExp {
+    return COLOR_REGEX;
+  }
+
+  format(text: string): string {
+    this.originalText = text ?? "";
+    this.formattedText = this.originalText.replace(
+      this.getRegex(),
+      (_match, color: string, inner: string) =>
+        `<span style="color: ${color}">${inner}</span>`,
+    );
+    return this.formattedText;
+  }
+}
+```
+
+<Note>
+`format()` must store `originalText`, set `formattedText`, and return the formatted string — the pipeline relies on those fields. Keep it fast: it runs on every text message render.
+</Note>
+
+## Step 2: The Toolbar Button
+
+The composer's `toolbarTrailingView` renders a node at the end of the rich-text toolbar. Put a button there that wraps the user's current selection in the color marker.
+
+_File: src/components/ColorButton.tsx_
+
+```tsx
+export function ColorButton({ color = "#e5484d" }: { color?: string }) {
+  function wrapSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+
+    const range = selection.getRangeAt(0);
+    const selected = range.toString();
+    range.deleteContents();
+    range.insertNode(
+      document.createTextNode(`{color=${color}}${selected}{/color}`),
+    );
+    selection.removeAllRanges();
+  }
+
+  return (
+    <button
+      type="button"
+      // Keep the caret/selection in the editor when the button is clicked.
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={wrapSelection}
+      aria-label="Color selected text"
+    >
+      🎨
+    </button>
+  );
+}
+```
+
+<Note>
+`onMouseDown={(e) => e.preventDefault()}` is the key detail — without it, clicking the button moves focus out of the editor and clears the selection before your handler runs.
+</Note>
+
+## Step 3: Wire It Into the Composer
+
+Register the formatter with `textFormatters` and mount the button with `toolbarTrailingView`. The toolbar (and therefore the trailing view) only renders when the rich-text editor is enabled, so pass `enableRichTextEditor`.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import { CometChatMessageComposer } from "@cometchat/chat-uikit-react";
+import { ColorFormatter } from "./formatters/ColorFormatter";
+import { ColorButton } from "./components/ColorButton";
+
+<CometChatMessageComposer
+  group={group}
+  enableRichTextEditor
+  textFormatters={[new ColorFormatter()]}
+  toolbarTrailingView={<ColorButton />}
+/>
+```
+
+Now: the user selects text, clicks 🎨, and the input becomes `Hello {color=#e5484d}world{/color}`. On send, that raw text is stored on the message.
+
+## Step 4: Render It Everywhere the Message Appears
+
+The marker only becomes color when a surface runs the formatter. Read-only surfaces — like the message list, conversations, pinned/saved panels — call `format()` to produce the bubble HTML. Register the same formatter on each surface where the message can show up.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import {
+  CometChatMessageList,
+  CometChatPinnedMessages,
+} from "@cometchat/chat-uikit-react";
+import { ColorFormatter } from "./formatters/ColorFormatter";
+
+<CometChatMessageList group={group} textFormatters={[new ColorFormatter()]} />
+
+{/* The same message can appear pinned — format it there too. */}
+<CometChatPinnedMessages group={group} textFormatters={[new ColorFormatter()]} />
+```
+
+<Warning>
+A formatter is only applied where you register it. If you add `textFormatters` to the composer but not the message list, the author sees the marker but readers see raw `{color=...}` text. Register it on every surface that displays the message.
+</Warning>
+
+## How It Round-Trips
+
+```
+Composer (author)         Wire format                Bubble (reader)
+─────────────────         ───────────                ───────────────
+select "world"            Hello {color=#e5484d}      Hello world
+click 🎨            →      world{/color}        →     (in red, via format())
+```
+
+The marker is plain text on the message, so it survives storage and delivery untouched; each display surface turns it into color independently through the formatter you registered.
+
+## Next Steps
+
+- [Text Formatters](/ui-kit/react/plugins/text-formatters) — the built-in formatters and the full `CometChatTextFormatter` API
+- [Message Composer → toolbarTrailingView](/ui-kit/react/components/message-composer#toolbartrailingview) — the toolbar slot in detail
+- [Message Bubble](/ui-kit/react/components/message-bubble) — how bubbles render message content
