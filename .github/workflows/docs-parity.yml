@@ -1,0 +1,84 @@
+name: Docs Parity
+
+# ADVISORY ONLY. This workflow must never fail a PR.
+#
+# The other two workflows in this repo (branch-name-*.yml) legitimately `exit 1`.
+# This one must not: there is no "correct" state to enforce here, only cross-platform
+# divergence to surface for the author. It always posts a `success` status; the
+# observation count goes in the status description.
+#
+# Do NOT add `docs-parity` to Settings -> Branches -> Require status checks to pass.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "ui-kit/**/*.mdx"
+      - "images/**"
+
+permissions:
+  contents: read
+  pull-requests: write   # sticky comment only — no access to other PRs' contents
+  statuses: write
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needs origin/main alongside the PR head
+
+      - name: Compare against merged sibling docs
+        id: compare
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -o pipefail
+          git fetch origin main --quiet || true
+          python3 .claude/skills/docs-parity/compare.py \
+            --pr "${{ github.event.pull_request.number }}" \
+            --sha "$HEAD_SHA" \
+            --markdown > /tmp/docs-parity.md || true
+
+          if [ ! -s /tmp/docs-parity.md ]; then
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          COUNT=$(sed -n 's/.*— \([0-9]*\) observation.*/\1/p' /tmp/docs-parity.md | head -1)
+          echo "count=${COUNT:-0}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          cat /tmp/docs-parity.md
+
+      - name: Upsert the sticky comment
+        if: steps.compare.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # One comment per PR, replaced on each push, keyed by the marker.
+          ID=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                 --jq '[.[] | select(.body | contains("<!-- docs-parity:"))] | last | .id')
+          if [ -n "$ID" ] && [ "$ID" != "null" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$ID" \
+              -F body=@/tmp/docs-parity.md >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" \
+              -F body=@/tmp/docs-parity.md >/dev/null
+          fi
+
+      - name: Post an always-successful status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          COUNT: ${{ steps.compare.outputs.count }}
+        run: |
+          # `success` unconditionally — see the header comment.
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="success" \
+            -f context="docs-parity" \
+            -f description="${COUNT:-0} observation(s) — advisory" >/dev/null
