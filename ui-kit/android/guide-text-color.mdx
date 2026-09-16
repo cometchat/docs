@@ -1,0 +1,493 @@
+---
+title: "Custom Text Formatter"
+sidebarTitle: "Custom Text Formatter"
+description: "Add a color button to the composer's rich-text toolbar that colors the selected text, and render that color in the sent message."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Packages | `com.cometchat:chatuikit-kotlin` · `com.cometchat:chatuikit-jetpack` |
+| Key classes | `RichTextToolbarTrailingViewListener` · `ComposerInputController` · `CometChatTextFormatter` |
+| Required setup | `CometChatUIKit.init()` then `CometChatUIKit.login("UID")` |
+| Purpose | Wrap the composer selection in a `{color:#rrggbb}…{/color}` token and render it as colored text everywhere |
+| Related | [Message Composer](/ui-kit/android/message-composer#rich-text-toolbar-trailing-buttons) \| [Text Formatter Base Class](/ui-kit/android/custom-text-formatter-guide) \| [All Guides](/ui-kit/android/guide-overview) |
+
+</Accordion>
+
+## Goal
+
+By the end of this guide you will have a **color button** at the trailing end of the composer's rich-text toolbar. The user selects some text, taps a swatch, and the text turns that color — in the composer while typing, and in the message bubble after it is sent.
+
+Android's built-in `RichTextFormat` set covers bold, italic, underline, strikethrough, code, lists, blockquote and links — but **not color**. So the work splits into two pieces:
+
+1. **Authoring** — a button in the composer's rich-text toolbar trailing slot that wraps the current selection in a color token through the `ComposerInputController`.
+2. **Rendering** — a `CometChatTextFormatter` that turns that token into colored text on every surface, and styles it live in the composer.
+
+<Note>
+This guide builds color on top of the formatter base class. For the base class itself — tracking characters, suggestion lists, `handlePreMessageSend` — see the [Text Formatter Base Class](/ui-kit/android/custom-text-formatter-guide) guide.
+</Note>
+
+## Prerequisites
+
+- Completed the [Getting Started](/ui-kit/android/getting-started) guide
+- A chat screen using `CometChatMessageList` and `CometChatMessageComposer`
+- Rich text formatting enabled on the composer — `setEnableRichTextFormatting(true)` / `enableRichTextFormatting = true`
+
+<Warning>
+The trailing slot lives **inside** the rich-text toolbar. It is not rendered when the toolbar is hidden or the rich-text editor is disabled, so the button disappears along with Bold and Italic.
+</Warning>
+
+## The Token
+
+There is no color entry in `RichTextFormat`, so the color travels as plain text in the message body:
+
+```
+Hello {color:#e11d48}world{/color}
+```
+
+The token is ordinary characters, so it survives storage and delivery untouched — the SDK never has to know about it. Everything below is about writing that token, then hiding it behind color again on each surface.
+
+## Step 1: The Formatter
+
+Extend `CometChatTextFormatter` with the null tracking character, the same idiom the built-in `CometChatRichTextFormatter` uses for a formatter that never opens a suggestion list.
+
+The formatter does two jobs:
+
+- `prepare*Span()` — strips the markers and applies a color span on bubbles, conversation subtitles and reply/edit previews.
+- `applyComposerSpans()` (XML) / `composerVisualTransformation()` (Compose) — styles the token **in place** in the live input, so the user sees color while typing. This one applies spans only and never deletes characters, so the token stays in the field and still goes on the wire.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+_File: ColorTextFormatter.kt_
+
+```kotlin lines
+import android.content.Context
+import android.graphics.Color
+import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import com.cometchat.chat.models.BaseMessage
+import com.cometchat.uikit.kotlin.shared.formatters.CometChatTextFormatter
+
+internal val COLOR_TOKEN =
+    Regex("""\{color:(#[0-9a-fA-F]{6})\}(.+?)\{/color\}""", RegexOption.DOT_MATCHES_ALL)
+
+/** Marker classes so the composer pass can remove exactly its own spans and stay idempotent. */
+private class ColorMarkerSpan : RelativeSizeSpan(0f)
+private class ColorTextSpan(color: Int) : ForegroundColorSpan(color)
+
+class ColorTextFormatter : CometChatTextFormatter('\u0000') {
+
+    init {
+        setDisableSuggestions(true)
+    }
+
+    override fun search(context: Context, queryString: String?) { /* no suggestions */ }
+    override fun onScrollToBottom() { /* no pagination */ }
+
+    override fun prepareLeftMessageBubbleSpan(
+        context: Context, baseMessage: BaseMessage, spannable: SpannableStringBuilder
+    ): SpannableStringBuilder = render(spannable)
+
+    override fun prepareRightMessageBubbleSpan(
+        context: Context, baseMessage: BaseMessage, spannable: SpannableStringBuilder
+    ): SpannableStringBuilder = render(spannable)
+
+    override fun prepareConversationSpan(
+        context: Context, baseMessage: BaseMessage, spannable: SpannableStringBuilder
+    ): SpannableStringBuilder = render(spannable)
+
+    /** The reply/edit preview is read-only, so it strips the token like a bubble does. */
+    override fun preparePreviewSpan(
+        context: Context, baseMessage: BaseMessage, spannable: SpannableStringBuilder
+    ): SpannableStringBuilder = render(spannable)
+
+    /** The live input keeps the token — applyComposerSpans() styles it instead. */
+    override fun prepareComposerSpan(
+        context: Context, baseMessage: BaseMessage, spannable: SpannableStringBuilder
+    ): SpannableStringBuilder = spannable
+
+    override fun applyComposerSpans(editable: Editable) {
+        // Remove this formatter's previous spans first — the composer calls this on every change.
+        editable.getSpans(0, editable.length, ColorMarkerSpan::class.java)
+            .forEach { editable.removeSpan(it) }
+        editable.getSpans(0, editable.length, ColorTextSpan::class.java)
+            .forEach { editable.removeSpan(it) }
+
+        for (match in COLOR_TOKEN.findAll(editable)) {
+            val inner = match.groups[2] ?: continue
+            val color = parseColor(match.groupValues[1]) ?: continue
+            val innerStart = inner.range.first
+            val innerEnd = inner.range.last + 1
+            // Zero-size spans on the markers: they stop showing without leaving the text.
+            editable.setSpan(
+                ColorMarkerSpan(), match.range.first, innerStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            editable.setSpan(
+                ColorTextSpan(color), innerStart, innerEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            editable.setSpan(
+                ColorMarkerSpan(), innerEnd, match.range.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun render(spannable: SpannableStringBuilder): SpannableStringBuilder {
+        var from = 0
+        while (true) {
+            val match = COLOR_TOKEN.find(spannable, from) ?: break
+            val start = match.range.first
+            val color = parseColor(match.groupValues[1])
+            if (color == null) {
+                from = match.range.last + 1
+                continue
+            }
+            val inner = match.groupValues[2]
+            spannable.replace(start, match.range.last + 1, inner)
+            spannable.setSpan(
+                ForegroundColorSpan(color),
+                start,
+                start + inner.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            from = start + inner.length
+        }
+        return spannable
+    }
+
+    private fun parseColor(hex: String): Int? = runCatching { Color.parseColor(hex) }.getOrNull()
+}
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+_File: ColorTextFormatter.kt_
+
+```kotlin lines
+import android.content.Context
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.sp
+import com.cometchat.chat.models.BaseMessage
+import com.cometchat.uikit.compose.presentation.shared.formatters.CometChatTextFormatter
+
+internal val COLOR_TOKEN =
+    Regex("""\{color:(#[0-9a-fA-F]{6})\}(.+?)\{/color\}""", RegexOption.DOT_MATCHES_ALL)
+
+private val HIDDEN = SpanStyle(fontSize = 0.sp)
+
+class ColorTextFormatter : CometChatTextFormatter('\u0000') {
+
+    init {
+        setDisableSuggestions(true)
+    }
+
+    override fun search(context: Context, queryString: String?) { /* no suggestions */ }
+    override fun onScrollToBottom() { /* no pagination */ }
+
+    override fun prepareLeftMessageBubbleSpan(
+        context: Context, baseMessage: BaseMessage, text: AnnotatedString
+    ): AnnotatedString = render(text)
+
+    override fun prepareRightMessageBubbleSpan(
+        context: Context, baseMessage: BaseMessage, text: AnnotatedString
+    ): AnnotatedString = render(text)
+
+    override fun prepareConversationSpan(
+        context: Context, baseMessage: BaseMessage, text: AnnotatedString
+    ): AnnotatedString = render(text)
+
+    /** The reply/edit preview is read-only, so it strips the token like a bubble does. */
+    override fun preparePreviewSpan(
+        context: Context, baseMessage: BaseMessage, text: AnnotatedString
+    ): AnnotatedString = render(text)
+
+    /** The live input keeps the token — the visual transformation styles it instead. */
+    override fun prepareComposerSpan(
+        context: Context, baseMessage: BaseMessage, text: AnnotatedString
+    ): AnnotatedString = text
+
+    override fun composerVisualTransformation(): VisualTransformation =
+        VisualTransformation { original ->
+            val styled = AnnotatedString.Builder(original)
+            for (match in COLOR_TOKEN.findAll(original.text)) {
+                val inner = match.groups[2] ?: continue
+                val color = parseColor(match.groupValues[1]) ?: continue
+                val innerStart = inner.range.first
+                val innerEnd = inner.range.last + 1
+                // Zero font size on the markers: they stop showing without changing any offsets,
+                // so OffsetMapping stays Identity and the caret never drifts.
+                styled.addStyle(HIDDEN, match.range.first, innerStart)
+                styled.addStyle(SpanStyle(color = color), innerStart, innerEnd)
+                styled.addStyle(HIDDEN, innerEnd, match.range.last + 1)
+            }
+            TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
+        }
+
+    private fun render(text: AnnotatedString): AnnotatedString = buildAnnotatedString {
+        var cursor = 0
+        for (match in COLOR_TOKEN.findAll(text.text)) {
+            val inner = match.groups[2] ?: continue
+            append(text.subSequence(cursor, match.range.first))
+            val color = parseColor(match.groupValues[1])
+            if (color != null) {
+                withStyle(SpanStyle(color = color)) {
+                    append(text.subSequence(inner.range.first, inner.range.last + 1))
+                }
+            } else {
+                append(text.subSequence(match.range.first, match.range.last + 1))
+            }
+            cursor = match.range.last + 1
+        }
+        append(text.subSequence(cursor, text.length))
+    }
+
+    private fun parseColor(hex: String): Color? =
+        runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
+}
+```
+
+</Tab>
+</Tabs>
+
+## Step 2: The Toolbar Button
+
+The trailing slot hands your view a live [`ComposerInputController`](/ui-kit/android/message-composer#rich-text-toolbar-trailing-buttons). The button reads `selection`, takes the selected substring out of `text`, and writes the token back with `replaceSelection()`.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+_File: ColorToolbarButton.kt_
+
+```kotlin lines
+import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.view.View
+import android.widget.LinearLayout
+import com.cometchat.chat.models.Group
+import com.cometchat.chat.models.User
+import com.cometchat.uikit.core.formatter.ComposerInputController
+import com.cometchat.uikit.kotlin.presentation.messagecomposer.utils.RichTextToolbarTrailingViewListener
+
+private val SWATCHES = listOf("#E11D48", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6")
+
+class ColorToolbarButton : RichTextToolbarTrailingViewListener {
+
+    override fun createView(
+        context: Context,
+        user: User?,
+        group: Group?,
+        input: ComposerInputController
+    ): View = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        SWATCHES.forEach { hex ->
+            addView(swatch(context, hex) { applyColor(input, hex) })
+        }
+    }
+
+    private fun applyColor(input: ComposerInputController, hex: String) {
+        // Nothing selected: a color token needs text to wrap.
+        if (input.isCursorCollapsed) return
+
+        val text = input.text
+        val start = minOf(input.selection.first, input.selection.last).coerceIn(0, text.length)
+        val end = maxOf(input.selection.first, input.selection.last).coerceIn(start, text.length)
+
+        // Mentions carry their own token and styling — skip a selection that crosses one.
+        if (input.mentionRanges().any { it.first < end && it.last > start }) return
+
+        input.replaceSelection("{color:$hex}${text.substring(start, end)}{/color}")
+    }
+
+    private fun swatch(context: Context, hex: String, onClick: () -> Unit): View =
+        View(context).apply {
+            val size = (24 * context.resources.displayMetrics.density).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply { marginEnd = size / 4 }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor(hex))
+            }
+            contentDescription = "Color $hex"
+            setOnClickListener { onClick() }
+        }
+}
+```
+
+Wire it up on your composer:
+
+```kotlin lines
+messageComposer.setRichTextToolbarTrailingViewListener(ColorToolbarButton())
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+_File: ChatScreen.kt_
+
+```kotlin lines
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import com.cometchat.uikit.core.formatter.ComposerInputController
+
+private val SWATCHES = listOf(0xFFE11D48, 0xFFF59E0B, 0xFF10B981, 0xFF3B82F6, 0xFF8B5CF6)
+
+private fun applyColor(input: ComposerInputController, argb: Long) {
+    // Nothing selected: a color token needs text to wrap.
+    if (input.isCursorCollapsed) return
+
+    val text = input.text
+    val start = minOf(input.selection.first, input.selection.last).coerceIn(0, text.length)
+    val end = maxOf(input.selection.first, input.selection.last).coerceIn(start, text.length)
+
+    // Mentions carry their own token and styling — skip a selection that crosses one.
+    if (input.mentionRanges().any { it.first < end && it.last > start }) return
+
+    val hex = "#%06X".format(argb and 0xFFFFFF)
+    input.replaceSelection("{color:$hex}${text.substring(start, end)}{/color}")
+}
+
+CometChatMessageComposer(
+    user = user,
+    group = group,
+    textFormatters = textFormatters,
+    trailingToolbarContent = { input ->
+        // The slot is a RowScope lambda, so the swatches lay out along the toolbar row.
+        SWATCHES.forEach { argb ->
+            Box(
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .size(24.dp)
+                    .background(Color(argb), CircleShape)
+                    .clickable { applyColor(input, argb) }
+            )
+        }
+    }
+)
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Keep the swatches inside the toolbar — do not open a dialog or bottom sheet.** A dialog takes focus from the input, which collapses the selection before your click handler reads it, so there is nothing left to wrap. Views rendered inline in the toolbar keep the selection alive, the same way the built-in Bold and Italic buttons do.
+</Note>
+
+## Step 3: Register the Formatter Everywhere
+
+A formatter only renders on the components it is given to. Build the list once from the data source — which already holds the built-in rich-text and mentions formatters — append yours, and pass the same list to every surface that shows message text.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+import com.cometchat.uikit.core.CometChatUIKit
+
+val textFormatters = CometChatUIKit.getDataSource()
+    .getTextFormatters(this, messageComposer.additionParameter)
+textFormatters.add(ColorTextFormatter())
+
+messageComposer.setTextFormatters(textFormatters)
+messageList.setTextFormatters(textFormatters)
+conversations.setTextFormatters(textFormatters)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+import com.cometchat.uikit.core.CometChatUIKit
+
+val textFormatters = remember {
+    CometChatUIKit.getDataSource()
+        .getTextFormatters(context, additionParameter)
+        .apply { add(ColorTextFormatter()) }
+}
+
+CometChatMessageList(user = user, textFormatters = textFormatters)
+CometChatMessageComposer(user = user, textFormatters = textFormatters)
+CometChatConversations(textFormatters = textFormatters)
+```
+
+</Tab>
+</Tabs>
+
+Now: the user selects "world", taps the red swatch, and the word turns red in the composer while the `{color:…}` markers shrink out of sight. On send, the message text is `Hello {color:#e11d48}world{/color}`, and every component holding the formatter renders it red.
+
+## How It Round-Trips
+
+| Stage | What the text is | What the user sees |
+| --- | --- | --- |
+| Composer, after tapping a swatch | `Hello {color:#e11d48}world{/color}` | `Hello world`, with "world" red and the markers shrunk to zero |
+| On the wire | `Hello {color:#e11d48}world{/color}` | — |
+| Message bubble | `Hello {color:#e11d48}world{/color}` | `Hello world`, with "world" red |
+
+The markers never leave the message text — `applyComposerSpans()` only shrinks them to zero size, and the bubble's `prepare*Span()` strips them at render time. That is what lets the color survive edit and reply: the composer repopulates with the stored token and styles it again.
+
+## What to Expect
+
+| Situation | Result | Why |
+| --- | --- | --- |
+| Caret only, nothing selected | Nothing happens | A color token needs a range to wrap; `isCursorCollapsed` guards the handler |
+| Selection crosses a mention | Skipped | Mentions carry their own token and styling — `mentionRanges()` lets you detect and skip them |
+| A surface without the formatter | Raw `{color:#…}` text | Rendering is per-component; register the same list everywhere message text appears |
+| A recipient on an older build | Raw `{color:#…}` text | The token is plain text, so it arrives intact but only renders where a formatter understands it |
+| Color inside a code block | Raw token inside the code block | Code blocks render verbatim, and `RichTextFormat.CODE_BLOCK` disables the built-in inline formats too |
+
+<Warning>
+The token is your own convention, not part of the message schema, so it is only meaningful to clients running this formatter. Ship the formatter on every platform in your app before you let users author colors.
+</Warning>
+
+## The `ComposerInputController`
+
+The handle your button receives. Every member acts on the live composer input.
+
+| Member | Description |
+| --- | --- |
+| `text: String` | Current plain text of the input. |
+| `selection: IntRange` | Current selection as `start..end`; `start == end` means a collapsed caret. |
+| `isCursorCollapsed: Boolean` | `true` when there is no selected range. |
+| `insertAtCursor(textToInsert)` | Insert at the caret, replacing any active selection; the caret moves to the end of the insert. |
+| `replaceSelection(replacement)` | Replace the selection; degrades to an insert when the caret is collapsed. |
+| `toggleFormat(format)` | Toggle one of the built-in `RichTextFormat` values over the selection. |
+| `mentionRanges(): List<IntRange>` | Ranges occupied by mentions, so custom logic can skip them. |
+
+<Note>
+The controller is live only while the composer is mounted — don't retain it past your button's lifecycle.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Message Composer" icon="pen" href="/ui-kit/android/message-composer#rich-text-toolbar-trailing-buttons">
+    The trailing-toolbar slot in detail
+  </Card>
+  <Card title="Text Formatter Base Class" icon="code" href="/ui-kit/android/custom-text-formatter-guide">
+    Tracking characters, suggestion lists, and pre-send hooks
+  </Card>
+  <Card title="Mentions Formatter" icon="at" href="/ui-kit/android/mentions-formatter-guide">
+    Built-in @mention formatting with styled tokens
+  </Card>
+  <Card title="All Guides" icon="book" href="/ui-kit/android/guide-overview">
+    Browse all feature and formatter guides
+  </Card>
+</CardGroup>
