@@ -14,7 +14,7 @@ description: "Add CometChat push notifications and VoIP calls to a React Native 
 | Files you add | `src/AppCredentials.ts` (provider IDs) · `src/navigation/navigationRef.ts` (`navigationRef`, `whenNavigationReady`, `navigate`) · `src/push/pushNotifications.ts` (`setupPushOnLogin`, `usePushOnLogin`) · `src/push/logout.ts` |
 | Android setup | Apply the `com.google.gms.google-services` plugin (with `google-services.json` in `android/app/`); `minSdkVersion 24`+; add a monochrome `ic_notification` drawable. **No manifest changes** — the package declares its services, activities and permissions. Do **not** add `firebase-messaging` (the package brings it). Remove other push libraries (`@react-native-firebase/messaging`, `notifee`, `react-native-callkeep`, `react-native-voip-push-notification`). |
 | iOS setup | Keep the Podfile's `platform :ios, min_ios_version_supported` (never lower it); `pod install`. Enable **Push Notifications** + **Background Modes** (*Voice over IP*, *Remote notifications*, *Audio*). Add `NSMicrophoneUsageDescription` + `NSCameraUsageDescription`. |
-| iOS AppDelegate | Swift only. Conform to `PKPushRegistryDelegate`. In `didFinishLaunchingWithOptions`, create **one** `PKPushRegistry` on a **background** queue with `desiredPushTypes = [.voIP]` **before** starting React Native. Forward to `CometChatPushNotificationsAppDelegate`: `.didRegisterAPNsToken(_:)`, `.didReceiveRemoteNotification(_:)`, `.didUpdateVoIPToken(_:)`, `.didReceiveIncomingVoIPPush(_:)` then `completion()`. Don't set a `UNUserNotificationCenter` delegate — the package installs one. |
+| iOS AppDelegate | Swift only. In `didFinishLaunchingWithOptions`, call `CometChatPushNotificationsAppDelegate.registerForVoIPPushes()` **before** starting React Native — the package owns the PushKit registry and reports calls to CallKit. Forward the APNs token with `.didRegisterAPNsToken(_:)`, and optionally background pushes with `.didReceiveRemoteNotification(_:)`. Don't create a `PKPushRegistry` or set a `UNUserNotificationCenter` delegate — the package owns both. |
 | index.js | `registerBackgroundCallTask();` at module scope — the package rejects a call declined while the Android app is killed. Optional `registerBackgroundCallTask(handler, { rejectDeclinedCalls })`: the handler runs **after** the package's reject; `rejectDeclinedCalls: false` hands the reject to the handler. No-op on iOS. |
 | Initialize | Call `usePushOnLogin()` once in a component rendered **after** `CometChat.init` resolves. It runs `setupPushOnLogin()` after a fresh login **and** a restored session, and its cleanup on logout. `setupPushOnLogin()` subscribes the handlers **before** `init()`, requests permissions in order, then `await CometChatPushNotifications.init(config)`. |
 | Config (`PNConfiguration`) | `fcmProviderId?`, `apnsProviderId?`, `notificationSmallIcon?`, `androidChannelId?` (default `"cometchat_messages"`), `androidChannelName?` (default `"Messages"`), `voip?` (default `true`), `showInForeground?` (default `false`; chat notifications only), `ringInForeground?` (default `true`: calls ring with CallKit / the Android ringing screen even while the app is open; set `false` when the app shows its own incoming-call screen, as the UI Kit does) |
@@ -37,7 +37,7 @@ description: "Add CometChat push notifications and VoIP calls to a React Native 
 ## What this guide covers
 
 - Adding the `@cometchat/push-notifications-react-native` package and initializing it.
-- Platform wiring: Firebase/`google-services.json` on Android, capabilities + `AppDelegate` PushKit forwarding on iOS.
+- Platform wiring: Firebase/`google-services.json` on Android, capabilities and a few `AppDelegate` lines on iOS.
 - Requesting permission and registering tokens (FCM on Android, APNs + VoIP on iOS) after login.
 - Receiving pushes and letting the package render chat notifications and full-screen / CallKit calls.
 - Handling notification taps (including thread deep-links), incoming-call navigation, and Android OEM permissions.
@@ -50,7 +50,7 @@ The `@cometchat/push-notifications-react-native` package replaces the previous a
 ## How it works
 
 - **Android (FCM):** Firebase issues the registration token and delivers the CometChat payload as a data message. The package ships its **own** `FirebaseMessagingService`, so it receives the message and shows the notification or full-screen call itself — **you write no FCM handling code**.
-- **iOS (APNs + PushKit):** Apple issues the APNs device token (chat alerts) and the VoIP token (calls). APNs alerts are shown by the system; VoIP pushes are presented through CallKit by the package. Your `AppDelegate` forwards the tokens and incoming VoIP pushes to the package (step 2).
+- **iOS (APNs + PushKit):** Apple issues the APNs device token (chat alerts) and the VoIP token (calls). APNs alerts are shown by the system; VoIP pushes are presented through CallKit by the package. Your `AppDelegate` starts the package's PushKit registry and forwards the APNs token (step 2).
 - **CometChat's role:** The providers you add in the dashboard bind your registered tokens to the logged-in user so CometChat can route pushes on your behalf.
 - **The package's role:** it retrieves the tokens, registers them with CometChat, parses payloads, drives the call UI, and calls the Chat SDK to accept/reject/end. It requires [`@cometchat/chat-sdk-react-native`](https://www.npmjs.com/package/@cometchat/chat-sdk-react-native) as a peer dependency — the one Chat SDK your app already uses, so there is no second SDK to version-align.
 
@@ -148,15 +148,13 @@ cd ios && pod install && cd ..
     import React
     import React_RCTAppDelegate
     import ReactAppDependencyProvider
-    import PushKit
     import react_native_cometchat_push_notifications
 
     @main
-    class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate {
+    class AppDelegate: UIResponder, UIApplicationDelegate {
       var window: UIWindow?
       var reactNativeDelegate: ReactNativeDelegate?
       var reactNativeFactory: RCTReactNativeFactory?
-      private var pushRegistry: PKPushRegistry?
 
       func application(
         _ application: UIApplication,
@@ -168,12 +166,10 @@ cd ios && pod install && cd ..
         reactNativeDelegate = delegate
         reactNativeFactory = factory
 
-        // Create the PushKit registry BEFORE starting React Native, on a BACKGROUND queue.
-        // When a call wakes a killed app, iOS terminates it unless the call is reported within
-        // ~5 seconds — the main thread is busy starting React Native and would miss that.
-        pushRegistry = PKPushRegistry(queue: DispatchQueue(label: "com.cometchat.voip.pushkit"))
-        pushRegistry?.delegate = self
-        pushRegistry?.desiredPushTypes = [.voIP]
+        // VoIP calls: the package creates and owns the PushKit registry. Call it BEFORE
+        // starting React Native — when a call wakes a killed app, iOS terminates the app
+        // unless the call reaches CallKit within ~5 seconds.
+        CometChatPushNotificationsAppDelegate.registerForVoIPPushes()
 
         window = UIWindow(frame: UIScreen.main.bounds)
         factory.startReactNative(
@@ -192,6 +188,7 @@ cd ios && pod install && cd ..
         CometChatPushNotificationsAppDelegate.didRegisterAPNsToken(deviceToken)
       }
 
+      // Optional — background data pushes reach onMessageReceived
       func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
@@ -200,30 +197,6 @@ cd ios && pod install && cd ..
         CometChatPushNotificationsAppDelegate.didReceiveRemoteNotification(userInfo)
         completionHandler(.noData)
       }
-
-      // VoIP token — calls
-      func pushRegistry(
-        _ registry: PKPushRegistry,
-        didUpdate pushCredentials: PKPushCredentials,
-        for type: PKPushType
-      ) {
-        guard type == .voIP else { return }
-        CometChatPushNotificationsAppDelegate.didUpdateVoIPToken(pushCredentials.token)
-      }
-
-      // Incoming VoIP push — the package reports the call to CallKit before this returns
-      func pushRegistry(
-        _ registry: PKPushRegistry,
-        didReceiveIncomingPushWith payload: PKPushPayload,
-        for type: PKPushType,
-        completion: @escaping () -> Void
-      ) {
-        guard type == .voIP else { return completion() }
-        CometChatPushNotificationsAppDelegate.didReceiveIncomingVoIPPush(payload.dictionaryPayload)
-        completion()
-      }
-
-      func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {}
     }
 
     class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
@@ -244,11 +217,11 @@ cd ios && pod install && cd ..
     You don't set a `UNUserNotificationCenter` delegate — the package installs its own at launch to handle foreground notifications and taps.
 
     <Warning>
-    **Create exactly one `PKPushRegistry`.** A second one — your own or a library's — makes iOS deliver every VoIP push twice.
+    **Don't create a `PKPushRegistry` of your own.** The package owns it, and a second registry — yours or a library's — makes iOS deliver every VoIP push twice. If another library must own PushKit, skip `registerForVoIPPushes()` and forward that registry's `didUpdate` and `didReceiveIncomingPushWith` callbacks to `CometChatPushNotificationsAppDelegate.didUpdateVoIPToken(_:)` and `.didReceiveIncomingVoIPPush(_:)`, calling `completion()` after it.
     </Warning>
 
     <Note>
-    **Older Swift template** (an `RCTAppDelegate` subclass): add the same registry lines before `return super.application(...)`, which starts React Native, and the same `CometChatPushNotificationsAppDelegate` calls in your delegate methods. **Objective-C `AppDelegate.mm`:** the package's iOS entry points are Swift-only, so move the AppDelegate to Swift first — the [React Native Upgrade Helper](https://react-native-community.github.io/upgrade-helper/) shows the change.
+    **Older Swift template** (an `RCTAppDelegate` subclass): call `registerForVoIPPushes()` before `return super.application(...)`, which starts React Native, and add the same token method. **Objective-C `AppDelegate.mm`:** the package's iOS entry points are Swift-only, so move the AppDelegate to Swift first — the [React Native Upgrade Helper](https://react-native-community.github.io/upgrade-helper/) shows the change.
     </Note>
   </Tab>
 </Tabs>
@@ -604,7 +577,7 @@ When logout completes, `usePushOnLogin()` removes the push handlers for you.
 | **Launched by a tap or an answered call** | Delivered as soon as `init()` runs — before the navigator mounts — which is why the handlers are subscribed before `init()` and every navigation waits for `whenNavigationReady()`. |
 
 <Warning>
-**Killed-app VoIP (iOS):** when a VoIP push wakes a killed app, the package reports the call to CallKit immediately, before React Native is ready. When the user answers, the app starts, `init()` delivers the answered call, and `onCallAccepted` opens your call screen — the call is already accepted. This is why the `PKPushRegistry` is created on a background queue, before React Native starts (step 2).
+**Killed-app VoIP (iOS):** when a VoIP push wakes a killed app, the package reports the call to CallKit immediately, before React Native is ready. When the user answers, the app starts, `init()` delivers the answered call, and `onCallAccepted` opens your call screen — the call is already accepted. This is why `registerForVoIPPushes()` runs before React Native starts (step 2).
 </Warning>
 
 ## 7. Android: OEM permissions for lock-screen calls
@@ -676,7 +649,7 @@ Use physical devices. The iOS Simulator can't receive APNs or VoIP pushes, and e
 | Two notifications for one message | Android | Another push library is still installed — usually `@react-native-firebase/messaging`, whose receiver handles every push too. Remove the other push libraries (step 2). |
 | Incoming call is a plain notification, not the full-screen ringing screen | Android | Check the merged manifest still has `MANAGE_OWN_CALLS` and `FOREGROUND_SERVICE_PHONE_CALL` (nothing strips them with `tools:node="remove"`). On MIUI, Oppo and Vivo, grant the section 7 permissions. For Google Play builds, complete the **full-screen intent** declaration in Play Console — without it, Play revokes `USE_FULL_SCREEN_INTENT` on Android 14+. |
 | Declining a call in a killed app doesn't reject it | Android | `registerBackgroundCallTask()` is called at module scope in `index.js`, and the app has been opened and logged in once since installing (so `init()` saved the Chat SDK settings). In a debug build the reject can take ~20 s — test on a release build. |
-| Killed app doesn't ring for a VoIP push | iOS | The `PKPushRegistry` is created in `didFinishLaunchingWithOptions`, on a background queue, **before** React Native starts, and nothing else creates one (step 2). |
+| Killed app doesn't ring for a VoIP push | iOS | `registerForVoIPPushes()` is called in `didFinishLaunchingWithOptions`, **before** React Native starts, and nothing else in the app creates a `PKPushRegistry` (step 2). |
 | iOS build fails with `'hermes/hermes.h' file not found` | iOS | The Podfile platform was lowered below React Native's minimum. Restore `platform :ios, min_ios_version_supported` and run `pod install`. |
 | Accepted call connects but has no audio | iOS | The **Audio** background mode is enabled and the Calls SDK (with `react-native-webrtc`) is installed. |
 | No VoIP pushes | iOS | Push Notifications + Background Modes (Voice over IP) are enabled, `aps-environment` matches the build (`production` for release), and the bundle ID matches the CometChat APNs provider. |
