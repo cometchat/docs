@@ -9,25 +9,27 @@ description: "Add CometChat push notifications and VoIP calls to a React Native 
 | --- | --- |
 | Goal | Add push notifications and VoIP calling (FCM on Android, APNs + PushKit on iOS) to a React Native app |
 | Package | `@cometchat/push-notifications-react-native` |
-| Peer dependency | `@cometchat/chat-sdk-react-native` — must be initialized **and logged in** before `init()` |
+| Peer dependencies | `@cometchat/chat-sdk-react-native` (initialized **and logged in** before `init()`); `@cometchat/calls-sdk-react-native` for calls |
 | Import | `import { CometChatPushNotifications, CometChatPNHelper, registerBackgroundCallTask } from "@cometchat/push-notifications-react-native";` |
-| Android setup | **No app-side code.** Add `google-services.json` + the `com.google.gms.google-services` plugin. The package already depends on `firebase-messaging` — do not add it. The package manifest declares the FCM service, ringing activity, and call foreground service. |
-| iOS setup | In Xcode enable **Push Notifications** + **Background Modes** (*Voice over IP*, *Remote notifications*, *Audio*). Add `NSMicrophoneUsageDescription` + `NSCameraUsageDescription` to `Info.plist`. Podfile `platform :ios, '14.0'`. |
-| iOS AppDelegate | Conform to `PKPushRegistryDelegate`; in `didFinishLaunchingWithOptions` create **one** `PKPushRegistry` on a **background** queue (a `.main` queue misses iOS's ~5s report deadline on a killed-app cold start) with `desiredPushTypes = [.voIP]`. Forward to `CometChatPushNotificationsAppDelegate`: `.didRegisterAPNsToken(_:)`, `.didReceiveRemoteNotification(_:)`, `.didUpdateVoIPToken(_:)`, `.didReceiveIncomingVoIPPush(_:)` (then call `completion()`). A second `PKPushRegistry` double-delivers every VoIP push. Don't set a `UNUserNotificationCenter` delegate — the package installs one. |
-| Initialize | In a `setupPushOnLogin()`: subscribe handlers, then request permissions and `await CometChatPushNotifications.init(config)` — call **after** `CometChat.init(...)` and login. Returns a cleanup for a `useEffect`. |
-| Config (`PNConfiguration`) | `fcmProviderId?`, `apnsProviderId?`, `notificationSmallIcon?`, `androidChannelId?` (default `"cometchat_messages"`), `androidChannelName?` (default `"Messages"`), `voip?` (default `true`), `showInForeground?` (default `false`; chat notifications only — foreground calls always use the in-app UI) |
-| Permissions | `CometChatPNHelper.requestNotificationPermission(): Promise<boolean>` (awaits the user's answer; **rejects** with `ERR_NO_ACTIVITY` / `ERR_PERMISSION_IN_FLIGHT` / `ERR_ACTIVITY_NOT_PERMISSION_AWARE` when it could not ask) · `.hasNotificationPermission(): Promise<boolean>` · `.requestCallPermissions(): Promise<boolean>` (mic + camera, required before a call connects). Await one before starting the next — Android allows one pending request per activity. |
-| Token registration | Automatic on `init()`. Manual: `CometChatPushNotifications.registerToken(platform, token)` where `PNTokenPlatform` = `"fcm"` \| `"apns"` \| `"voip"` |
-| Events (each returns `Unsubscribe`) | `onNotificationTap(cb)` · `onCallAccepted(cb)` · `onCallEnded(cb)` · `onMessageReceived(cb)` |
-| Cold-start replay | `onNotificationTap` and `onCallAccepted` replay a buffered event that fired before JS was ready — subscribe once at startup, not lazily. The tap can arrive before `NavigationContainer` mounts: wait for `navigationRef.isReady()` / the ref's `'ready'` event before navigating |
-| `PNNotificationTapInfo` | `receiverType?` · `sender?` · `senderName?` · `receiver?` · `conversationId?` · `messageId?` · `parentMessageId?` (present for thread replies) |
+| Files you add | `src/AppCredentials.ts` (provider IDs) · `src/navigation/navigationRef.ts` (`navigationRef`, `whenNavigationReady`, `navigate`) · `src/push/pushNotifications.ts` (`setupPushOnLogin`, `usePushOnLogin`) · `src/push/logout.ts` |
+| Android setup | Apply the `com.google.gms.google-services` plugin (with `google-services.json` in `android/app/`); `minSdkVersion 24`+; add a monochrome `ic_notification` drawable. **No manifest changes** — the package declares its services, activities and permissions. Do **not** add `firebase-messaging` (the package brings it). Remove other push libraries (`@react-native-firebase/messaging`, `notifee`, `react-native-callkeep`, `react-native-voip-push-notification`). |
+| iOS setup | Keep the Podfile's `platform :ios, min_ios_version_supported` (never lower it); `pod install`. Enable **Push Notifications** + **Background Modes** (*Voice over IP*, *Remote notifications*, *Audio*). Add `NSMicrophoneUsageDescription` + `NSCameraUsageDescription`. |
+| iOS AppDelegate | Swift only. Conform to `PKPushRegistryDelegate`. In `didFinishLaunchingWithOptions`, create **one** `PKPushRegistry` on a **background** queue with `desiredPushTypes = [.voIP]` **before** starting React Native. Forward to `CometChatPushNotificationsAppDelegate`: `.didRegisterAPNsToken(_:)`, `.didReceiveRemoteNotification(_:)`, `.didUpdateVoIPToken(_:)`, `.didReceiveIncomingVoIPPush(_:)` then `completion()`. Don't set a `UNUserNotificationCenter` delegate — the package installs one. |
+| index.js | `registerBackgroundCallTask();` at module scope — the package rejects a call declined while the Android app is killed. Optional `registerBackgroundCallTask(handler, { rejectDeclinedCalls })`: the handler runs **after** the package's reject; `rejectDeclinedCalls: false` hands the reject to the handler. No-op on iOS. |
+| Initialize | Call `usePushOnLogin()` once in a component rendered **after** `CometChat.init` resolves. It runs `setupPushOnLogin()` after a fresh login **and** a restored session, and its cleanup on logout. `setupPushOnLogin()` subscribes the handlers **before** `init()`, requests permissions in order, then `await CometChatPushNotifications.init(config)`. |
+| Config (`PNConfiguration`) | `fcmProviderId?`, `apnsProviderId?`, `notificationSmallIcon?`, `androidChannelId?` (default `"cometchat_messages"`), `androidChannelName?` (default `"Messages"`), `voip?` (default `true`), `showInForeground?` (default `false`; chat notifications only) |
+| Permissions | `CometChatPNHelper.requestNotificationPermission(): Promise<boolean>` (resolves on the user's answer; **rejects** with `ERR_NO_ACTIVITY` / `ERR_PERMISSION_IN_FLIGHT` / `ERR_ACTIVITY_NOT_PERMISSION_AWARE` when it could not ask — catch it, don't skip `init()`) · `.hasNotificationPermission()` · `.requestCallPermissions()` (mic + camera). Await each before the next. |
+| Token registration | Automatic in `init()`, including refreshes. Manual: `CometChatPushNotifications.registerToken(platform, token)`, `PNTokenPlatform` = `"fcm"` \| `"apns"` \| `"voip"` |
+| Events (each returns `Unsubscribe`) | `onNotificationTap(cb)` · `onCallAccepted(cb)` (call already accepted) · `onCallEnded(cb)` · `onMessageReceived(cb)` |
+| Notification tap | Wait for the navigator (`whenNavigationReady()`), mark the conversation read, then open `ThreadView` with the parent message **and** the user/group when `parentMessageId` is set (fall back to the conversation), else `Messages` with the user/group. Group taps use `info.receiver` (the GUID). |
+| Call ended | End the call on the server (`CometChat.endCall`), end the media session (`CometChatCalls.endSession()`), `CometChat.clearActiveCall()`, and leave the call screen — a call ended from the iOS call screen isn't seen by the Calls SDK. |
+| Logout | `await CometChatPushNotifications.unregister()` **before** `CometChatUIKit.logout()` / `CometChat.logout()` (it needs the auth token); if it fails, don't log out. `usePushOnLogin()` removes the handlers when logout completes. |
+| `PNNotificationTapInfo` | `receiverType?` · `sender?` · `senderName?` · `receiver?` · `conversationId?` · `messageId?` · `parentMessageId?` (thread replies) |
 | `PNCallInfo` | `sessionId` · `callerUid?` · `callerName?` · `callerAvatar?` · `receiverId?` · `receiverType?` · `callType?` · `callAction?` |
 | `PNCallEndEvent` | `sessionId` · `reason?` (`"cancelled"` \| `"unanswered"` \| `"rejected"` \| `"busy"` \| `"ended"`) |
-| Killed-state decline | `registerBackgroundCallTask(async (action, info) => { ... })` in `index.js`, outside the component tree. `PNBackgroundCallAction` = `"decline"` only. Android-only; iOS declines natively via CallKit. |
-| Unregister on logout | `await CometChatPushNotifications.unregister()` **before** `CometChat.logout()` (it needs the session's auth token). Handlers are removed by the cleanup `setupPushOnLogin()` returns — skipping it fires each handler twice after a re-login. `dispose()` detaches native listeners (app-facing subscriptions stay intact). |
-| Coexist with existing push | `CometChatPNHelper.isCometChatNotification(data): boolean` — detect CometChat payloads when the app has its own FCM handler |
-| Exported types | `PNConfiguration` · `PNCallInfo` · `PNCallEndEvent` · `PNNotificationTapInfo` · `PNTokenPlatform` · `PNBackgroundCallAction` · `PNReceiverType` (`"user"` \| `"group"`) · `PNCallType` (`"audio"` \| `"video"`) · `PNCallEndReason` · `PNTokenEvent` |
-| Android permissions | Declared by the package: `POST_NOTIFICATIONS`, `USE_FULL_SCREEN_INTENT`, `FOREGROUND_SERVICE`(+`_PHONE_CALL`), `WAKE_LOCK`, `VIBRATE`, `RECORD_AUDIO`, `CAMERA`, `BLUETOOTH_CONNECT`. **No telecom/calling-account permission** — the lock-screen ring is a full-screen-intent activity, not a `ConnectionService`. |
+| Coexist with existing push | `CometChatPNHelper.isCometChatNotification(data): boolean` |
+| Exported types | `PNConfiguration` · `PNCallInfo` · `PNCallEndEvent` · `PNNotificationTapInfo` · `PNTokenPlatform` · `PNBackgroundCallAction` · `PNBackgroundCallOptions` · `PNReceiverType` · `PNCallType` · `PNCallEndReason` · `PNTokenEvent` |
+| Android permissions | Declared by the package: `POST_NOTIFICATIONS`, `USE_FULL_SCREEN_INTENT`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_PHONE_CALL`, `MANAGE_OWN_CALLS`, `WAKE_LOCK`, `VIBRATE`, `RECORD_AUDIO`, `CAMERA`, `BLUETOOTH_CONNECT`. `MANAGE_OWN_CALLS` is required for the ringing foreground service on Android 14+; it is auto-granted and registers **no** calling account. |
 | Related | [Push Overview](/notifications/push-overview) · [Templates & Sounds](/notifications/templates-and-sounds) · [Badge Count](/notifications/badge-count) |
 
 </Accordion>
@@ -55,41 +57,45 @@ The `@cometchat/push-notifications-react-native` package replaces the previous a
 ## Prerequisites
 
 - The providers, Firebase project, and Apple/APNs credentials from **[Getting Started](/notifications/push-overview)** (this guide assumes those are done).
-- React Native **0.65+**, and an app already initializing and logging in with `@cometchat/chat-sdk-react-native` (or the UI Kit).
+- React Native **0.65+**, an app already initializing and logging in with `@cometchat/chat-sdk-react-native` or the UI Kit, and `@cometchat/calls-sdk-react-native` for calls. The code below uses the UI Kit's screens and React Navigation — rename the screens to yours.
 - **Android:** `google-services.json` in `android/app/`, the `com.google.gms.google-services` plugin, `minSdkVersion 24`+.
-- **iOS:** iOS 13.0+ (set the Podfile platform to **14.0** for VoIP/CallKit).
+- **iOS:** iOS 13.0+. React Native already sets a higher minimum in your Podfile — keep it.
 - A physical device — background delivery, full-screen calls, and VoIP pushes are unreliable on emulators/simulators.
 
 <Info>
-**Complete the [Getting Started](/notifications/push-overview) guide first** — enable Push Notifications, add your providers (FCM for Android, APNs + APNs VoIP for iOS), and finish the Firebase/Apple setup. This guide covers only the React Native app wiring.
+**Complete the [Getting Started](/notifications/push-overview) guide first** — enable Push Notifications, add your providers (FCM for Android; APNs for iOS — the package registers both the device token and the VoIP token with that one APNs provider), and finish the Firebase/Apple setup. This guide covers only the React Native app wiring.
 </Info>
 
 ## 1. Store your credentials
 
-Keep the values from Getting Started somewhere your app can read them. Only the fields for the platforms you ship are needed:
+Create `src/AppCredentials.ts` with the values from Getting Started. Only the fields for the platforms you ship are needed:
 
-```ts lines
+```ts src/AppCredentials.ts lines
 export const AppCredentials = {
-  appId: "YOUR_APP_ID",
-  region: "YOUR_REGION",
-  authKey: "YOUR_AUTH_KEY",
+  appId: 'YOUR_APP_ID',
+  region: 'YOUR_REGION',
+  authKey: 'YOUR_AUTH_KEY',
 
-  // Android
-  fcmProviderId: "FCM-PROVIDER-ID",
+  // Android — the FCM provider ID from the CometChat dashboard
+  fcmProviderId: 'FCM-PROVIDER-ID',
 
-  // iOS — one provider covers the APNs device token and the VoIP token
-  apnsProviderId: "APNS-PROVIDER-ID",
+  // iOS — one APNs provider covers both the device token and the VoIP token
+  apnsProviderId: 'APNS-PROVIDER-ID',
 };
 ```
 
 ## 2. Add the package and configure the platform
 
-Install the package (the Chat SDK peer is already in your app):
+Install the package (the Chat SDK and Calls SDK are already in your app):
 
 ```bash
 npm install @cometchat/push-notifications-react-native
-# or: yarn add @cometchat/push-notifications-react-native
+cd ios && pod install && cd ..
 ```
+
+<Warning>
+**Remove any other push library first** — `@react-native-firebase/messaging`, `@notifee/react-native`, `react-native-callkeep`, `react-native-voip-push-notification` — along with their code and native setup. Each registers its own push handler or call registry, and every notification or call then arrives twice.
+</Warning>
 
 <Tabs>
   <Tab title="Android">
@@ -113,26 +119,20 @@ npm install @cometchat/push-notifications-react-native
 
     2. Keep `minSdkVersion 24` or higher.
 
+    3. Add the status-bar notification icon: a **white-on-transparent** drawable named `ic_notification` — for example `android/app/src/main/res/drawable/ic_notification.png`. Android Studio generates one: right-click `res` → **New → Image Asset**, icon type **Notification Icons**, name `ic_notification`. Without it, the package falls back to your launcher icon, which the status bar draws as a plain white shape.
+
     <Note>
-    You do **not** need to add notification, call, full-screen-intent, or lock-screen permissions to your `AndroidManifest.xml`, and you write **no** FCM/JS message-handling code. The package's library manifest contributes everything it needs — the `FirebaseMessagingService`, the incoming-call foreground service, the full-screen lock-screen `CallRingingActivity`, the notification trampoline/decline receiver, and `POST_NOTIFICATIONS` — and Gradle merges them into your app automatically.
+    You do **not** edit `AndroidManifest.xml` and you write **no** FCM code. The package's manifest contributes the `FirebaseMessagingService`, the incoming-call foreground service, the full-screen `CallRingingActivity`, the notification action receivers, and every permission it needs — merged into your app by Gradle.
     </Note>
   </Tab>
   <Tab title="iOS">
-    1. Set the deployment target in `ios/Podfile`, then install pods:
-
-    ```ruby
-    platform :ios, '14.0'
-    ```
-
-    ```bash
-    cd ios && pod install && cd ..
-    ```
+    1. **Keep** the Podfile's `platform :ios, min_ios_version_supported` from the React Native template. Don't lower it: current React Native requires iOS 15.1, and a lower platform fails the build — for example with `'hermes/hermes.h' file not found`.
 
     2. In Xcode, select your app target → **Signing & Capabilities** and add:
        - **Push Notifications**
        - **Background Modes**, with **Voice over IP**, **Remote notifications**, and **Audio, AirPlay, and Picture in Picture** checked
 
-    3. Add the microphone and camera usage strings to `ios/<App>/Info.plist` — iOS needs them before a call can use either:
+    3. Add the microphone and camera usage strings to `ios/<App>/Info.plist` — a call can't use either without them:
 
     ```xml lines
     <key>NSMicrophoneUsageDescription</key>
@@ -141,29 +141,46 @@ npm install @cometchat/push-notifications-react-native
     <string>Needed for video calls</string>
     ```
 
-    4. In `AppDelegate.swift`, create **one** `PKPushRegistry` and forward the APNs token, the VoIP token, and incoming VoIP pushes to the package:
+    4. Replace `ios/<App>/AppDelegate.swift` with this — React Native's current template plus the push lines. Set `withModuleName` to your app's name:
 
-    ```swift lines
+    ```swift ios/<App>/AppDelegate.swift lines
+    import UIKit
+    import React
+    import React_RCTAppDelegate
+    import ReactAppDependencyProvider
     import PushKit
     import react_native_cometchat_push_notifications
 
     @main
     class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate {
+      var window: UIWindow?
+      var reactNativeDelegate: ReactNativeDelegate?
+      var reactNativeFactory: RCTReactNativeFactory?
       private var pushRegistry: PKPushRegistry?
 
       func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
       ) -> Bool {
-        // ... your existing React Native setup ...
+        let delegate = ReactNativeDelegate()
+        let factory = RCTReactNativeFactory(delegate: delegate)
+        delegate.dependencyProvider = RCTAppDependencyProvider()
+        reactNativeDelegate = delegate
+        reactNativeFactory = factory
 
-        // BACKGROUND queue, not .main: on a killed-app cold start the main thread is busy
-        // starting React Native, and iOS terminates the app if the call isn't reported
-        // within ~5 seconds of the push.
+        // Create the PushKit registry BEFORE starting React Native, on a BACKGROUND queue.
+        // When a call wakes a killed app, iOS terminates it unless the call is reported within
+        // ~5 seconds — the main thread is busy starting React Native and would miss that.
         pushRegistry = PKPushRegistry(queue: DispatchQueue(label: "com.cometchat.voip.pushkit"))
         pushRegistry?.delegate = self
         pushRegistry?.desiredPushTypes = [.voIP]
 
+        window = UIWindow(frame: UIScreen.main.bounds)
+        factory.startReactNative(
+          withModuleName: "YourAppName", // your app's registered name
+          in: window,
+          launchOptions: launchOptions
+        )
         return true
       }
 
@@ -194,7 +211,7 @@ npm install @cometchat/push-notifications-react-native
         CometChatPushNotificationsAppDelegate.didUpdateVoIPToken(pushCredentials.token)
       }
 
-      // Incoming VoIP push — the package reports it to CallKit before this returns
+      // Incoming VoIP push — the package reports the call to CallKit before this returns
       func pushRegistry(
         _ registry: PKPushRegistry,
         didReceiveIncomingPushWith payload: PKPushPayload,
@@ -208,183 +225,79 @@ npm install @cometchat/push-notifications-react-native
 
       func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {}
     }
+
+    class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
+      override func sourceURL(for bridge: RCTBridge) -> URL? {
+        self.bundleURL()
+      }
+
+      override func bundleURL() -> URL? {
+    #if DEBUG
+        return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "index")
+    #else
+        return Bundle.main.url(forResource: "main", withExtension: "jsbundle")
+    #endif
+      }
+    }
     ```
 
-    You don't set a `UNUserNotificationCenter` delegate — the package installs its own at launch to handle foreground presentation and notification taps.
+    You don't set a `UNUserNotificationCenter` delegate — the package installs its own at launch to handle foreground notifications and taps.
 
     <Warning>
-    **Create exactly one `PKPushRegistry`.** A second one — your own, or from a library such as `react-native-voip-push-notification` — makes iOS deliver every VoIP push twice. Remove other VoIP push libraries.
+    **Create exactly one `PKPushRegistry`.** A second one — your own or a library's — makes iOS deliver every VoIP push twice.
     </Warning>
 
     <Note>
-    With an Objective-C `AppDelegate.mm`, make the same `CometChatPushNotificationsAppDelegate` calls from your Objective-C delegate methods.
+    **Older Swift template** (an `RCTAppDelegate` subclass): add the same registry lines before `return super.application(...)`, which starts React Native, and the same `CometChatPushNotificationsAppDelegate` calls in your delegate methods. **Objective-C `AppDelegate.mm`:** the package's iOS entry points are Swift-only, so move the AppDelegate to Swift first — the [React Native Upgrade Helper](https://react-native-community.github.io/upgrade-helper/) shows the change.
     </Note>
   </Tab>
 </Tabs>
 
 ## 3. Initialize the SDK
 
-Register the killed-state background task **at module scope** in `index.js` (before any component renders), then initialize the package **after the user logs in**.
+This step adds two files and changes two. Copy the new files as they are — only the route names in `SCREENS` should need changing.
 
-```js lines
-// index.js
+**`index.js`** — register the package's background task at module scope, before any component renders:
+
+```js index.js lines
 import { AppRegistry } from 'react-native';
-import { CometChat } from '@cometchat/chat-sdk-react-native';
 import { registerBackgroundCallTask } from '@cometchat/push-notifications-react-native';
 import App from './App';
 import { name as appName } from './app.json';
 
-// Android only: runs when the app is FULLY KILLED and the user taps Decline on the
-// call notification. A killed app has no JS alive, so this headless task boots just
-// enough to reject the call — otherwise the caller only times out. (iOS declines
-// natively via CallKit, so this is a no-op there.)
-registerBackgroundCallTask(async (action, info) => {
-  if (action === 'decline' && info.sessionId) {
-    // (re)initialize + login your CometChat session here, then:
-    await CometChat.rejectCall(info.sessionId, CometChat.CALL_STATUS.REJECTED);
-  }
-});
+// Android: lets a FULLY KILLED app reject a call declined from its notification. The package
+// does the work — this only registers its background task. (No-op on iOS.)
+registerBackgroundCallTask();
 
 AppRegistry.registerComponent(appName, () => App);
 ```
 
-```ts lines
-// call this once, after CometChat.init(...) and login succeed:
-import {
-  CometChatPushNotifications,
-  CometChatPNHelper,
-} from '@cometchat/push-notifications-react-native';
+On Android this lets a **fully killed** app reject a call declined from its notification — the package re-initializes the Chat SDK with the settings `init()` saved and rejects the call. To add your own logic, pass a handler: it runs **after** the package has rejected the call, with the Chat SDK initialized and logged in.
 
-// Returns a cleanup that removes the handlers — wire it to a `useEffect` (step 5).
-export function setupPushOnLogin(): () => void {
-  // Subscribe BEFORE init() so the tap or answered call that LAUNCHED the app
-  // is delivered to you rather than dropped.
-  const unsubscribes = [
-    CometChatPushNotifications.onNotificationTap(handleTap),
-    CometChatPushNotifications.onCallAccepted(info =>
-      navigate('OngoingCall', { sessionId: info.sessionId, callType: info.callType })),
-    CometChatPushNotifications.onCallEnded(handleCallEnded),
-    CometChatPushNotifications.onMessageReceived(data =>
-      console.log('data push:', data)),
-  ];
+```js lines
+registerBackgroundCallTask(async (action, info) => {
+  // Your logic, e.g. record the declined call. The Chat SDK is initialized and logged in here.
+  console.log('Declined call from', info.callerUid);
+});
 
-  const start = async () => {
-    // Await each permission request before the next: Android allows only ONE pending
-    // request per activity, and a second one cancels the dialog still on screen.
-    // This rejects when the OS could not be asked at all — which is not the user
-    // declining, and not a reason to skip init(): the token still has to register.
-    await CometChatPNHelper.requestNotificationPermission().catch(() => false);
-    await CometChatPNHelper.requestCallPermissions(); // mic + camera (Android) before a call connects
-
-    await CometChatPushNotifications.init({
-      fcmProviderId: AppCredentials.fcmProviderId,   // Android
-      apnsProviderId: AppCredentials.apnsProviderId, // iOS (APNs device + VoIP)
-      // Android status-bar icon (a monochrome drawable); without it the launcher icon
-      // is used, which Android renders as a solid square.
-      notificationSmallIcon: 'ic_notification',
-      // Show one chat notification while the app is open too. Set false if your
-      // in-app UI already surfaces new messages. Calls are unaffected: a foreground
-      // call never shows CallKit / the system ring, only your in-app call UI.
-      showInForeground: true,
-    });
-  };
-  start().catch(e => console.log('push setup failed', e));
-
-  return () => unsubscribes.forEach(unsub => unsub());
-}
+// Or reject it yourself instead:
+// registerBackgroundCallTask(myHandler, { rejectDeclinedCalls: false });
 ```
 
-`init` wires the native events to the Chat SDK, **auto-registers** the device tokens, and drains any cold-start tap/call the app was launched from. It is safe to call again on re-login.
+**`src/navigation/navigationRef.ts`** — a notification tap or answered call that **launched** the app arrives before your navigator exists, so every navigation waits for it:
 
-`init` also accepts: `voip` (default `true`), `androidChannelId`, and `androidChannelName`. `showInForeground` defaults to `false` and affects **chat notifications only**.
+```ts src/navigation/navigationRef.ts lines
+import { createNavigationContainerRef } from '@react-navigation/native';
 
-## 4. Request permission and register tokens
+/** Pass this to your <NavigationContainer ref={navigationRef}>. */
+export const navigationRef = createNavigationContainerRef();
 
-Permission is requested via `CometChatPNHelper` (call it before pushes/calls arrive):
-
-```ts lines
-await CometChatPNHelper.requestNotificationPermission(); // POST_NOTIFICATIONS (Android 13+) / iOS
-await CometChatPNHelper.requestCallPermissions();        // mic + camera (Android 14+ call FGS)
-// non-prompting check:
-const enabled = await CometChatPNHelper.hasNotificationPermission();
-```
-
-<Warning>
-**Always `await` one permission request before starting the next.** Android allows only
-one pending request per activity: a second request cancels the dialog still on screen and
-the OS reports it as denied without the user ever seeing it. On a fresh install that leaves
-the app with no notification permission — pushes arrive and are silently dropped.
-</Warning>
-
-`requestNotificationPermission()` resolves `true`/`false` on the user's answer. It **rejects**
-when the permission could not be requested at all, which is a different situation from the
-user declining and should not stop the rest of your setup — the token still registers:
-
-| Rejection | Meaning |
-| --- | --- |
-| `ERR_NO_ACTIVITY` | No foreground activity, so no dialog can be shown. Retry when the app is foreground. |
-| `ERR_PERMISSION_IN_FLIGHT` | A request is already open. Await that one instead. |
-| `ERR_ACTIVITY_NOT_PERMISSION_AWARE` | Your host activity does not extend `ReactActivity`. Fix the activity. |
-
-**Token registration is automatic** — `init()` registers the FCM token (Android) and the APNs device + VoIP tokens (iOS) with CometChat, and re-registers on refresh. You rarely need to do it by hand, but you can:
-
-```ts lines
-await CometChatPushNotifications.registerToken('fcm', token);   // or 'apns' / 'voip'
-```
-
-## 5. Unregister the token on logout
-
-Two separate things have to happen on logout: the **token** must be unregistered so the device
-stops receiving that user's notifications, and your **handlers** must be unsubscribed.
-
-Let React own the handlers. `setupPushOnLogin()` returns its cleanup, so returning it from a
-`useEffect` keyed on the logged-in state removes the handlers on logout and on unmount:
-
-```tsx lines
-// App.tsx
-useEffect(() => {
-  if (!isLoggedIn) return;
-  return setupPushOnLogin(); // the cleanup runs on logout / unmount
-}, [isLoggedIn]);
-```
-
-Unregister the token in your logout handler, **before** `logout()`:
-
-```ts lines
-// in your logout button / handler
-try {
-  await CometChatPushNotifications.unregister();
-} catch (error) {
-  console.error('Failed to unregister push token:', error);
-  return; // logging out anyway would leave the device receiving this user's push
-}
-await CometChat.logout();
-```
-
-<Warning>
-`unregister()` must run **before** `logout()`. It calls the Chat SDK's `unregisterPushToken()`,
-which needs the session's auth token — after logout it fails, and the device keeps receiving
-notifications for the user who just logged out.
-</Warning>
-
-<Note>
-Unlike the other platforms, React Native needs the unsubscribe step too: the package keeps your callbacks in a set that survives `unregister()`, so a logout → login cycle would register a second copy of each handler and fire it twice (e.g. navigating to a tapped message twice).
-</Note>
-
-## 6. Notification taps and call events
-
-Subscribe once (in `setupPushOnLogin` above). Each subscribe returns an unsubscribe function.
-
-**Notification tap** — open the conversation, or the **thread** when the push is a thread reply.
-
-When a tap **launches a killed app**, it is delivered as soon as `init()` subscribes — which can be before your `NavigationContainer` has mounted. Wait for the navigator first, or the navigation is silently dropped and the app stays on its first screen:
-
-```ts lines
-import { navigationRef } from './NavigationService'; // createNavigationContainerRef()
-
-// React Navigation's documented readiness check. The ref queues listeners added
-// before the container mounts, so this also works on a cold start.
-function whenNavigationReady() {
+/**
+ * Resolves once the NavigationContainer is mounted. A notification tap or answered call
+ * that LAUNCHED the app arrives before the navigator exists, and navigating then is
+ * silently dropped. The ref queues listeners added before it mounts.
+ */
+export function whenNavigationReady(): Promise<void> {
   if (navigationRef.isReady()) return Promise.resolve();
   return new Promise(resolve => {
     const unsubscribe = navigationRef.addListener('ready', () => {
@@ -394,45 +307,303 @@ function whenNavigationReady() {
   });
 }
 
-async function handleTap(info) {
-  // info: { receiverType, sender, receiver, conversationId, messageId, parentMessageId, senderName }
+/** Navigate by route name once the navigator is ready. */
+export async function navigate(name: string, params?: object): Promise<void> {
   await whenNavigationReady();
-  if (info.parentMessageId) {
-    const parent = await CometChat.getMessageDetails(info.parentMessageId);
-    navigate('ThreadView', { message: parent, highlightMessageId: info.messageId });
-    return;
-  }
-  navigateToConversation({
-    receiverType: info.receiverType,
-    sender: info.sender,
-    conversationId: info.conversationId,
-  });
+  (navigationRef.navigate as (name: string, params?: object) => void)(name, params);
 }
 ```
 
-**Call accepted** — the package has *already* accepted the call via the Chat SDK; just open your call screen:
+**`src/push/pushNotifications.ts`** — everything push does for the logged-in user:
 
-```ts lines
-CometChatPushNotifications.onCallAccepted(info => {
-  navigate('OngoingCall', { sessionId: info.sessionId, callType: info.callType });
-});
-```
-
-**Call ended** — a ringing call was cancelled/declined/ended, **or** the user ended the call from the iOS CallKit UI. The Calls SDK's own listener doesn't see a CallKit-initiated end, so tear the call down here:
-
-```ts lines
+```ts src/push/pushNotifications.ts lines
+import { useEffect, useState } from 'react';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
 import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+import { CometChatUIEventHandler, MessageEvents } from '@cometchat/chat-uikit-react-native';
+import {
+  CometChatPNHelper,
+  CometChatPushNotifications,
+  type PNCallEndEvent,
+  type PNCallInfo,
+  type PNNotificationTapInfo,
+} from '@cometchat/push-notifications-react-native';
 
-function handleCallEnded(info) {
-  if (info.sessionId) CometChat.endCall(info.sessionId).catch(() => {});
-  try { CometChatCalls.endSession(); } catch {}
-  CometChat.clearActiveCall?.();
-  // leave the ongoing-call screen if you're on it
+import { AppCredentials } from '../AppCredentials';
+import { navigate, navigationRef } from '../navigation/navigationRef';
+
+/** Your navigator's route names — these are the CometChat UI Kit sample app's. */
+const SCREENS = {
+  messages: 'Messages',
+  thread: 'ThreadView',
+  ongoingCall: 'OngoingCallScreen',
+  home: 'BottomTabNavigator',
+} as const;
+
+const LOGIN_LISTENER_ID = 'push-notifications-login';
+
+/**
+ * Starts push for the logged-in user. Call it from React with `usePushOnLogin()` (below)
+ * rather than directly: it returns a cleanup that must run on logout, or every handler
+ * fires twice after the next login.
+ */
+export function setupPushOnLogin(): () => void {
+  // Subscribe BEFORE init(): the tap or answered call that LAUNCHED the app is delivered
+  // as soon as init() runs.
+  const unsubscribes = [
+    CometChatPushNotifications.onNotificationTap(openFromNotification),
+    CometChatPushNotifications.onCallAccepted(openCallScreen),
+    CometChatPushNotifications.onCallEnded(endCall),
+  ];
+
+  const start = async () => {
+    // Await each permission request before the next — Android allows only one pending
+    // request per activity. A rejection means the OS could not be asked (not that the user
+    // declined), and must not stop init(): the push token still has to register.
+    await CometChatPNHelper.requestNotificationPermission().catch(() => false);
+    await CometChatPNHelper.requestCallPermissions(); // mic + camera, needed before a call connects
+
+    await CometChatPushNotifications.init({
+      fcmProviderId: AppCredentials.fcmProviderId, // Android
+      apnsProviderId: AppCredentials.apnsProviderId, // iOS (APNs device + VoIP)
+      notificationSmallIcon: 'ic_notification', // Android status-bar icon (step 2)
+      showInForeground: true, // one notification while the app is open, too
+    });
+  };
+  start().catch(error => console.log('Push setup failed:', error));
+
+  return () => unsubscribes.forEach(unsubscribe => unsubscribe());
 }
+
+/**
+ * Runs push while a user is logged in — after a fresh login AND after a session restored
+ * on launch — and cleans up on logout. Use it once, in a component rendered after
+ * CometChat has been initialized.
+ */
+export function usePushOnLogin(): void {
+  const [loggedIn, setLoggedIn] = useState(false);
+
+  useEffect(() => {
+    // A restored session never fires loginSuccess, so check once on mount.
+    CometChat.getLoggedinUser()
+      .then(user => setLoggedIn(!!user))
+      .catch(() => setLoggedIn(false));
+
+    CometChat.addLoginListener(
+      LOGIN_LISTENER_ID,
+      new CometChat.LoginListener({
+        loginSuccess: () => setLoggedIn(true),
+        logoutSuccess: () => setLoggedIn(false),
+      }),
+    );
+    return () => CometChat.removeLoginListener(LOGIN_LISTENER_ID);
+  }, []);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    return setupPushOnLogin();
+  }, [loggedIn]);
+}
+
+/** Open the thread for a thread reply, otherwise the conversation. */
+async function openFromNotification(info: PNNotificationTapInfo): Promise<void> {
+  const isGroup = info.receiverType === 'group';
+  try {
+    const user = !isGroup && info.sender ? await CometChat.getUser(info.sender) : undefined;
+    const group = isGroup && info.receiver ? await CometChat.getGroup(info.receiver) : undefined;
+    if (!user && !group) return;
+
+    markConversationRead(isGroup ? info.receiver! : info.sender!, isGroup);
+
+    if (info.parentMessageId) {
+      try {
+        const parent = await CometChat.getMessageDetails(info.parentMessageId);
+        // The thread screen needs the user or group, not just the parent message.
+        await navigate(SCREENS.thread, { message: parent, user, group, highlightMessageId: info.messageId });
+        return;
+      } catch (error) {
+        console.log('Could not open the thread, opening the conversation:', error);
+      }
+    }
+    await navigate(SCREENS.messages, { user, group });
+  } catch (error) {
+    console.log('Could not open the conversation from a notification:', error);
+  }
+}
+
+/** Mark the conversation read and clear its unread badge in the UI Kit's conversation list. */
+function markConversationRead(conversationWith: string, isGroup: boolean): void {
+  const type = isGroup ? CometChat.RECEIVER_TYPE.GROUP : CometChat.RECEIVER_TYPE.USER;
+  CometChat.markConversationAsRead(conversationWith, type)
+    .then(() => CometChat.getConversation(conversationWith, type))
+    .then(conversation => {
+      const lastMessage = conversation.getLastMessage();
+      if (lastMessage) {
+        CometChatUIEventHandler.emitMessageEvent(MessageEvents.ccMessageRead, { message: lastMessage });
+      }
+    })
+    .catch(error => console.log('Could not mark the conversation read:', error));
+}
+
+/** The package has already accepted the call — just show the call screen. */
+function openCallScreen(info: PNCallInfo): void {
+  navigate(SCREENS.ongoingCall, { sessionId: info.sessionId, callType: info.callType });
+}
+
+/**
+ * A ringing call was cancelled or declined, or the user ended the call from the iOS call
+ * screen — which the Calls SDK does not see, so tear the call down here.
+ */
+function endCall(info: PNCallEndEvent): void {
+  if (info.sessionId) CometChat.endCall(info.sessionId).catch(() => {});
+  try {
+    CometChatCalls.endSession();
+  } catch {}
+  try {
+    CometChat.clearActiveCall();
+  } catch {}
+  if (navigationRef.isReady() && navigationRef.getCurrentRoute()?.name === SCREENS.ongoingCall) {
+    navigate(SCREENS.home);
+  }
+}
+```
+
+<Note>
+Not using the UI Kit? Delete the `@cometchat/chat-uikit-react-native` import and the `emitMessageEvent` block in `markConversationRead`, and point `SCREENS` and the route params at your own screens. In `logout.ts` (step 5), call `CometChat.logout()` instead of `CometChatUIKit.logout()`.
+</Note>
+
+**`App.tsx`** — call `usePushOnLogin()` once, in a component that renders **after** CometChat is initialized, and pass `navigationRef` to your `NavigationContainer`:
+
+```tsx App.tsx lines
+import React, { useEffect, useState } from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { CometChat } from '@cometchat/chat-sdk-react-native';
+import { CometChatUIKit, UIKitSettings } from '@cometchat/chat-uikit-react-native';
+
+import { AppCredentials } from './AppCredentials';
+import { navigationRef } from './navigation/navigationRef';
+import { usePushOnLogin } from './push/pushNotifications';
+
+export default function App() {
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    // Your existing CometChat initialization.
+    CometChatUIKit.init({
+      appId: AppCredentials.appId,
+      region: AppCredentials.region,
+      authKey: AppCredentials.authKey,
+      subscriptionType: CometChat.AppSettings.SUBSCRIPTION_TYPE_ALL_USERS as UIKitSettings['subscriptionType'],
+    } as UIKitSettings)
+      .then(() => setInitialized(true))
+      .catch(error => console.log('CometChat init failed:', error));
+  }, []);
+
+  // Push must start only after CometChat is initialized.
+  if (!initialized) return null;
+  return <Root />;
+}
+
+function Root() {
+  usePushOnLogin(); // push follows login and logout from here on
+
+  return (
+    <NavigationContainer ref={navigationRef}>
+      <RootStack /> {/* your existing navigator */}
+    </NavigationContainer>
+  );
+}
+```
+
+`usePushOnLogin()` starts push after a fresh login **and** when a session is restored on launch, and removes the handlers when the user logs out — so a later login never registers them twice. `init()` registers the device tokens (and re-registers them when they refresh) and delivers the tap or answered call the app was launched from.
+
+`init()` also accepts `voip` (default `true`), `androidChannelId`, and `androidChannelName`. `showInForeground` defaults to `false` and affects chat notifications only — a foreground call always rings in your in-app UI.
+
+## 4. Request permission and register tokens
+
+`setupPushOnLogin()` already requests both permissions, in order, before `init()`. To check or request them elsewhere:
+
+```ts lines
+const granted = await CometChatPNHelper.requestNotificationPermission().catch(() => false); // Android 13+ / iOS
+await CometChatPNHelper.requestCallPermissions(); // mic + camera
+const enabled = await CometChatPNHelper.hasNotificationPermission(); // checks without prompting
 ```
 
 <Warning>
-**Cold-start VoIP handling (iOS):** when the app is killed and a VoIP push arrives, the package presents CallKit natively via PushKit before React Native is ready. When the user answers, the app cold-starts, `init()` replays the accepted call, `onCallAccepted` fires, and the package has already called `CometChat.acceptCall` — set up your call session/screen there. (This path is why the `PKPushRegistry` must be created on a background queue — see step 2.)
+**Always `await` one permission request before starting the next.** Android allows only one pending request per activity: a second request cancels the dialog still on screen, and the OS reports it as denied without the user seeing it. On a fresh install that leaves the app with no notification permission — pushes arrive and are dropped.
+</Warning>
+
+`requestNotificationPermission()` resolves `true`/`false` on the user's answer. It **rejects** when the permission could not be requested at all — a different situation from the user declining, and not a reason to skip `init()`:
+
+| Rejection | Meaning |
+| --- | --- |
+| `ERR_NO_ACTIVITY` | No foreground activity, so no dialog can be shown. Retry when the app is foreground. |
+| `ERR_PERMISSION_IN_FLIGHT` | A request is already open. Await that one instead. |
+| `ERR_ACTIVITY_NOT_PERMISSION_AWARE` | Your host activity does not extend `ReactActivity`. Fix the activity. |
+
+**Token registration is automatic.** You rarely need it, but you can register a token yourself:
+
+```ts lines
+await CometChatPushNotifications.registerToken('fcm', token); // or 'apns' / 'voip'
+```
+
+## 5. Unregister the token on logout
+
+Add `src/push/logout.ts` and call it from your logout button instead of logging out directly:
+
+```ts src/push/logout.ts lines
+import { CometChatUIKit } from '@cometchat/chat-uikit-react-native';
+import { CometChatPushNotifications } from '@cometchat/push-notifications-react-native';
+
+/** Log out and stop this device receiving the user's notifications. Resolves false on failure. */
+export async function logout(): Promise<boolean> {
+  // Unregister BEFORE logout: it needs the session's auth token, so after logout it fails
+  // and the device keeps receiving notifications for the user who just logged out.
+  try {
+    await CometChatPushNotifications.unregister();
+  } catch (error) {
+    console.log('Failed to unregister the push token:', error);
+    return false;
+  }
+  try {
+    await CometChatUIKit.logout();
+    return true;
+  } catch (error) {
+    console.log('Logout failed:', error);
+    return false;
+  }
+}
+```
+
+```tsx lines
+const onLogoutPress = async () => {
+  if (loggingOut) return; // ignore a second tap while logging out
+  setLoggingOut(true);
+  const loggedOut = await logout();
+  setLoggingOut(false);
+  if (loggedOut) navigation.navigate('Login'); // your login screen
+};
+```
+
+<Warning>
+`unregister()` must run **before** logout. It needs the session's auth token — after logout it fails, and the device keeps receiving notifications for the user who just logged out.
+</Warning>
+
+When logout completes, `usePushOnLogin()` removes the push handlers for you.
+
+## 6. Notification taps and call events
+
+`src/push/pushNotifications.ts` from step 3 handles all of these. What each one does, and why:
+
+| Event | What happens |
+| --- | --- |
+| **Notification tap** | Waits for the navigator, marks the conversation read (clearing its unread badge), then opens the **thread** for a thread reply — with the parent message *and* the user or group, which the thread screen needs — or the conversation. If the thread can't be opened, it falls back to the conversation. |
+| **Call accepted** | The package has **already** accepted the call with the Chat SDK; the app only opens its call screen. |
+| **Call ended** | A ringing call was cancelled or declined, or the user ended the call from the iOS call screen. The Calls SDK doesn't see a call ended there, so the handler ends it on the server, ends the media session, and leaves the call screen. |
+| **Launched by a tap or an answered call** | Delivered as soon as `init()` runs — before the navigator mounts — which is why the handlers are subscribed before `init()` and every navigation waits for `whenNavigationReady()`. |
+
+<Warning>
+**Killed-app VoIP (iOS):** when a VoIP push wakes a killed app, the package reports the call to CallKit immediately, before React Native is ready. When the user answers, the app starts, `init()` delivers the answered call, and `onCallAccepted` opens your call screen — the call is already accepted. This is why the `PKPushRegistry` is created on a background queue, before React Native starts (step 2).
 </Warning>
 
 ## 7. Android: OEM permissions for lock-screen calls
@@ -478,37 +649,42 @@ CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` 
 
 ## 9. Testing checklist
 
-1. Run on a physical device. Grant notification, microphone, and camera permissions when prompted (Android 13+ requires `POST_NOTIFICATIONS`).
-2. Send a message from another user:
-   - Foreground: exactly **one** system notification (with `showInForeground: true`), or none with `false`.
-   - Background: a notification appears; tapping opens the right conversation via `onNotificationTap` (and the thread, for a thread reply).
-3. Force-quit the app, send another message, tap the notification, and confirm it cold-starts to the conversation.
-4. Trigger an incoming CometChat call and confirm:
-   - The full-screen call UI (Android) / CallKit (iOS) shows the caller with Accept/Decline, even on the lock screen.
-   - **Accept** joins the call (audio works both ways) and the screen tears down when the call ends.
-   - **Decline** rejects the call promptly on the caller side — including from a killed state.
-   - **Caller cancels** while it's ringing → the callee ring dismisses.
-5. Uninstall and reinstall, then log in: on Android 13+ the notification prompt must **wait** for your answer before the microphone/camera prompt appears, and pushes must arrive on that first install.
-6. Log out and send a message from another user — the device must receive nothing.
-7. On an OEM device (MIUI/Oppo/Vivo), grant the section-7 permissions and re-check locked/killed calls.
+Use physical devices. The iOS Simulator can't receive APNs or VoIP pushes, and emulators often delay FCM. Test call timing on a **release** build: a debug build loads its JavaScript from Metro, which delays the first JavaScript that runs in a killed app.
+
+1. **Fresh install:** install, log in, and confirm the notification prompt **waits** for your answer before the microphone/camera prompt appears. Then send a message from another user — it must arrive.
+2. **Chat notifications:**
+   - App open: exactly **one** notification (`showInForeground: true`).
+   - App in the background: a notification appears; tapping it opens the conversation.
+   - App killed: tapping the notification starts the app **in** the conversation.
+   - A thread reply opens the **thread**; a group message opens the group.
+3. **Calls, app killed, device locked:**
+   - Android shows the **full-screen ringing screen** with Accept/Decline; iOS shows CallKit.
+   - **Accept** connects the call with audio both ways.
+   - **Decline** shows the call as rejected on the caller's side.
+   - The caller **cancelling** stops the ring.
+4. **Calls, app in the background:** accept and decline both work, and ending the call from the iOS call screen closes your call screen.
+5. **Logout:** log out, send a message from another user — nothing arrives. Log in as another user — only that user's notifications arrive, and a tap opens its conversation once.
+6. **OEM devices** (MIUI, Oppo, Vivo): grant the section 7 permissions and re-check locked and killed calls.
 
 ## 10. Troubleshooting
 
 | Symptom | Platform | Quick checks |
 | --- | --- | --- |
-| No notifications received | Android | Confirm `google-services.json` is in `android/app/`, the package name matches Firebase, the `google-services` plugin is applied, and `POST_NOTIFICATIONS` is granted (Android 13+). |
-| Killed app doesn't ring for a VoIP push | iOS | Ensure the `PKPushRegistry` is created in `didFinishLaunchingWithOptions` on a **background queue**, `didReceiveIncomingPushWith` forwards to `CometChatPushNotificationsAppDelegate.didReceiveIncomingVoIPPush`, and nothing else creates a `PKPushRegistry` (step 2). |
-| Accepted call connects but has no audio | iOS | Confirm the `audio` background mode is enabled (Background Modes → Audio, step 2) and `react-native-webrtc` (via the Calls SDK) is linked in the app — the package coordinates CallKit's audio session with WebRTC automatically. |
-| Full-screen call UI not showing on lock screen | Android | OEM gate — grant Autostart / "Display pop-up while running in background" / "Show on lock screen" and disable battery optimization (section 7). |
-| Declining a killed-state call doesn't reject the caller | Both | Android: ensure `registerBackgroundCallTask` is registered at module scope in `index.js`. iOS: the package handles it via CallKit — verify the `AppDelegate` forwards `didReceiveIncomingVoIPPush` (step 2). |
-| Two notifications for one chat message | Android | Another FCM receiver is still installed — usually `@react-native-firebase/messaging`, whose broadcast receiver handles every push on its own. Remove the legacy push libraries so the package's service is the only handler. |
-| Notifications work on an existing install but not on a fresh one | Android | The permission dialog was cancelled before the user could answer it. `await` `requestNotificationPermission()` before requesting any other permission — Android allows one pending request per activity (step 4). Check with `adb shell dumpsys package <id> \| grep POST_NOTIFICATIONS`: `granted=false` with no `USER_SET` flag means the dialog was never answered. |
-| Notifications still arrive after logout | Both | `unregister()` must run **before** `logout()` — it needs the session's auth token (step 5). Check that its rejection is not being swallowed. |
-| No notification while the app is open | Both | Expected with `showInForeground: false` (the default). Set it to `true` to show one. It affects chat notifications only; a foreground call always uses your in-app UI. |
-| Tapping a notification when the app was killed opens the app but not the conversation | Both | Wait for the navigator before navigating (`whenNavigationReady()`, step 6) — the tap is delivered before `NavigationContainer` mounts. |
-| Duplicate navigation after re-login | Both | Return `setupPushOnLogin()`'s cleanup from a `useEffect` keyed on the logged-in state so the handlers are removed on logout (step 5). |
-| No VoIP pushes | iOS | Ensure Push Notifications + Background Modes (Voice over IP) are enabled, `aps-environment` is correct (`production` for release), the bundle ID matches the CometChat APNs VoIP provider, and the VoIP cert is uploaded to the dashboard. |
-| Token registration errors | Both | Verify the provider IDs match the dashboard exactly and that `init()` runs **after** login. |
+| No notifications received | Android | `google-services.json` is in `android/app/`, its package name matches the app, the `google-services` plugin is applied, and `POST_NOTIFICATIONS` is granted (Android 13+). |
+| Notifications work on an existing install but not on a fresh one | Android | A permission request wasn't awaited, so the notification dialog was cancelled unseen (step 4). `adb shell dumpsys package <id> \| grep POST_NOTIFICATIONS`: `granted=false` with no `USER_SET` flag means the dialog was never answered. |
+| Two notifications for one message | Android | Another push library is still installed — usually `@react-native-firebase/messaging`, whose receiver handles every push too. Remove the other push libraries (step 2). |
+| Incoming call is a plain notification, not the full-screen ringing screen | Android | Check the merged manifest still has `MANAGE_OWN_CALLS` and `FOREGROUND_SERVICE_PHONE_CALL` (nothing strips them with `tools:node="remove"`). On MIUI, Oppo and Vivo, grant the section 7 permissions. For Google Play builds, complete the **full-screen intent** declaration in Play Console — without it, Play revokes `USE_FULL_SCREEN_INTENT` on Android 14+. |
+| Declining a call in a killed app doesn't reject it | Android | `registerBackgroundCallTask()` is called at module scope in `index.js`, and the app has been opened and logged in once since installing (so `init()` saved the Chat SDK settings). In a debug build the reject can take ~20 s — test on a release build. |
+| Killed app doesn't ring for a VoIP push | iOS | The `PKPushRegistry` is created in `didFinishLaunchingWithOptions`, on a background queue, **before** React Native starts, and nothing else creates one (step 2). |
+| iOS build fails with `'hermes/hermes.h' file not found` | iOS | The Podfile platform was lowered below React Native's minimum. Restore `platform :ios, min_ios_version_supported` and run `pod install`. |
+| Accepted call connects but has no audio | iOS | The **Audio** background mode is enabled and the Calls SDK (with `react-native-webrtc`) is installed. |
+| No VoIP pushes | iOS | Push Notifications + Background Modes (Voice over IP) are enabled, `aps-environment` matches the build (`production` for release), and the bundle ID matches the CometChat APNs provider. |
+| No notification while the app is open | Both | Expected with `showInForeground: false` (the default). Set it to `true`. Calls always ring in your in-app UI while the app is open. |
+| Tapping a notification opens the app but not the conversation | Both | `navigationRef` is passed to your `NavigationContainer`, and navigation goes through `navigate()` from `navigationRef.ts`, which waits for the navigator. The route names in `SCREENS` match your navigator. |
+| Thread reply opens an empty thread screen | Both | The thread screen is given the user or group as well as the parent message (step 3 does this). |
+| Handlers fire twice after logging out and in | Both | Use `usePushOnLogin()` rather than calling `setupPushOnLogin()` directly — its cleanup must run on logout. |
+| Notifications still arrive after logout | Both | `unregister()` runs **before** logout and its failure isn't ignored (step 5). |
+| Token registration errors | Both | The provider IDs match the dashboard exactly, and `usePushOnLogin()` is rendered after CometChat is initialized. |
 
 ## Resources
 
