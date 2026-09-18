@@ -351,6 +351,151 @@ The following properties are exposed by `RichTextToolbarStyle`:
 
 ---
 
+### Trailing toolbar actions
+
+`set(richTextToolbarActions:)` appends your own buttons at the trailing end of the built-in toolbar — after the format buttons, separated by a divider — without replacing the toolbar. It takes the same closure shape as `set(attachmentOptions:)`, receiving the current `User?` and `Group?`, and returns a list of `CometChatRichTextToolbarAction` items.
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `id` | `String` | Identifies the action, and looks the rendered button up in `CometChatRichTextToolbar.trailingActionButtons`. |
+| `icon` | `UIImage?` | The button glyph. Rendered as-is — apply `.withRenderingMode(.alwaysTemplate)` for `tint` or the toolbar's `iconTintColor` to take effect. |
+| `onClick` | `(CometChatComposerInput) -> Void` | Called on tap with a live handle onto the composer's input. |
+| `tint` | `UIColor?` | Overrides `RichTextToolbarStyle.iconTintColor` when non-nil. |
+| `accessibilityLabel` | `String?` | VoiceOver label. Falls back to `id`, so a button is never unlabelled. |
+
+Each action's `onClick` receives a **`CometChatComposerInput`** — a live handle for reading and mutating the draft, so the composer stays the owner of the field:
+
+| Member | Description |
+| ------ | ----------- |
+| `text: String` | The input's contents without attributes. |
+| `attributedText: NSAttributedString` | The contents, including formatting attributes. |
+| `selectedRange: NSRange` | The current selection, or a zero-length range at the caret. |
+| `hasSelection: Bool` | Whether text is selected, as opposed to a caret being placed. |
+| `typingAttributes: [NSAttributedString.Key: Any]` | Attributes the next typed character inherits — set this to format text typed next rather than a selection. |
+| `mentionRanges: [NSRange]` | The ranges currently occupied by mentions. |
+| `attributes(at:)` | The attributes at a location, or empty if out of bounds. |
+| `insertAtCaret(_:)` | Insert at the caret, replacing any selection; the caret lands after the inserted text. |
+| `setAttributedText(_:preservingSelection:)` | Replace the contents, keeping the selection by default. |
+| `setSelectedRange(_:)` | Move the caret or change the selection, clamped to the current length. |
+| `applyAttributes(_:to:protectingKitRuns:)` / `removeAttributes(_:from:protectingKitRuns:)` | Add or strip attributes over a range. |
+| `applyAttributesToSelection(_:protectingKitRuns:)` / `removeAttributesFromSelection(_:protectingKitRuns:)` | The same over the current selection; each returns whether there was a selection to act on. |
+| `commit()` | Resync the toolbar and send button partway through a long edit. |
+
+<Tabs>
+<Tab title="Swift">
+```swift
+compactComposer.set(richTextToolbarActions: { user, group in
+    [
+        CometChatRichTextToolbarAction(
+            id: "insert_greeting",
+            icon: UIImage(systemName: "hand.wave")?.withRenderingMode(.alwaysTemplate),
+            accessibilityLabel: "Greeting"
+        ) { input in
+            input.insertAtCaret(NSAttributedString(string: "Hello! "))
+        }
+    ]
+})
+```
+</Tab>
+</Tabs>
+
+Actions are registered per composer instance, so a thread composer can offer a different set from the main one.
+
+<Note>
+
+The trailing section lives **inside** the rich-text toolbar — it is not rendered when the toolbar is hidden (`showRichTextFormattingOptions = false`) or rich text is disabled (`enableRichTextFormatting = false`).
+
+The `CometChatComposerInput` is valid only for the duration of the `onClick` call; don't retain it. The action itself is retained by the toolbar, so capture `self` weakly.
+
+The composer serializes to markdown on send. The built-in formats survive. Every other attribute you apply is composer-local: markdown has no representation for it, so it is dropped from the sent message. Use attributes for affordances that are meant to be transient, such as marking a range while the action's own picker or sheet is open — and to send styling of your own, insert text your formatter understands. See [Sending styling of your own](#sending-styling-of-your-own).
+
+</Note>
+
+Mutations apply immediately, but composer state that derives from the text — the toolbar's active formats and the send button — resyncs once when `onClick` returns rather than per mutation, so a multi-step edit resyncs once. Call `commit()` to resync earlier.
+
+#### Leaving Kit-owned runs alone
+
+An action that restyles a range will happily run over a mention or a link, which the Kit repaints on its own schedule — so your attribute is reverted on the next repaint anyway, and removing one of the Kit's attributes deletes it rather than restoring the Kit's value.
+
+The mutating methods therefore take `protectingKitRuns`, which defaults to `true`. With it on, **mention ranges** are carved out of the target range and left untouched; the mutation is applied to the gaps between them.
+
+<Warning>
+
+`protectingKitRuns` protects mentions, and only mentions. Links, inline code, code blocks and every other run the Kit repaints are **yours to skip** — the Kit leaves that decision to you, as the Android and Compose Kits do.
+
+If your action restyles a range that spans a link or a code block, do the check yourself before mutating.
+
+</Warning>
+
+To make that decision, read `mentionRanges` for mentions and `attributes(at:)` for everything else — inspect the run's own attributes (`.link`, the monospaced font, and so on) and narrow your range accordingly. Ranges are read at call time, so re-read them after a mutation rather than caching, as they shift with the text.
+
+Pass `protectingKitRuns: false` to opt out and write over the whole range in one go.
+
+Two behaviours worth knowing before you write an action:
+
+- `applyAttributes` is **additive**. It adds your keys and leaves existing ones in place, so a colour applied over bold text keeps the bold.
+- `removeAttributes` **strips keys rather than resetting values**. The text falls back to the input's own styling, not to a value you choose. To reset to something specific, call `applyAttributes` with it.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChatRichTextToolbarAction(
+    id: "highlight",
+    icon: UIImage(systemName: "highlighter")?.withRenderingMode(.alwaysTemplate),
+    accessibilityLabel: "Highlight"
+) { input in
+    // Highlighting applies to a selection; with only a caret there is nothing
+    // to restyle, so leave the text alone rather than guessing at a range.
+    guard input.hasSelection else { return }
+
+    // Mentions are skipped by default. This is composer-local: it marks the
+    // range on screen and is dropped on send.
+    input.applyAttributesToSelection([
+        .backgroundColor: UIColor.systemYellow.withAlphaComponent(0.3)
+    ])
+}
+```
+</Tab>
+</Tabs>
+
+#### Sending styling of your own
+
+Attributes are composer-local, so styling that has to reach the recipient travels as **text**, not as an `NSAttributedString` attribute. Your action inserts a token the message carries, and a `CometChatTextFormatter` — see [setTextFormatters](#settextformatters) below, and the [Mentions formatter guide](/ui-kit/ios/mentions-formatter-guide) for a worked subclass — renders that token in the bubble. The token and its rendering are both yours — the Kit carries the characters and stays out of the way.
+
+The documented convention for text colour is `{color:#hex}…{/color}`:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChatRichTextToolbarAction(
+    id: "red_text",
+    icon: UIImage(systemName: "paintpalette")?.withRenderingMode(.alwaysTemplate),
+    accessibilityLabel: "Red text"
+) { input in
+    guard input.hasSelection else { return }
+
+    // Wrap the selection in a token your formatter understands. This is
+    // ordinary text, so it survives send.
+    input.replaceSelection("{color:#ff0000}\(input.selectedText){/color}")
+}
+```
+</Tab>
+</Tabs>
+
+`replaceSelection(_:)` degrades to an insertion when only a caret is placed, and leaves the caret after the inserted text.
+
+<Note>
+
+Pair the button with a formatter that renders the token, on **every** platform your users are on. Without one the recipient sees the literal `{color:#ff0000}…{/color}` braces in the message.
+
+Because the token is plain text, a user can also type it by hand, and it will render the same way. Choose a delimiter you are comfortable having interpreted anywhere it appears.
+
+</Note>
+
+The UI Kit ships no colour button of its own, and no colour parsing: the composer handle and the formatter API are provided, the token and its rendering are yours. That is what the trailing-actions slot is for.
+
+---
+
 ## Advanced
 
 For advanced-level customization, you can set custom views to the component. This lets you tailor each aspect of the component to fit your exact needs and application aesthetics. You can create and define your views, layouts, and UI elements and then incorporate those into the component.
