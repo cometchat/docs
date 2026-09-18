@@ -407,7 +407,7 @@ The trailing section lives **inside** the rich-text toolbar — it is not render
 
 The `CometChatComposerInput` is valid only for the duration of the `onClick` call; don't retain it. The action itself is retained by the toolbar, so capture `self` weakly.
 
-The composer serializes to markdown on send. The built-in formats survive, and so does text colour — see [Colour that survives send](#colour-that-survives-send). Any other attribute you apply is composer-local: markdown has no representation for it, so it is dropped from the sent message. Use those for affordances that are meant to be transient, such as marking a range while the action's own picker or sheet is open.
+The composer serializes to markdown on send. The built-in formats survive. Every other attribute you apply is composer-local: markdown has no representation for it, so it is dropped from the sent message. Use attributes for affordances that are meant to be transient, such as marking a range while the action's own picker or sheet is open — and to send styling of your own, insert text your formatter understands. See [Sending styling of your own](#sending-styling-of-your-own).
 
 </Note>
 
@@ -417,14 +417,52 @@ Mutations apply immediately, but composer state that derives from the text — t
 
 An action that restyles a range will happily run over a mention or a link, which the Kit repaints on its own schedule — so your attribute is reverted on the next repaint anyway, and removing one of the Kit's attributes deletes it rather than restoring the Kit's value.
 
-The mutating methods therefore take `protectingKitRuns`, which defaults to `true`. With it on, the following are carved out of the target range and left untouched:
+The mutating methods therefore take `protectingKitRuns`, which defaults to `true`. With it on, **mention ranges** are carved out of the target range and left untouched; the mutation is applied to the gaps between them.
 
-- mentions
-- links, including a URL still being typed
-- inline code and code blocks, and any monospaced run
-- fully transparent runs, so an action cannot repaint hidden text into view
+<Warning>
 
-Pass `protectingKitRuns: false` to opt out and write over the whole range. To make a narrower decision yourself, read `mentionRanges` — the ranges are read at call time, so re-read them after a mutation rather than caching, as they shift with the text. Note that `mentionRanges` covers mentions only; the other carve-outs above have no public accessor.
+`protectingKitRuns` protects mentions, and only mentions. Links, inline code, code blocks and every other run the Kit repaints are **yours to skip** — the Kit leaves that decision to you, as the Android and Compose Kits do.
+
+If your action restyles a range that spans a link or a code block, do the check yourself before mutating.
+
+</Warning>
+
+To make that decision, read `mentionRanges` for mentions and `attributes(at:)` for everything else — inspect the run's own attributes (`.link`, the monospaced font, and so on) and narrow your range accordingly. Ranges are read at call time, so re-read them after a mutation rather than caching, as they shift with the text.
+
+Pass `protectingKitRuns: false` to opt out and write over the whole range in one go.
+
+Two behaviours worth knowing before you write an action:
+
+- `applyAttributes` is **additive**. It adds your keys and leaves existing ones in place, so a colour applied over bold text keeps the bold.
+- `removeAttributes` **strips keys rather than resetting values**. The text falls back to the input's own styling, not to a value you choose. To reset to something specific, call `applyAttributes` with it.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChatRichTextToolbarAction(
+    id: "highlight",
+    icon: UIImage(systemName: "highlighter")?.withRenderingMode(.alwaysTemplate),
+    accessibilityLabel: "Highlight"
+) { input in
+    // Highlighting applies to a selection; with only a caret there is nothing
+    // to restyle, so leave the text alone rather than guessing at a range.
+    guard input.hasSelection else { return }
+
+    // Mentions are skipped by default. This is composer-local: it marks the
+    // range on screen and is dropped on send.
+    input.applyAttributesToSelection([
+        .backgroundColor: UIColor.systemYellow.withAlphaComponent(0.3)
+    ])
+}
+```
+</Tab>
+</Tabs>
+
+#### Sending styling of your own
+
+Attributes are composer-local, so styling that has to reach the recipient travels as **text**, not as an `NSAttributedString` attribute. Your action inserts a token the message carries, and a `CometChatTextFormatter` — see [setTextFormatters](#settextformatters) below, and the [Mentions formatter guide](/ui-kit/ios/mentions-formatter-guide) for a worked subclass — renders that token in the bubble. The token and its rendering are both yours — the Kit carries the characters and stays out of the way.
+
+The documented convention for text colour is `{color:#hex}…{/color}`:
 
 <Tabs>
 <Tab title="Swift">
@@ -434,54 +472,27 @@ CometChatRichTextToolbarAction(
     icon: UIImage(systemName: "paintpalette")?.withRenderingMode(.alwaysTemplate),
     accessibilityLabel: "Red text"
 ) { input in
-    // Colouring applies to a selection; with only a caret there is nothing
-    // to restyle, so leave the text alone rather than guessing at a range.
     guard input.hasSelection else { return }
 
-    // Kit-owned runs are protected by default and keep their own styling.
-    input.applyAttributesToSelection([
-        .foregroundColor: UIColor.systemRed,
-        RichTextFormatterManager.textColorKey: UIColor.systemRed
-    ])
+    // Wrap the selection in a token your formatter understands. This is
+    // ordinary text, so it survives send.
+    input.replaceSelection("{color:#ff0000}\(input.selectedText){/color}")
 }
 ```
 </Tab>
 </Tabs>
 
-#### Colour that survives send
-
-Text colour is the one value-carrying style with a wire representation: the composer serializes it as `<color=#rrggbb>…</color>`, and the message bubble parses it back. Colour therefore reaches the recipient, unlike other attributes you might apply.
-
-Setting `.foregroundColor` on its own is not enough. That key is written by six different things — mentions, links, inline code, code blocks, ordinary text and the user — so it records nothing about *who* set it. `RichTextFormatterManager.textColorKey` is the marker that identifies a run the user deliberately coloured, and it is what the serializer looks for. Always write and remove the two together.
-
-<Tabs>
-<Tab title="Swift">
-```swift
-// Applies colour, and marks the run so it survives send.
-input.applyAttributesToSelection([
-    .foregroundColor: UIColor.systemRed,
-    RichTextFormatterManager.textColorKey: UIColor.systemRed
-])
-
-// Clearing colour removes both keys; the text falls back to the
-// composer's own colour rather than to a value hard-coded here.
-input.removeAttributesFromSelection([
-    .foregroundColor,
-    RichTextFormatterManager.textColorKey
-])
-```
-</Tab>
-</Tabs>
+`replaceSelection(_:)` degrades to an insertion when only a caret is placed, and leaves the caret after the inserted text.
 
 <Note>
 
-Use opaque colours. Only `#rgb` and `#rrggbb` are valid on the wire — eight-digit `#rrggbbaa` is rejected deliberately, since a fully transparent run would be an invisible message.
+Pair the button with a formatter that renders the token, on **every** platform your users are on. Without one the recipient sees the literal `{color:#ff0000}…{/color}` braces in the message.
 
-A translucent `UIColor` is **not** rejected locally: it renders in the composer, then is dropped on send, because a colour with alpha below 1 has no wire representation. That is the silent loss this section exists to prevent, so pass a fully opaque colour.
+Because the token is plain text, a user can also type it by hand, and it will render the same way. Choose a delimiter you are comfortable having interpreted anywhere it appears.
 
 </Note>
 
-The UI Kit ships no colour button of its own: the wire format and the serializer are provided, the button is yours. That is what the trailing-actions slot is for.
+The UI Kit ships no colour button of its own, and no colour parsing: the composer handle and the formatter API are provided, the token and its rendering are yours. That is what the trailing-actions slot is for.
 
 ---
 
