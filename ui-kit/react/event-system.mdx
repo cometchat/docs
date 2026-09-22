@@ -7,7 +7,7 @@ description: "Unified pub/sub event system that merges SDK listener events with 
 
 | Field | Value |
 | --- | --- |
-| Subscribe hook | `useCometChatEvents((event) => { ... })` |
+| Subscribe hook | `useCometChatEvents((event) => { ... }, [deps])` — `deps` is required |
 | Publish hook | `const publish = usePublishEvent()` |
 | Provider | `CometChatEventsProvider` (mounted automatically by `CometChatProvider` after login) |
 | Event prefix | SDK events: `message/`, `receipt/`, `user/`, `group/`, `call/`, `connection/`, `conversation/` |
@@ -63,16 +63,33 @@ function MyComponent() {
         console.log("User online:", event.user.getName());
         break;
       case "ui:message/sent":
-        console.log("Message sent:", event.message.getId());
+        // Fires once per send stage — filter to avoid handling the same message twice.
+        if (event.status === "success") {
+          console.log("Message sent:", event.message.getId());
+        }
         break;
     }
-  });
+  }, []);
 
   return <div>...</div>;
 }
 ```
 
 The hook automatically subscribes on mount and unsubscribes on unmount. No cleanup needed.
+
+<Warning>
+**`deps` is a required second argument.** It is not optional.
+
+Pass `[]` when the handler closes over nothing that changes, exactly as you would for `useEffect`. The handler reference itself is held in a ref and stays current on every render, so it never needs to appear in `deps` — list only the external values the handler reads, such as a conversation ID.
+
+```tsx
+useCometChatEvents((event) => {
+  if (event.type === "message/text-received" && event.message.getReceiverId() === conversationId) {
+    // ...
+  }
+}, [conversationId]);
+```
+</Warning>
 
 ---
 
@@ -213,6 +230,28 @@ These events are published by UI Kit components for local cross-component commun
 | `ui:message/deleted` | `{ message }` | MessageList (after delete) |
 | `ui:message/read` | `{ message }` | MessageList (mark as read) |
 
+<Warning>
+**`ui:message/sent` fires more than once per message.** It is emitted at each stage of the send, so a handler that does not filter on `status` runs twice for every message:
+
+| `status` | When | `message` |
+| --- | --- | --- |
+| `"inprogress"` | Optimistically, before the SDK confirms | The local object — **`getId()` is still undefined** |
+| `"success"` | After the SDK confirms the send | The server's message, with its real ID |
+| `"error"` | The send failed | The local object, with `error` in its metadata |
+
+Filter on the stage you care about — `status === "success"` for a confirmed send:
+
+```tsx
+useCometChatEvents((event) => {
+  if (event.type === "ui:message/sent" && event.status === "success") {
+    analytics.track("message_sent", { id: event.message.getId() });
+  }
+}, []);
+```
+
+This matters most when porting a v6 `ccMessageSent` subscription, which fired once. Without the `status` check the same message is counted twice — once with no ID, then again with one.
+</Warning>
+
 ### Pin and Save (optimistic)
 
 Published by the message options the moment a pin/save succeeds locally, before the network echo. Pinned/Saved panels and the message list listen to these so every surface flips together.
@@ -309,6 +348,6 @@ Published when a user clicks an action (button, link, etc.) inside a card messag
 | --- | --- |
 | Multiple RxJS Subject classes (`CometChatMessageEvents`, `CometChatGroupEvents`, etc.) | Single unified event bus |
 | `CometChatMessageEvents.ccMessageSent.next(...)` | `publish({ type: 'ui:message/sent', ... })` |
-| `CometChatMessageEvents.ccMessageSent.subscribe(...)` | `useCometChatEvents((e) => { if (e.type === 'ui:message/sent') ... })` |
+| `CometChatMessageEvents.ccMessageSent.subscribe(...)` | `useCometChatEvents((e) => { if (e.type === 'ui:message/sent' && e.status === 'success') ... }, [])` |
 | Manual listener management | Automatic — provider handles all SDK listeners |
 | RxJS dependency | No external dependencies |
