@@ -390,6 +390,8 @@ This section provides a complete reference of all @Input properties, @Output eve
 | `hideCopyMessageOption` | `boolean` | `false` | Hides the "Copy" option from message context menu (only shown for text messages). |
 | `hideMessageInfoOption` | `boolean` | `false` | Hides the "Message Info" option from message context menu. |
 | `hideModerationView` | `boolean` | `false` | Hides moderation status indicators on messages. |
+| `additionalOptions` | `CometChatActionsIcon[]` | `[]` | Extra options appended to the context menu of **every** message. Use `optionsOverride` when the options need to vary per message. |
+| `optionsOverride` | `(message, defaultOptions) => CometChatActionsIcon[]` | `undefined` | Per-message hook. Receives the message and the options the kit computed for it, and returns the final list — so you can add, remove, reorder or relabel options for one message without affecting the rest. |
 
 #### Custom View Properties (Templates)
 
@@ -432,6 +434,33 @@ This section provides a complete reference of all @Input properties, @Output eve
 | `messagePrivatelyClick` | `{ message: CometChat.BaseMessage, user: CometChat.User }` | Emitted when "Message Privately" option is clicked in a group chat. |
 | `replyClick` | `CometChat.BaseMessage` | Emitted when the "Reply" option is clicked on a message. Handle this to show reply preview in composer. |
 | `threadSubscriptionChange` | `IThreadSubscriptionChanged` | Emitted when a thread's follow state changes — from this list, from the thread header, or from a server-side auto-subscribe. Payload: `{ parentMessageId: number, subscribed: boolean }`. |
+
+### Real-Time Message Updates
+
+`<cometchat-message-list>` keeps already-rendered bubbles in sync on its own. You do **not**
+need to track edits and repaint them yourself.
+
+| Change | Handled automatically? | How |
+| ------ | ---------------------- | --- |
+| A message is edited by **another user** | Yes | The SDK's `onMessageEdited` listener replaces the message object in the list. |
+| A message is edited by the **logged-in user** | Yes | The kit's `ccMessageEdited` event replaces the message object in the list. |
+| A message is deleted | Yes | The bubble switches to the deleted state. |
+| Reactions change | Yes | Reaction counts update in place. |
+
+This applies to **custom message types as well as built-in ones**. The list replaces the
+message object by ID without inspecting its `type` or `category`, and the bubble re-renders
+from the new object — so a custom type that mutates after it is sent, such as a live-location
+message, repaints without any work on your side.
+
+<Note>
+Two limits worth knowing:
+
+* Only messages **already loaded into the list** are updated. An edit to a message that has
+  not been paginated into view yet is a no-op — it arrives with the correct content when the
+  user scrolls to it.
+* An edit replaces the whole message object. If you hold your own reference to a message,
+  re-read it from the event payload rather than mutating the copy you captured earlier.
+</Note>
 
 ### Thread Subscription
 
@@ -1508,6 +1537,63 @@ Control how many options appear directly on the message bubble (without opening 
   [quickOptionsCount]="3"
 ></cometchat-message-list>
 ```
+
+#### Per-Message Options with `optionsOverride`
+
+`additionalOptions` is a single static array shared by every message. When an option's
+presence or label depends on the message itself — "Pin" on an unpinned message and "Unpin"
+on a pinned one — use `optionsOverride` instead. It runs per message and receives the
+options the kit already computed, so you return the final list rather than rebuilding it:
+
+```typescript expandable
+import { Component } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatMessageListComponent,
+  CometChatActionsIcon,
+} from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-per-message-options',
+  standalone: true,
+  imports: [CometChatMessageListComponent],
+  template: `
+    <cometchat-message-list
+      [user]="user"
+      [optionsOverride]="optionsOverride"
+    ></cometchat-message-list>
+  `
+})
+export class PerMessageOptionsComponent {
+  user?: CometChat.User;
+
+  // Arrow property, not a method — it is passed by reference into the input.
+  optionsOverride = (
+    message: CometChat.BaseMessage,
+    defaultOptions: CometChatActionsIcon[]
+  ): CometChatActionsIcon[] => {
+    const isStarred = Boolean(message.getTags()?.includes('starred'));
+
+    const starOption = new CometChatActionsIcon({
+      id: isStarred ? 'unstar' : 'star',
+      title: isStarred ? 'Remove star' : 'Star message',
+      iconURL: isStarred ? 'assets/unstar.svg' : 'assets/star.svg',
+      onClick: () => this.toggleStar(message),
+    });
+
+    return [...defaultOptions, starOption];
+  };
+
+  private toggleStar(message: CometChat.BaseMessage): void {
+    // your own call — e.g. CometChat.callExtension(...)
+  }
+}
+```
+
+<Note>
+`optionsOverride` returns the complete list for that message. Spread `defaultOptions` into
+your return value unless you intend to replace the kit's options entirely.
+</Note>
 
 #### Handling Option Events
 
