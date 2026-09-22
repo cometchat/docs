@@ -86,15 +86,17 @@ Most of this page maps v6 to v7. These props existed in an earlier **v7** releas
 
 #### Porting a v6 formatter
 
-How much work this is depends entirely on what your formatter does. There are three cases:
+**The rule: in v7 a formatter works on text, never on the message.** `format(text)` goes in, a string comes out. Composer-side formatters still get live-input access — the composer assigns `inputElementReference`, calls `initializeComposerTracking()`, fans keystrokes to `onKeyUp()`/`onKeyDown()`, and provides `getCaretPosition()`/`setCaretPosition()`. What no longer reaches a formatter is the **message object and the logged-in user**, so every v6 member carrying that context is gone — along with the v6 hooks the kit used to call, which v7 replaced or dropped.
+
+That splits a v6 formatter into one part that carries over and two that do not:
 
 | What your v6 formatter does | On v7 |
 | --- | --- |
-| Transforms text — overrides `customLogicToFormatText()` | **Works unchanged.** Add `readonly id` for TypeScript |
-| **Calls** `setStyle()`, `setClasses()`, `setCssClassMapping()` | **Throws** `TypeError: … is not a function`. Delete the calls |
-| **Overrides** `formatMessageForSending()` | **Silently stops running.** Needs a rewrite — see below |
+| Transforms text by overriding `customLogicToFormatText()` | **Works unchanged.** Add `readonly id` for TypeScript |
+| **Calls** a removed helper | **Throws** `TypeError: … is not a function` — loud, easy to find |
+| **Overrides** a removed hook, or **reads** a removed context field | **Silently does nothing.** No error; the code just never runs |
 
-**1. Text transforms still work.** v7's `format()` delegates to `getFormattedText()` and then to `customLogicToFormatText()` — the same override point v6 used. `id` is the only abstract member on v7's `CometChatTextFormatter`, so a v6 subclass fails to compile with `TS2515: … does not implement inherited abstract member id`. Add one and it compiles:
+**What still works.** v7's `format()` delegates to `getFormattedText()` and then to `customLogicToFormatText()` — the same override point v6 used. `id` is the only abstract member, so a v6 subclass fails to compile with `TS2515: … does not implement inherited abstract member id` until you add one:
 
 ```tsx
 export class HashtagFormatter extends CometChatTextFormatter {
@@ -105,16 +107,29 @@ export class HashtagFormatter extends CometChatTextFormatter {
 }
 ```
 
-Plain JavaScript runs without an `id` at all, but declare one anyway — it is how the pipeline identifies your formatter.
+Plain JavaScript runs without an `id`, but declare one anyway — it is how the pipeline identifies your formatter.
 
-**2. Removed helpers fail loudly.** `setStyle()`, `setClasses()`, `setCssClassMapping()`, `getFormattedTextForEntity()`, `setMessage()` and `setLoggedInUser()` do not exist in v7. Calling one throws immediately, so these are easy to find and delete. Apply styling with CSS against your own class names instead.
+**Removed helpers — these throw when called.** Delete the calls.
+
+`setStyle()` · `getStyle()` · `setClasses()` · `setCssClassMapping()` · `setId()` · `getId()` · `setMessage()` · `getMessage()` · `setLoggedInUser()` · `getLoggedInUser()` · `setComposerConfig()` · `getComposerConfig()` · `setMessageBubbleAlignment()` · `getMessageBubbleAlignment()` · `setCaretPositionAndRange()` · `addAtCaretPosition()` · `getPrecedingText()` · `checkPreviousCharacterUsingRange()` · `debounce()` · `cleanup()` · `stopTracking()` · `getKeyUpCallBack()` · `getKeyDownCallBack()`
+
+Apply styling with CSS against your own class names rather than `setStyle`/`setClasses`.
 
 <Warning>
-**3. `formatMessageForSending()` is the one that fails quietly.** In v6 this was a hook the composer called on your formatter just before sending, so you could attach metadata or tags to the outgoing message.
+**Removed hooks and context — these fail silently.** Your method or field is still on your class, so nothing throws. It is simply never called or never populated.
 
-v7 has no such hook. Formatters only ever receive and return **text** — no method on a v7 formatter is given the message object. Your `formatMessageForSending()` is still defined on your class, so nothing throws; it simply never runs, and whatever it was attaching silently stops being attached.
+**Hooks nothing calls any more:** `onRegexMatch()` · `registerEventListeners()` · `formatMessageForSending()` · `getFormattedTextForEntity()`
 
-Nothing in the composer flags this. If your formatter added metadata at send time, move that logic into your own send path — for example, set it on the message before `CometChatUIKit.sendTextMessage()`.
+**Renamed live-input hook:** `formatTextOnKeyUp()` and `debouncedFormatTextOnKeyUp()` are gone — v7 calls `formatText()` instead, and only when you override it. Move that logic to `formatText()`. `onKeyUp()` and `onKeyDown()` are unchanged and still called.
+
+**Context fields nothing populates any more:** `messageObject` · `loggedInUser` · `user` · `group` · `composerId` · `messageBubbleAlignment` · `classes` · `cssClassMapping` · `textStyle` · `timeoutID`
+
+**Caret fields with a v7 replacement:** `currentCaretPosition` and `currentRange` are gone, but caret access is not — use `getCaretPosition()` and `setCaretPosition()`.
+
+This is the category to audit, because nothing surfaces it. Two common cases from the v6 guides:
+
+- **The v6 URL formatter pattern** — [that guide](/ui-kit/react/v6/url-formatter-guide) has you override `onRegexMatch()` and `registerEventListeners()`. In v7 neither is called: the formatter compiles, formats nothing, and attaches no click handlers. Move the transform into `customLogicToFormatText()` and attach click handling yourself.
+- **`formatMessageForSending()`** — in v6 the composer called this just before sending so you could attach metadata or tags to the outgoing message. v7 has no equivalent. Move that logic into your own send path, setting it on the message before `CometChatUIKit.sendTextMessage()`.
 </Warning>
 
 See [Text Formatters](/ui-kit/react/plugins/text-formatters) for the full v7 interface.
