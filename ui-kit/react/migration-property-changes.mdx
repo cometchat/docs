@@ -22,7 +22,7 @@ These 8 patterns apply across all components. You do not need to look them up pe
 | 2 | Date format type | `CalendarObject` | `CometChatDateFormatConfig` | Same shape, type alias renamed |
 | 3 | `hideError` prop (list & other components) | `boolean` | Removed | Use `errorView` prop instead — **retained on `CometChatMessageComposer`** |
 | 4 | `disableLoadingState` prop | `boolean` | Removed | Use `loadingView` prop instead |
-| 5 | `textFormatters` on list components | `CometChatTextFormatter[]` | `CometChatTextFormatter[]` | Prop removed in 7.0.0 and **back in 7.2.0** on `CometChatConversations`, `CometChatMessageList` and `CometChatThreadHeader` — but formatter classes must be ported to the v7 `CometChatTextFormatter` API. On 7.0.x–7.1.x the prop is unavailable |
+| 5 | `textFormatters` on list components | `CometChatTextFormatter[]` | `CometChatTextFormatter[]` | Prop removed in 7.0.0 and **back in 7.2.0** on `CometChatConversations`, `CometChatMessageList` and `CometChatThreadHeader`. Display-only v6 formatters still work; see [Porting a v6 formatter](#porting-a-v6-formatter). On 7.0.x–7.1.x the prop is unavailable |
 | 6 | `templates` prop | `CometChatMessageTemplate[]` | Removed | Handled by plugin system |
 | 7 | `className` prop | Not available | `string` | New on all components — for custom styling |
 | 8 | `children` prop | Not available | `ReactNode` | New on many components — for compound composition |
@@ -60,7 +60,7 @@ Most of this page maps v6 to v7. These props existed in an earlier **v7** releas
 | `onEmpty` | `() => void` | 7.0.0 | Called when conversation list is empty |
 | `searchRequestBuilder` | `ConversationsRequestBuilder` | 7.0.0 | Builder for search filtering |
 | `searchKeyword` | `string` | 7.0.0 | Controlled search keyword |
-| `textFormatters` | `CometChatTextFormatter[]` | 7.2.0 | Prop name is back, but formatter classes must be ported to the v7 `CometChatTextFormatter` API |
+| `textFormatters` | `CometChatTextFormatter[]` | 7.2.0 | Display-only v6 formatters still work — see [Porting a v6 formatter](#porting-a-v6-formatter) |
 | `hidePinConversation` | `boolean` | 7.2.0 | Hide the pin/unpin conversation option |
 
 ---
@@ -81,8 +81,43 @@ Most of this page maps v6 to v7. These props existed in an earlier **v7** releas
 | `hideError` | Use `errorView` prop |
 
 <Note>
-`textFormatters` was removed in 7.0.0 and the prop is **back in 7.2.0** — but the class behind it was rewritten, so formatter classes must be ported to the v7 `CometChatTextFormatter` API. v7 declares `id`, `getRegex()` and `format()` as abstract members, so a v6 subclass does not compile; in plain JavaScript it fails silently instead. v6-only hooks such as `formatMessageForSending()`, `setClasses()` and `setStyle()` no longer exist. See [Text Formatters](/ui-kit/react/plugins/text-formatters) for the v7 interface. On 7.0.x–7.1.x the prop is unavailable and formatting must go through a plugin.
+`textFormatters` was removed in 7.0.0 and the prop is **back in 7.2.0**. On 7.0.x–7.1.x it is unavailable and formatting must go through a plugin. Your v6 formatter classes do not all need rewriting — see [Porting a v6 formatter](#porting-a-v6-formatter) for which parts still work.
 </Note>
+
+#### Porting a v6 formatter
+
+How much work this is depends entirely on what your formatter does. There are three cases:
+
+| What your v6 formatter does | On v7 |
+| --- | --- |
+| Transforms text — overrides `customLogicToFormatText()` | **Works unchanged.** Add `readonly id` for TypeScript |
+| **Calls** `setStyle()`, `setClasses()`, `setCssClassMapping()` | **Throws** `TypeError: … is not a function`. Delete the calls |
+| **Overrides** `formatMessageForSending()` | **Silently stops running.** Needs a rewrite — see below |
+
+**1. Text transforms still work.** v7's `format()` delegates to `getFormattedText()` and then to `customLogicToFormatText()` — the same override point v6 used. `id` is the only abstract member on v7's `CometChatTextFormatter`, so a v6 subclass fails to compile with `TS2515: … does not implement inherited abstract member id`. Add one and it compiles:
+
+```tsx
+export class HashtagFormatter extends CometChatTextFormatter {
+  readonly id = "hashtag"; // the only thing v7 adds
+  customLogicToFormatText(text: string): string {
+    return text.replace(/#(\w+)/g, '<span class="hashtag">#$1</span>');
+  }
+}
+```
+
+Plain JavaScript runs without an `id` at all, but declare one anyway — it is how the pipeline identifies your formatter.
+
+**2. Removed helpers fail loudly.** `setStyle()`, `setClasses()`, `setCssClassMapping()`, `getFormattedTextForEntity()`, `setMessage()` and `setLoggedInUser()` do not exist in v7. Calling one throws immediately, so these are easy to find and delete. Apply styling with CSS against your own class names instead.
+
+<Warning>
+**3. `formatMessageForSending()` is the one that fails quietly.** In v6 this was a hook the composer called on your formatter just before sending, so you could attach metadata or tags to the outgoing message.
+
+v7 has no such hook. Formatters only ever receive and return **text** — no method on a v7 formatter is given the message object. Your `formatMessageForSending()` is still defined on your class, so nothing throws; it simply never runs, and whatever it was attaching silently stops being attached.
+
+Nothing in the composer flags this. If your formatter added metadata at send time, move that logic into your own send path — for example, set it on the message before `CometChatUIKit.sendTextMessage()`.
+</Warning>
+
+See [Text Formatters](/ui-kit/react/plugins/text-formatters) for the full v7 interface.
 
 ### New Props
 
@@ -186,7 +221,7 @@ Most of this page maps v6 to v7. These props existed in an earlier **v7** releas
 | --- | --- | --- | --- |
 | `onParentDeleted` | `() => void` | 7.0.0 | Called when parent message is deleted |
 | `headerView` | `ReactNode` | 7.0.0 | Custom header content |
-| `textFormatters` | `CometChatTextFormatter[]` | 7.2.0 | Prop name is back, but formatter classes must be ported to the v7 `CometChatTextFormatter` API |
+| `textFormatters` | `CometChatTextFormatter[]` | 7.2.0 | Display-only v6 formatters still work — see [Porting a v6 formatter](#porting-a-v6-formatter) |
 | `hideThreadSubscriptionToggle` | `boolean` | 7.2.0 | Hide the thread-subscription bell |
 | `onThreadSubscriptionChange` | `(subscribed: boolean) => void` | 7.2.0 | Thread subscribe/unsubscribe callback |
 
