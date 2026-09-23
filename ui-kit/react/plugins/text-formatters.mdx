@@ -26,34 +26,190 @@ Raw text: "Hey **@Alice**, check https://example.com"
 
 ## The Formatter Interface
 
-All formatters extend the abstract `CometChatTextFormatter` class. `id` is its only abstract member — everything else has a working default, so a v6 formatter that only transforms text carries over with an `id` added. See [Porting a v6 formatter](/ui-kit/react/migration-property-changes#porting-a-v6-formatter) for the cases that do need changes.
+All formatters extend the abstract `CometChatTextFormatter` class. **`id` is its only abstract member** — everything else has a working default, so the smallest useful formatter is an `id` plus one transform method.
+
+Porting from v6? Read this page for the class, then [Porting a v6 formatter](/ui-kit/react/migration-property-changes#porting-a-v6-formatter) for the members v6 had that v7 does not.
+
+### Where your formatter runs
+
+A formatter can take part in two independent pipelines. Display is the common case; live input is opt-in.
+
+| Pipeline | What runs | Where it shows |
+| --- | --- | --- |
+| **Display** (text → HTML) | `format()` → `getFormattedText()` → `customLogicToFormatText()` | Text and caption bubbles, conversation subtitles, reply and edit previews, saved messages, search results |
+| **Live input** (composer typing) | The composer assigns `inputElementReference`, calls `initializeComposerTracking()`, then `onKeyUp()`/`onKeyDown()` on every keystroke — **only when [`enableRichTextEditor`](/ui-kit/react/components/message-composer#enablerichtexteditor) is set** | The message composer's editable input |
+
+Formatters run in `priority` order (lower first), each receiving the previous one's output.
+
+<Warning>
+**The built-ins run alongside yours.** Markdown (10), mentions (20) and URL (100) are always in the pipeline, so a formatter that matches what a built-in already produced will process it twice. A ported v6 URL formatter is the common case: both it and `CometChatUrlFormatter` match the same URL, and the second one rewrites the first one's `<a>` into broken markup. Drop your own URL handling in favour of the built-in, or give your formatter a pattern and `priority` that keep it clear of the built-ins' output.
+</Warning>
+
+<Warning>
+**Errors inside the display pipeline are caught, and your formatter is dropped.** Text bubbles log `console.warn("CometChatTextBubble: Error applying text formatter")` and skip it; conversation subtitles, reply and edit previews, saved messages and search results swallow the error silently. A formatter that renders nothing is usually a formatter that threw — check the console before assuming it was never registered.
+</Warning>
+
+### Display members
+
+| Member | Called by | Default behaviour | Override when |
+| --- | --- | --- | --- |
+| `abstract readonly id: string` | the kit, to key the formatter map | none — you must declare it | always; see [Ids](#ids-must-be-unique) |
+| `priority: number` | the kit, to order the pipeline | `100` | you need to run before or after a built-in |
+| `shouldFormat(text, message?): boolean` | text bubbles, before formatting | `true` | you want to skip formatting for specific text. Two limits: only the message bubble checks it (subtitles and previews do not), and the kit always calls it with text alone — `message` is never populated |
+| `format(text): string` | the kit, per render | stores `originalText`, returns `getFormattedText(text)` | you want full control of the transform |
+| `getFormattedText(inputText?): string` | `format()` | with an argument, returns `customLogicToFormatText(inputText)`; without one, returns the last formatted text | rarely — prefer `customLogicToFormatText` |
+| `customLogicToFormatText(text): string` | `getFormattedText()` | identity | **the usual override point** |
+| `getRegex(): RegExp` | you, and some built-ins | first of `regexPatterns`, else a never-matching pattern | you match a single pattern |
+| `getOriginalText(inputText?): string` | you | strips this formatter's markup using `regexToReplaceFormatting` (group 1 kept) | your markup needs custom stripping |
+| `getMetadata()` / `metadata` | you | returns what you stored during formatting | you want to expose extracted data |
+| `reset(): void` | you | clears `originalText`, `formattedText` and `metadata` | you keep extra state — call `super.reset()` |
+
+The display pipeline never receives the message object or the logged-in user. A formatter sees text only.
+
+### Live-input members
+
+Only relevant if your formatter drives the composer's editable input. Display-only formatters ignore this section.
+
+<Warning>
+**Live input requires `enableRichTextEditor` on the composer.** The composer binds formatters to its editor — assigning `inputElementReference`, calling `initializeComposerTracking()` and fanning keystrokes — only when the rich-text editor is active. Without that prop, `inputElementReference` stays `null`, `onKeyUp()`/`onKeyDown()` are never called and `formatText()` does nothing, with no error. Display formatting is unaffected and works either way.
+</Warning>
+
+| Member | Called by | Notes |
+| --- | --- | --- |
+| `inputElementReference` | the composer assigns it | The contenteditable element. Do not set it by hand |
+| `initializeComposerTracking()` | the composer, after assigning the reference | No-op by default. Override for one-time setup |
+| `onKeyUp(event)` / `onKeyDown(event)` | the composer, every keystroke | Default forwards to the callbacks set by `setKeyUpCallBack()` / `setKeyDownCallBack()` |
+| `formatText()` | the composer, when entering rich-text edit mode | Default replaces the input's `innerHTML` with `getFormattedText(text)`, which **flattens other formatting** such as bold and mentions. Override to edit only the matched text nodes |
+| `getCaretPosition()` / `setCaretPosition(position)` | you | Kit-provided defaults; structure-aware, so they survive wrapping. Override only for exotic needs |
+| `setTrackingCharacter()` / `trackCharacter` | you | The character that starts tracking, e.g. `#`. Starts empty |
+| `setRegexPatterns()` / `getRegexPatterns()` | you | Patterns this formatter matches. Starts empty |
+| `setRegexToReplaceFormatting()` | you | Patterns that strip your markup back to storable text |
+| `setKeyUpCallBack()` / `setKeyDownCallBack()` | you | Register keystroke handlers |
+| `setReRender()` / `reRender()` | you | Ask the composer to re-render after you mutate the DOM |
+| `startTracking` | you | Convenience flag; the formatter manages it |
+
+<Note>
+**v7 does not reformat the live input on keystrokes by itself.** The base `onKeyUp()` only forwards to your callback, and `formatText()` runs only on entering rich-text edit mode. To reformat as the user types, call `formatText()` from your own `onKeyUp()` override or from the callback you register.
+</Note>
+
+### The full class
+
+Every member of the class, annotated with who calls it and what the default does. "Called by the kit" means the UI Kit invokes it on your formatter, so overriding it takes part in the pipeline; "called by you" means nothing invokes it for you.
 
 ```typescript
 abstract class CometChatTextFormatter {
-  /** Unique identifier. */
-  abstract readonly id: string;
-
-  /** Priority in the pipeline (lower = runs first). Default: 100. */
+  /** Pipeline order; lower runs first. Built-ins: markdown 10, mentions 20, URL 100. Default: 100. */
   priority: number;
 
-  /** Regex pattern for detecting formattable content. Defaults to the first of `regexPatterns`. */
-  getRegex(): RegExp;
+  /** Unique identifier. The only abstract member — you must declare it. Keys the formatter map,
+   *  so a duplicate id drops the earlier formatter and a built-in id replaces that built-in. */
+  abstract readonly id: string;
 
-  /** Transform the input text. Default stores state and delegates to
-      getFormattedText() -> customLogicToFormatText(), so a v6-style formatter
-      need only override customLogicToFormatText. */
+  /** The text passed to the last format() call. Set for you by the default format(). */
+  protected originalText: string;
+
+  /** The result of the last format() call. Set for you by the default format(). */
+  protected formattedText: string;
+
+  /** Anything you extract while formatting (mentions, URLs, hashtags). Yours to populate. */
+  protected metadata: Record<string, unknown>;
+
+  // --- Display pipeline (text -> HTML) ---
+
+  /** Called by the kit, per render. Default: stores originalText, returns getFormattedText(text).
+   *  Override for full control of the transform. */
   format(text: string): string;
 
-  /** The display transform. Default: identity. The usual override point. */
+  /** Called by format(). With an argument, returns customLogicToFormatText(inputText); without one,
+   *  returns the text from the last format(). Override to transform, but keep this exact signature:
+   *  it must return a string, and v7 passes exactly one argument. */
+  getFormattedText(inputText?: string): string;
+
+  /** Called by getFormattedText(). Default: identity. The usual override point — put your
+   *  text-to-HTML transform here. */
   customLogicToFormatText(text: string): string;
 
-  /** Whether this formatter should process the given text. Override to skip conditionally. */
-  shouldFormat(text: string, message?: BaseMessage): boolean;
+  /** Called by the kit from text bubbles only, before formatting; subtitles and previews skip it.
+   *  Default: true. Override to skip formatting for specific text. NOTE: the kit calls this with
+   *  text alone — the optional `message` is never passed, so it cannot be used for context. */
+  shouldFormat(text: string, message?: CometChat.BaseMessage): boolean;
 
-  /** Reset internal state. */
+  /** Called by you, and by some built-ins. Default: the first entry of regexPatterns, or a
+   *  never-matching pattern when none is set. Override when you match a single pattern. */
+  getRegex(): RegExp;
+
+  /** Called by you. With an argument, strips this formatter's markup back to storable text using
+   *  regexToReplaceFormatting (group 1 kept); without one, returns the last original text. */
+  getOriginalText(inputText?: string): string;
+
+  /** Called by you. Returns whatever you stored in metadata while formatting. */
+  getMetadata(): Record<string, unknown>;
+
+  /** Called by you. Clears originalText, formattedText and metadata. Call super.reset() when you
+   *  override it to clear your own state too. */
   reset(): void;
+
+  // --- Live composer input (optional; display-only formatters ignore all of this) ---
+
+  /** Assigned by the composer — the contenteditable input element. Do not set it by hand. */
+  inputElementReference: HTMLElement | null;
+
+  /** The character that starts a tracking session, e.g. '#'. Starts as '' — set it yourself. */
+  trackCharacter: string;
+
+  /** Convenience flag for "a tracking session is active". The formatter manages it. */
+  startTracking: boolean;
+
+  /** Patterns this formatter matches. Starts as [] — set via setRegexPatterns(). */
+  protected regexPatterns: RegExp[];
+
+  /** Patterns that strip this formatter's markup back to storable text (group 1 kept). */
+  protected regexToReplaceFormatting: RegExp[];
+
+  /** Callbacks you register; the default onKeyUp/onKeyDown/reRender delegate to them. */
+  protected keyUpCallBack?: (event: KeyboardEvent) => void;
+  protected keyDownCallBack?: (event: KeyboardEvent) => void;
+  protected reRenderCallBack?: () => void;
+
+  /** Called by the composer, after it assigns inputElementReference. No-op by default.
+   *  Override for one-time setup. NOTE: the composer only binds formatters — this method,
+   *  inputElementReference and the keystroke fan-out below — when enableRichTextEditor is set. */
+  initializeComposerTracking(): void;
+
+  /** Called by the composer on every keystroke. Default: forwards to the callback registered with
+   *  setKeyUpCallBack() / setKeyDownCallBack(). Note v7 does NOT reformat as you type — call
+   *  formatText() from here (or from your callback) if you want live formatting. */
+  onKeyUp(event: KeyboardEvent): void;
+  onKeyDown(event: KeyboardEvent): void;
+
+  /** Called by the composer when it enters rich-text edit mode — never on keystrokes.
+   *  Default: replaces the input's innerHTML with getFormattedText(text), which FLATTENS other
+   *  formatting such as bold and mentions. Override to edit only the matched text nodes. */
+  formatText(): void;
+
+  /** Called by you. Kit-provided caret helpers: a character offset within the input, structure-aware
+   *  so they stay correct after your wrapping introduces nested elements. */
+  getCaretPosition(): number;
+  setCaretPosition(position: number): void;
+
+  /** Called by you, normally from your constructor, to configure the members above. */
+  setInputElementReference(element: HTMLElement | null): void;
+  setTrackingCharacter(character: string): void;
+  setRegexPatterns(patterns: RegExp[]): void;
+  getRegexPatterns(): RegExp[];
+  setRegexToReplaceFormatting(patterns: RegExp[]): void;
+  setKeyUpCallBack(callback: (event: KeyboardEvent) => void): void;
+  setKeyDownCallBack(callback: (event: KeyboardEvent) => void): void;
+
+  /** Register a re-render callback, then call reRender() after you mutate the input's DOM. */
+  setReRender(callback: () => void): void;
+  reRender(): void;
 }
 ```
+
+### Ids must be unique
+
+The kit merges formatters into a map keyed by `id`. Two formatters with the same id leave only the last one, and reusing a built-in id — `markdown-formatter`, `mentions-formatter`, `url-formatter` — replaces that built-in. Plain JavaScript will run a formatter with no `id`, but every id-less formatter collapses onto the same key, so always declare one.
 
 ## Creating a Custom Formatter
 
