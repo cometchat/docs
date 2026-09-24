@@ -47,6 +47,8 @@ abstract class CometChatTextFormatter {
   // Core methods
   setTrackingCharacter(char: string): void;
   setRegexPatterns(pattern: RegExp): void;
+  /** Runs on the RAW message text, before any of the UI Kit's own parsing. Return a string. */
+  formatRawText(text: string): string;
   getFormattedText(inputText: string | null | JSX.Element): string | null | JSX.Element;
   handlePreMessageSend(message: CometChat.TextMessage): CometChat.TextMessage;
   search(searchKey: string): void;
@@ -71,184 +73,117 @@ import { CometChatTextFormatter, SuggestionItem } from "@cometchat/chat-uikit-re
 class HashTagTextFormatter extends CometChatTextFormatter {
   constructor() {
     super();
-    this.setTrackingCharacter("#");
-    this.setRegexPatterns(/\B#(\w+)\b/g);
+    this.setId("hashtag-formatter");
+    // A tracking character opens the suggestion list as the user types it. This formatter
+    // only styles text, so it tracks nothing — see the Advanced section for suggestions.
+    this.setTrackingCharacter("");
   }
 }
 ```
 
-### 3. Implement formatting methods
+### 3. Match the pattern in `formatRawText`
 
-Override `getFormattedText` to apply custom styling to matched patterns:
+`formatRawText()` receives the **raw message text as a string**, before any of the UI Kit's own parsing, and returns a string. Rewrite your pattern into markup the UI Kit already draws — here, color and bold:
 
 ```tsx
-import React from "react";
-import { Text } from "react-native";
-
 class HashTagTextFormatter extends CometChatTextFormatter {
   constructor() {
     super();
-    this.setTrackingCharacter("#");
-    this.setRegexPatterns(/\B#(\w+)\b/g);
+    this.setId("hashtag-formatter");
+    // No suggestion list for this formatter, so it tracks no character.
+    this.setTrackingCharacter("");
   }
 
-  getFormattedText(inputText: string | null | JSX.Element): string | null | JSX.Element {
-    if (!inputText || typeof inputText !== "string") {
-      return inputText;
-    }
-
-    const regex = this.getRegexPattern();
-    const parts: (string | JSX.Element)[] = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = regex.exec(inputText)) !== null) {
-      // Add text before the match
-      if (match.index > lastIndex) {
-        parts.push(inputText.slice(lastIndex, match.index));
-      }
-
-      // Add styled hashtag
-      parts.push(
-        <Text key={match.index} style={{ color: "#5dff05", fontWeight: "bold" }}>
-          #{match[1]}
-        </Text>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text
-    if (lastIndex < inputText.length) {
-      parts.push(inputText.slice(lastIndex));
-    }
-
-    return <Text>{parts}</Text>;
+  formatRawText(text: string): string {
+    // <color=…> is the UI Kit's color markup; ** ** is bold.
+    return text.replace(/\B#(\w+)\b/g, "<color=#5dff05>**#$1**</color>");
   }
 }
-
-export default HashTagTextFormatter;
 ```
+
+<Warning>
+Do **not** put the pattern matching in `getFormattedText()`. That method runs **after** the built-in Markdown formatter, which hands it **JSX** rather than a string — so the usual `if (typeof inputText !== "string") return inputText;` guard returns early and your formatter silently does nothing on any message containing `_`, `**`, `- `, `[` or a backtick. It works only on messages with no Markdown at all, which is why the failure is easy to miss in testing.
+</Warning>
 
 ---
 
 ## Example
 
-A hashtag formatter used with [CometChatMessageList](/ui-kit/react-native/message-list) and [CometChatMessageComposer](/ui-kit/react-native/message-composer).
+A hashtag formatter used with `CometChatMessageList` and `CometChatCompactMessageComposer`.
 
-<Tabs>
-<Tab title="HashTagTextFormatter.tsx">
-```tsx
-import React, { JSX } from "react";
-import { Text, TextStyle } from "react-native";
-import { CometChat } from "@cometchat/chat-sdk-react-native";
+<CodeGroup>
+
+```tsx HashTagTextFormatter.ts
 import { CometChatTextFormatter } from "@cometchat/chat-uikit-react-native";
 
-class HashTagTextFormatter extends CometChatTextFormatter {
-  private hashtagStyle: TextStyle = {
-    color: "#5dff05",
-    fontWeight: "bold",
-  };
+/** #word — a hashtag, captured without its leading # so we can re-emit it. */
+const HASHTAG_REGEX = /\B#(\w+)\b/g;
+
+export class HashTagTextFormatter extends CometChatTextFormatter {
+  private color = "#5dff05";
 
   constructor() {
     super();
-    this.setTrackingCharacter("#");
-    this.setRegexPatterns(/\B#(\w+)\b/g);
+    this.setId("hashtag-formatter");
+    this.setTrackingCharacter("");
   }
 
-  setHashtagStyle(style: TextStyle) {
-    this.hashtagStyle = style;
+  setHashtagColor(color: string) {
+    this.color = color;
   }
 
-  getFormattedText(inputText: string | null | JSX.Element): string | null | JSX.Element {
-    if (!inputText || typeof inputText !== "string") {
-      return inputText;
-    }
-
-    const regex = this.getRegexPattern();
-    const parts: (string | JSX.Element)[] = [];
-    let lastIndex = 0;
-    let match;
-
-    // Reset regex lastIndex for global patterns
-    regex.lastIndex = 0;
-
-    while ((match = regex.exec(inputText)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(inputText.slice(lastIndex, match.index));
-      }
-
-      parts.push(
-        <Text key={match.index} style={this.hashtagStyle}>
-          #{match[1]}
-        </Text>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < inputText.length) {
-      parts.push(inputText.slice(lastIndex));
-    }
-
-    if (parts.length === 0) {
-      return inputText;
-    }
-
-    return <Text>{parts}</Text>;
+  /**
+   * Reading: your pattern -> markup the UI Kit already renders.
+   * Runs on the raw text on every surface, before Markdown.
+   */
+  formatRawText(text: string): string {
+    return text.replace(HASHTAG_REGEX, `<color=${this.color}>**#$1**</color>`);
   }
 }
 
 export default HashTagTextFormatter;
 ```
-</Tab>
 
-<Tab title="ChatScreen.tsx">
-```tsx
-import React, { useState, useEffect, useMemo } from "react";
-import { View, SafeAreaView } from "react-native";
-import { CometChat } from "@cometchat/chat-sdk-react-native";
+```tsx ChatScreen.tsx
+import React from "react";
 import {
-  CometChatMessageHeader,
+  CometChatCompactMessageComposer,
+  CometChatConversations,
   CometChatMessageList,
-  CometChatMessageComposer,
 } from "@cometchat/chat-uikit-react-native";
 import HashTagTextFormatter from "./HashTagTextFormatter";
 
-function ChatScreen(): React.JSX.Element {
-  const [chatUser, setChatUser] = useState<CometChat.User | undefined>();
+// One instance, shared by every surface that shows the message.
+const hashTagFormatter = new HashTagTextFormatter();
 
-  useEffect(() => {
-    CometChat.getUser("uid").then((user) => {
-      setChatUser(user);
-    });
-  }, []);
-
-  const hashtagFormatter = useMemo(() => new HashTagTextFormatter(), []);
-
+function ChatScreen({ user, group }) {
   return (
-    <SafeAreaView style={{ flex: 1 }}>
-      {chatUser && (
-        <View style={{ flex: 1 }}>
-          <CometChatMessageHeader user={chatUser} />
-          <CometChatMessageList
-            user={chatUser}
-            textFormatters={[hashtagFormatter]}
-          />
-          <CometChatMessageComposer
-            user={chatUser}
-            textFormatters={[hashtagFormatter]}
-          />
-        </View>
-      )}
-    </SafeAreaView>
+    <>
+      <CometChatMessageList
+        user={user}
+        group={group}
+        textFormatters={[hashTagFormatter]}
+      />
+      <CometChatCompactMessageComposer
+        user={user}
+        group={group}
+        textFormatters={[hashTagFormatter]}
+      />
+    </>
   );
 }
 
-export default ChatScreen;
+// The same message also appears in the conversation list — register it there too.
+<CometChatConversations textFormatters={[hashTagFormatter]} />;
 ```
-</Tab>
-</Tabs>
+
+</CodeGroup>
+
+Sending `hello #world **bold** _italic_` now renders `#world` green and bold, with the Markdown around it still formatted.
+
+<Note>
+A formatter only applies where you register it. `CometChatMessageList`, `CometChatConversations`, `CometChatSearch`, `CometChatPinnedMessages`, `CometChatSavedMessages` and `CometChatCompactMessageComposer` each take `textFormatters`. Media captions, the quoted reply inside a bubble, the reply and edit previews, and the message information screen inherit it from the component that renders them.
+</Note>
 
 ---
 
@@ -258,6 +193,7 @@ export default ChatScreen;
 | --- | --- |
 | `setTrackingCharacter(char)` | Character that starts tracking (e.g. `#` for hashtags) |
 | `setRegexPatterns(pattern)` | Regex pattern to match text for formatting |
+| `formatRawText(text)` | Rewrites the **raw** message text before any UI Kit parsing. Where custom patterns belong |
 | `getFormattedText(inputText)` | Returns formatted JSX from input text |
 | `handlePreMessageSend(message)` | Process message before sending |
 | `search(searchKey)` | Search function called when tracking character is typed |
@@ -318,6 +254,9 @@ class CustomSuggestionFormatter extends CometChatTextFormatter {
 ## Next Steps
 
 <CardGroup cols={2}>
+  <Card title="Color Formatter" href="/ui-kit/react-native/guide-color-formatter">
+    Build an app-defined color marker end to end.
+  </Card>
   <Card title="Mentions Formatter" href="/ui-kit/react-native/mentions-formatter-guide">
     Add @mentions with styled tokens.
   </Card>
