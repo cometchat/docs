@@ -1,10 +1,14 @@
 ---
 title: "Threaded Messages Header"
 sidebarTitle: "Threaded Messages Header"
-description: "Configure CometChat iOS UI Kit threaded message headers with parent message context, reply lists, composer layout, and back actions."
+description: "Configure the CometChat iOS UI Kit threaded message header: the parent message bubble and reply count shown at the top of a thread screen."
 ---
 
-The `CometChatThreadedMessageHeader` component displays the header for threaded message conversations showing parent message info. By default, the parent message appears at the top, the message composer is at the bottom, and a message list containing all replies is displayed between them.
+The `CometChatThreadedMessageHeader` component shows the parent message of a thread, with its reply count, at the top of a thread screen. It renders only that panel. The reply list, the composer and the screen's top bar are separate components that you add around it (see [Building a Thread Screen](#building-a-thread-screen)).
+
+<Warning>
+`CometChatThreadedMessageHeader` has **no back or close control**. It is a content panel, not a navigation bar. Give the thread screen its exit with a [CometChatMessageHeader](/ui-kit/ios/message-header) above it, or leave the system navigation bar visible.
+</Warning>
 
 <Frame>
   <img src="/images/0a425996-threaded-conversation-bb63b71df514c0eec680ffda196473de.png" />
@@ -16,26 +20,19 @@ The `CometChatThreadedMessageHeader` component displays the header for threaded 
   "component": "CometChatThreadedMessageHeader",
   "package": "CometChatUIKitSwift",
   "import": "import CometChatUIKitSwift\nimport CometChatSDK",
-  "description": "Displays the header for threaded message conversations showing parent message info",
+  "description": "Displays the parent message and reply count at the top of a thread screen. Has no back or close control.",
   "inherits": "UIView",
-  "primaryOutput": {
-    "callback": "onBack",
-    "type": "() -> Void"
-  },
   "props": {
     "data": {
       "parentMessage": { "type": "BaseMessage", "required": true }
-    },
-    "callbacks": {
-      "onBack": "() -> Void"
     }
   },
   "events": [],
   "sdkListeners": [],
   "compositionExample": {
-    "description": "ThreadedMessageHeader is used within ThreadedMessages component",
-    "components": ["CometChatThreadedMessageHeader", "CometChatMessageList", "CometChatMessageComposer"],
-    "flow": "User opens thread → sees parent message in header → views/sends replies below"
+    "description": "A thread screen is assembled by the app. CometChatMessageHeader provides the top bar and back button; CometChatThreadedMessageHeader sits beneath it.",
+    "components": ["CometChatMessageHeader", "CometChatThreadedMessageHeader", "CometChatMessageList", "CometChatMessageComposer"],
+    "flow": "User opens thread → sees parent message in header → views/sends replies below → taps the message header's back button to leave"
   }
 }
 ```
@@ -49,12 +46,14 @@ The `CometChatThreadedMessageHeader` component displays the header for threaded 
 
 ---
 
-ThreadedMessages is composed of the following components:
+The UI Kit has no ready-made thread screen. Your app assembles one from these components, top to bottom:
 
-| Component                                       | Description                                                                                                        |
+| Component                                       | Role on the thread screen                                                                                          |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| [MessageList](/ui-kit/ios/message-list)         | CometChatMessageList is a component that displays a list of Messages                                               |
-| [MessageComposer](/ui-kit/ios/message-composer) | CometChatMessageComposer is a component that helps in writing and editing of messages and also sending attachments |
+| [MessageHeader](/ui-kit/ios/message-header)     | The top bar, with the **back button**. From v5.1.22, `set(parentMessage:)` puts it in thread mode and adds the subscription bell |
+| `CometChatThreadedMessageHeader`                | The parent message and its reply count                                                                             |
+| [MessageList](/ui-kit/ios/message-list)         | The thread's replies                                                                                               |
+| [MessageComposer](/ui-kit/ios/message-composer) | Sends replies into the thread                                                                                      |
 
 ---
 
@@ -74,7 +73,7 @@ view.addSubview(threadedMessage)
 </Tabs>
 
 <Note>
-Ensure to pass and present `threadedMessage`. If a navigation controller is already in use, utilize the pushViewController function instead of directly presenting the view controller.
+This adds only the parent-message panel. Present or push the view controller that hosts it, and give that screen a way back: see [Building a Thread Screen](#building-a-thread-screen).
 </Note>
 
 ---
@@ -354,9 +353,9 @@ class MyCustomTextFormatter: CometChatTextFormatter {
 
 ## Common Patterns
 
-### Open Thread from Message List
+### Building a Thread Screen
 
-Present the threaded messages view when a user taps on a message's reply count:
+Push a thread screen when a user taps a message's reply count. `CometChatThreadedMessageHeader` has no back button, so put a `CometChatMessageHeader` above it: its back button pops a pushed screen, or dismisses a presented one, once you pass it the controller.
 
 <Tabs>
 <Tab title="Swift">
@@ -366,53 +365,72 @@ func openThread(for parentMessage: BaseMessage) {
     // Create a view controller to host the threaded messages
     let threadVC = UIViewController()
     threadVC.view.backgroundColor = .systemBackground
-    
+
+    // A thread belongs to the conversation of its parent message: the group,
+    // or in a one-on-one chat the other user (the receiver if you sent the parent).
+    let group = parentMessage.receiver as? Group
+    let user: User? = group != nil ? nil
+        : (parentMessage.receiverUid == CometChat.getLoggedInUser()?.uid
+            ? parentMessage.sender : parentMessage.receiver as? User)
+
+    // Top bar with the back button
+    let messageHeader = CometChatMessageHeader()
+    if let group { messageHeader.set(group: group) } else if let user { messageHeader.set(user: user) }
+    messageHeader.set(controller: threadVC)          // required: the back button pops or dismisses this controller
+    messageHeader.set(parentMessage: parentMessage)  // v5.1.22+: thread mode, adds the subscription bell
+    messageHeader.translatesAutoresizingMaskIntoConstraints = false
+
     // Create threaded message header
     let threadedHeader = CometChatThreadedMessageHeader()
     threadedHeader.set(parentMessage: parentMessage)
     threadedHeader.set(controller: threadVC)
+    threadedHeader.set(hideThreadSubscriptionButton: true)  // v5.1.22+: the top bar already shows the bell
     threadedHeader.translatesAutoresizingMaskIntoConstraints = false
-    
+
     // Create message list for thread replies
     let messageList = CometChatMessageList()
-    if let user = parentMessage.sender {
-        messageList.set(user: user)
-    }
-    messageList.set(parentMessageId: parentMessage.id)
+    if let group { messageList.set(group: group, parentMessage: parentMessage) }
+    else if let user { messageList.set(user: user, parentMessage: parentMessage) }
     messageList.set(controller: threadVC)
     messageList.translatesAutoresizingMaskIntoConstraints = false
-    
+
     // Create composer for thread replies
     let composer = CometChatMessageComposer()
-    if let user = parentMessage.sender {
-        composer.set(user: user)
-    }
+    if let group { composer.set(group: group) } else if let user { composer.set(user: user) }
     composer.set(parentMessageId: parentMessage.id)
     composer.set(controller: threadVC)
     composer.translatesAutoresizingMaskIntoConstraints = false
-    
+
     // Add to view
+    threadVC.view.addSubview(messageHeader)
     threadVC.view.addSubview(threadedHeader)
     threadVC.view.addSubview(messageList)
     threadVC.view.addSubview(composer)
-    
+
     // Layout constraints
     NSLayoutConstraint.activate([
-        threadedHeader.topAnchor.constraint(equalTo: threadVC.view.safeAreaLayoutGuide.topAnchor),
+        messageHeader.topAnchor.constraint(equalTo: threadVC.view.safeAreaLayoutGuide.topAnchor),
+        messageHeader.leadingAnchor.constraint(equalTo: threadVC.view.leadingAnchor),
+        messageHeader.trailingAnchor.constraint(equalTo: threadVC.view.trailingAnchor),
+
+        threadedHeader.topAnchor.constraint(equalTo: messageHeader.bottomAnchor),
         threadedHeader.leadingAnchor.constraint(equalTo: threadVC.view.leadingAnchor),
         threadedHeader.trailingAnchor.constraint(equalTo: threadVC.view.trailingAnchor),
-        
+
         messageList.topAnchor.constraint(equalTo: threadedHeader.bottomAnchor),
         messageList.leadingAnchor.constraint(equalTo: threadVC.view.leadingAnchor),
         messageList.trailingAnchor.constraint(equalTo: threadVC.view.trailingAnchor),
         messageList.bottomAnchor.constraint(equalTo: composer.topAnchor),
-        
+
         composer.leadingAnchor.constraint(equalTo: threadVC.view.leadingAnchor),
         composer.trailingAnchor.constraint(equalTo: threadVC.view.trailingAnchor),
         composer.bottomAnchor.constraint(equalTo: threadVC.view.safeAreaLayoutGuide.bottomAnchor)
     ])
-    
+
     self.navigationController?.pushViewController(threadVC, animated: true)
+    // The message header is the top bar, so hide the system one (a chat screen that
+    // shows it again in viewWillDisappear has already done so by this point).
+    self.navigationController?.setNavigationBarHidden(true, animated: true)
 }
 ```
 </Tab>
