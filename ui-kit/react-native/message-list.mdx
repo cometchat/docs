@@ -78,7 +78,7 @@ description: "Display sent and received messages with text, media, reactions, re
     "ai": {
       "suggestedMessages": { "type": "string[]", "note": "Predefined prompts for AI assistant chats" },
       "aiAssistantTools": { "type": "CometChatAIAssistantTools", "note": "Tool actions for AI assistant" },
-      "quickReactionList": { "type": "string[]", "default": "predefined reactions" },
+      "quickReactionList": { "type": "[string, string?, string?, string?, string?]", "default": "👍 ❤️ 😂 😢 🙏", "note": "Tuple capped at 5 — not string[]" },
       "streamingSpeed": { "type": "number", "default": "undefined", "note": "AI response streaming speed in ms" }
     },
     "viewSlots": {
@@ -238,15 +238,23 @@ A type missing from those two filters is excluded **server-side**, so overriding
 message is sent, then disappears on reload — with no error in the console, on the listener,
 or in the network response.
 
-When you add a custom message type in a `DataSourceDecorator`, override **four** methods:
+When you add a custom message type in a `DataSourceDecorator`, override **five** methods:
 
 | Half | Methods |
 | --- | --- |
 | Render | `getAllMessageTemplates` · `getMessageTemplate` |
 | **Fetch** | **`getAllMessageTypes`** · **`getAllMessageCategories`** |
+| **Identity** | **`getId`** |
 
-Each must call `super` and extend the result — returning your own list wholesale drops every
-built-in type.
+The four template and type methods must call `super` and extend the result — returning your own
+list wholesale drops every built-in type.
+
+`getId` is the exception: it must **not** call `super`. The base implementation throws
+`Method not implemented.`, so omitting the override crashes at `ChatConfigurator.enable()` with a
+message that names neither `getId` nor your decorator. Returning the wrapped source's id is worse —
+`enable()` dedupes on the id, finds it already registered, and skips your decorator **silently**.
+Return an id unique to your decorator. See
+[Custom Message Types](/ui-kit/react-native/custom-message-types) for the full contract.
 
 Register the decorator **after `CometChatUIKit.login()`**, not merely after `init()`.
 `login()` calls `enableExtensions()`, whose first statement is `ChatConfigurator.init()` —
@@ -710,6 +718,86 @@ function MessageListWithFormatters() {
 ```
 
 See [CometChatMentionsFormatter](/ui-kit/react-native/mentions-formatter-guide) for mention formatting.
+
+---
+
+## Reaction Components
+
+Reactions are on by default and the list renders them for you, so most apps only need the props above. The three pieces the list is built from are also exported, for hosts composing their own bubbles or their own reaction bar.
+
+| Component | What it renders |
+| --- | --- |
+| `CometChatReactions` | The row of reaction pills under a message bubble |
+| `CometChatQuickReactions` | The quick reaction bar shown on long press, with its "add reaction" button |
+| `CometChatReactionList` | The tabbed sheet listing who reacted with what |
+
+<Note>
+The two required props are named differently: `CometChatReactions` takes **`messageObject`**, while `CometChatReactionList` takes **`message`**. Both are a `CometChat.BaseMessage`.
+</Note>
+
+### CometChatReactions
+
+| Prop | Type | Notes |
+| --- | --- | --- |
+| `messageObject` | `CometChat.BaseMessage` | Required. The message whose reactions are shown. |
+| `onReactionPress` | `(reaction: CometChat.ReactionCount, messageObject: CometChat.BaseMessage) => void` | Called when a pill is tapped. |
+| `onReactionLongPress` | `(reaction: CometChat.ReactionCount, messageObject: CometChat.BaseMessage) => void` | Called when a pill is long pressed — the list uses this to open `CometChatReactionList`. |
+| `alignment` | `"left" \| "right" \| "center"` | Which edge the row hugs. Defaults to left. |
+| `maxContentWidth` | `number` | Width budget in px. Without it the row shows at most 3 pills; with it, as many as fit. |
+| `style` | theme `messageBubbleReactionStyles` | `DeepPartial`, merged over the theme. |
+
+```tsx lines
+import { CometChatReactions } from "@cometchat/chat-uikit-react-native";
+
+<CometChatReactions
+  messageObject={message}
+  alignment="right"
+  onReactionPress={(reaction) => console.log(reaction.getReaction())}
+/>
+```
+
+### CometChatQuickReactions
+
+| Prop | Type | Notes |
+| --- | --- | --- |
+| `quickReactions` | `[string, string?, string?, string?, string?]` | Tuple capped at five. Defaults to `["👍", "❤️", "😂", "😢", "🙏"]`. Same shape as [`quickReactionList`](#quickreactionlist). |
+| `onReactionPress` | `(emoji: string) => void` | Called with the emoji that was tapped. |
+| `onAddReactionPress` | `() => void` | Called when the trailing "add reaction" button is tapped. |
+| `addReactionUrl` | `ImageSourcePropType` | Replaces the "add reaction" button's icon. |
+| `style` | theme `quickReactionStyle` | Merged over the theme. |
+
+<Note>
+Its props type, `CometChatQuickReactionsProps`, is **not** exported from the package root — unlike `CometChatReactionsInterface` and `CometChatReactionListInterface`, which are. Derive it instead:
+
+```ts
+type QuickReactionsProps = React.ComponentProps<typeof CometChatQuickReactions>;
+```
+</Note>
+
+### CometChatReactionList
+
+| Prop | Type | Notes |
+| --- | --- | --- |
+| `message` | `CometChat.BaseMessage` | Required. Note the name — not `messageObject`. |
+| `onPress` | `(messageReaction: CometChat.Reaction, message: CometChat.BaseMessage) => void` | Called when a row is tapped. |
+| `reactionsRequestBuilder` | `CometChat.ReactionsRequestBuilder` | Controls how reactions are fetched. |
+| `selectedReaction` | `string` | Which tab opens first — `"All"`, or a specific emoji. |
+| `onListEmpty` | `() => void` | Fires when the last reaction is removed, so you can close the sheet. |
+| `LoadingStateView` | `() => JSX.Element` | Replaces the skeleton shown while fetching. |
+| `ErrorStateView` | `() => JSX.Element` | Replaces the error state. |
+| `errorStateText` | `string` | Overrides the default error copy. |
+
+```tsx lines
+import { CometChatReactionList } from "@cometchat/chat-uikit-react-native";
+
+<CometChatReactionList
+  message={message}
+  selectedReaction="👍"
+  onListEmpty={() => setSheetOpen(false)}
+/>
+```
+
+Styling for all three is covered on [Component Styling](/ui-kit/react-native/component-styling).
 
 ---
 
@@ -1397,12 +1485,18 @@ Displays threaded conversation for the specified parent message.
 
 ### quickReactionList
 
-Custom list of quick reactions.
+Custom list of quick reactions shown on the long-press reaction bar.
 
 | | |
 | --- | --- |
-| Type | `string[]` |
-| Default | Predefined reactions |
+| Type | `[string, string?, string?, string?, string?]` |
+| Default | `["👍", "❤️", "😂", "😢", "🙏"]` |
+
+<Warning>
+This is a **tuple capped at five**, not a `string[]`. A sixth emoji does not compile, and a value
+typed as `string[]` is rejected with TS2322 even when it holds five items — annotate the constant
+with the tuple type, or pass the array inline so it is contextually typed.
+</Warning>
 
 ---
 
