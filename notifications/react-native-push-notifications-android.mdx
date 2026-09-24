@@ -9,7 +9,7 @@ description: "CometChat push notifications and VoIP calls in React Native apps o
 | --- | --- |
 | Platform | Android (FCM) |
 | Package | `@cometchat/push-notifications-react-native` |
-| Key APIs | `CometChatPushNotifications.init()`, `onNotificationTap()`, `onCallAccepted()`, `onCallEnded()`, `unregister()`, `registerBackgroundCallTask()`, `CometChatPNHelper.requestNotificationPermission()` |
+| Key APIs | `CometChatPushNotifications.init()`, `onNotificationTap()`, `onCallAccepted()`, `onCallEnded()`, `onMessageReceived()`, `unregister()`, `registerBackgroundCallTask()`, `CometChatPNHelper.requestNotificationPermission()` |
 | Push Platform | `FCM_REACT_NATIVE_ANDROID`, registered by `init()` with `fcmProviderId` |
 | Native setup | `google-services.json` + Google Services plugin, `minSdkVersion 24`, an `ic_notification` drawable. No manifest or Kotlin changes |
 | Prerequisites | React Native 0.78 or later and `@cometchat/chat-sdk-react-native` 4.0.10 or later; CometChat initialized and the user logged in before `init()`, an FCM provider ID, a physical device for call tests |
@@ -371,10 +371,10 @@ import { NavigationContainer } from '@react-navigation/native';
 import { CometChat } from '@cometchat/chat-sdk-react-native';
 import { CometChatUIKit, UIKitSettings } from '@cometchat/chat-uikit-react-native';
 
-import { AppCredentials } from './AppCredentials';
-import { navigationRef } from './navigation/navigationRef';
-import { usePushOnLogin } from './push/pushNotifications';
-import { IncomingCall } from './calls/IncomingCall';
+import { AppCredentials } from './src/AppCredentials';
+import { navigationRef } from './src/navigation/navigationRef';
+import { usePushOnLogin } from './src/push/pushNotifications';
+import { IncomingCall } from './src/calls/IncomingCall';
 
 export default function App() {
   const [initialized, setInitialized] = useState(false);
@@ -466,10 +466,14 @@ You don't edit `AndroidManifest.xml`. The package's manifest is merged into your
 <application>
   <service android:name="com.cometchat.pushnotification.reactnative.IncomingCallService" tools:node="remove" />
   <activity android:name="com.cometchat.pushnotification.reactnative.CallRingingActivity" tools:node="remove" />
+  <receiver android:name="com.cometchat.pushnotification.reactnative.CallActionReceiver" tools:node="remove" />
+  <service android:name="com.cometchat.pushnotification.reactnative.CometChatHeadlessTaskService" tools:node="remove" />
 </application>
 ```
 
 `tools:node="remove"` drops an entry whichever library declared it — keep any permission another part of your app still uses.
+
+In `src/push/pushNotifications.ts`, also delete the `CometChatCalls` import and the `CometChatCalls.endSession()` call: `@cometchat/calls-sdk-react-native` is an optional peer dependency, so a chat-only app that doesn't install it fails to bundle while that import remains.
 
 ### 4.3 Notification icon
 
@@ -586,7 +590,7 @@ await CometChatPushNotifications.registerToken('fcm', token); // or 'apns' / 'vo
 ### 5.2 Local notifications and navigation
 
 - **App in the background or killed:** the package's service shows the notification with your `ic_notification` icon.
-- **App open:** the payload goes to `onMessageReceived`; a system notification also shows when `showInForeground` is `true`.
+- **App open:** the payload **always** goes to `onMessageReceived`, and a system notification also shows when `showInForeground` is `true`. This differs from iOS, where `onMessageReceived` fires only when no banner is shown — see the [iOS guide](/notifications/react-native-push-notifications-ios).
 - **Tap:** `onNotificationTap` fires, and `openFromNotification` marks the conversation read, then opens the thread for a thread reply, otherwise the conversation. A tap that **launched** the app is held until your handler subscribes, and navigation waits for the navigator.
 
 ### 5.3 Call events
@@ -709,7 +713,7 @@ Use physical devices and a **release** build: a debug build loads its JavaScript
 | `init()` rejects with `ERR_PN_CONFIGURE` | The native setup failed, and the error message says why. If it mentions `FirebaseApp`, Firebase isn't initialized: `google-services.json` must be in `android/app` and the Google Services plugin applied (step 4.1). |
 | Notifications work on an existing install but not on a fresh one | A permission request wasn't awaited, so the notification dialog was cancelled unseen (step 5.1). `adb shell dumpsys package <id> \| grep POST_NOTIFICATIONS`: `granted=false` with no `USER_SET` flag means the dialog was never answered. |
 | Two notifications for one message | Another push library is still installed (step 3.1). With `@react-native-firebase/messaging`, follow step 4.5. |
-| Incoming call is a plain notification, not the full-screen ringing screen | The merged manifest still has `MANAGE_OWN_CALLS` and `FOREGROUND_SERVICE_PHONE_CALL`. On MIUI, Oppo and Vivo, grant the step 4.4 permissions. From Google Play, complete the full-screen intent declaration (step 4.2). |
+| Incoming call is a plain notification, not the full-screen ringing screen | The merged manifest still has `MANAGE_OWN_CALLS` and `FOREGROUND_SERVICE_PHONE_CALL` — a leftover chat-only `tools:node="remove"` strips them. On MIUI, Oppo and Vivo, grant the step 4.4 permissions. From Google Play, complete the full-screen intent declaration (step 4.2). |
 | Declining a call in a killed app doesn't reject it | `registerBackgroundCallTask()` is called at module scope in `index.js`, and the app has been opened and logged in once since installing (so `init()` saved the Chat SDK settings). Test on a release build. |
 | Token registration errors | The provider IDs match the dashboard exactly, and `usePushOnLogin()` is rendered after CometChat is initialized. |
 | No notification while the app is open | Expected with `showInForeground: false` (the default) — set it to `true`. For calls, `ringInForeground` decides whether the system call UI or your in-app screen rings. |

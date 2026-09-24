@@ -9,7 +9,7 @@ description: "CometChat push notifications and VoIP calls in React Native apps o
 | --- | --- |
 | Platform | iOS (APNs + PushKit + CallKit) |
 | Package | `@cometchat/push-notifications-react-native` |
-| Key APIs | `CometChatPushNotifications.init()`, `onNotificationTap()`, `onCallAccepted()`, `onCallEnded()`, `unregister()`, `CometChatPushNotificationsAppDelegate.registerForVoIPPushes()`, `CometChatPushNotificationsAppDelegate.didRegisterAPNsToken(_:)` |
+| Key APIs | `CometChatPushNotifications.init()`, `onNotificationTap()`, `onCallAccepted()`, `onCallEnded()`, `onMessageReceived()`, `unregister()`, `CometChatPushNotificationsAppDelegate.registerForVoIPPushes()`, `CometChatPushNotificationsAppDelegate.didRegisterAPNsToken(_:)` |
 | Push Platforms | `APNS_REACT_NATIVE_DEVICE` and `APNS_REACT_NATIVE_VOIP`, registered by `init()` with one `apnsProviderId` |
 | Native setup | Push Notifications + Background Modes (Voice over IP, Remote notifications, Audio), microphone and camera usage strings, and in `AppDelegate`: `registerForVoIPPushes()` before React Native starts plus the APNs token method |
 | Prerequisites | React Native 0.78 or later and `@cometchat/chat-sdk-react-native` 4.0.10 or later; CometChat initialized and the user logged in before `init()`, an APNs provider ID, a physical device |
@@ -97,7 +97,9 @@ cd ios && pod install && cd ..
 Keep the Podfile's `platform :ios, min_ios_version_supported` from the React Native template. Don't lower it: current React Native requires iOS 15.1, and a lower platform fails the build — for example with `'hermes/hermes.h' file not found`.
 
 <Warning>
-**Remove other push and call libraries first** — `@react-native-firebase/messaging`, `@notifee/react-native`, `react-native-callkeep`, `react-native-voip-push-notification` — along with their code and native setup. Each registers its own push handler or PushKit registry, and every notification or call then arrives twice.
+**Remove other push and call libraries first** — `@notifee/react-native`, `react-native-callkeep`, `react-native-voip-push-notification` — along with their code and native setup. Each registers its own push handler or PushKit registry, and every notification or call then arrives twice.
+
+`@react-native-firebase/messaging` can stay for other Firebase features. iOS has nothing like Android's rule that only one `FirebaseMessagingService` receives messages, so there is no iOS equivalent of the Android guide's step 4.5: the package handles CometChat notifications and passes every other notification to the delegate installed before it.
 </Warning>
 
 ### 4.2 Wire the entry points
@@ -362,10 +364,10 @@ import { NavigationContainer } from '@react-navigation/native';
 import { CometChat } from '@cometchat/chat-sdk-react-native';
 import { CometChatUIKit, UIKitSettings } from '@cometchat/chat-uikit-react-native';
 
-import { AppCredentials } from './AppCredentials';
-import { navigationRef } from './navigation/navigationRef';
-import { usePushOnLogin } from './push/pushNotifications';
-import { IncomingCall } from './calls/IncomingCall';
+import { AppCredentials } from './src/AppCredentials';
+import { navigationRef } from './src/navigation/navigationRef';
+import { usePushOnLogin } from './src/push/pushNotifications';
+import { IncomingCall } from './src/calls/IncomingCall';
 
 export default function App() {
   const [initialized, setInitialized] = useState(false);
@@ -513,7 +515,7 @@ You don't write PushKit or CallKit code, and you don't set a `UNUserNotification
 </Warning>
 
 <Note>
-**Chat-only apps** skip `registerForVoIPPushes()` and the *Voice over IP* and *Audio* background modes, and pass `voip: false` to `init()`.
+**Chat-only apps** skip `registerForVoIPPushes()` and the *Voice over IP* and *Audio* background modes, and pass `voip: false` to `init()`. In `src/push/pushNotifications.ts`, also delete the `CometChatCalls` import and the `CometChatCalls.endSession()` call — `@cometchat/calls-sdk-react-native` is an optional peer dependency, so an app that doesn't install it fails to bundle while that import remains.
 </Note>
 
 <Note>
@@ -533,14 +535,14 @@ You don't write PushKit or CallKit code, and you don't set a `UNUserNotification
 ### 6.3 Local notifications and navigation
 
 - **App in the background or killed:** iOS shows the APNs notification.
-- **App open:** the package's notification delegate shows the banner when `showInForeground` is `true`; otherwise the payload goes to `onMessageReceived`.
+- **App open:** the package's notification delegate shows the banner when `showInForeground` is `true`; **otherwise** the payload goes to `onMessageReceived`. This differs from Android, where every foreground payload reaches `onMessageReceived` whether or not a notification is shown — so with `showInForeground: true` on iOS, don't rely on `onMessageReceived` to count unread messages while the app is open.
 - **Tap:** `onNotificationTap` fires, and `openFromNotification` marks the conversation read, then opens the thread for a thread reply, otherwise the conversation. A tap that **launched** the app is held until your handler subscribes, and navigation waits for the navigator.
 
 ### 6.4 Call events
 
 | Event | What happens |
 | --- | --- |
-| **VoIP push arrives** | The package reports the call to CallKit, which rings, in every app state — except while the app is open with `ringInForeground: false`, when your app's `IncomingCall` screen rings instead. Then, on iOS 26.4 and later, the package leaves CallKit out, since iOS no longer requires the report while the app is open; on earlier iOS it still reports the call, as iOS requires, and ends it at once. |
+| **VoIP push arrives** | The package reports the call to CallKit, which rings, in every app state — except while the app is open with `ringInForeground: false`, when your app's `IncomingCall` screen rings instead. Even then the report happens on iOS 26.3 and earlier, where PushKit requires **every** VoIP push to be reported: the package reports the call and ends it immediately, so nothing rings. iOS 26.4 added [`PKVoIPPushMetadata`](https://developer.apple.com/documentation/pushkit/pkvoippushmetadata), which tells the package when a report isn't required — the app is in the foreground, already on a call, or the push arrived too late to be viable — and the package then skips CallKit entirely, so no CallKit banner flashes over your own call screen. |
 | **Accept** | The package puts the audio session in call mode, accepts the call through the Chat SDK, and hands CallKit's audio to WebRTC; then `onCallAccepted` fires and `openCallScreen` opens your call screen. |
 | **Decline** | The package rejects the call through the Chat SDK. In a killed app, iOS has already launched the app for the VoIP push, and the package keeps it running long enough to reject. |
 | **Caller hangs up** | The cancel VoIP push ends the CallKit call and `onCallEnded` fires. |
