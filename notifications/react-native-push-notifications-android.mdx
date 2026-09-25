@@ -130,6 +130,13 @@ registerBackgroundCallTask(async (action, info) => {
 // registerBackgroundCallTask(myHandler, { rejectDeclinedCalls: false });
 ```
 
+<Warning>
+**The whole task must finish within ~30 seconds.** It runs as an Android headless JS task, which the OS
+stops at that point — and the package spends part of that budget restoring the Chat SDK and the saved
+login before your handler runs. Keep the handler to a quick write or a single request; anything longer
+belongs in work you schedule for the next foreground launch.
+</Warning>
+
 **`src/navigation/navigationRef.ts`** — a notification tap or answered call that **launched** the app arrives before your navigator exists, so every navigation waits for it:
 
 ```ts src/navigation/navigationRef.ts lines
@@ -314,6 +321,12 @@ function endCall(info: PNCallEndEvent): void {
   }
 }
 ```
+
+<Note>
+**Back from a thread.** `navigate(SCREENS.thread, …)` pushes the thread on its own, so Back returns to
+whatever was on screen before — not to the conversation the reply belongs to. If your navigator expects a
+conversation underneath, push it first and then the thread, or use a reset that builds both entries.
+</Note>
 
 **`src/calls/IncomingCall.tsx`** — `init()` above sets `ringInForeground: false`, so **while the app is open the package doesn't ring: your app must show its own incoming-call screen**, or calls won't ring at all while it's open. Calls reach an open app over the Chat SDK's connection; this component listens for them and shows the UI Kit's `CometChatIncomingCall`, which accepts the call and shows the call screen itself:
 
@@ -662,15 +675,33 @@ CometChat sends FCM data messages with this structure (relevant fields):
 ```jsonc
 {
   "data": {
-    "unreadMessageCount": "5",
     "title": "New Message",
     "alert": "John: Hello!",
+    "unreadMessageCount": "5",
     "conversationId": "user_abc123",
-    "parentId": "176001", // Optional - parent message ID; sent only for threaded notifications
-    "conversationType": "user"
+    "receiverType": "user",   // "user" or "group" — also how the package recognises its own payloads
+    "sender": "john",         // sender UID
+    "senderName": "John",     // falls back to `title` when absent
+    "receiver": "abc123",     // the group GUID for group conversations
+    "tag": "176000",          // the message ID arrives HERE, not as `messageId`
+    "message": "{\"id\":\"176000\",\"parentId\":\"176001\", … }" // JSON string
   }
 }
 ```
+
+Two of these are easy to get wrong, because the wire format and the
+[`PNNotificationTapInfo`](#52-local-notifications-and-navigation) your handler receives are not the same shape:
+
+| You want | On the wire | What `onNotificationTap` gives you |
+| --- | --- | --- |
+| Conversation type | `receiverType` | `receiverType` |
+| Message ID | `tag` | `messageId` |
+| Thread parent ID | inside the `message` JSON, as `parentId` | `parentMessageId` |
+
+The package normalises both: `messageId` resolves from `messageId ?? id ?? tag ?? message.id`, and
+`parentMessageId` from `parentMessageId ?? message.parentId`. **There is no top-level `parentId` and no
+`conversationType` field** — read `parentMessageId` and `receiverType` off `PNNotificationTapInfo`
+rather than parsing the raw payload yourself.
 
 `unreadMessageCount` is a string; the package hands every payload value to JavaScript as a string, so convert it with `Number()` before use.
 

@@ -308,6 +308,12 @@ function endCall(info: PNCallEndEvent): void {
 }
 ```
 
+<Note>
+**Back from a thread.** `navigate(SCREENS.thread, …)` pushes the thread on its own, so Back returns to
+whatever was on screen before — not to the conversation the reply belongs to. If your navigator expects a
+conversation underneath, push it first and then the thread, or use a reset that builds both entries.
+</Note>
+
 **`src/calls/IncomingCall.tsx`** — `init()` above sets `ringInForeground: false`, so **while the app is open the package doesn't ring: your app must show its own incoming-call screen**, or calls won't ring at all while it's open. Calls reach an open app over the Chat SDK's connection; this component listens for them and shows the UI Kit's `CometChatIncomingCall`, which accepts the call and shows the call screen itself:
 
 ```tsx src/calls/IncomingCall.tsx lines
@@ -621,11 +627,41 @@ CometChat sends APNs payloads with this structure (relevant fields):
   },
   "unreadMessageCount": "5",
   "conversationId": "user_abc123",
-  "parentId": "176001" // Optional - parent message ID; sent only for threaded notifications
+  "receiverType": "user",   // "user" or "group" — also how the package recognises its own payloads
+  "sender": "john",         // sender UID
+  "senderName": "John",     // falls back to `title` when absent
+  "receiver": "abc123",     // the group GUID for group conversations
+  "tag": "176000",          // the message ID arrives HERE, not as `messageId`
+  "message": "{\"id\":\"176000\",\"parentId\":\"176001\", … }" // JSON string
 }
 ```
 
-The `aps.badge` field is set by CometChat server-side, so iOS updates the badge when the push is delivered. In JavaScript (`onMessageReceived`), the package hands `unreadMessageCount` over as a string, as on Android.
+Two of these are easy to get wrong, because the wire format and the
+[`PNNotificationTapInfo`](#63-local-notifications-and-navigation) your handler receives are not the same shape:
+
+| You want | On the wire | What `onNotificationTap` gives you |
+| --- | --- | --- |
+| Conversation type | `receiverType` | `receiverType` |
+| Message ID | `tag` | `messageId` |
+| Thread parent ID | inside the `message` JSON, as `parentId` | `parentMessageId` |
+
+The package normalises both, with the same fallbacks as Android: `messageId` resolves from
+`messageId ?? id ?? tag ?? message.id`, and `parentMessageId` from `parentMessageId ?? message.parentId`.
+**There is no top-level `parentId` and no `conversationType` field** — read `parentMessageId` and
+`receiverType` off `PNNotificationTapInfo` rather than parsing the raw payload yourself.
+
+`aps.badge` is set by CometChat server-side, so iOS updates the badge when the push is delivered.
+
+<Warning>
+**The badge only moves when a push arrives.** The package exports no badge API, so reading a conversation
+in the app leaves the badge at its last pushed value until the next notification. Clear it yourself with a
+native module or a library such as [`@react-native-community/push-notification-ios`](https://github.com/react-native-push-notification/ios)
+(`setApplicationIconBadgeNumber`) when the user opens a conversation.
+
+Note also that `unreadMessageCount` does **not** reach `onMessageReceived` under this guide's recommended
+`showInForeground: true` — on iOS that callback only fires when `showInForeground` is `false` (see
+[6.3](#63-local-notifications-and-navigation)). Read the count from `aps.badge`, or from the Chat SDK.
+</Warning>
 
 ## 8. Testing checklist
 
