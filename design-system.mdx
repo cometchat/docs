@@ -51,18 +51,27 @@ real", or "make our chat feel like iMessage".
 
 1. **Pick the archetype** — map the prompt to an [app recipe](#app-archetypes-recipes) (WhatsApp-like,
    Telegram-like, Slack-like, …). If unclear, default to **WhatsApp-like** for 1:1 + groups.
-2. **Take the component set + feature checklist** for that archetype.
-3. **Apply the design tokens** via the family's real theming API (CSS variables on web; theme objects
-   on iOS/Android/Flutter) — see [Design tokens](#design-tokens). Map roles → the family's theme keys;
-   do not hand-write ad-hoc CSS that fights the kit.
-4. **Compose the layout** for the target form factor ([Layout & responsiveness](#layout-and-responsiveness))
-   using the [component map](#component-map).
-5. **Enable the features** — some are props, some are Dashboard settings; the checklist marks which.
-6. **Apply motion** ([Motion & animation](#motion-and-animation)) so send/receive/typing/reactions/calls
-   feel native.
-7. **Keep the customer's brand** — replace brand tokens + assets only; never ship CometChat branding as
+2. **Build the auth/session gate first** — a real login screen and session, never a hardcoded UID. See
+   [Auth and session](#auth-and-session). Logged-out shows login; logged-in shows the app; logout works.
+3. **Wire the complete screen set** — not just a list + a message pane. Chats, chat, **contact/group
+   details, search, new chat, calls, settings** must all exist and navigate. See
+   [Navigation and screens](#navigation-and-screens). **Every control the UI shows must open a working
+   screen — a dead button (search/details/attach/call that does nothing) or a half-wired pane is a bug,
+   not "done."**
+4. **Get the layout right** — fill the viewport, the message list scrolls *internally*, the composer is
+   pinned, there is **no empty gap and no over-scroll**, and it's keyboard-safe on mobile. See
+   [Layout correctness](#layout-correctness).
+5. **Apply the design tokens for a premium look** via the family's real theming API — not the flat
+   defaults. See [Design tokens](#design-tokens) and [Premium look](#premium-look). Map roles → the
+   family's theme keys; theme through the kit, not ad-hoc CSS that fights it.
+6. **Enable the features** from the [full feature checklist](#full-feature-checklist) — some are props,
+   some are Dashboard settings. Implement the archetype's whole set, not a subset.
+7. **Apply motion** ([Motion and animation](#motion-and-animation)) so send/receive/typing/reactions/
+   calls feel native.
+8. **Keep the customer's brand** — replace brand tokens + assets only; never ship CometChat branding as
    the app's identity ([Brand ownership](#brand-ownership)).
-8. **Verify** against the [acceptance checklist](#verify-it-looks-and-feels-real) before finishing.
+9. **Verify** against the [acceptance checklist](#verify-it-looks-and-feels-real) before finishing — a
+   basic-looking UI, a dead control, an empty scroll gap, or a missing login all fail the check.
 
 ### Grounding rules (non-negotiable)
 - **APIs come from the docs, never memory.** Fetch component props/theme keys/SDK methods from the
@@ -72,6 +81,48 @@ real", or "make our chat feel like iMessage".
 - **Brand is the customer's.** Their logo, name, and palette — CometChat is the engine, not the skin.
 - **Non-destructive when retrofitting.** Work on a branch; preserve routing, state, and auth; swap
   region-by-region; delete only the UI you replace. See [Retrofitting](#retrofitting-an-existing-app-non-breaking).
+
+## Auth and session
+
+A production app has a **session**, not a hardcoded user. Build this even for a demo:
+
+- **Gate the app on auth state.** While the SDK initializes, show a splash/skeleton; if no user is
+  logged in, show a **login screen**; once logged in, show the app; on logout, return to login. Never
+  drop straight into a single baked-in UID.
+- **Login screen.** At minimum a field/flow to sign in the app's user (your own auth, SSO, or a user
+  picker for a demo). Persist the session (the SDK stores it) so a refresh stays logged in.
+- **Production auth = server-minted tokens.** In production call `loginWithAuthToken(token)` with a
+  token your server mints; the dev Auth Key is for local only and must not ship in a public build.
+- **Logout** clears the CometChat session and returns to the login screen.
+- **Error/edge states.** Wrong credentials, network failure, or an expired session each show a clear
+  message and a retry — never a blank screen or an infinite spinner.
+
+<Note>
+A demo that logs in as a fixed UID with no login UI, no logout, and the Auth Key in the client bundle
+is a prototype, not production. Ship the gate + a login screen, and use auth tokens for anything real.
+</Note>
+
+## Navigation and screens
+
+A WhatsApp-class app is **many screens**, not one list + one message pane. Wire all of these and make
+every affordance open a real screen (no dead buttons):
+
+| Screen | Built with | Must work on mobile |
+| --- | --- | --- |
+| **Chats** (list, search, unread, presence, new-chat FAB) | Conversations + Search | list is the home screen |
+| **Chat** (header, messages, composer) | MessageHeader + MessageList + MessageComposer | opens on tap, back returns to list |
+| **Contact / group details** (profile, shared media, members, actions: mute/block/leave/report) | user/group info panel + members list | opens from the chat header |
+| **Search** (across conversations, and within a chat) | Search | the search control actually filters |
+| **New chat / new group** (user + group pickers) | Users + Groups + GroupMembers | the FAB opens the picker |
+| **Calls** (call log + voice/video call screen) | CallLogs + Incoming/Outgoing/CallButtons | the call button starts a call |
+| **Settings / profile** (theme, notifications, logout) | your screen + kit settings | reachable from a tab/menu |
+
+**Mobile routing (this is where basic clones break):** use a router or an explicit screen state so
+Search, Details, New Chat, Calls, and Settings each open as their **own full screen with a back
+button** — not an overlay squeezed into a 2-pane desktop layout that silently does nothing on a phone.
+On desktop the details/search open as the third pane or a drawer; on mobile they push over the chat.
+If tapping a control on a phone does nothing, the screen wasn't wired — that is a defect to fix, not
+an acceptable limitation.
 
 ## UX principles
 
@@ -149,6 +200,33 @@ switch with the OS unless the app offers a manual toggle.
 | Elevation | header/composer subtle shadow; media viewer full scrim; sheets raised |
 | Density | **comfortable** (default) vs **compact** (Slack/Discord): reduce vertical padding ~25% and avatar size |
 
+### Premium look
+
+Setting only `--cometchat-primary-color` gives a flat, generic result (the "basic" look). A premium,
+WhatsApp-class finish needs the details:
+
+- **Chat wallpaper, not a flat color.** Real messengers put a subtle patterned wallpaper behind the
+  messages (WhatsApp's doodle). Set `--cometchat-message-list-bg` to that wallpaper — a tiled pattern
+  (data-URI or asset) or at least the exact tint (`#efeae2` light / `#0b141a` dark), never plain white.
+- **Bubbles with tails, shadow, and tight radii.** Message bubbles have a small **tail** on the
+  sender's side, a subtle **drop shadow** (`0 1px .5px rgba(11,20,26,.13)`), a tight radius (~`7.5px`),
+  and comfortable padding. Outgoing tinted (`#d9fdd3` / `#005c4b`), incoming surface (`#fff` / `#202c33`).
+  A flat, shadowless, tail-less rounded rectangle is exactly what reads as "basic."
+- **Ticks & meta done right.** Timestamp + status ticks sit *inside* the bubble, bottom-right: single
+  grey → double grey (delivered) → **blue** read (`#53bdeb`). Don't drop or recolor them arbitrarily.
+- **Header + list rows.** The chat/app header uses the brand color with legible on-brand text; list
+  rows show avatar, name, last-message preview, time, and an unread **badge** (brand-colored pill).
+- **New-chat FAB** on mobile, plus hover/press states on rows and buttons — interactive things must
+  look interactive.
+- **Density & type.** Use the token type scale + spacing; don't cram or over-space. Match the
+  reference app's density (comfortable for WhatsApp/iMessage, compact for Slack/Discord).
+- **Avatars & icons.** Circular avatars with initials fallback, a presence dot, and one consistent icon
+  set. **Full dark mode** with the dark palette — not just inverted text.
+
+Pull the exact recolorable tokens/classes from the family's **theming** and **message-bubble styling**
+docs. The point is to spend the polish (wallpaper, tails, shadows, ticks, badges), not stop at the
+primary color.
+
 ## Motion and animation
 
 Match the real product's feel. Durations are guidance; respect `prefers-reduced-motion` (and the
@@ -181,6 +259,27 @@ transform/opacity (GPU-friendly) over layout-animating properties.
 Rules: the chat pane always shows a header, a scrollable message list, and a pinned composer. The list
 column keeps search + new-chat affordances. Never let the body scroll horizontally; media and the
 message list scroll within their own containers.
+
+### Layout correctness
+
+The #1 reason a clone looks broken — an empty gap under the messages, the **whole page scrolling**, or
+the composer floating — is flex/height mistakes. Follow these exactly:
+
+- **Full-viewport root.** `html, body, #root { height: 100%; margin: 0 }`; the app shell uses
+  **`height: 100dvh`** (dynamic viewport height — accounts for mobile browser chrome, so there is no
+  empty strip at the bottom). Reset the starter's `#root` (`max-width: none; padding: 0; width: 100%`).
+- **The chat column is a flex column that fills its parent and clips:** `display: flex;
+  flex-direction: column; height: 100%; min-height: 0; overflow: hidden`.
+- **The message list flexes and scrolls internally:** give it `flex: 1 1 auto; min-height: 0`. The
+  `min-height: 0` is exactly what stops the list from pushing the layout taller and leaving an empty
+  gap / making the whole document scroll. Header and composer are `flex: 0 0 auto` (composer pinned to
+  the bottom).
+- **Only the message list scrolls — never the page body.** If you see the whole screen scroll, or a gap
+  below the last message, a flex parent is missing `min-height: 0` / `overflow: hidden`, or the root
+  isn't `100dvh`. Fix that before shipping.
+- **Keyboard-safe on mobile.** Use `100dvh` (not `100vh`) so the composer stays above the on-screen
+  keyboard; keep the composer sticky. Never put `transform` or `filter` on an ancestor — it clips the
+  kit's fixed overlays (emoji picker, context menus, call screen).
 
 ## Component map
 
@@ -290,6 +389,17 @@ some are Dashboard settings — verify each in the docs):
 
 Ship only when all pass:
 
+- **Login works:** logged-out shows a login screen; logging in enters the app; logout returns to login;
+  refresh stays signed in. No hardcoded UID, no Auth Key in a public production build.
+- **No layout bugs:** the message list fills the space and scrolls **internally**; the composer is
+  pinned; **no empty gap under the messages and no whole-page/over-scroll**; correct with the mobile
+  keyboard open (`100dvh`).
+- **Every control works on mobile:** tapping search filters; the chat header opens **contact/group
+  details** (profile, shared media, members); the FAB opens **new chat**; the call button starts a
+  **call**; settings is reachable. **No dead buttons.**
+- **Premium look, not flat:** patterned/tinted chat wallpaper; bubbles have tails + subtle shadow;
+  ticks grey→blue on read; unread badges; avatars + presence; proper density — it doesn't look like the
+  default demo.
 - Bubbles grouped correctly; date separators + unread divider present.
 - Optimistic send; sent/delivered/read states; typing; presence.
 - Smooth auto-scroll + scroll-to-bottom with unread count.
