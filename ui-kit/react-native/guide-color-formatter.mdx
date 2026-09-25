@@ -1,0 +1,204 @@
+---
+title: "Custom Text Formatter"
+sidebarTitle: "Custom Text Formatter"
+description: "Build a minimal color formatter, bind it to a toolbar button in the composer, and render the result everywhere the message appears."
+---
+
+<Note>
+**Requires `@cometchat/chat-uikit-react-native` 5.5.1 or later.** This guide is built on `formatRawText()` and `composer.replaceSelection()`, and registers `textFormatters` on Pinned, Saved, Search and Message Information — none of which exist in 5.5.0. On 5.5.0 the toolbar button does not compile and four of the five surfaces in Step 4 silently render the raw marker.
+</Note>
+
+## Goal
+
+By the end of this guide you will have a **color formatter**: a button in the composer's formatting toolbar that wraps the selected text in a color marker, and a formatter that renders that marker as colored text everywhere the message appears — the message list, the conversation subtitle, search results, pinned and saved messages.
+
+A text formatter has two jobs, and this guide covers both:
+
+* **Rendering** — turn a marker in the raw message text into styled text wherever the message is displayed (`formatRawText()`).
+* **Authoring** — give users a way to produce that marker. Here, a button in the composer's `ToolbarTrailingButtonsView` wraps the current selection.
+
+The marker is your own. It travels on the message exactly as you write it, so the same marker can be read by your web and mobile apps with a matching formatter on each.
+
+<Note>
+If you only need colored text inside a React Native app, the composer's rich-text toolbar already colors a selection with no formatter at all — see [Text Color](/ui-kit/react-native/guide-text-color). Use this guide when the marker has to be **yours**.
+</Note>
+
+## Prerequisites
+
+* Completed the [Integration Guide](/ui-kit/react-native/react-native-cli-integration)
+* A chat screen using `CometChatMessageList` and **`CometChatCompactMessageComposer`**
+
+<Warning>
+`ToolbarTrailingButtonsView` exists on `CometChatCompactMessageComposer` only. `CometChatMessageComposer` has no formatting toolbar, so there is nowhere to mount the button.
+</Warning>
+
+## Step 1: The Formatter
+
+Extend `CometChatTextFormatter`. The method that matters for rendering is **`formatRawText()`**: it receives the raw message text, before any of the UI Kit's own parsing, and returns a string. Our marker is `{color=VALUE}...{/color}`, and we turn it into the UI Kit's color markup.
+
+_File: src/formatters/ColorFormatter.ts_
+
+```ts
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+import { CometChatTextFormatter } from "@cometchat/chat-uikit-react-native";
+
+/**
+ * Matches {color=#e5484d}text{/color} — a hex color or a name, then the wrapped text.
+ * The same pattern the React and Angular guides publish, so one marker works everywhere.
+ */
+const COLOR_REGEX = /\{color=(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\}([\s\S]*?)\{\/color\}/g;
+
+/** What the UI Kit renders. Keep this in sync with COLOR_REGEX. */
+const KIT_REGEX = /<color=(#[0-9a-fA-F]{3,6})>([\s\S]*?)<\/color>/g;
+
+/** Your palette — the UI Kit only understands hex, so names resolve here. */
+const NAMED: Record<string, string> = {
+  red: "#e5484d",
+  green: "#10b981",
+  blue: "#3b82f6",
+};
+
+/**
+ * Resolve a marker value to hex the UI Kit can render.
+ *
+ * The UI Kit accepts #rgb and #rrggbb only. The marker also allows the alpha forms #rgba and
+ * #rrggbbaa, so drop the alpha — an unrecognised value is not silently uncolored, it leaves
+ * the raw `<color=...>` tag visible in the message.
+ */
+const toKitHex = (value: string): string => {
+  const hex = value.startsWith("#") ? value : NAMED[value.toLowerCase()] ?? "";
+  if (hex.length === 5) return hex.slice(0, 4); // #rgba     -> #rgb
+  if (hex.length === 9) return hex.slice(0, 7); // #rrggbbaa -> #rrggbb
+  return hex;
+};
+
+export class ColorFormatter extends CometChatTextFormatter {
+  constructor() {
+    super();
+    this.setId("color-formatter");
+    // A color formatter has nothing to suggest, so it tracks no character.
+    this.setTrackingCharacter("");
+  }
+
+  /** Reading: your marker -> what the UI Kit draws. Runs on every surface. */
+  formatRawText(text: string): string {
+    return text.replace(COLOR_REGEX, (match, color: string, inner: string) => {
+      const hex = toKitHex(color);
+      return hex ? `<color=${hex}>${inner}</color>` : match;
+    });
+  }
+
+  /** Sending: back to your marker, so the wire carries your format and not ours. */
+  handlePreMessageSend(message: CometChat.TextMessage): CometChat.TextMessage {
+    message.setText(message.getText().replace(KIT_REGEX, "{color=$1}$2{/color}"));
+    return message;
+  }
+}
+```
+
+<Note>
+`formatRawText()` runs **before** the built-in Markdown formatter. That ordering is what makes the formatter reliable: by the time Markdown has run, the text is no longer a string, so a formatter that only overrides `getFormattedText()` never sees your marker in a message that also contains `_`, `**`, `- `, `[` or a backtick.
+</Note>
+
+## Step 2: The Toolbar Button
+
+`ToolbarTrailingButtonsView` renders your views at the end of the formatting toolbar. It is a render function and, besides `user`, `group` and `composerId`, it receives a **`composer`** handle — the same controls the built-in Bold and Italic buttons use.
+
+`composer.replaceSelection(text)` swaps the current selection for your text, leaving the caret after it. With nothing selected it inserts at the caret.
+
+_File: src/components/ColorButton.tsx_
+
+```tsx
+import React from "react";
+import { Text, TouchableOpacity } from "react-native";
+import type { ComposerInputHandle } from "@cometchat/chat-uikit-react-native";
+
+export function ColorButton({
+  composer,
+  color = "#e5484d",
+}: {
+  composer: ComposerInputHandle;
+  color?: string;
+}) {
+  const wrapSelection = () => {
+    const { start, end } = composer.getSelection();
+    if (start === end) return; // nothing selected
+    const selected = composer.getText().slice(start, end);
+    composer.replaceSelection(`{color=${color}}${selected}{/color}`);
+  };
+
+  return (
+    <TouchableOpacity accessibilityLabel="Color selected text" onPress={wrapSelection}>
+      <Text style={{ paddingHorizontal: 6 }}>🎨</Text>
+    </TouchableOpacity>
+  );
+}
+```
+
+## Step 3: Wire It Into the Composer
+
+Register the formatter with `textFormatters` and mount the button with `ToolbarTrailingButtonsView`.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import { CometChatCompactMessageComposer } from "@cometchat/chat-uikit-react-native";
+import { ColorFormatter } from "./formatters/ColorFormatter";
+import { ColorButton } from "./components/ColorButton";
+
+const colorFormatter = new ColorFormatter();
+
+<CometChatCompactMessageComposer
+  user={user} // or group={group} — one or the other, never both
+  textFormatters={[colorFormatter]}
+  ToolbarTrailingButtonsView={({ composer }) => <ColorButton composer={composer} />}
+/>
+```
+
+Now the user selects text, taps 🎨, and the input becomes `Hello {color=#e5484d}world{/color}`. On send, that raw text is stored on the message.
+
+## Step 4: Render It Everywhere the Message Appears
+
+The marker only becomes color when a surface runs the formatter. Register the same instance on every surface where the message can show up.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import {
+  CometChatConversations,
+  CometChatMessageList,
+  CometChatPinnedMessages,
+  CometChatSavedMessages,
+  CometChatSearch,
+} from "@cometchat/chat-uikit-react-native";
+
+// user={user} or group={group} on the conversation-scoped components — one, never both
+<CometChatMessageList user={user} textFormatters={[colorFormatter]} />
+<CometChatConversations textFormatters={[colorFormatter]} />
+<CometChatSearch textFormatters={[colorFormatter]} />
+<CometChatPinnedMessages user={user} textFormatters={[colorFormatter]} />
+<CometChatSavedMessages textFormatters={[colorFormatter]} />
+```
+
+Media captions, the quoted reply inside a bubble, the reply and edit previews above the composer, and the message information screen all inherit the formatter from the component that renders them — you do not register those separately.
+
+<Warning>
+A formatter is only applied where you register it. If you add `textFormatters` to the composer but not the message list, the author sees the color but readers see raw `{color=...}` text. Register it on every surface that displays the message.
+</Warning>
+
+## How It Round-Trips
+
+```
+Composer (author)         Wire format                Bubble (reader)
+─────────────────         ───────────                ───────────────
+select "world"            Hello {color=#e5484d}      Hello world
+tap 🎨              →      world{/color}        →     (in red, via formatRawText())
+```
+
+The marker is plain text on the message, so it survives storage and delivery untouched; each display surface turns it into color independently through the formatter you registered.
+
+## Next Steps
+
+* [Text Formatter Base Class](/ui-kit/react-native/custom-text-formatter-guide) — the full `CometChatTextFormatter` API
+* [Text Color](/ui-kit/react-native/guide-text-color) — coloring text with the built-in rich-text toolbar, no formatter required
+* [Message Composer](/ui-kit/react-native/compact-message-composer) — the toolbar slot in detail

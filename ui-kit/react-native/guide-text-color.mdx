@@ -1,0 +1,188 @@
+---
+title: "Text Color"
+sidebarTitle: "Text Color"
+description: "Add a color button to the composer's formatting toolbar that colors the selected text, and see the color rendered in the sent message."
+---
+
+## Goal
+
+By the end of this guide you will have a **color button** in the composer's rich-text toolbar. The user selects some text, taps a swatch, and the text turns that color — in the composer while typing, and in the message bubble after it is sent.
+
+In React Native you do not need to write a text formatter for this. Text color is part of the UI Kit's built-in rich-text format, so the work splits into two small pieces:
+
+1. **Authoring** — a button in the composer's `ToolbarTrailingButtonsView` slot that applies a color to the current selection through the `composer` handle.
+2. **Rendering** — nothing to do. The UI Kit already renders colored text wherever it formats rich text.
+
+<Note>
+This guide colors text with the built-in rich-text format. To build your own inline pattern — hashtags, keywords, custom tokens — see the [Text Formatter Base Class](/ui-kit/react-native/custom-text-formatter-guide) guide instead.
+</Note>
+
+## Prerequisites
+
+- Completed the [Integration Guide](/ui-kit/react-native/react-native-cli-integration)
+- A chat screen using `CometChatMessageList` and **`CometChatCompactMessageComposer`**
+
+<Warning>
+`ToolbarTrailingButtonsView` exists on `CometChatCompactMessageComposer` only. `CometChatMessageComposer` has no formatting toolbar, so there is nowhere to mount the button.
+</Warning>
+
+## Step 1: The Toolbar Button
+
+`ToolbarTrailingButtonsView` renders your views at the end of the formatting toolbar, after a divider. It is a render function, and besides `user`, `group` and `composerId` it receives a **`composer`** handle — the same controls the built-in Bold and Italic buttons use.
+
+The toolbar shows an **A** and a **✕**. Tapping **A** swaps them for a row of color swatches; tapping a swatch colors the selection. **✕** removes the color from the selection.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import React, { useState } from "react";
+import { Text, TouchableOpacity, View } from "react-native";
+import {
+  CometChatCompactMessageComposer,
+  CometChatMessageList,
+  useTheme,
+} from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const SWATCHES = ["#E11D48", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6"];
+
+function ChatScreen({ user, group }: { user?: CometChat.User; group?: CometChat.Group }) {
+  const theme = useTheme();
+  // Keep the open/closed state in the screen, not inside the render function — see the note below.
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+
+  return (
+    <>
+      <CometChatMessageList user={user} group={group} />
+
+      <CometChatCompactMessageComposer
+        user={user}
+        group={group}
+        ToolbarTrailingButtonsView={({ composer }) =>
+          colorPickerOpen ? (
+            <>
+              {SWATCHES.map((swatch) => (
+                <TouchableOpacity
+                  key={swatch}
+                  accessibilityLabel={`Color ${swatch}`}
+                  style={{ paddingHorizontal: 5, paddingVertical: 4 }}
+                  onPress={() => {
+                    composer.applyInlineStyle("color", swatch);
+                    setColorPickerOpen(false);
+                  }}>
+                  <View
+                    style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: swatch }}
+                  />
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                accessibilityLabel="Close colors"
+                style={{ paddingHorizontal: 8, paddingVertical: 4 }}
+                onPress={() => setColorPickerOpen(false)}>
+                <Text style={{ color: theme.color.iconSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              {/* Disabled inside a code block: send keeps code blocks as raw text and
+                  drops inline styles, so a color applied there would vanish on send. */}
+              <TouchableOpacity
+                accessibilityLabel="Color selected text"
+                disabled={composer.getActiveStyles().codeBlock}
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  opacity: composer.getActiveStyles().codeBlock ? 0.4 : 1,
+                }}
+                onPress={() => setColorPickerOpen(true)}>
+                <Text style={{ color: "#E11D48", fontWeight: "700" }}>A</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityLabel="Remove text color"
+                style={{ paddingHorizontal: 8, paddingVertical: 4 }}
+                onPress={() => composer.removeInlineStyle("color")}>
+                <Text style={{ color: theme.color.iconSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </>
+          )
+        }
+      />
+    </>
+  );
+}
+```
+
+<Note>
+**Keep the picker's state in your screen.** The composer mounts `ToolbarTrailingButtonsView` as a component, and an inline render function is a new function every time your screen re-renders, so whatever it returns is remounted. State held inside it — an `open` flag in a child component, for example — resets, and the picker closes on its own.
+</Note>
+
+<Note>
+**Keep the swatches inside the toolbar — do not open a `Modal`.** A modal takes focus from the text input, which collapses the selection before `applyInlineStyle` runs, so nothing gets colored. Views rendered inline in the toolbar keep the selection alive, the same way the built-in buttons do.
+</Note>
+
+## Step 2: Try It
+
+The slot lives inside the formatting toolbar, so it only renders while the toolbar is visible: `enableRichTextEditor` must be `true` and `hideRichTextFormattingOptions` must be `false`. Both are the defaults, so the screen above needs neither.
+
+The user selects "world", taps **A**, picks red, and the word turns red in the composer. With no selection, the color applies to whatever they type next, the same way Bold does. On send, the message text becomes `Hello <color=#e11d48>world</color>`.
+
+## Step 3: Where the Color Shows Up
+
+There is nothing to register. The UI Kit's rich-text formatting reads the color markup and renders it as colored text on the surfaces that format message text, including:
+
+- Message bubbles in `CometChatMessageList` — and therefore in threads and in `CometChatPinnedMessages`, which render the same bubbles
+- The last-message subtitle in `CometChatConversations`
+- Results in `CometChatSearch`
+
+Unlike the React UI Kit, you do not add a formatter to each surface — the color is not a custom marker, so every UI Kit surface that renders rich text already understands it.
+
+## What Gets Sent
+
+| In the composer | Sent as | Why |
+| --- | --- | --- |
+| Any React Native color string: `'#E11D48'`, `'red'`, `'rgb(225, 29, 72)'` | `<color=#rrggbb>…</color>` | The editor normalises the color, and the message always carries a 6-digit hex |
+| A transparent color, e.g. `'rgba(225, 29, 72, 0.5)'` | Sent **fully opaque** | The alpha channel is dropped, so text can never be sent invisible |
+| `applyInlineStyle("backgroundColor", …)` | **Nothing** | Background color only styles the composer; it is not part of the message format, so it is dropped on send |
+| Color inside a code block | **Nothing** | Code blocks are sent as raw text with every inline style removed |
+| A selection that contains a mention | Mention left uncolored | `applyInlineStyle` skips mentions so they keep their own styling |
+
+<Warning>
+Use `"color"` for anything the recipient should see. `"backgroundColor"` is accepted by `applyInlineStyle` but never leaves the device.
+</Warning>
+
+## How It Round-Trips
+
+```
+Composer (author)         Wire format                   Bubble (reader)
+─────────────────         ───────────                   ───────────────
+select "world"            Hello <color=#e11d48>         Hello world
+tap A → red         →      world</color>          →     (in red, built in)
+```
+
+The markup is plain text on the message, so it survives storage and delivery untouched. Every UI Kit surface that renders rich text turns it back into color on its own.
+
+## The `composer` Handle
+
+The handle your button receives. Every method acts on the live composer input.
+
+| Method | Description |
+| --- | --- |
+| `getText()` | Current plain-text content |
+| `getSelection()` | Current selection as `{ start, end }` — collapsed when there is only a caret |
+| `setText(text)` | Replaces the content |
+| `setSelection(start, end?)` | Moves the selection; omit `end` for a caret |
+| `insertLink(url, text)` | Inserts a link, wrapping the selection when there is one |
+| `toggleBold()` / `toggleItalic()` / `toggleUnderline()` / `toggleStrikethrough()` / `toggleCode()` | Same as the built-in toolbar buttons |
+| `clearFormatting()` | Removes all inline formatting from the selection |
+| `applyInlineStyle(key, value)` | Applies `"color"` or `"backgroundColor"` to the selection |
+| `removeInlineStyle(key)` | Removes that style from the selection |
+| `getMentionRanges()` | Mention ranges in plain-text positions |
+| `getActiveStyles()` | Formatting at the caret — `bold`, `italic`, `underline`, `strikethrough`, `code`, `codeBlock`, `highlight`, `blockType`, `alignment` |
+
+`getActiveStyles()` does not report the current color, so a color button cannot show which swatch is active.
+
+## Next Steps
+
+- [Compact Message Composer → ToolbarTrailingButtonsView](/ui-kit/react-native/compact-message-composer#toolbartrailingbuttonsview) — the toolbar slot in detail
+- [Text Formatter Base Class](/ui-kit/react-native/custom-text-formatter-guide) — build your own inline patterns with `CometChatTextFormatter`
+- [Message List](/ui-kit/react-native/message-list) — where the colored message renders
