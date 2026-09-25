@@ -15,18 +15,26 @@ CometChat provides 5 test users: `cometchat-uid-1`, `cometchat-uid-2`, `cometcha
 
 ## Check Login Status
 
-Before calling `login()`, check if a user is already logged in using `getLoggedInUser()`. The SDK maintains the session internally, so you only need to login once per user session.
+Use `getLoggedInUser()` to find out whether — and **which** — user has a persisted session, for example at app launch to decide whether to show your login screen. It returns a `CallUser` object if a user is logged in, or `null` if no session exists.
+
+You never need it as a guard before `login()`: calling `login()` is always safe — if the same user is already logged in it returns the existing session without a network round trip, and if a different user is logged in the SDK switches to the new user automatically (see [Switching Users](#switching-users)).
+
+<Warning>
+**Check *who* is logged in, not just *whether***
+
+On a shared or reused device, the persisted session may belong to a *different* user. If your app skips its own login flow because `getLoggedInUser()` is non-null, compare the returned UID against your app's current account first — otherwise calls are silently placed as the previous user.
+</Warning>
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
 val loggedInUser = CometChatCalls.getLoggedInUser()
 
-if (loggedInUser != null) {
-    // User is already logged in
-    Log.d(TAG, "User already logged in: ${loggedInUser.uid}")
+if (loggedInUser != null && loggedInUser.uid.equals(myAppsCurrentUserUid, ignoreCase = true)) {
+    // The right user's session is already active — skip your login flow
+    Log.d(TAG, "Session restored for: ${loggedInUser.uid}")
 } else {
-    // No user logged in, proceed with login
+    // No session, or the session belongs to someone else — run login()
 }
 ```
 </Tab>
@@ -34,17 +42,15 @@ if (loggedInUser != null) {
 ```java
 CallUser loggedInUser = CometChatCalls.getLoggedInUser();
 
-if (loggedInUser != null) {
-    // User is already logged in
-    Log.d(TAG, "User already logged in: " + loggedInUser.getUid());
+if (loggedInUser != null && loggedInUser.getUid().equalsIgnoreCase(myAppsCurrentUserUid)) {
+    // The right user's session is already active — skip your login flow
+    Log.d(TAG, "Session restored for: " + loggedInUser.getUid());
 } else {
-    // No user logged in, proceed with login
+    // No session, or the session belongs to someone else — run login()
 }
 ```
 </Tab>
 </Tabs>
-
-The `getLoggedInUser()` method returns a `CallUser` object if a user is logged in, or `null` if no session exists.
 
 ## Login with UID and API Key
 
@@ -62,19 +68,15 @@ Using the API Key directly in client code is not recommended for production. Use
 val uid = "cometchat-uid-1" // Replace with your user's UID
 val apiKey = "API_KEY" // Replace with your API Key
 
-if (CometChatCalls.getLoggedInUser() == null) {
-    CometChatCalls.login(uid, apiKey, object : CometChatCalls.CallbackListener<CallUser>() {
-        override fun onSuccess(user: CallUser) {
-            Log.d(TAG, "Login successful: ${user.uid}")
-        }
+CometChatCalls.login(uid, apiKey, object : CometChatCalls.CallbackListener<CallUser>() {
+    override fun onSuccess(user: CallUser) {
+        Log.d(TAG, "Login successful: ${user.uid}")
+    }
 
-        override fun onError(e: CometChatException) {
-            Log.e(TAG, "Login failed: ${e.message}")
-        }
-    })
-} else {
-    // User already logged in
-}
+    override fun onError(e: CometChatException) {
+        Log.e(TAG, "Login failed: ${e.message}")
+    }
+})
 ```
 </Tab>
 <Tab title="Java">
@@ -82,21 +84,17 @@ if (CometChatCalls.getLoggedInUser() == null) {
 String uid = "cometchat-uid-1"; // Replace with your user's UID
 String apiKey = "API_KEY"; // Replace with your API Key
 
-if (CometChatCalls.getLoggedInUser() == null) {
-    CometChatCalls.login(uid, apiKey, new CometChatCalls.CallbackListener<CallUser>() {
-        @Override
-        public void onSuccess(CallUser user) {
-            Log.d(TAG, "Login successful: " + user.getUid());
-        }
+CometChatCalls.login(uid, apiKey, new CometChatCalls.CallbackListener<CallUser>() {
+    @Override
+    public void onSuccess(CallUser user) {
+        Log.d(TAG, "Login successful: " + user.getUid());
+    }
 
-        @Override
-        public void onError(CometChatException e) {
-            Log.e(TAG, "Login failed: " + e.getMessage());
-        }
-    });
-} else {
-    // User already logged in
-}
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Login failed: " + e.getMessage());
+    }
+});
 ```
 </Tab>
 </Tabs>
@@ -158,6 +156,43 @@ CometChatCalls.login(authToken, new CometChatCalls.CallbackListener<CallUser>() 
 | `authToken` | String | Auth Token generated via CometChat API |
 | `listener` | CallbackListener | Callback for success/error handling |
 
+## Switching Users
+
+On a shared or reused device, call `login()` with the new user's credentials — there is no need to check or clear the previous session yourself. If a different user is logged in, the SDK logs them out automatically before logging the new user in. Calling `login()` for the user who is already logged in simply returns the existing session.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+// Logs out the previous user (if any) and logs the new user in
+CometChatCalls.login(newUserUid, apiKey, object : CometChatCalls.CallbackListener<CallUser>() {
+    override fun onSuccess(user: CallUser) {
+        Log.d(TAG, "Switched to user: ${user.uid}")
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e(TAG, "User switch failed: ${e.message}")
+    }
+})
+```
+</Tab>
+<Tab title="Java">
+```java
+// Logs out the previous user (if any) and logs the new user in
+CometChatCalls.login(newUserUid, apiKey, new CometChatCalls.CallbackListener<CallUser>() {
+    @Override
+    public void onSuccess(CallUser user) {
+        Log.d(TAG, "Switched to user: " + user.getUid());
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "User switch failed: " + e.getMessage());
+    }
+});
+```
+</Tab>
+</Tabs>
+
 ## CallUser Object
 
 On successful login, the callback returns a `CallUser` object containing user information:
@@ -171,7 +206,7 @@ On successful login, the callback returns a `CallUser` object containing user in
 
 ## Logout
 
-Call `logout()` when the user signs out of your application. This clears the local session and disconnects from CometChat services.
+Call `logout()` when the user signs out of your application. This clears the local session and disconnects from CometChat services; the SDK stays initialized, so the next user can `login()` directly.
 
 <Tabs>
 <Tab title="Kotlin">
