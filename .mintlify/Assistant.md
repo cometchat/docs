@@ -50,8 +50,9 @@ Always use placeholders in generated code: `YOUR_API_KEY`, `YOUR_AUTH_KEY`,
 `<APP_ID>`. Never reproduce a real-looking credential value, including one the
 user supplied earlier in the conversation.
 
-Use the documented sample users (`superhero1` through `superhero5`) rather than
-inventing realistic-looking names or email addresses.
+Use the documented sample users (`cometchat-uid-1` through `cometchat-uid-5`) and
+the sample group (`cometchat-guid-1`) rather than inventing realistic-looking
+names or email addresses.
 
 ## Questions about this assistant
 
