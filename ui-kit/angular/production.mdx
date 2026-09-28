@@ -1,0 +1,149 @@
+---
+title: "Production Checklist"
+sidebarTitle: "Production"
+description: "Harden a CometChat Angular UI Kit integration before launch — Auth Token login, credential hygiene, environment configuration, and what to verify in the shipped bundle."
+---
+
+## Overview
+
+The [Integration](/ui-kit/angular/integration) guide gets you to a working chat as fast as
+possible, which means it uses the **Auth Key** flow. That flow is for development only. This
+page is the set of changes to make before you ship.
+
+<Warning>
+**The single most important item on this page:** an Auth Key can create a session for *any*
+user on your app. If it reaches a browser bundle or a public repository, anyone can
+impersonate any of your users. Everything below follows from that.
+</Warning>
+
+## 1. Move to Auth Token login
+
+Replace `login(UID)` with `loginWithAuthToken()`. Your server calls the CometChat REST API to
+mint a token for one user, and hands that token to the client. The Auth Key stays on your
+server.
+
+<Steps>
+<Step title="Mint the token on your server">
+Call the CometChat REST API with your Auth Key from a server route that already knows who the
+signed-in user is. Never expose this route without your own authentication.
+</Step>
+
+<Step title="Return it to the client">
+Return only the token for the user making the request.
+</Step>
+
+<Step title="Log in with it">
+```ts expandable
+import { CometChatUIKit } from '@cometchat/chat-uikit-angular';
+
+const { authToken } = await fetch('/api/cometchat/token', {
+  credentials: 'include',
+}).then((r) => r.json());
+
+await CometChatUIKit.loginWithAuthToken(authToken);
+```
+</Step>
+</Steps>
+
+See [Login using Auth Token](/ui-kit/angular/methods#login-using-auth-token) for the full
+method reference.
+
+## 2. Remove the Auth Key from the client
+
+Once login goes through a token, `setAuthKey()` is no longer needed for user sessions.
+
+```ts title="src/main.ts"
+const settings = new UIKitSettingsBuilder()
+  .setAppId(environment.cometchat.appId)
+  .setRegion(environment.cometchat.region)
+  // .setAuthKey(...)  ← remove for production builds
+  .subscribePresenceForAllUsers()
+  .build();
+```
+
+<Note>
+Some helper methods — `createUser()`, `updateUser()` — take an Auth Key because they are
+administrative operations. Those belong on your server, not in an Angular app. If you are
+calling them from the browser, move them behind your own API before launch.
+</Note>
+
+## 3. Split environment configuration
+
+Keep real credentials out of version control and let Angular's `fileReplacements` swap in the
+production values at build time.
+
+```json title="angular.json" expandable
+{
+  "configurations": {
+    "production": {
+      "fileReplacements": [
+        {
+          "replace": "src/environments/environment.ts",
+          "with": "src/environments/environment.prod.ts"
+        }
+      ]
+    }
+  }
+}
+```
+
+```sh title=".gitignore"
+src/environments/environment.ts
+src/environments/environment.prod.ts
+```
+
+Commit `src/environments/environment.example.ts` with empty placeholder values so teammates
+and CI know which keys are required.
+
+<Warning>
+`fileReplacements` controls **which file is bundled**, not whether its contents are secret.
+Anything in `environment.prod.ts` ships to the browser and is readable by anyone who opens
+DevTools. App ID and Region are fine there. An Auth Key is not.
+</Warning>
+
+## 4. Handle logout failures
+
+`CometChatUIKit.logout()` clears local session state only when the underlying SDK call
+succeeds. A rejected logout leaves the previous user cached, and the next
+`initFromSettings()` restores that session — so the sign-out does not stick.
+
+```ts expandable
+try {
+  await CometChatUIKit.logout();
+  this.router.navigate(['/login']);
+} catch (error) {
+  // Do not navigate away as if it worked.
+  this.showError('Could not sign out. Please try again.');
+}
+```
+
+See the warning on [Logout](/ui-kit/angular/methods#logout) for the full explanation.
+
+## 5. Pre-launch checklist
+
+- [ ] Login goes through `loginWithAuthToken()`, not `login(UID)`
+- [ ] `setAuthKey()` is absent from the production build
+- [ ] No Auth Key string appears in `dist/` — grep the built bundle to confirm
+- [ ] `environment.ts` and `environment.prod.ts` are gitignored, and the repository history contains no key (check past commits, not just the working tree)
+- [ ] `fileReplacements` is configured for the production configuration
+- [ ] Token minting sits behind your own authentication
+- [ ] Logout failures are surfaced, not swallowed
+- [ ] Calling is enabled only if you use it — `setCallingEnabled(true)` pulls in the Calls SDK
+- [ ] `css-variables.css` is registered in `angular.json`, and kit assets are copied into the build output
+- [ ] If you use SSR, initialization is guarded — see [SSR](/ui-kit/angular/ssr)
+
+### Verifying the bundle
+
+The check that catches the mistake this page exists to prevent:
+
+```sh
+npm run build -- --configuration production
+grep -r "YOUR_AUTH_KEY_VALUE" dist/ && echo "FAIL: Auth Key is in the bundle"
+```
+
+## Related
+
+* [Methods](/ui-kit/angular/methods) — login, logout, session handling
+* [Integration](/ui-kit/angular/integration) — first-run setup
+* [SSR](/ui-kit/angular/ssr) — server-side rendering
+* [Troubleshooting](/ui-kit/angular/troubleshooting)
