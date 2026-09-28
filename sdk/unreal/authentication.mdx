@@ -86,22 +86,71 @@ void AMyActor::BeginPlay()
     }
 }
 
-void AMyActor::OnLoginSuccess()
+void AMyActor::OnLoginSuccess(const FCometChatUser& User)
 {
-    UE_LOG(LogTemp, Log, TEXT("Login successful!"));
+    // On Success returns the logged-in FCometChatUser
+    UE_LOG(LogTemp, Log, TEXT("Logged in as %s (%s)"), *User.Name, *User.Uid);
 }
 
-void AMyActor::OnLoginFailed(const FString& Error)
+void AMyActor::OnLoginFailed(const FCometChatError& Error)
 {
-    UE_LOG(LogTemp, Error, TEXT("Login failed: %s"), *Error);
+    UE_LOG(LogTemp, Error, TEXT("Login failed: %s"), *Error.Message);
 }
 ```
 </Tab>
 </Tabs>
 
+<Tip>
+**Use case — "Sign in and enter the lobby."** A player launches your game and you sign them into chat before showing the social hub:
+
+1. `Event Init` → `Get CometChat Subsystem` → `Configure Async` (App Id, Region)
+2. **On Success** → check the returned `FCometChatUser`: if `Uid` is **not** empty, a session was restored — skip to step 4
+3. `Login Async` (Uid, Auth Key)
+4. **On Success** (returns `FCometChatUser`) → bind real-time delegates, open the lobby / friends list
+5. **On Failure** → `Break FCometChatError` → show the `Message` on your login screen and let the player retry
+</Tip>
+
 <Warning>
 **UID format**: UIDs can be alphanumeric with underscores and hyphens. Spaces, punctuation, and other special characters are not allowed.
 </Warning>
+
+### Handling login failures
+
+Read `FCometChatError.Code` to decide how to recover — a bad credential should re-prompt, a network blip should offer retry.
+
+```cpp
+void AMyActor::OnLoginFailed(const FCometChatError& Error)
+{
+    if (Error.Code == TEXT("ERR_UID_NOT_FOUND") || Error.Code.Contains(TEXT("AUTH")))
+    {
+        ShowLoginScreen(TEXT("Invalid credentials — please sign in again."));
+    }
+    else
+    {
+        // Likely a network/connectivity issue — safe to retry
+        ShowRetryPrompt(Error.Message);
+    }
+}
+```
+
+<Warning>
+**Bad practice — shipping your Auth Key.** The Auth Key can authenticate *any* user in your app, so never embed it in a packaged client. Use it only for proof-of-concept, and switch to server-minted **Auth Tokens** (below) for production. Also always call **Configure** before **Login** — logging in first fails.
+</Warning>
+
+### Reference: sample UI
+
+The bundled `UCometChatGroupChatBox` widget logs in via the **native C++ SDK** (`GetSdk()->login(...)`) rather than the Blueprint node — a lower-level alternative. Prefer the **Login Async** node in your own code.
+
+```cpp
+// UCometChatGroupChatBox::DoLogin() — Plugins/CometChat/Source/CometChat/UI/CometChatGroupChatBox.cpp
+Sub->GetSdk()->login(TCHAR_TO_UTF8(*UserUid), TCHAR_TO_UTF8(*AuthKey),
+    [this](const std::string& err) {
+        AsyncTask(ENamedThreads::GameThread, [this, err]() {
+            if (err.empty()) { /* logged in — proceed to join group */ DoJoinGroup(); }
+            else { SetState(EChatState::Error, /* show err */); }
+        });
+    });
+```
 
 ---
 
@@ -170,21 +219,31 @@ void AMyActor::LoginWithToken(const FString& AuthToken)
     }
 }
 
-void AMyActor::OnLoginSuccess()
+void AMyActor::OnLoginSuccess(const FCometChatUser& User)
 {
-    UE_LOG(LogTemp, Log, TEXT("Auth token login successful!"));
+    UE_LOG(LogTemp, Log, TEXT("Auth token login OK — %s"), *User.Name);
 }
 
-void AMyActor::OnLoginFailed(const FString& Error)
+void AMyActor::OnLoginFailed(const FCometChatError& Error)
 {
-    UE_LOG(LogTemp, Error, TEXT("Auth token login failed: %s"), *Error);
+    UE_LOG(LogTemp, Error, TEXT("Auth token login failed: %s"), *Error.Message);
 }
 ```
 </Tab>
 </Tabs>
 
+<Tip>
+**Use case — "Production sign-in via your backend."** When the player authenticates with your own account system:
+
+1. Your game server requests an Auth Token from the CometChat REST API for that player's UID
+2. Your server returns the token to the client
+3. `Login With Auth Token Async` (Auth Token)
+4. **On Success** → enter chat
+5. **On Failure** → `Break FCometChatError`; an expired/invalid token should trigger your backend to mint a fresh one and retry once
+</Tip>
+
 <Warning>
-**Security**: Never hardcode Auth Tokens in your client. Always fetch them from your backend at runtime.
+**Security**: Never hardcode Auth Tokens in your client. Always fetch them from your backend at runtime. An Auth Token is short-lived and scoped to a single user — the safe choice for shipping builds.
 </Warning>
 
 ---

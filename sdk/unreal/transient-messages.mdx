@@ -164,6 +164,56 @@ void AMyActor::HandleTransientMessage(const FCometChatTransientMessage& Message)
 
 ---
 
+## Use Case: Live Score / Location Ping
+
+**Goal:** broadcast a lightweight signal — a live score delta, a map marker, or a player location — to everyone in a match group, updating HUDs instantly without writing anything to history.
+
+This is a bind-on-receive, fire-on-send flow. Bind the receive delegate once, before Login (see [Real-Time Events](/sdk/unreal/real-time-events)).
+
+<Tabs>
+<Tab title="Blueprint">
+**Receive:**
+
+1. Get a reference to the **CometChat Subsystem**
+2. **Bind Event** to **On Transient Message Received** → parse `Data` as JSON, route by a `type` field, update the HUD or marker
+
+**Send (fire-and-forget):**
+
+3. On a score/location change, build an `FCometChatTransientMessage` — `ReceiverId` = match GUID, `ReceiverType` = `"group"`, `Data` = `{"type":"score","uid":"p1","score":42}`
+4. Call **Send Transient Message**
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::PingScore(const FString& MatchGuid, int32 Score)
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+    if (!Chat->IsLoggedIn()) return; // no connection → the ping would be dropped
+
+    FCometChatTransientMessage Msg;
+    Msg.ReceiverId   = MatchGuid;
+    Msg.ReceiverType = TEXT("group");
+    Msg.Data = FString::Printf(TEXT("{\"type\":\"score\",\"score\":%d}"), Score);
+
+    Chat->SendTransientMessage(Msg);
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+`SendTransientMessage` is fire-and-forget void — there is no On Success/On Failure pin. It silently no-ops when you are not connected, so check `IsLoggedIn()` (and, in manual-socket mode, `GetConnectionStatus() == Connected`) before broadcasting. `OnTransientMessageReceived` is a real-time delegate: a dropped socket pauses it, and any pings sent during the gap are gone for good — pair the view with a [connection banner](/sdk/unreal/connection-status).
+</Info>
+
+<Tip>
+**Best practice:** reserve transient messages for ephemeral, high-frequency signals — cursor positions, live scores, "looking at this" hints — where dropping a single frame is harmless and nothing needs to be persisted.
+</Tip>
+
+<Warning>
+**Never** use transient messages for anything that must arrive reliably — purchases, moves in a turn-based game, or chat you expect to see in history. Offline users receive nothing and there is no delivery guarantee or retry. Use a regular message for those.
+</Warning>
+
+---
+
 ## Next Steps
 
 <CardGroup cols={2}>
