@@ -227,6 +227,35 @@ Pull the exact recolorable tokens/classes from the family's **theming** and **me
 docs. The point is to spend the polish (wallpaper, tails, shadows, ticks, badges), not stop at the
 primary color.
 
+### Theming contract (where tokens live, and how the cascade resolves)
+
+Overriding the primary color is not the same as owning the theme. On the web UI Kit, three facts
+decide whether your tokens actually win — get them wrong and the app stays half-branded (this is the
+single most common "my theme didn't apply" surprise):
+
+- **Set the brand tokens on BOTH the kit wrapper and the document root.** The kit reads most tokens
+  from the `.cometchat` wrapper, but some values — notably the accent baked into generated icon assets —
+  are read from `:root` / `document.documentElement`. Declare the full brand set (primary + the extended
+  primary ramp `50`–`900` + highlight icon/text/border + button/FAB backgrounds) on **both** `:root`
+  (and `html`) **and** `.cometchat`. Tokens set only on `.cometchat` leave the root-read values on the
+  kit default.
+- **Win the cascade on purpose.** The kit ships its own rules on `.cometchat` / `[data-theme]`. To beat
+  them regardless of stylesheet load order, raise specificity deliberately — the doubled-class
+  `.cometchat.cometchat { … }` for tokens, and the same-element `.cometchat[data-theme="dark"] { … }`
+  (not a descendant selector) for the dark set. Define every token in the base rule, then redefine only
+  what changes under dark.
+- **Some icons are a CSS `filter`, not a token — so you override the filter.** The composer /
+  attachment / emoji icons are `<img>` assets recolored by a **hardcoded** CSS `filter`
+  (`brightness(0) … hue-rotate(…deg) …`) that no `--cometchat-*` variable touches. Brand them by
+  overriding that `filter` on the specific rules that carry it, and **solve the filter numerically**
+  rather than guessing: draw the icon to a `<canvas>` with a candidate `ctx.filter`, read the average
+  pixel, and sweep `hue-rotate` / `invert` / `saturate` to minimise distance to your brand color. Full
+  recipe and selector list in [Known UI Kit gotchas](#known-ui-kit-gotchas).
+
+Treat theming as a **contract** — where tokens live, plus how specificity resolves — not a single
+variable. (Native families theme through the platform theme object instead; the "both scopes" and
+"filter icons" points are web-specific.)
+
 ## Motion and animation
 
 Match the real product's feel. Durations are guidance; respect `prefers-reduced-motion` (and the
@@ -385,6 +414,45 @@ some are Dashboard settings — verify each in the docs):
 6. **Remove only the UI you replaced**; leave everything else intact.
 7. **Verify** parity with the checklist; confirm the build passes and there are no console errors.
 
+## Known UI Kit gotchas
+
+Verified traps a generic design doc won't warn you about — each has cost real build time. Check them
+explicitly. Most are **web UI Kit** (React/Angular, CSS-variable theming) specifics, noted where so.
+
+- **Off-brand icons that no token fixes (web).** The composer / attachment / emoji icons are `<img>`
+  data-URIs recolored by a hardcoded CSS `filter` (`… hue-rotate(235deg) …` = the kit's default
+  accent), **not** a `--cometchat-*` token — so brand tokens leave them the default color, most visibly
+  in **dark mode**. **Fix:** override the `filter` on the rules that carry it. Selectors (React v7):
+  `.cometchat-message-composer__attachment-option-icon`;
+  `.cometchat-message-composer__attachment-button .cometchat-message-composer__button-icon`;
+  `.cometchat-message-composer__sticker-button--active .cometchat-message-composer__button-icon`;
+  `.cometchat-message-composer__ai-button:hover / --active .cometchat-message-composer__button-icon`;
+  `.cometchat-message-composer__voice-button:hover .cometchat-message-composer__button-icon`;
+  `.cometchat-emoji-keyboard__tab--active .cometchat-emoji-keyboard__tab-icon`. Solve the filter for
+  your brand color by canvas-sampling (see [Theming contract](#theming-contract-where-tokens-live-and-how-the-cascade-resolves)).
+  Worked example that renders `#008069`:
+  `brightness(0) saturate(1) invert(.4) sepia(.6) saturate(6) hue-rotate(120deg) brightness(.85) contrast(1)`
+  (measured rgb ≈ 1,125,104).
+- **Search is plan-gated — it fails *silently* with HTTP 402.** `CometChatSearch` (conversation +
+  message search) hits a server endpoint that returns **402** unless **Search is enabled on the app's
+  plan** (dashboard). Correctly wired search still returns nothing until then. **Fix:** always pass
+  `onError` and surface the gate to the user instead of a dead search box, and tell the customer to
+  enable Search on their plan. Never assume "search works" because the component rendered.
+- **Message search is a component, not a header button.** There is no built-in search on
+  `CometChatMessageHeader`. Use **`CometChatSearch`**: open it from the conversation list's
+  `onSearchBarClicked`, and in-chat from a header `auxiliaryButtonView` trigger; route results with
+  `onConversationClicked` / `onMessageClicked` → `CometChatMessageList`'s `goToMessageId`. New chat uses
+  **`CometChatUsers`**. Confirm exact component/prop names in the family docs before wiring.
+- **Opening details can be unreliable — give it an explicit affordance.** `CometChatMessageHeader`'s
+  `onItemClick` (tap avatar/name → details) does not always fire. Don't make it the *only* way in — add
+  an explicit info button (e.g. in `auxiliaryButtonView`) so the details panel is always reachable. A
+  details screen you can't open is a dead control.
+- **Verify in DARK mode, not just light.** Several of the above (especially the icon filter) look fine
+  in light and regress in dark. Test the composer, attachment menu, emoji keyboard, and reactions with
+  the theme set to dark before calling it done.
+- **Don't put `transform` / `filter` on an ancestor of the kit.** It clips the kit's fixed overlays
+  (emoji picker, context menus, call screen). Keep those off the app shell.
+
 ## Verify it looks and feels real
 
 Ship only when all pass:
@@ -405,10 +473,13 @@ Ship only when all pass:
 - Smooth auto-scroll + scroll-to-bottom with unread count.
 - Media thumbnails + progress; voice notes; link previews.
 - Reactions, reply/quote (with jump-to-original), edit/delete tombstones.
-- Search and mentions work; long-press/hover menu; swipe-to-reply (mobile).
+- Search returns results **or an honest plan-gated state** (never a silent dead box — Search can 402);
+  mentions work; long-press/hover menu; swipe-to-reply (mobile).
 - Empty / loading (skeleton) / error / offline states on every surface.
 - Responsive at mobile / tablet / desktop; no horizontal body scroll; safe areas + keyboard-avoidance.
-- Full dark mode; RTL for RTL locales; `prefers-reduced-motion` respected.
+- Full dark mode — including **on-brand icons** in the composer / attachment menu / emoji keyboard
+  (these are recolored by a hardcoded filter, not a token; see [Known UI Kit gotchas](#known-ui-kit-gotchas));
+  RTL for RTL locales; `prefers-reduced-motion` respected.
 - Customer brand + logo applied; no CometChat branding as the app identity.
 - Push + unread badges; calls (if in scope) ring and connect.
 - Build passes; no console errors; APIs used all exist in the docs.
