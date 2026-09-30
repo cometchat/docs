@@ -1,0 +1,255 @@
+---
+title: "Pin A Message"
+description: "Pin and unpin messages in a conversation, fetch the pinned list, and listen for pin events with the CometChat Flutter SDK."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_sdk` |
+| Import | `import 'package:cometchat_sdk/cometchat_sdk.dart';` |
+| Purpose | Pin and unpin messages in a conversation, fetch the pinned list, and listen for pin events with the CometChat Flutter SDK. |
+| Key methods | `pinMessage()` · `unpinMessage()` · `isPinMessageEnabled()` · `getPinnedMessagesLimit()` · `addMessageListener()` |
+| Key classes | `MessagesRequestBuilder` · `BaseMessage` · `CometChatException` |
+| Key fields | `BaseMessage.pinnedAt` · `BaseMessage.pinnedBy` · `MessagesRequestBuilder.pinned` |
+| Listener callbacks | `onMessagePinned()` · `onMessageUnpinned()` |
+| Prerequisites | SDK initialised via [`CometChat.init()`](/sdk/flutter/setup) and a logged-in user via [`CometChat.login()`](/sdk/flutter/authentication-overview). |
+| Constraints | The pinned list belongs to one conversation — set exactly one of `uid` or `guid` on the builder. A pin is conversation-wide and visible to every participant. |
+| Related | [Save A Message](/sdk/flutter/save-message) · [Pin A Conversation](/sdk/flutter/pin-conversation) |
+| Full reference | [`BaseMessage`](/sdk/reference/messages#basemessage) · [`CometChatException`](/sdk/reference/auxiliary#cometchatexception) |
+
+</Accordion>
+
+<Note>
+**Available from Chat SDK v5.0.7.** These APIs require `cometchat_sdk` v5.0.7 or later. See [Setup](/sdk/flutter/setup) to upgrade.
+</Note>
+
+Pinning highlights an important message in a conversation. A pin is **conversation-wide and visible to everyone** in that conversation, so it is the right tool for announcements, rules or a link everyone keeps asking for. A pinned message carries a `pinnedAt` timestamp and the `pinnedBy` UID of the member who pinned it.
+
+<Note>
+Pinning is a moderation action. In a group, only an Admin or Moderator — a group owner included — may pin or unpin; in a one-on-one conversation both participants can. The server is the authority: a call the user may not make is rejected with `ERR_PERMISSION_DENIED`.
+</Note>
+
+## Pin a Message
+
+Call `pinMessage()` with the message's ID. On success, `onSuccess` receives the **full updated message**, with `pinnedAt` and `pinnedBy` set.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int messageId = 103;
+
+CometChat.pinMessage(messageId, onSuccess: (BaseMessage message) {
+  debugPrint("Message pinned at: ${message.pinnedAt}");
+}, onError: (CometChatException e) {
+  debugPrint("Message pinning failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+Pinning is **idempotent**, and a message has a single pinner: re-pinning an already pinned message updates `pinnedBy` and `pinnedAt` to the most recent pinner rather than failing.
+
+<Warning>
+**A just-sent message may not be pinnable yet.** On an app with moderation enabled, the server marks a new message as moderation-pending and clears it a moment later. While it is pending, the call is rejected with `ERR_MESSAGE_NO_ACCESS` — the same code returned for a genuine access refusal, so you cannot tell the two apart from the error alone.
+
+The window runs from **send**, not from the user's tap, and clears within a few seconds. Do not disable the control on this error; prefer a retry or a transient "not ready yet" message over telling the user they lack access. Moderation is configured per app, so this never reproduces on an app that has it switched off.
+</Warning>
+
+## Unpin a Message
+
+Call `unpinMessage()`. Any participant with pin permission can unpin a message — not just the one who pinned it. The returned message comes back with its pin fields cleared to `null`, so you can swap it straight into your list.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int messageId = 103;
+
+CometChat.unpinMessage(messageId, onSuccess: (BaseMessage message) {
+  debugPrint("Message unpinned successfully");
+}, onError: (CometChatException e) {
+  debugPrint("Message unpinning failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+## Fetch Pinned Messages
+
+Build a `MessagesRequest` with the `pinned` field of the `MessagesRequestBuilder` set to `true`. A pinned list belongs to one conversation, so pair it with `uid` for a one-on-one conversation or `guid` for a group — exactly one of the two.
+
+<Tabs>
+<Tab title="Dart (User)">
+```dart
+MessagesRequest messageRequest = (MessagesRequestBuilder()
+      ..uid = "cometchat-uid-1"
+      ..pinned = true
+      ..limit = 50)
+    .build();
+
+messageRequest.fetchPrevious(onSuccess: (List<BaseMessage> list) {
+  debugPrint("Pinned messages fetched: ${list.length}");
+}, onError: (CometChatException e) {
+  debugPrint("Pinned message fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+<Tab title="Dart (Group)">
+```dart
+MessagesRequest messageRequest = (MessagesRequestBuilder()
+      ..guid = "cometchat-guid-1"
+      ..pinned = true
+      ..limit = 50)
+    .build();
+
+messageRequest.fetchPrevious(onSuccess: (List<BaseMessage> list) {
+  debugPrint("Pinned messages fetched: ${list.length}");
+}, onError: (CometChatException e) {
+  debugPrint("Pinned message fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+The list is ordered by **pin time, most recently pinned first** — not by when the messages were sent. Render it in the order the SDK returns it.
+
+Use `fetchPrevious()` for this list. `fetchNext()` needs a message ID or timestamp cursor and fails with `ERR_FILTERS_MISSING` without one. The `setPinned(true)` setter is equivalent to the `pinned` field. A `MessagesRequest` returns at most 100 messages per call, which also covers the whole list at the default cap of 100 pins per conversation.
+
+## Check if a Message is Pinned
+
+Every fetched or received `BaseMessage` carries its pin state. A `null` `pinnedAt` means the message is not pinned.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pinnedAt` | `DateTime?` | When the message was pinned, or `null` when it is not pinned. |
+| `pinnedBy` | `String?` | The UID of the member who pinned it, or `null` when it is not pinned. The value `app_system` marks a pin applied by the app itself (a system pin) — render it as a system pin, not as a user. |
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (message.pinnedAt != null) {
+  final bool isSystemPin = message.pinnedBy == "app_system";
+  debugPrint("Pinned by ${message.pinnedBy} at ${message.pinnedAt}"
+      "${isSystemPin ? " (system pin)" : ""}");
+}
+```
+
+</Tab>
+</Tabs>
+
+## Real-time Pin Events
+
+Register a `MessageListener` using `addMessageListener()` and override the `onMessagePinned()` and `onMessageUnpinned()` callbacks. Each callback receives the **full updated message**, so you can replace the message in your list without a follow-up fetch.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class Class_Name with MessageListener {
+
+  //CometChat.addMessageListener("listenerId", this);
+
+  @override
+  void onMessagePinned(BaseMessage message) {
+    debugPrint("Message pinned: ${message.id} by ${message.pinnedBy}");
+  }
+
+  @override
+  void onMessageUnpinned(BaseMessage message) {
+    debugPrint("Message unpinned: ${message.id}");
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+The device that performed the action also receives these callbacks as soon as the call succeeds — the SDK fans them out locally and drops the server's echo of the same action — so a single code path can update your UI for your own pins and for pins made by other members. Remove the listener with `CometChat.removeMessageListener("listenerId")` when it is no longer needed.
+
+## Pin Limit
+
+A conversation holds a capped number of pins, configurable per app. Read the cap rather than hard-coding it — it is tenant-overridable and will drift.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int? limit = CometChat.getPinnedMessagesLimit();
+
+if (limit != null && pinnedCount >= limit) {
+  // Disable the pin control instead of letting the user hit the error
+}
+```
+
+</Tab>
+</Tabs>
+
+`getPinnedMessagesLimit()` is synchronous and returns `null` when the backend did not serve a limit — show generic copy in that case rather than guessing a number. The server still enforces its own cap, so treat the value as a display hint, not a gate.
+
+## Error Handling
+
+`pinMessage()` and `unpinMessage()` report failures through `onError` with a `CometChatException`. Branch on `e.code` rather than the message text:
+
+| Code | Meaning |
+| --- | --- |
+| `ERR_PERMISSION_DENIED` | The acting user's role may not pin or unpin here. Pin and unpin are gated independently. |
+| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | The conversation's pin cap was reached. The cap is in `errorParams["limit"]`. |
+| `ERR_MESSAGE_ID_NOT_FOUND` | No message with that ID — it never existed, or it was deleted. |
+| `ERR_MESSAGE_NO_ACCESS` | The user has no access to that message — for example they are not a participant in its conversation. |
+
+On the limit error, the exception's `errorParams` map carries the authoritative cap as `{"limit": n}`, so you can name the exact number without a second call:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.pinMessage(messageId, onSuccess: (BaseMessage message) {
+  debugPrint("Message pinned");
+}, onError: (CometChatException e) {
+  if (e.code == 'ERR_PINNED_MESSAGES_LIMIT_EXCEEDED') {
+    final limit = e.errorParams?['limit'];
+    debugPrint("You can only pin $limit messages. Unpin one to pin another.");
+  }
+});
+```
+
+</Tab>
+</Tabs>
+
+## Feature Availability
+
+Check whether Pin Message is enabled for your app before showing pin actions. `isPinMessageEnabled()` is synchronous and safe to call from `build()` — it never throws.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (CometChat.isPinMessageEnabled()) {
+  // Show the Pin option
+}
+```
+
+</Tab>
+</Tabs>
+
+The flag is served on the logged-in user's login payload, with the app settings as a fallback. When neither carries it, `isPinMessageEnabled()` returns `true`, so the feature is not disabled on a backend that predates the flag — the server still rejects the calls if the feature is genuinely off.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/flutter/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+  <Card title="Pin A Conversation" icon="thumbtack" href="/sdk/flutter/pin-conversation">
+    Pin a conversation to the top of the list
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/flutter/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Additional Message Filtering" icon="filter" href="/sdk/flutter/additional-message-filtering">
+    Filter messages by pinned, saved, type, tags and more
+  </Card>
+</CardGroup>
