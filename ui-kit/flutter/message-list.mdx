@@ -19,7 +19,7 @@ description: "Scrollable list of messages for a conversation with real-time upda
 | Custom message types | Use `addTemplate:` — **never** `templates:`. `addTemplate` merges your `CometChatMessageTemplate` with the defaults **and** folds its type/category into the list's fetch + realtime filter; `templates` replaces the default set and only registers the bubble, so a custom type sends fine and **never appears**, with no error. A hand-rolled `MessagesRequestBuilder` does not help — the list always overrides `uid`/`guid`/`types`/`categories` on it. |
 | Stitching | Pair with `CometChatMessageHeader` and `CometChatMessageComposer`, passing the same `user` or `group` to all three. |
 | Prerequisites | `CometChatUIKit` initialised and a user logged in. |
-| Full props | [88 props](#functionality) |
+| Full props | [89 props](#functionality) |
 
 </Accordion>
 
@@ -224,8 +224,8 @@ The component listens to SDK message events internally. No manual setup needed.
 | `onMessagesDelivered` / `onMessagesRead` | Updates receipt status via ValueNotifier |
 | `onTypingStarted` / `onTypingEnded` | Updates typing indicator |
 | `onMessageReactionAdded` / `onMessageReactionRemoved` | Updates reaction counts |
-| `onMessagePinned` / `onMessageUnpinned` | Restamps the message's pin state in-place |
-| `onMessageSaved` / `onMessageUnsaved` | Restamps the message's saved state (own devices only) |
+| `onMessagePinned` / `onMessageUnpinned` | Restamps the message's pin state in place |
+| `onMessageSaved` / `onMessageUnsaved` | Restamps the message's saved state (the logged-in user's devices only) |
 | Connection reconnected | Triggers silent sync to fetch missed messages |
 
 ---
@@ -259,6 +259,7 @@ The component listens to SDK message events internally. No manual setup needed.
 | `onLoad` | `OnLoad<BaseMessage>?` | `null` | Called once the first page of messages has loaded. |
 | `onEmpty` | `OnEmpty?` | `null` | `onEmpty` callback triggered when the list is empty |
 | `stateCallBack` | `Function(CometChatMessageListControllerProtocol controller)?` | `null` | Exposes the widget's state so a host can drive it imperatively. |
+| `controller` | `CometChatMessageListController?` | `null` | Lets the host jump the list to a message after it has mounted. See [Jump to a message](#jump-to-a-message). *Available since v6.1.1.* |
 | `customSoundForMessages` | `String?` | `null` | `customSoundForMessages` set custom sound for messages |
 | `customSoundForMessagePackage` | `String?` | `null` | `customSoundForMessagePackage` package name to show icon from |
 | `readIcon` | `Widget?` | `null` | `readIcon` widget visible when readAt != null in `BaseMessage`. If blank will load default readIcon |
@@ -536,11 +537,11 @@ To stage and send multiple attachments, see [Message Composer](/ui-kit/flutter/m
 | `hideDeleteMessageOption` | `false` | Hide "Delete Message" |
 | `hideEditMessageOption` | `false` | Hide "Edit Message" |
 | `hideMessageInfoOption` | `false` | Hide "Message Info" |
-| `hidePinMessageOption` | `false` | Hide "Pin" (shown while the message is unpinned) |
-| `hideUnpinMessageOption` | `false` | Hide "Unpin" (shown while the message is pinned) |
-| `hideSaveMessageOption` | `false` | Hide "Save" (shown while the message is unsaved) |
-| `hideUnsaveMessageOption` | `false` | Hide "Unsave" (shown while the message is saved) |
-| `hideThreadSubscriptionOption` | `false` | Hide "Subscribe/Unsubscribe to thread" (requires the feature gate, below) |
+| `hidePinMessageOption` | `false` | Hide "Pin message" (shown while the message is unpinned). *Available since v6.1.1.* |
+| `hideUnpinMessageOption` | `false` | Hide "Unpin message" (shown while the message is pinned). *Available since v6.1.1.* |
+| `hideSaveMessageOption` | `false` | Hide "Save message" (shown while the message is unsaved). *Available since v6.1.1.* |
+| `hideUnsaveMessageOption` | `false` | Hide "Unsave message" (shown while the message is saved). *Available since v6.1.1.* |
+| `hideThreadSubscriptionOption` | `false` | Hide "Subscribe to thread" / "Unsubscribe from thread". Only shown when `UIKitSettings.enableThreadSubscription` is on — see the [Thread Subscription guide](/ui-kit/flutter/guide-thread-subscription). *Available since v6.1.1.* |
 | `hideMessagePrivatelyOption` | `false` | Hide "Message Privately" |
 | `hideReactionOption` | `false` | Hide "Reaction" |
 | `hideReplyInThreadOption` | `false` | Hide "Reply in Thread" |
@@ -637,11 +638,16 @@ CometChatMessageList(
 
 ### Pin or save a message
 
-The action menu offers **Pin** / **Unpin** and **Save** / **Unsave** on every message, wired internally to the SDK's [Pin Messages](/sdk/flutter/pin-message) and [Save Messages](/sdk/flutter/save-message) APIs. No setup is needed: the component performs the call, shows a confirmation toast, updates the bubble through the SDK's listener fan-out (so pins made by other members — and saves made on your other devices — land too), and maps the cap errors (`ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` / `ERR_SAVED_MESSAGES_LIMIT_EXCEEDED`) to localized error copy with the server's limit interpolated.
+*Available since v6.1.1*
 
-Pin respects the conversation's permission model (group pinning requires admin/moderator/owner scope), and both options hide themselves when the feature is disabled for the logged-in user.
+With the features enabled, the action menu offers **Pin message** / **Unpin message** and **Save message** / **Unsave message**, the label following the message's current state. They are wired to the SDK's [Pin A Message](/sdk/flutter/pin-message) and [Save A Message](/sdk/flutter/save-message) APIs — no setup is needed:
 
-To hide them regardless, note that each state has its own flag: the menu shows **Pin** or **Unpin** depending on the message, so hiding pinning entirely takes `hidePinMessageOption` *and* `hideUnpinMessageOption`. Save works the same way.
+- The options appear on any sent, non-deleted message, thread replies included. They are withheld from deleted messages, messages not yet sent or still pending moderation, your own messages that moderation disapproved, and group action messages, and they hide themselves when `CometChat.isPinMessageEnabled()` / `CometChat.isSaveMessageEnabled()` returns `false`.
+- **Pin permission is enforced by the server, not the UI Kit.** The Pin / Unpin option is shown to every participant; a user who lacks permission gets a "You don't have permission to perform this action." toast when they tap it. Save has no role gate.
+- All four actions apply immediately, without a confirmation, and show a toast ("Message pinned", "Message saved", …). Hitting a cap shows "You can pin up to N messages in this conversation." or "You can save up to N messages.", with N taken from the server's error.
+- A pinned message shows a pin glyph, and a message the user saved shows a bookmark glyph, before the bubble's timestamp. The glyphs update live, including for pins made by other members and saves made on the user's other devices.
+
+Each state has its own flag, because the menu shows **Pin** or **Unpin** depending on the message. Hiding pinning entirely takes `hidePinMessageOption` *and* `hideUnpinMessageOption`; save works the same way.
 
 <Tabs>
 <Tab title="Dart">
@@ -659,6 +665,8 @@ CometChatMessageList(
 </Tabs>
 
 ### Jump to a message
+
+*Available since v6.1.1*
 
 `goToMessageId` is read once when the list mounts, so it cannot re-aim a list that is already on screen — the case you hit when a pinned or saved row is tapped and the conversation is already open.
 
