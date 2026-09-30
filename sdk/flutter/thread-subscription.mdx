@@ -36,7 +36,7 @@ Thread subscription builds on [Threaded Messages](/sdk/flutter/threaded-messages
 
 The SDK keeps **no subscription state of its own**. There is no cache and no listener to reconcile:
 
-- Every message fetch asks the server for the flag, and it arrives on the message as the `threadSubscribed` field.
+- Message-list fetches and `getMessageDetails()` ask the server for the flag, and it arrives on the message as the `threadSubscribed` field.
 - `subscribeToThread()` and `unsubscribeFromThread()` complete when the server has accepted the change. The `onSuccess` callback **is** the acknowledgement — there is no follow-up event.
 
 Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
@@ -103,10 +103,10 @@ if (parentMessage.threadSubscribed) {
 </Tab>
 </Tabs>
 
-Every message fetch the SDK makes sends `withThreadSubscribed=true`, so any message you obtained from a `MessagesRequest` or from `getMessageDetails()` carries the flag. The flag is per-viewer: the same message yields different values for different users.
+`MessagesRequest` fetches and `getMessageDetails()` send `withThreadSubscribed=true`, so any message you obtained from them carries the flag. Other responses do not ask for it — the message returned by `pinMessage()` or `saveMessage()`, and a conversation's last message — so those read `false`. The flag is per-viewer: the same message yields different values for different users.
 
 <Note>
-A message delivered over the **socket** carries no flag and therefore reads `false`. That is not a claim that the user is unsubscribed — it means nobody asked. Because subscribing is idempotent, rendering that `false` as the "Subscribe" affordance is safe: an unnecessary subscribe is harmless.
+A message delivered over the **socket**, or returned by a call that did not ask for the flag, reads `false`. That is not a claim that the user is unsubscribed — it means nobody asked. Because subscribing is idempotent, rendering that `false` as the "Subscribe" affordance is safe: an unnecessary subscribe is harmless.
 </Note>
 
 ### Re-read the State for One Message
@@ -134,7 +134,7 @@ Sending a message subscribes you to the thread it may later grow — there is no
 
 That default is what makes the flag meaningful on your own messages. Since it starts out `true`, a `false` on a message **you sent** — read from a fetch, not the socket — is not silence. It means you unsubscribed, and nothing should quietly put you back.
 
-This only holds for a message you sent and obtained from a fetch. On anyone else's message, or on anything socket-delivered, `false` still just means the server was not asked.
+This only holds for a message you sent and obtained from a fetch that asked for the flag. On anyone else's message, or on anything socket-delivered, `false` still just means the server was not asked.
 
 ### Keeping Your Own Copies in Sync
 
@@ -184,11 +184,11 @@ class Class_Name with MessageListener {
 
 Using `MessageListener` also gets you `onMessageEdited` and `onMessageDeleted` for replies, which a thread-only channel would not.
 
-Your own replies do not arrive on a listener — bump your thread row from the send call's `onSuccess` callback instead.
+Replies sent from **this** device do not arrive on a listener — bump your thread row from the send call's `onSuccess` callback instead. Replies the same user sends from another device do arrive on `MessageListener`.
 
 ## Fetch the Threads a User Participates In
 
-Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to — presence in the list *is* a subscription.
+Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to — presence in the list *is* a subscription. `ThreadsRequest`, `MessageThread` and `ConversationListener` are exported from `package:cometchat_sdk/cometchat_sdk.dart`, not from the modular `core.dart` or `messaging.dart` entry points.
 
 <Tabs>
 <Tab title="Dart">
@@ -208,7 +208,7 @@ threadsRequest.fetchNext(onSuccess: (List<MessageThread> threads) {
 </Tab>
 </Tabs>
 
-`fetchNext()` takes **required** `onSuccess` and `onError` callbacks, like every other request in the SDK. Call it repeatedly on the same object to page through the list, using `hasMore()` as the loop condition — page on it rather than on the size of the last result.
+`fetchNext()` takes **required** `onSuccess` and `onError` callbacks, like every other request in the SDK. Call it repeatedly on the same object to page through the list, using `hasMore()` as the loop condition — page on it rather than on the size of the last result. Once the list is exhausted, `fetchNext()` resolves an empty list.
 
 <Tabs>
 <Tab title="Dart">
@@ -246,6 +246,8 @@ ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
 | `setParticipatedByMe(bool)` | Restrict the list to threads the logged-in user participates in. Defaults to `true`. |
 | `setUid(String)` | Only threads in the one-on-one conversation with this user. |
 | `setGuid(String)` | Only threads in this group. |
+
+If you insert a row into the list yourself — for example after the user subscribes to a thread from the message view — call `threadsRequest.markSeen(parentMessageId)` so the next `fetchNext()` does not return it again as a duplicate.
 
 <Note>
 A `ThreadsRequest` is **single-use and one-directional**: it accumulates its paging state internally and has no reset. To refresh a list, build a new request from the builder and replace the list rather than re-running an exhausted one. This is the same contract as `ConversationsRequest` and `MessagesRequest`.
