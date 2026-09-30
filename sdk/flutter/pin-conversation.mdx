@@ -1,17 +1,39 @@
 ---
-title: "Pin Conversations"
-description: "Pin CometChat conversations to the top of the list in Flutter apps and keep every device in sync through real-time pin events."
+title: "Pin A Conversation"
+description: "Pin and unpin conversations, read the pin-ordered conversation list, and listen for conversation pin events with the CometChat Flutter SDK."
 ---
 
+<Accordion title="AI Integration Quick Reference">
 
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_sdk` |
+| Import | `import 'package:cometchat_sdk/cometchat_sdk.dart';` |
+| Purpose | Pin and unpin conversations, read the pin-ordered conversation list, and listen for conversation pin events with the CometChat Flutter SDK. |
+| Key methods | `pinConversation()` · `unpinConversation()` · `isPinConversationEnabled()` · `getPinnedConversationsLimit()` · `addConversationListener()` · `removeConversationListener()` |
+| Key classes | `Conversation` · `ConversationListener` · `CometChatConversationType` · `CometChatException` |
+| Key fields | `Conversation.pinnedAt` · `Conversation.pinnedBy` |
+| Listener callbacks | `onConversationPinned()` · `onConversationUnpinned()` |
+| Prerequisites | SDK initialised via [`CometChat.init()`](/sdk/flutter/setup) and a logged-in user via [`CometChat.login()`](/sdk/flutter/authentication-overview). |
+| Constraints | A conversation is addressed by its peer UID/GUID plus the conversation type, not by `conversationId`. Pins are private to the logged-in user. |
+| Related | [Retrieve Conversations](/sdk/flutter/retrieve-conversations) · [Pin A Message](/sdk/flutter/pin-message) |
+| Full reference | [`Conversation`](/sdk/reference/entities#conversation) · [`CometChatException`](/sdk/reference/auxiliary#cometchatexception) |
 
-Pinning a conversation surfaces it at the top of the logged-in user's conversation list. Conversation pins are **per-user** — pinning a conversation does not affect how the other participants see their lists. A pinned conversation carries a `pinnedAt` timestamp and the `pinnedBy` uid.
+</Accordion>
 
-A conversation can also be pinned for the user by an admin surface, in which case `pinnedBy` carries the `app_system` sentinel. System pins rank above the user's own pins and cannot be removed from the client.
+<Note>
+**Available from Chat SDK v5.0.7.** These APIs require `cometchat_sdk` v5.0.7 or later. See [Setup](/sdk/flutter/setup) to upgrade.
+</Note>
+
+Pinning a conversation keeps it at the top of the logged-in user's conversation list. The pin is **private to that user** — nobody else sees it — and it syncs to their other devices. A pinned conversation carries a `pinnedAt` timestamp and the `pinnedBy` UID.
+
+<Note>
+This is separate from an **admin (system) pin**, which is applied from an admin surface such as the [CometChat Dashboard](https://app.cometchat.com) and carries the `app_system` sentinel in `pinnedBy`. System pins rank above the user's own pins and cannot be created or removed from the SDK, only observed.
+</Note>
 
 ## Pin a Conversation
 
-In order to pin a conversation, you can use the `pinConversation()` method. This method takes the uid/guid of the conversation counterpart and the conversation type (`user`/`group`). On success it returns the full updated `Conversation` with `pinnedAt` and `pinnedBy` stamped.
+A conversation is addressed by its peer — the other user's UID for a one-on-one conversation, or the GUID for a group — together with the conversation type.
 
 <Tabs>
 <Tab title="Dart">
@@ -20,21 +42,23 @@ String conversationWith = "cometchat-uid-1";
 String conversationType = CometChatConversationType.user;
 
 CometChat.pinConversation(conversationWith, conversationType,
-  onSuccess: (Conversation conversation) {
-    debugPrint("Conversation pinned at: ${conversation.pinnedAt}");
-  }, onError: (CometChatException e) {
-    debugPrint("Conversation pinning failed with exception: ${e.message}");
+    onSuccess: (Conversation conversation) {
+  debugPrint("Conversation pinned at: ${conversation.pinnedAt}");
+}, onError: (CometChatException e) {
+  debugPrint("Conversation pinning failed with exception: ${e.message}");
 });
 ```
 
 </Tab>
 </Tabs>
 
-The call is idempotent — pinning an already-pinned conversation succeeds and returns the current state.
+On success, `onSuccess` receives the full updated `Conversation`, with `pinnedAt` and `pinnedBy` set. Pinning is idempotent.
+
+<Note>
+Addressing by peer rather than by `conversationId` is deliberate: it lets you pin a conversation that has no messages yet.
+</Note>
 
 ## Unpin a Conversation
-
-In order to unpin a conversation, you can use the `unpinConversation()` method. Only a pin placed by the logged-in user can be removed — an `app_system` pin is rejected server-side. The returned `Conversation` carries the pin fields cleared to `null`.
 
 <Tabs>
 <Tab title="Dart">
@@ -43,21 +67,66 @@ String conversationWith = "cometchat-uid-1";
 String conversationType = CometChatConversationType.user;
 
 CometChat.unpinConversation(conversationWith, conversationType,
-  onSuccess: (Conversation conversation) {
-    debugPrint("Conversation unpinned");
-  }, onError: (CometChatException e) {
-    debugPrint("Conversation unpinning failed with exception: ${e.message}");
+    onSuccess: (Conversation conversation) {
+  debugPrint("Conversation unpinned");
+}, onError: (CometChatException e) {
+  debugPrint("Conversation unpinning failed with exception: ${e.message}");
 });
 ```
 
 </Tab>
 </Tabs>
 
-## Real-Time Pin Events
+The returned `Conversation` carries its pin fields cleared to `null`. Only a pin the logged-in user placed can be removed — a system pin is rejected server-side, so hide or disable the unpin control for conversations whose `pinnedBy` is `app_system`.
 
-Pin and unpin events are delivered to the logged-in user's devices through the `ConversationListener` class — the acting device receives the callback on success, and the user's other devices receive it over the socket, so lists stay in sync everywhere. Admin (`app_system`) pins applied server-side arrive through the same callbacks.
+## Fetch Pinned Conversations
 
-To receive them, register a listener using the `addConversationListener()` method and override the `onConversationPinned()` and `onConversationUnpinned()` callbacks. Remove the listener with `removeConversationListener()` when it is no longer needed.
+The default conversation list is already **pin-ordered** by the server: system pins first, then the user's own pins, then everything else by latest activity. Fetch it with the regular `ConversationsRequest` described in [Retrieve Conversations](/sdk/flutter/retrieve-conversations) — no extra filter is needed.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+ConversationsRequest conversationsRequest = (ConversationsRequestBuilder()
+      ..limit = 30)
+    .build();
+
+conversationsRequest.fetchNext(onSuccess: (List<Conversation> conversations) {
+  final pinned = conversations.where((c) => c.pinnedAt != null);
+  debugPrint("Pinned conversations on this page: ${pinned.length}");
+}, onError: (CometChatException e) {
+  debugPrint("Conversation fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+When you apply real-time events to a list you already hold, keep the same ordering contract: system pins stay above user pins, and user pins stay above the activity-ordered rest of the list — new activity moves a conversation to the top of **its own section only**.
+
+## Check if a Conversation is Pinned
+
+As with messages, a `null` `pinnedAt` means the conversation is not pinned.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pinnedAt` | `DateTime?` | When the conversation was pinned for the logged-in user, or `null`. |
+| `pinnedBy` | `String?` | The UID of whoever placed the pin, `app_system` for a system pin, or `null` when not pinned. |
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (conversation.pinnedAt != null) {
+  final bool isSystemPin = conversation.pinnedBy == "app_system";
+  debugPrint("Pinned at: ${conversation.pinnedAt}, system pin: $isSystemPin");
+}
+```
+
+</Tab>
+</Tabs>
+
+## Real-time Conversation Pin Events
+
+Conversation pins arrive on a dedicated `ConversationListener`, **not** on `MessageListener` — the payload is a `Conversation`, not a message. Register it with `addConversationListener()` and override `onConversationPinned()` and `onConversationUnpinned()`.
 
 <Tabs>
 <Tab title="Dart">
@@ -81,26 +150,93 @@ class Class_Name with ConversationListener {
 </Tab>
 </Tabs>
 
-When applying these events to a conversation list, keep the ordering contract: system pins (`pinnedBy == "app_system"`) stay above user pins, and user pins stay above the activity-ordered rest of the list.
+These fire for the logged-in user's own pins — on the acting device as soon as the call succeeds, and over the socket on their other devices — and when a system pin is applied server-side. They never fire because another user pinned their own list. Remove the listener when you are done:
 
-## Fetching and Ordering
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.removeConversationListener("listenerId");
+```
 
-Pinned conversations are returned by the regular `ConversationsRequest` described in [Retrieve Conversations](/sdk/flutter/retrieve-conversations), ordered pinned-first — system pins, then the user's pins, then the remaining conversations by latest activity. Inspect `conversation.pinnedAt` / `conversation.pinnedBy` on the fetched objects to render the pinned state.
+</Tab>
+</Tabs>
 
-## Feature Availability and Limits
+<Warning>
+Adding a listener with an ID that is already registered silently replaces the earlier one. Use a unique ID per registration site.
+</Warning>
 
-Whether the Pin Conversation feature is enabled for the logged-in user is served on the user's login payload. You can check it at any time using the synchronous `isPinConversationEnabled()` method — it never throws, and returns `true` when the backend did not serve the flag.
+## Pin Limit
 
-The maximum number of conversations a user can pin is available through `getPinnedConversationsLimit()`, which returns `null` when the backend did not serve a limit. When a pin call exceeds the cap, it fails with a limit-exceeded error whose `errorParams` map carries the authoritative limit as `{"limit": n}`.
+<Tabs>
+<Tab title="Dart">
+```dart
+int? limit = CometChat.getPinnedConversationsLimit();
+```
+
+</Tab>
+</Tabs>
+
+`getPinnedConversationsLimit()` is synchronous and returns `null` when the backend did not serve a limit. System pins do not count against the user's allowance.
+
+## Error Handling
+
+`pinConversation()` and `unpinConversation()` report failures through `onError` with a `CometChatException`. Branch on `e.code` rather than the message text:
+
+| Code | Meaning |
+| --- | --- |
+| `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` | The user's conversation pin cap was reached. The cap is in `errorParams["limit"]`. |
+| `ERR_UID_NOT_FOUND` / `ERR_GUID_NOT_FOUND` | The peer named by `conversationWith` does not exist. |
+| `ERR_SYSTEM_PINNED_CONVERSATION` | The conversation is **system-pinned**, which a user may never unpin. |
+
+Pins are per-user, so pinning a conversation never affects anyone else's list. Both calls are idempotent: unpinning a conversation that was never pinned succeeds rather than erroring.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.pinConversation(conversationWith, conversationType,
+    onSuccess: (Conversation conversation) {
+  debugPrint("Conversation pinned");
+}, onError: (CometChatException e) {
+  if (e.code == 'ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED') {
+    final limit = e.errorParams?['limit'];
+    debugPrint("You can only pin $limit conversations.");
+  }
+});
+```
+
+</Tab>
+</Tabs>
+
+## Feature Availability
 
 <Tabs>
 <Tab title="Dart">
 ```dart
 if (CometChat.isPinConversationEnabled()) {
-  int? limit = CometChat.getPinnedConversationsLimit();
-  debugPrint("Conversation pinning enabled, limit: ${limit ?? "server default"}");
+  // Show the Pin Conversation option
 }
 ```
 
 </Tab>
 </Tabs>
+
+`isPinConversationEnabled()` is synchronous and never throws. When neither the login payload nor the app settings carry the flag, it returns `true`, so the feature is not disabled on a backend that predates the flag.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Retrieve Conversations" icon="comments" href="/sdk/flutter/retrieve-conversations">
+    Fetch and order the conversation list
+  </Card>
+  <Card title="Pin A Message" icon="thumbtack" href="/sdk/flutter/pin-message">
+    Highlight a message for everyone in a conversation
+  </Card>
+  <Card title="Save A Message" icon="bookmark" href="/sdk/flutter/save-message">
+    Bookmark a message privately, across conversations
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/flutter/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+</CardGroup>
