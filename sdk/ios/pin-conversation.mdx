@@ -1,0 +1,257 @@
+---
+title: "Pin A Conversation"
+sidebarTitle: "Pin A Conversation"
+description: "Pin and unpin conversations, fetch the pinned conversation list, and keep it in sync with the CometChat iOS SDK."
+---
+
+<Note>
+**Available from Chat SDK v4.1.9.** These APIs require `CometChatSDK` v4.1.9 or later.
+</Note>
+
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// Pin / unpin — address the conversation by peer id + type, not by conversation id
+CometChat.pinConversation(conversationWith: "cometchat-uid-1", conversationType: .user) { conversation in } onError: { error in }
+CometChat.unpinConversation(conversationWith: "cometchat-guid-1", conversationType: .group) { conversation in } onError: { error in }
+
+// Fetch pinned conversations only ("me", "system", or both)
+let request = ConversationRequest.ConversationRequestBuilder(limit: 30)
+    .set(pinnedBy: ["system", "me"])
+    .build()
+request.fetchNext(onSuccess: { conversations in }, onError: { error in })
+
+// Read pin state off a conversation — presence of the timestamp IS the boolean
+let isPinned = conversation.pinnedAt != 0
+let isSystemPinned = isPinned && conversation.pinnedBy == "app_system"
+
+// Availability
+let enabled = CometChat.isPinConversationEnabled()   // Bool
+
+// Listen for events (CometChatMessageDelegate)
+func onConversationPinned(conversation: Conversation) { }
+func onConversationUnpinned(conversation: Conversation) { }
+```
+
+</Accordion>
+
+Let users keep their most important chats at the top of the list. Pinning a conversation is **per-user** — it changes the order of the acting user's own conversation list, other participants do not see it, and it syncs across that user's devices. A conversation can also be pinned globally for everyone by the app itself (a system pin). Let's see how to work with pinned conversations in CometChat's iOS SDK.
+
+<Note>
+
+Pinning a conversation with the SDK requires the Pin Conversation feature to be enabled for your app. You can check its availability at runtime using the [feature flag](#feature-availability).
+
+</Note>
+
+## Pin a Conversation
+
+To pin a conversation, use the `pinConversation` method. Pass the `UID` of the other user (for a one-on-one conversation) or the `GUID` of the group, along with the matching conversation type. On success, the callback returns the updated `Conversation` with its pin attributes set.
+
+<Tabs>
+<Tab title="User">
+```swift
+CometChat.pinConversation(conversationWith: "cometchat-uid-1", conversationType: .user) { conversation in
+    print("Conversation pinned at: \(conversation.pinnedAt)")
+} onError: { error in
+    print("Failed to pin conversation: \(error.errorDescription)")
+}
+```
+</Tab>
+<Tab title="Group">
+```swift
+CometChat.pinConversation(conversationWith: "cometchat-guid-1", conversationType: .group) { conversation in
+    print("Conversation pinned at: \(conversation.pinnedAt)")
+} onError: { error in
+    print("Failed to pin conversation: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+## Unpin a Conversation
+
+To unpin a conversation, use the `unpinConversation` method with the same parameters. On success, the callback returns the updated `Conversation` with `pinnedAt` cleared back to `0`.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.unpinConversation(conversationWith: "cometchat-uid-1", conversationType: .user) { conversation in
+    print("Conversation unpinned: \(conversation.pinnedAt == 0)")
+} onError: { error in
+    print("Failed to unpin conversation: \(error.errorDescription)")
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+
+A user cannot unpin a **system pin** (a conversation pinned globally by the app) — the server rejects the call. Check [`pinnedBy`](#check-if-a-conversation-is-pinned) for `app_system` and hide the unpin action rather than relying on the round-trip to fail.
+
+</Info>
+
+<Note>
+
+Both callbacks fire on a background thread. Dispatch to the main queue before updating your UI.
+
+</Note>
+
+## Fetch Pinned Conversations
+
+The default conversations list already orders pinned conversations at the top. To fetch **only** pinned conversations, use the `set(pinnedBy:)` filter of the `ConversationRequestBuilder`.
+
+| Value      | Description                                             |
+| ---------- | -------------------------------------------------------- |
+| `"me"`     | Conversations pinned by the logged-in user.              |
+| `"system"` | Conversations pinned globally by the app (system pins).  |
+
+Pass both to get every pinned conversation. Any other value is dropped by the SDK, and an empty array — or one holding only unrecognised values — leaves the list unfiltered.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let conversationRequest = ConversationRequest.ConversationRequestBuilder(limit: 30)
+    .set(pinnedBy: ["system", "me"])
+    .build()
+
+conversationRequest.fetchNext(onSuccess: { conversations in
+    print("Pinned conversations: \(conversations.count)")
+}, onError: { error in
+    print("Fetch failed: \(error?.errorDescription ?? "")")
+})
+```
+</Tab>
+</Tabs>
+
+## Check if a Conversation is Pinned
+
+Every fetched `Conversation` carries its pin state in two fields:
+
+| Field      | Type     | Description                                                                          |
+| ---------- | -------- | ------------------------------------------------------------------------------------- |
+| `pinnedAt` | `Double` | When the conversation was pinned, in epoch seconds. `0` when it is not pinned.        |
+| `pinnedBy` | `String` | The `UID` of the pinner, or `app_system` for a system pin. `""` when it is not pinned. |
+
+<Warning>
+**Presence of the timestamp is the boolean.** There is no separate `isPinned` or `isSystemPinned` flag on iOS — check `pinnedAt != 0`, and compare `pinnedBy` with `"app_system"` for a system pin.
+</Warning>
+
+<Tabs>
+<Tab title="Swift">
+```swift
+let isPinned = conversation.pinnedAt != 0
+
+// Pinned globally by the app. A user cannot unpin one, so hide or disable your unpin control.
+let isSystemPinned = isPinned && conversation.pinnedBy == "app_system"
+```
+</Tab>
+</Tabs>
+
+When a conversation carries both a system pin and the user's own pin, the system pin takes precedence and sorts above the user's pins.
+
+## Real-time Conversation Pin Events
+
+Implement `CometChatMessageDelegate` to be notified when a conversation is pinned or unpinned, so your list can reorder without a refetch. Both callbacks are optional and carry the full updated `Conversation`. They live on the message delegate rather than a separate conversation delegate, so the delegate you already register for message events receives them.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+extension ViewController: CometChatMessageDelegate {
+
+    func onConversationPinned(conversation: Conversation) {
+        // Read pinnedBy to tell a personal pin from a system pin
+        print("Conversation pinned: \(conversation.conversationId ?? "")")
+    }
+
+    func onConversationUnpinned(conversation: Conversation) {
+        print("Conversation unpinned: \(conversation.conversationId ?? "")")
+    }
+}
+```
+</Tab>
+</Tabs>
+
+Register the delegate as you would for any message event — see [Real-time Delegates and Listeners](/sdk/ios/all-real-time-delegates-listeners). To stop listening, call `CometChat.removeMessageListener(_:)` with the same listener ID.
+
+Delivery of these events activates once server-side real-time delivery for conversation-pin events is rolled out. Until then, update your list from the `Conversation` returned to `pinConversation` / `unpinConversation` on the acting device; the user's other devices pick up the change on their next conversations fetch.
+
+## Pin Limit
+
+A user can pin a capped number of conversations, configurable per app — see [Properties and Constraints](/articles/properties-and-constraints) for the current value. System pins have their own separate cap and do not consume a user's allowance.
+
+The iOS SDK exposes no getter for the cap. When the limit is breached, the SDK surfaces `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` through `onError`, and the applicable limit is carried in the exception's `errorParams`. Read it from there rather than hard-coding a number:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+CometChat.pinConversation(conversationWith: "cometchat-uid-1", conversationType: .user) { _ in
+    // pinned
+} onError: { error in
+    if error.errorCode == "ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED",
+       let limit = error.errorParams?["limit"] as? Int {
+        print("You can pin up to \(limit) conversations.")
+    }
+}
+```
+</Tab>
+</Tabs>
+
+<Note>
+
+`errorParams` is `[String: Any]?` and is therefore **not** exposed to Objective-C. It is `nil` when the server sent no structured details, so always unwrap it.
+
+</Note>
+
+## Error Handling
+
+Rejected locally by the SDK, before any network call:
+
+| Error                               | Meaning                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| `ERROR_USER_NOT_LOGGED_IN`          | No user is logged in.                                                                    |
+| `ERROR_INVALID_CONVERSATION_ID`     | The `conversationWith` argument was empty or whitespace only.                            |
+| `ERROR_INVALID_CONVERSATION_TYPE`   | The conversation type was neither `.user` nor `.group`.                                  |
+
+Returned by the server:
+
+| Error                                     | Meaning                                                                                  |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` | The user is at the per-user pinned cap. The real cap rides in `errorParams` — see [Pin Limit](#pin-limit). |
+| `ERR_CONVERSATION_NOT_ACCESSIBLE`         | No conversation exists yet (never messaged), or it was deleted for this user.            |
+| `ERR_PERMISSION_DENIED`                   | The user's role does not allow the action.                                               |
+| `ERR_BAD_REQUEST`                         | Invalid `pinnedBy` filter or malformed body.                                             |
+
+If the server's response cannot be read as a conversation, the SDK reports `ERROR_UNSUCCESS_CONVERSATION_PIN` or `ERROR_UNSUCCESS_CONVERSATION_UNPIN`.
+
+## Feature Availability
+
+Check whether the Pin Conversation feature is enabled for your app before showing pin actions in your UI. The method is synchronous and safe to call from the UI layer. It returns `false` until the app settings have been fetched, so UI gated on it stays hidden rather than offering an action the server would refuse.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+if CometChat.isPinConversationEnabled() {
+    // show the Pin conversation option
+}
+```
+</Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Pin & Save Messages" icon="thumbtack" href="/sdk/ios/pin-save-message">
+    Pin a message for everyone, or save it privately
+  </Card>
+  <Card title="Retrieve Conversations" icon="comments" href="/sdk/ios/retrieve-conversations">
+    Every filter the conversations list supports
+  </Card>
+  <Card title="All Real Time Delegates" icon="tower-broadcast" href="/sdk/ios/all-real-time-delegates-listeners">
+    Every delegate the SDK exposes, in one place
+  </Card>
+  <Card title="Conversations UI Component" icon="list" href="/ui-kit/ios/conversations#pinning-conversations">
+    The UI Kit's built-in pin swipe action
+  </Card>
+</CardGroup>
