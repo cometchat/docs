@@ -43,7 +43,7 @@ Pin and save let users mark messages for later. The two features look similar bu
 |---|---|---|
 | Visibility | Everyone in the conversation | Private to the user |
 | Scope | One conversation | All conversations |
-| Permission | Group owner, admin or moderator | Anyone |
+| Permission | Decided by the server | Anyone |
 | Limit | Capped per conversation | Capped per user |
 
 ---
@@ -64,9 +64,17 @@ CometChat.pinMessage(messageId: 148) { message in
 </Tab>
 </Tabs>
 
-<Note>
-Pinning is permission-gated. In a group, only the owner, admins and moderators can pin or unpin; everyone can view the pinned list. In one-to-one conversations both participants can pin.
-</Note>
+Pinning is **idempotent**, and a message has a single pinner: re-pinning an already pinned message updates `pinnedBy` and `pinnedAt` to the most recent pinner rather than failing.
+
+<Warning>
+**A just-sent message may not be pinnable or savable yet.** On an app with moderation enabled, the server stamps a new message as moderation-pending and clears it a moment later. While it is pending, the call is rejected with `ERR_MESSAGE_NO_ACCESS` — the **same code returned for a genuine permission refusal**, so you cannot tell the two apart from the error alone.
+
+The window runs from **send**, not from the user's tap, and clears within a few seconds. Prefer a retry or a transient "not ready yet" message over telling the user they lack permission. Moderation is configured **per app**, so this never reproduces on an app that has it switched off.
+</Warning>
+
+<Info>
+Pinning is a moderation action and **the server is the authority**: a user without pin permission is rejected with `ERR_PERMISSION_DENIED`. There is no client-side role gate — show the Pin/Unpin option and surface a "you don't have permission" message on that error, rather than trying to predict the verdict. Every participant can see pinned messages. Deleted messages cannot be pinned; deleting a pinned message automatically unpins it.
+</Info>
 
 ---
 
@@ -89,7 +97,7 @@ CometChat.unpinMessage(messageId: 148) { message in
 
 ## Save a Message
 
-Saving is private to the logged-in user and syncs across that user's own devices. It carries no permission checks.
+Saving is private to the logged-in user and syncs across that user's own devices. It carries no permission checks. Saving is **idempotent** — saving an already saved message succeeds and keeps its original `savedAt`.
 
 <Tabs>
 <Tab title="Swift">
@@ -281,10 +289,10 @@ if CometChat.isSaveMessageEnabled() {
 
 | Error code | Meaning |
 |------------|---------|
-| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | The conversation already has the maximum pinned messages. |
-| `ERR_SAVED_MESSAGES_LIMIT_EXCEEDED` | The user already has the maximum saved messages. |
-| `ERR_PERMISSION_DENIED` | The user's scope does not allow pinning here. |
-| `ERR_MESSAGE_NO_ACCESS` | The user cannot access this message. |
+| `ERR_PINNED_MESSAGES_LIMIT_EXCEEDED` | The conversation already has the maximum pinned messages. The cap is in `errorParams["limit"]` when the server includes it. |
+| `ERR_SAVED_MESSAGES_LIMIT_EXCEEDED` | The user already has the maximum saved messages. The cap is in `errorParams["limit"]` when the server includes it. |
+| `ERR_PERMISSION_DENIED` | The user is not allowed to pin or unpin in this conversation. |
+| `ERR_MESSAGE_NO_ACCESS` | The user cannot act on this message — either a genuine access refusal or a message still held by moderation ([above](#pin-a-message)). |
 | `ERR_MESSAGE_ACTION_NOT_ALLOWED` | The action is not allowed on this message. |
 | `ERR_FEATURE_NOT_ACCESSIBLE` | The feature is not enabled for this app. |
 
@@ -305,7 +313,7 @@ CometChat.pinMessage(messageId: messageId) { _ in
 </Tab>
 </Tabs>
 
-For the two limit errors, read the actual cap from `errorParams` rather than hard-coding a number — the limit is server-owned and may change.
+For the two limit errors, read the actual cap from `errorParams` rather than hard-coding a number — the limit is server-owned and may change. When the server sends no `limit`, show generic copy rather than guessing one.
 
 <Note>
 

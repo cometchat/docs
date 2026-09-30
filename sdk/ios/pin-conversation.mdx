@@ -37,9 +37,15 @@ func onConversationUnpinned(conversation: Conversation) { }
 
 Let users keep their most important chats at the top of the list. Pinning a conversation is **per-user** — it changes the order of the acting user's own conversation list, other participants do not see it, and it syncs across that user's devices. A conversation can also be pinned globally for everyone by the app itself (a system pin). Let's see how to work with pinned conversations in CometChat's iOS SDK.
 
+<Warning>
+
+Pin Conversation requires the `features.ux.conversations.pinned.enabled` flag, which is **not seeded in any plan** and must be mapped per app. Until it is, every call fails with `ERR_FEATURE_NOT_ACCESSIBLE`. Gate your UI on the [feature flag](#feature-availability) before showing the control.
+
+</Warning>
+
 <Note>
 
-Pinning a conversation with the SDK requires the Pin Conversation feature to be enabled for your app. You can check its availability at runtime using the [feature flag](#feature-availability).
+This is separate from an **admin-global pin**, which is managed from the [CometChat Dashboard](https://app.cometchat.com) and shows for every user. Those cannot be created or removed from the SDK, only observed.
 
 </Note>
 
@@ -67,6 +73,14 @@ CometChat.pinConversation(conversationWith: "cometchat-guid-1", conversationType
 ```
 </Tab>
 </Tabs>
+
+Pinning is **idempotent** — pinning an already pinned conversation succeeds rather than failing.
+
+<Warning>
+
+A conversation that has **never been messaged**, or that is hidden, cannot be newly pinned — the call fails with `ERR_CONVERSATION_NOT_ACCESSIBLE`. Pin from a conversation that already exists in the list.
+
+</Warning>
 
 ## Unpin a Conversation
 
@@ -98,14 +112,22 @@ Both callbacks fire on a background thread. Dispatch to the main queue before up
 
 ## Fetch Pinned Conversations
 
-The default conversations list already orders pinned conversations at the top. To fetch **only** pinned conversations, use the `set(pinnedBy:)` filter of the `ConversationRequestBuilder`.
+The default conversation list is already **pin-ordered** by the server: admin-global pins first, then the user's own pins, then everything else. Pinned rows count toward the page `limit` rather than being added on top of it. Fetch it as you normally would and no extra filter is needed.
+
+To fetch **only** pinned conversations, use the `set(pinnedBy:)` filter of the `ConversationRequestBuilder`.
 
 | Value      | Description                                             |
 | ---------- | -------------------------------------------------------- |
 | `"me"`     | Conversations pinned by the logged-in user.              |
 | `"system"` | Conversations pinned globally by the app (system pins).  |
 
-Pass both to get every pinned conversation. Any other value is dropped by the SDK, and an empty array — or one holding only unrecognised values — leaves the list unfiltered.
+Pass both to get every pinned conversation. These are plain strings — there is no constant to import.
+
+<Warning>
+
+The match is **exact and case-sensitive**, and an unrecognised value is dropped silently rather than raising. `set(pinnedBy: ["Me"])` leaves nothing behind, the filter is omitted entirely, and you get the **full conversation list** back — not an error, and not a pinned-only list. Passing an empty array does the same thing.
+
+</Warning>
 
 <Tabs>
 <Tab title="Swift">
@@ -179,7 +201,7 @@ Delivery of these events activates once server-side real-time delivery for conve
 
 A user can pin a capped number of conversations, configurable per app — see [Properties and Constraints](/articles/properties-and-constraints) for the current value. System pins have their own separate cap and do not consume a user's allowance.
 
-The iOS SDK exposes no getter for the cap. When the limit is breached, the SDK surfaces `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` through `onError`, and the applicable limit is carried in the exception's `errorParams`. Read it from there rather than hard-coding a number:
+The iOS SDK exposes no getter for the cap. When the limit is breached, the SDK surfaces `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` through `onError`, and the applicable limit is carried in the exception's `errorParams` when the server includes it. Read it from there rather than hard-coding a number, and show generic copy when it is absent:
 
 <Tabs>
 <Tab title="Swift">
@@ -200,6 +222,8 @@ CometChat.pinConversation(conversationWith: "cometchat-uid-1", conversationType:
 
 `errorParams` is `[String: Any]?` and is therefore **not** exposed to Objective-C. It is `nil` when the server sent no structured details, so always unwrap it.
 
+The conversation pin cap and the message pin cap are **separate quotas with different values**, and both are server-owned and tenant-overridable. Never assume one from the other.
+
 </Note>
 
 ## Error Handling
@@ -216,9 +240,10 @@ Returned by the server:
 
 | Error                                     | Meaning                                                                                  |
 | ----------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` | The user is at the per-user pinned cap. The real cap rides in `errorParams` — see [Pin Limit](#pin-limit). |
-| `ERR_CONVERSATION_NOT_ACCESSIBLE`         | No conversation exists yet (never messaged), or it was deleted for this user.            |
+| `ERR_PINNED_CONVERSATIONS_LIMIT_EXCEEDED` | The user is at the per-user pinned cap. The cap is in `errorParams["limit"]` when the server includes it — see [Pin Limit](#pin-limit). |
+| `ERR_CONVERSATION_NOT_ACCESSIBLE`         | No conversation exists yet (never messaged), or it is hidden or deleted for this user.   |
 | `ERR_PERMISSION_DENIED`                   | The user's role does not allow the action.                                               |
+| `ERR_FEATURE_NOT_ACCESSIBLE`              | Pin Conversation is not enabled for the app — see [Feature Availability](#feature-availability). |
 | `ERR_BAD_REQUEST`                         | Invalid `pinnedBy` filter or malformed body.                                             |
 
 If the server's response cannot be read as a conversation, the SDK reports `ERROR_UNSUCCESS_CONVERSATION_PIN` or `ERROR_UNSUCCESS_CONVERSATION_UNPIN`.
@@ -236,6 +261,8 @@ if CometChat.isPinConversationEnabled() {
 ```
 </Tab>
 </Tabs>
+
+Unlike the two message-level flags, this one is **not seeded anywhere and is off by default** — treat a `false` as the normal case for a new app, not as an error.
 
 ---
 
