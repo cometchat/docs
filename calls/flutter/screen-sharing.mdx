@@ -5,18 +5,49 @@ sdk_version: "5.x"
 description: "Add screen sharing in CometChat Calls SDK v5 on Flutter with presenter controls, permissions, and in-call display behavior."
 ---
 
-View screen shares from other participants during a call. The Flutter SDK can receive and display screen shares initiated from web clients.
+Share your own screen during a call, and view screen shares started by other participants.
 
 <Note>
-The Flutter Calls SDK does not support initiating screen sharing. Screen sharing can only be started from web clients. Flutter participants can view shared screens.
+Starting a screen share from Flutter requires `cometchat_calls_sdk` 5.0.7 or later. On earlier
+versions Flutter participants could only view shares started from other clients.
 </Note>
 
 ## How It Works
 
-When a web participant starts screen sharing:
-1. The SDK receives the screen share stream
+When any participant starts screen sharing:
+1. The SDK publishes or receives the screen share stream
 2. The call layout automatically adjusts to display the shared screen prominently
-3. Flutter participants can view the shared content
+3. Every participant in the session can view the shared content
+
+## Start and Stop Screen Sharing
+
+`CallSession` exposes the screen-share controls directly, so a custom control panel can drive
+them without the SDK's built-in button:
+
+```dart
+CallSession? callSession = CallSession.getInstance();
+
+// Start sharing the local screen
+await callSession?.startScreenShare();
+
+// Stop sharing
+await callSession?.stopScreenShare();
+
+// Or flip the current state
+await callSession?.toggleScreenShare();
+
+// Read the current state to drive your button's appearance
+final bool sharing = callSession?.isScreenSharing ?? false;
+```
+
+On web this triggers the browser's screen picker (`getDisplayMedia`). On Android and iOS it
+invokes the platform screen-share flow, which shows the system's own permission prompt.
+
+<Note>
+These methods throw `CometChatCallsException` if the screen share cannot be started — for
+example when the user dismisses the system permission prompt. Wrap the call in a `try`/`catch`
+if you surface errors in your UI.
+</Note>
 
 ## Listen for Screen Share Events
 
@@ -41,29 +72,62 @@ class _ParticipantEventListener extends ParticipantEventListeners {
 
 CallSession? callSession = CallSession.getInstance();
 
-callSession?.addParticipantEventListener(_ParticipantEventListener());
+final screenShareListener = _ParticipantEventListener();
+callSession?.addParticipantEventListener(screenShareListener);
 ```
 
 <Note>
-Flutter listeners are not lifecycle-aware. You must manually remove listeners in your widget's `dispose()` method to prevent memory leaks.
+Flutter listeners are not lifecycle-aware, and `removeParticipantEventListener` matches on the
+instance you passed in. Keep the listener in a field — a listener constructed inline can never
+be removed — and call `callSession?.removeParticipantEventListener(screenShareListener)` from
+your widget's `dispose()`.
 </Note>
 
 ## Check Screen Share Status
 
-Use the `isPresenting` property on the `Participant` object to check if someone is sharing their screen:
+`Participant` carries no screen-share flag. Track who is presenting yourself, by recording the
+`mid` of whoever started sharing and clearing it when they stop:
 
 ```dart
-class _ParticipantEventListener2 extends ParticipantEventListeners {
+class _PresenterTracker extends ParticipantEventListeners {
+  String? presenterMid;
+  String? presenterName;
+
   @override
-  void onParticipantListChanged(List<Participant> participants) {
-    final presenter = participants.where((p) => p.isPresenting).firstOrNull;
-    if (presenter != null) {
-      debugPrint("${presenter.name} is currently sharing their screen");
+  void onParticipantStartedScreenShare(Participant participant) {
+    presenterMid = participant.mid;
+    presenterName = participant.name;
+  }
+
+  @override
+  void onParticipantStoppedScreenShare(Participant participant) {
+    if (participant.mid == presenterMid) {
+      presenterMid = null;
+      presenterName = null;
+    }
+  }
+
+  @override
+  void onParticipantLeft(Participant participant) {
+    if (participant.mid == presenterMid) {
+      presenterMid = null;
+      presenterName = null;
     }
   }
 }
 
 CallSession? callSession = CallSession.getInstance();
 
-callSession?.addParticipantEventListener(_ParticipantEventListener2());
+final presenterTracker = _PresenterTracker();
+callSession?.addParticipantEventListener(presenterTracker);
+
+// Later
+if (presenterTracker.presenterMid != null) {
+  debugPrint("${presenterTracker.presenterName} is currently sharing their screen");
+}
+
+// In dispose()
+callSession?.removeParticipantEventListener(presenterTracker);
 ```
+
+For your own screen share, read `callSession.isScreenSharing` rather than tracking events.

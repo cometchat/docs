@@ -48,35 +48,75 @@ class _ParticipantEventListener extends ParticipantEventListeners {
 
 CallSession? callSession = CallSession.getInstance();
 
-callSession?.addParticipantEventListener(_ParticipantEventListener());
+final handListener = _ParticipantEventListener();
+callSession?.addParticipantEventListener(handListener);
 ```
 
 <Note>
-Flutter listeners are not lifecycle-aware. You must manually remove listeners in your widget's `dispose()` method to prevent memory leaks.
+Flutter listeners are not lifecycle-aware, and `removeParticipantEventListener` matches on the
+instance you passed in. Keep the listener in a field — a listener constructed inline can never
+be removed — and call `callSession?.removeParticipantEventListener(handListener)` from your
+widget's `dispose()`.
 </Note>
 
 ## Check Raised Hand Status
 
-The `Participant` object includes a `raisedHandTimestamp` property to check if a participant has their hand raised:
+`Participant` carries no raised-hand flag or timestamp. Build the raised-hand queue yourself
+from the hand-raised and hand-lowered events, stamping the time as each hand goes up:
 
 ```dart
-class _ParticipantEventListener2 extends ParticipantEventListeners {
-  @override
-  void onParticipantListChanged(List<Participant> participants) {
-    final raisedHands = participants
-        .where((p) => p.raisedHandTimestamp > 0)
-        .toList()
-      ..sort((a, b) => a.raisedHandTimestamp.compareTo(b.raisedHandTimestamp));
+class _RaisedHandsTracker extends ParticipantEventListeners {
+  /// Raise time in millis, keyed by participant `mid`.
+  final Map<String, int> raisedAt = {};
+  final Map<String, Participant> participants = {};
 
-    // Display participants with raised hands in order
-    updateRaisedHandsList(raisedHands);
+  @override
+  void onParticipantHandRaised(Participant participant) {
+    final mid = participant.mid;
+    if (mid == null) return;
+    raisedAt[mid] = DateTime.now().millisecondsSinceEpoch;
+    participants[mid] = participant;
+    updateRaisedHandsList(ordered);
+  }
+
+  @override
+  void onParticipantHandLowered(Participant participant) {
+    final mid = participant.mid;
+    if (mid == null) return;
+    raisedAt.remove(mid);
+    participants.remove(mid);
+    updateRaisedHandsList(ordered);
+  }
+
+  @override
+  void onParticipantLeft(Participant participant) {
+    final mid = participant.mid;
+    if (mid == null) return;
+    raisedAt.remove(mid);
+    participants.remove(mid);
+    updateRaisedHandsList(ordered);
+  }
+
+  /// Participants with a raised hand, oldest first.
+  List<Participant> get ordered {
+    final mids = raisedAt.keys.toList()
+      ..sort((a, b) => raisedAt[a]!.compareTo(raisedAt[b]!));
+    return mids.map((mid) => participants[mid]!).toList();
   }
 }
 
 CallSession? callSession = CallSession.getInstance();
 
-callSession?.addParticipantEventListener(_ParticipantEventListener2());
+final raisedHandsTracker = _RaisedHandsTracker();
+callSession?.addParticipantEventListener(raisedHandsTracker);
+
+// In dispose()
+callSession?.removeParticipantEventListener(raisedHandsTracker);
 ```
+
+<Note>
+For the local user, read `callSession?.isHandRaised` instead of tracking events.
+</Note>
 
 ## Hide Raise Hand Button
 

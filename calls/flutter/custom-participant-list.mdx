@@ -112,12 +112,12 @@ class ParticipantListPanel extends StatelessWidget {
             child: ListView.builder(
               itemCount: filtered.length,
               itemBuilder: (context, index) {
-                final participant = filtered[index];
+                final view = filtered[index];
                 return _ParticipantTile(
-                  participant: participant,
-                  onMute: () => onMute(participant),
-                  onPauseVideo: () => onPauseVideo(participant),
-                  onPin: () => onPin(participant),
+                  view: view,
+                  onMute: () => onMute(view),
+                  onPauseVideo: () => onPauseVideo(view),
+                  onPin: () => onPin(view),
                 );
               },
             ),
@@ -128,14 +128,31 @@ class ParticipantListPanel extends StatelessWidget {
   }
 }
 
+/// `Participant` carries identity and usage data only — it has no mute, video,
+/// hand-raise, screen-share or pinned flags. Hold that state alongside it and
+/// update it from `ParticipantEventListeners` events (Step 3).
+class ParticipantView {
+  ParticipantView(this.participant);
+
+  Participant participant;
+  bool muted = false;
+  bool videoPaused = false;
+  bool presenting = false;
+  bool handRaised = false;
+  bool pinned = false;
+
+  String get mid => participant.mid ?? "";
+  String get displayName => participant.name ?? "Unknown";
+}
+
 class _ParticipantTile extends StatelessWidget {
-  final Participant participant;
+  final ParticipantView view;
   final VoidCallback onMute;
   final VoidCallback onPauseVideo;
   final VoidCallback onPin;
 
   const _ParticipantTile({
-    required this.participant,
+    required this.view,
     required this.onMute,
     required this.onPauseVideo,
     required this.onPin,
@@ -143,27 +160,26 @@ class _ParticipantTile extends StatelessWidget {
 
   String get statusText {
     final parts = <String>[];
-    if (participant.isAudioMuted) parts.add("🔇 Muted");
-    if (participant.isVideoPaused) parts.add("📹 Video Off");
-    if (participant.isPresenting) parts.add("🖥️ Presenting");
-    if (participant.raisedHandTimestamp > 0) parts.add("✋ Hand Raised");
-    if (participant.isPinned) parts.add("📌 Pinned");
+    if (view.muted) parts.add("🔇 Muted");
+    if (view.videoPaused) parts.add("📹 Video Off");
+    if (view.presenting) parts.add("🖥️ Presenting");
+    if (view.handRaised) parts.add("✋ Hand Raised");
+    if (view.pinned) parts.add("📌 Pinned");
     return parts.isEmpty ? "Active" : parts.join(" • ");
   }
 
   @override
   Widget build(BuildContext context) {
+    final avatar = view.participant.avatar;
+    final name = view.displayName;
+
     return ListTile(
       leading: CircleAvatar(
-        backgroundImage: participant.avatar != null
-            ? NetworkImage(participant.avatar!)
-            : null,
-        child: participant.avatar == null
-            ? Text(participant.name[0].toUpperCase())
-            : null,
+        backgroundImage: avatar != null ? NetworkImage(avatar) : null,
+        child: avatar == null ? Text(name[0].toUpperCase()) : null,
       ),
       title: Text(
-        participant.name,
+        name,
         style: const TextStyle(fontWeight: FontWeight.bold),
       ),
       subtitle: Text(statusText, style: const TextStyle(fontSize: 12)),
@@ -173,17 +189,17 @@ class _ParticipantTile extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.mic_off, size: 20),
             onPressed: onMute,
-            color: participant.isAudioMuted ? Colors.grey : null,
+            color: view.muted ? Colors.grey : null,
           ),
           IconButton(
             icon: const Icon(Icons.videocam_off, size: 20),
             onPressed: onPauseVideo,
-            color: participant.isVideoPaused ? Colors.grey : null,
+            color: view.videoPaused ? Colors.grey : null,
           ),
           IconButton(
             icon: const Icon(Icons.push_pin, size: 20),
             onPressed: onPin,
-            color: participant.isPinned ? Colors.blue : Colors.grey,
+            color: view.pinned ? Colors.blue : Colors.grey,
           ),
         ],
       ),
@@ -200,28 +216,115 @@ Listen for participant updates and handle actions in your call screen:
 
 ```dart
 class _ParticipantEventListener extends ParticipantEventListeners {
+  _ParticipantEventListener(this.onChanged);
+
+  /// Called after any change so the widget can `setState`.
+  final void Function(List<ParticipantView>) onChanged;
+
+  /// Keyed on `mid`, which is what identifies a participant within a session.
+  final Map<String, ParticipantView> _views = {};
+
+  /// `mid` of the pinned participant, or null. The SDK reports no pinned state,
+  /// so we own it.
+  String? pinnedMid;
+
+  List<ParticipantView> get views => _views.values.toList();
+
+  ParticipantView _viewFor(Participant participant) {
+    final mid = participant.mid ?? "";
+    final view = _views.putIfAbsent(mid, () => ParticipantView(participant));
+    view.participant = participant;
+    return view;
+  }
+
   @override
   void onParticipantListChanged(List<Participant> updatedParticipants) {
-          setState(() => participants = updatedParticipants);
-        }
+    final seen = <String>{};
+    for (final participant in updatedParticipants) {
+      seen.add(participant.mid ?? "");
+      _viewFor(participant);
+    }
+    _views.removeWhere((mid, _) => !seen.contains(mid));
+    onChanged(views);
+  }
 
   @override
   void onParticipantJoined(Participant participant) {
-          debugPrint("${participant.name} joined");
-        }
+    _viewFor(participant);
+    onChanged(views);
+  }
 
   @override
   void onParticipantLeft(Participant participant) {
-          debugPrint("${participant.name} left");
-        }
+    final mid = participant.mid ?? "";
+    _views.remove(mid);
+    if (pinnedMid == mid) pinnedMid = null;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantAudioMuted(Participant participant) {
+    _viewFor(participant).muted = true;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantAudioUnmuted(Participant participant) {
+    _viewFor(participant).muted = false;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantVideoPaused(Participant participant) {
+    _viewFor(participant).videoPaused = true;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantVideoResumed(Participant participant) {
+    _viewFor(participant).videoPaused = false;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantHandRaised(Participant participant) {
+    _viewFor(participant).handRaised = true;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantHandLowered(Participant participant) {
+    _viewFor(participant).handRaised = false;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantStartedScreenShare(Participant participant) {
+    _viewFor(participant).presenting = true;
+    onChanged(views);
+  }
+
+  @override
+  void onParticipantStoppedScreenShare(Participant participant) {
+    _viewFor(participant).presenting = false;
+    onChanged(views);
+  }
+
+  void setPinned(String? mid) {
+    for (final view in _views.values) {
+      view.pinned = view.mid == mid;
+    }
+    pinnedMid = mid;
+    onChanged(views);
+  }
 }
 
 class _CallScreenState extends State<CallScreen> {
-  List<Participant> participants = [];
+  List<ParticipantView> participants = [];
   String searchQuery = "";
   bool isParticipantPanelVisible = false;
 
-  late final ParticipantEventListeners _participantListener;
+  late final _ParticipantEventListener _participantListener;
 
   @override
   void initState() {
@@ -230,30 +333,35 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   void _setupParticipantListener() {
-    _participantListener = _ParticipantEventListener();
+    _participantListener = _ParticipantEventListener((views) {
+      if (mounted) setState(() => participants = views);
+    });
     CallSession.getInstance()?.addParticipantEventListener(_participantListener);
   }
 
-  void _onMuteParticipant(Participant participant) async {
-    final uid = participant.uid;
+  void _onMuteParticipant(ParticipantView view) async {
+    final uid = view.participant.uid;
     if (uid == null) return;
     await CallSession.getInstance()?.muteParticipant(uid);
   }
 
-  void _onPauseParticipantVideo(Participant participant) async {
-    final uid = participant.uid;
+  void _onPauseParticipantVideo(ParticipantView view) async {
+    final uid = view.participant.uid;
     if (uid == null) return;
     await CallSession.getInstance()?.pauseParticipantVideo(uid);
   }
 
-  void _onPinParticipant(Participant participant) async {
-    if (participant.isPinned) {
-      await CallSession.getInstance()?.unPinParticipant();
+  void _onPinParticipant(ParticipantView view) async {
+    final session = CallSession.getInstance();
+    if (view.pinned) {
+      await session?.unPinParticipant();
+      _participantListener.setPinned(null);
       return;
     }
-    final uid = participant.uid;
+    final uid = view.participant.uid;
     if (uid == null) return;
-    await CallSession.getInstance()?.pinParticipant(uid);
+    await session?.pinParticipant(uid);
+    _participantListener.setPinned(view.mid);
   }
 
   @override
@@ -314,29 +422,11 @@ Flutter listeners are not lifecycle-aware. You must manually remove listeners in
 Here's the full implementation with all components:
 
 ```dart
-class _ParticipantEventListener2 extends ParticipantEventListeners {
-  @override
-  void onParticipantListChanged(List<Participant> updatedParticipants) {
-          setState(() => participants = updatedParticipants);
-        }
-
-  @override
-  void onParticipantJoined(Participant participant) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("${participant.name} joined")),
-          );
-        }
-
-  @override
-  void onParticipantLeft(Participant participant) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("${participant.name} left")),
-          );
-        }
-}
-
 import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
 import 'package:flutter/material.dart';
+
+// ParticipantView and _ParticipantEventListener are the versions defined in
+// Steps 2 and 3 above.
 
 class CallScreen extends StatefulWidget {
   final String sessionId;
@@ -349,9 +439,11 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> {
   Widget? callWidget;
-  List<Participant> participants = [];
+  List<ParticipantView> participants = [];
   String searchQuery = "";
   bool isParticipantPanelVisible = false;
+
+  late final _ParticipantEventListener _participantListener;
 
   @override
   void initState() {
@@ -379,30 +471,35 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   void _setupParticipantListener() {
-    _participantListener = _ParticipantEventListener2();
+    _participantListener = _ParticipantEventListener((views) {
+      if (mounted) setState(() => participants = views);
+    });
     CallSession.getInstance()?.addParticipantEventListener(_participantListener);
   }
 
-  void _onMuteParticipant(Participant participant) async {
-    final uid = participant.uid;
+  void _onMuteParticipant(ParticipantView view) async {
+    final uid = view.participant.uid;
     if (uid == null) return;
     await CallSession.getInstance()?.muteParticipant(uid);
   }
 
-  void _onPauseParticipantVideo(Participant participant) async {
-    final uid = participant.uid;
+  void _onPauseParticipantVideo(ParticipantView view) async {
+    final uid = view.participant.uid;
     if (uid == null) return;
     await CallSession.getInstance()?.pauseParticipantVideo(uid);
   }
 
-  void _onPinParticipant(Participant participant) async {
-    if (participant.isPinned) {
-      await CallSession.getInstance()?.unPinParticipant();
+  void _onPinParticipant(ParticipantView view) async {
+    final session = CallSession.getInstance();
+    if (view.pinned) {
+      await session?.unPinParticipant();
+      _participantListener.setPinned(null);
       return;
     }
-    final uid = participant.uid;
+    final uid = view.participant.uid;
     if (uid == null) return;
-    await CallSession.getInstance()?.pinParticipant(uid);
+    await session?.pinParticipant(uid);
+    _participantListener.setPinned(view.mid);
   }
 
   @override
@@ -452,14 +549,19 @@ class _CallScreenState extends State<CallScreen> {
 <Accordion title="Participant Object Reference">
 | Property | Type | Description |
 |----------|------|-------------|
-| `uid` | String | Unique identifier (CometChat user ID) |
-| `name` | String | Display name |
-| `avatar` | String? | URL of avatar image |
-| `pid` | String | Participant ID for this call session |
-| `role` | String | Role in the call |
-| `isAudioMuted` | bool | Whether audio is muted |
-| `isVideoPaused` | bool | Whether video is paused |
-| `isPinned` | bool | Whether pinned in layout |
-| `isPresenting` | bool | Whether screen sharing |
-| `raisedHandTimestamp` | int | Timestamp when hand was raised (0 if not raised) |
+| `uid` | `String?` | CometChat user ID |
+| `name` | `String?` | Display name |
+| `avatar` | `String?` | URL of avatar image |
+| `mid` | `String?` | Media ID — identifies this participant within the session |
+| `deviceId` | `String?` | Device the participant joined from |
+| `state` | `String?` | Participant's current state in the session |
+| `isJoined` | `bool?` | Whether the participant is currently joined |
+| `joinedAt` | `int?` | Timestamp when the participant joined |
+| `leftAt` | `int?` | Timestamp when the participant left |
+| `totalAudioMinutes` | `double?` | Audio minutes consumed by this participant |
+| `totalVideoMinutes` | `double?` | Video minutes consumed by this participant |
+| `totalDurationInMinutes` | `double?` | Total minutes this participant spent in the session |
+
+Every field is nullable. There are no mute, video, hand-raise, screen-share or pinned flags —
+that is why this page keeps a `ParticipantView` alongside each `Participant`.
 </Accordion>
