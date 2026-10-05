@@ -1,159 +1,1047 @@
 ---
 title: "Custom Text Formatter"
 sidebarTitle: "Custom Text Formatter"
-description: "Build a minimal color formatter, bind it to a toolbar button in the composer, and render the result in read-only message bubbles."
+description: "Build a text color formatter: color text live in the composer, send it as a token, and render it on every surface that shows the message."
 ---
 
 ## Goal
 
-By the end of this guide you will have a **color formatter**: a toolbar button in the composer that wraps the selected text in a color marker, and a formatter that renders that marker as colored text everywhere the message appears — in the composer, in the message list, conversation subtitle, pinned and saved messages.
+By the end of this guide you will have a **text color formatter**, working end to end:
 
-A text formatter has two jobs, and this guide covers both:
+- **Composer:** a toolbar button picks a color. Text you type next is colored as you type, and selected text can be colored or cleared.
+- **Send:** colored text is stored on the message as a plain-text token, `{color:#e5484d}text{/color}`.
+- **Display:** the token renders as colored text in message bubbles, the conversation list, thread headers, pinned and saved messages, search, reply and edit previews, and copied text is plain.
 
-1. **Rendering** — turn a marker in the raw message text into styled HTML wherever the message is displayed (`format()`).
-2. **Authoring** — give users a way to produce that marker. Here, a button in the composer's `toolbarTrailingView` wraps the current selection.
+Each step below explains one part of the formatter with an excerpt. The [complete code](#complete-code) at the end is ready to drop into your app.
 
 <Note>
-For the full formatter reference — the built-in Markdown, Mentions, and URL formatters and the complete `CometChatTextFormatter` API — see [Text Formatters](/ui-kit/react/plugins/text-formatters). This guide is the minimal, task-focused version.
+For the built-in Markdown, Mentions, and URL formatters and the full `CometChatTextFormatter` API, see [Text Formatters](/ui-kit/react/plugins/text-formatters).
 </Note>
 
 ## Prerequisites
 
 - Completed the [Integration Guide](/ui-kit/react/integration-react)
 - A chat screen using `CometChatMessageList` and `CometChatMessageComposer`
+- React 18 or later (the toolbar button uses `useSyncExternalStore`)
 
-## Step 1: The Formatter
+## How It Works
 
-Extend `CometChatTextFormatter`. The one method that matters for rendering is `format()`: it receives the raw message text and returns HTML. Our marker is `{color=VALUE}...{/color}`, and we turn it into a colored `<span>`.
+```
+Composer        <span class="cc-color" style="color:#e5484d">world</span>
+   │  send: getOriginalText()
+   ▼
+Message text    {color:#e5484d}world{/color}
+   │  display: format() → customLogicToFormatText()
+   ▼
+Every surface   <span class="cc-color" style="color:#e5484d">world</span>
+```
 
-_File: src/formatters/ColorFormatter.ts_
+A formatter has three jobs, and `ColorFormatter` does all three:
+
+| Job | Where it runs | Methods |
+|:----|:--------------|:--------|
+| **Display**: token → HTML | Every surface the formatter is registered on | `customLogicToFormatText` |
+| **Send**: composer HTML → token | The composer, on send and on paste | `getOriginalText` |
+| **Live input**: color text as you type | The composer (rich text editor only) | `onKeyUp`, `formatText`, `initializeComposerTracking` |
+
+The composer gives each formatter in its `textFormatters` a reference to the editor element (`inputElementReference`), forwards every `keyup` to `onKeyUp`, and supplies caret helpers (`getCaretPosition`, `setCaretPosition`) and `reRender()`, which syncs the composer after the formatter changes the editor's DOM.
+
+## Step 1: Token and Display
+
+The token is plain text, so it survives storage and delivery unchanged. `customLogicToFormatText` turns it into a colored span. You don't need to override `format()`: the base class calls `customLogicToFormatText` from it, so every display surface uses this method.
+
+_File: src/formatters/ColorFormatter.ts (excerpt)_
 
 ```typescript
-import { CometChatTextFormatter } from "@cometchat/chat-uikit-react";
+import { CometChatTextFormatter } from '@cometchat/chat-uikit-react';
 
-/** Matches {color=#e5484d}text{/color} — a CSS color, then the wrapped text. */
-const COLOR_REGEX = /\{color=(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\}([\s\S]*?)\{\/color\}/g;
+/** Class on every colored span, in the composer and in rendered messages. */
+const COLOR_CLASS = 'cc-color';
+/** Accepted color values: 3- to 6-digit hex. */
+const HEX = '#[0-9a-fA-F]{3,6}';
+/** Stored token: `{color:#e5484d}text{/color}`. */
+const TOKEN_REGEX = new RegExp(`\\{color:(${HEX})\\}([\\s\\S]*?)\\{/color\\}`, 'g');
+
+// …
 
 export class ColorFormatter extends CometChatTextFormatter {
-  readonly id = "color-formatter";
-  override priority = 20; // after markdown (10), before mentions/URLs
+  readonly id = 'color';
+  override priority = 60;
 
-  getRegex(): RegExp {
-    return COLOR_REGEX;
-  }
+  // …
 
-  format(text: string): string {
-    this.originalText = text ?? "";
-    this.formattedText = this.originalText.replace(
-      this.getRegex(),
-      (_match, color: string, inner: string) =>
-        `<span style="color: ${color}">${inner}</span>`,
-    );
-    return this.formattedText;
+  /**
+   * Token → HTML. Used by every display surface (the base `format()` delegates here) and to restore
+   * colors after a paste.
+   */
+  override customLogicToFormatText(text: string): string {
+    return text.replace(TOKEN_REGEX, `<span class="${COLOR_CLASS}" style="color:$1">$2</span>`);
   }
 }
 ```
 
 <Note>
-`format()` must store `originalText`, set `formattedText`, and return the formatted string — the pipeline relies on those fields. Keep it fast: it runs on every text message render.
+Formatters run in `priority` order, lowest first. Markdown runs at 10, mentions at 20, URLs at 100. At 60, the color token is replaced after markdown and mentions have already been rendered inside it.
 </Note>
 
-## Step 2: The Toolbar Button
+## Step 2: Serialize on Send
 
-The composer's `toolbarTrailingView` renders a node at the end of the rich-text toolbar. Put a button there that wraps the user's current selection in the color marker.
+On send, the composer passes the editor's HTML through each formatter's `getOriginalText` before converting it to markdown. `ColorFormatter` replaces each colored span with the token.
 
-_File: src/components/ColorButton.tsx_
+It walks the DOM instead of using a regex because a colored run can contain other elements. If you insert a mention while typing in color, the mention's own `</span>` would end a non-greedy `<span …>…</span>` match early and leave a broken token in the message.
 
-```tsx
-export function ColorButton({ color = "#e5484d" }: { color?: string }) {
-  function wrapSelection() {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+```typescript
+/** Composer HTML → token. Used on send and before a paste is sanitized. */
+override getOriginalText(inputText?: string): string {
+  if (inputText === undefined) return super.getOriginalText();
+  if (!inputText.includes(COLOR_CLASS)) return inputText;
+  // Walk the DOM rather than using a regex: a colored run can contain another element (e.g. a
+  // mention), and a non-greedy `…</span>` regex would stop at that element's closing tag.
+  const doc = new DOMParser().parseFromString(inputText, 'text/html');
+  doc.querySelectorAll(`span.${COLOR_CLASS}`).forEach(el => {
+    const parent = el.parentNode;
+    if (!parent) return;
+    const color = this.colorOf(el as HTMLElement);
+    // Replace the span with `{color:#hex}` + its children + `{/color}`.
+    if (color) parent.insertBefore(doc.createTextNode(`{color:${color}}`), el);
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    if (color) parent.insertBefore(doc.createTextNode('{/color}'), el);
+    parent.removeChild(el);
+  });
+  return doc.body.innerHTML;
+}
+```
 
-    const range = selection.getRangeAt(0);
-    const selected = range.toString();
-    range.deleteContents();
-    range.insertNode(
-      document.createTextNode(`{color=${color}}${selected}{/color}`),
-    );
-    selection.removeAllRanges();
+<Tip>
+The composer also runs `getOriginalText` and then `customLogicToFormatText` around its paste sanitizer, so colored text copied from one message and pasted into the composer keeps its color. You get this for free.
+</Tip>
+
+## Step 3: Color Text as You Type
+
+The formatter works like a highlighter pen. `setActiveColor` turns the pen on (or off, with `null`), and `formatText` wraps newly typed text in a span of the pen's color after each keystroke.
+
+```typescript
+/** Pen color applied to newly typed text; `null` when the pen is off. */
+private activeColor: string | null = null;
+/** Set when the pen is turned off inside a colored run: the next typed char is moved out of it. */
+private breakoutPending = false;
+
+// …
+
+/** Set the pen color for newly typed text, or `null` to turn the pen off. */
+setActiveColor(color: string | null): void {
+  this.activeColor = color;
+  if (color === null && this.caretColorSpan()) this.breakoutPending = true;
+  this.notify();
+}
+
+override onKeyUp(event: KeyboardEvent): void {
+  // Skip IME composition; the committed text arrives with a later keyup.
+  if (event.isComposing || event.keyCode === 229) return;
+  this.formatText();
+  this.lastCaret = this.getCaretPosition();
+}
+
+/** Color the text typed since the last keystroke according to the pen. */
+override formatText(): void {
+  const root = this.inputElementReference;
+  if (!root) return;
+  const sel = this.selection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const node = range.startContainer;
+  const offset = range.startOffset;
+  if (!root.contains(node) || node.nodeType !== Node.TEXT_NODE || offset === 0) {
+    if (this.activeColor === null) this.breakoutPending = false;
+    return;
+  }
+  if (this.isProtected(node, root)) return;
+
+  const text = node as Text;
+  const span = this.closestColorSpan(text);
+  const caret = this.getCaretPosition();
+
+  // Pen was turned off inside a colored run: move the typed char out, uncolored.
+  if (this.breakoutPending) {
+    this.breakoutPending = false;
+    if (span) {
+      this.breakOutCharBefore(text, offset, span, null);
+      this.setCaretPosition(caret);
+      this.reRender();
+    }
+    return;
   }
 
+  if (this.activeColor === null) return;
+  // The browser already typed into a run of the pen's color.
+  if (span && this.colorOf(span) === this.activeColor) return;
+
+  if (span) {
+    // Typed inside a run of a different color: move the char out and wrap it in the pen color.
+    this.breakOutCharBefore(text, offset, span, this.activeColor);
+  } else {
+    // Color everything typed since the last keystroke. A delta outside [1, min(offset, cap)]
+    // means the caret jumped, so color just the last char.
+    const delta = caret - this.lastCaret;
+    const runLen = delta >= 1 && delta <= MAX_TYPED_RUN && delta <= offset ? delta : 1;
+    this.wrapRunBefore(text, offset, runLen, this.activeColor);
+  }
+  this.setCaretPosition(caret);
+  this.reRender();
+}
+```
+
+A few details keep typing correct:
+
+- **Only newly typed text is colored.** `lastCaret` records the caret after each keystroke or click, so `formatText` colors exactly the characters typed since, including a quick burst typed before a `keyup` arrived, and never text that was already there.
+- **Changing color mid-word.** The browser keeps inserting into the span the caret is in. When the pen's color differs from that span, or the pen was turned off inside it (`breakoutPending`), the typed character is moved out of the span. Text after the caret keeps its color.
+- **Protected content.** Mentions and other non-editable nodes, code, and links are never colored. Pass `protectedSelectors` to the constructor to protect more, such as another formatter's spans.
+- **IME input** is skipped until the composition is committed.
+
+`initializeComposerTracking` runs once the composer has assigned the editor. It keeps `lastCaret` in sync on mouse clicks and turns the pen off when the input is cleared, for example after a message is sent.
+
+```typescript
+/** Called by the composer once `inputElementReference` is assigned. */
+override initializeComposerTracking(): void {
+  const root = this.inputElementReference;
+  if (!root) return;
+  this.domObserver?.disconnect();
+
+  // Clicks move the caret without a keyup, so sync `lastCaret` on mouseup too.
+  if (this.trackedRoot) this.trackedRoot.removeEventListener('mouseup', this.caretSync);
+  this.trackedRoot = root;
+  root.addEventListener('mouseup', this.caretSync);
+
+  // Turn the pen off when the input goes from non-empty to empty (message sent or cleared).
+  this.domObserver = new MutationObserver(() => {
+    const empty = (root.textContent ?? '').trim() === '';
+    if (!empty) {
+      this.wasNonEmpty = true;
+      return;
+    }
+    if (this.wasNonEmpty) {
+      this.wasNonEmpty = false;
+      this.lastCaret = 0;
+      if (this.activeColor !== null || this.breakoutPending) {
+        this.activeColor = null;
+        this.breakoutPending = false;
+        this.notify();
+      }
+    }
+  });
+  this.domObserver.observe(root, { childList: true, subtree: true, characterData: true });
+}
+```
+
+## Step 4: Color a Selection
+
+`applyColorToSelection` colors the selected text, replacing any color it already has. `clearColorInSelection` removes it. Both split existing runs so text outside the selection keeps its color, and both skip protected content.
+
+```typescript
+/** Apply `color` to the current selection, replacing any color already there. */
+applyColorToSelection(color: string): void {
+  const root = this.inputElementReference;
+  if (!root) return;
+  const sel = this.selection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  const spans: HTMLElement[] = [];
+  for (const { node, start, end } of this.collectSlices(sel.getRangeAt(0), root)) {
+    const existing = this.closestColorSpan(node);
+    spans.push(
+      existing
+        ? this.recolorSlice(existing, node, start, end, color)
+        : this.wrapSlice(node, start, end, color)
+    );
+  }
+  if (spans.length === 0) return;
+  this.mergeRun(spans);
+  this.reselect(spans);
+  this.reRender();
+}
+```
+
+For the button in the next step, the formatter also exposes `onColorChange` and `getCaretColor`, shaped for React's `useSyncExternalStore`, so the button can show the color at the caret.
+
+## Step 5: The Toolbar Button
+
+The composer renders `toolbarTrailingView` at the end of the rich-text toolbar. `ColorPickerButton` puts two controls there:
+
+- **A** opens the native color picker. Picking a color colors the current selection (if any) and turns the pen on.
+- **⌫** clears color from the selection, or turns the pen off when nothing is selected.
+
+_File: src/formatters/ColorPickerButton.tsx (excerpt)_
+
+```tsx
+export function ColorPickerButton({ formatter }: ColorPickerButtonProps) {
+  const [lastColor, setLastColor] = useState(DEFAULT_COLOR);
+  const caretColor = useSyncExternalStore(formatter.onColorChange, formatter.getCaretColor);
+  const displayColor = toInputHex(caretColor) ?? toInputHex(lastColor) ?? DEFAULT_COLOR;
+  const active = caretColor !== null;
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The native picker takes focus from the editor, which drops the selection. Save it on mousedown
+  // and restore it when a color is picked.
+  const savedRange = useRef<Range | null>(null);
+
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    savedRange.current =
+      sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed
+        ? sel.getRangeAt(0).cloneRange()
+        : null;
+  };
+
+  const applyPicked = (color: string) => {
+    const range = savedRange.current;
+    if (range) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      formatter.applyColorToSelection(color);
+      // The saved range is stale after re-wrapping. Save the new selection so another pick in the
+      // same picker session recolors the same text.
+      saveSelection();
+    }
+    formatter.setActiveColor(color);
+    setLastColor(color);
+  };
+
+  const removeColor = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed) {
+      formatter.clearColorInSelection();
+    } else {
+      formatter.setActiveColor(null);
+    }
+  };
+
+  // … renders the "A" button (with the same saveSelection-on-mousedown), the ⌫ button,
+  // and a hidden <input type="color"> whose onChange calls applyPicked.
+}
+```
+
+<Note>
+`onMouseDown={(e) => e.preventDefault()}` keeps focus in the editor. The native color picker still takes focus when it opens, which is why the selection is saved on mousedown and restored when a color is picked.
+</Note>
+
+## Step 6: Wire It Into the Composer
+
+Create **one** `ColorFormatter` instance and pass it to both the composer's `textFormatters` and the button. The button drives the same instance the composer bound to its editor. Live input requires `enableRichTextEditor`.
+
+_File: ChatScreen.tsx_
+
+```tsx
+import { useMemo } from "react";
+import type { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatMessageComposer, CometChatMessageList } from "@cometchat/chat-uikit-react";
+import { ColorFormatter } from "./formatters/ColorFormatter";
+import { ColorPickerButton } from "./formatters/ColorPickerButton";
+
+function ChatScreen({ group }: { group: CometChat.Group }) {
+  // One instance, shared by the list, the composer, and the button.
+  const colorFormatter = useMemo(() => new ColorFormatter(), []);
+  const formatters = useMemo(() => [colorFormatter], [colorFormatter]);
+
   return (
-    <button
-      type="button"
-      // Keep the caret/selection in the editor when the button is clicked.
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={wrapSelection}
-      aria-label="Color selected text"
-    >
-      🎨
-    </button>
+    <>
+      <CometChatMessageList group={group} textFormatters={formatters} />
+      <CometChatMessageComposer
+        group={group}
+        enableRichTextEditor
+        textFormatters={formatters}
+        toolbarTrailingView={<ColorPickerButton formatter={colorFormatter} />}
+      />
+    </>
   );
 }
 ```
 
-<Note>
-`onMouseDown={(e) => e.preventDefault()}` is the key detail — without it, clicking the button moves focus out of the editor and clears the selection before your handler runs.
-</Note>
+Registering the formatter on the composer also colors its reply and edit previews.
 
-## Step 3: Wire It Into the Composer
+## Step 7: Register It on Every Surface
 
-Register the formatter with `textFormatters` and mount the button with `toolbarTrailingView`. The toolbar (and therefore the trailing view) only renders when the rich-text editor is enabled, so pass `enableRichTextEditor`.
+A formatter only applies where it is registered. If a surface doesn't have it, readers see the raw `{color:…}` token there. Pass it to every component that shows message text:
 
-_File: ChatScreen.tsx_
+| Component | What it colors |
+|:----------|:---------------|
+| `CometChatMessageList` | Text bubbles, media captions, quoted replies, and the text the **Copy** option puts on the clipboard |
+| `CometChatMessageComposer` | Live input, reply preview, edit preview |
+| `CometChatConversations` | Last-message subtitle |
+| `CometChatThreadHeader` | The parent message at the top of a thread |
+| `CometChatPinnedMessages` | Pinned message rows |
+| `CometChatSavedMessages` | Saved message rows |
+| `CometChatSearch` | Message search results |
+| `CometChatMessageInformation` | The message preview |
+
+A thread panel has its own message list and composer, so register the formatter there too.
 
 ```tsx
-import { CometChatMessageComposer } from "@cometchat/chat-uikit-react";
-import { ColorFormatter } from "./formatters/ColorFormatter";
-import { ColorButton } from "./components/ColorButton";
+// Display-only surfaces: create the list once, outside the component.
+const displayFormatters = [new ColorFormatter()];
 
+<CometChatConversations textFormatters={displayFormatters} />
+<CometChatPinnedMessages group={group} textFormatters={displayFormatters} />
+<CometChatSavedMessages textFormatters={displayFormatters} />
+<CometChatSearch textFormatters={displayFormatters} />
+
+// Thread panel: its own shared instance for the header, list, composer, and button.
+const threadColor = useMemo(() => new ColorFormatter(), []);
+const threadFormatters = useMemo(() => [threadColor], [threadColor]);
+
+<CometChatThreadHeader parentMessage={parentMessage} textFormatters={threadFormatters} />
+<CometChatMessageList group={group} parentMessage={parentMessage} textFormatters={threadFormatters} />
 <CometChatMessageComposer
   group={group}
+  parentMessageId={parentMessage.getId()}
   enableRichTextEditor
-  textFormatters={[new ColorFormatter()]}
-  toolbarTrailingView={<ColorButton />}
+  textFormatters={threadFormatters}
+  toolbarTrailingView={<ColorPickerButton formatter={threadColor} />}
 />
 ```
 
-Now: the user selects text, clicks 🎨, and the input becomes `Hello {color=#e5484d}world{/color}`. On send, that raw text is stored on the message.
-
-## Step 4: Render It Everywhere the Message Appears
-
-The marker only becomes color when a surface runs the formatter. Read-only surfaces — like the message list, conversations, pinned/saved panels — call `format()` to produce the bubble HTML. Register the same formatter on each surface where the message can show up.
-
-_File: ChatScreen.tsx_
-
-```tsx
-import {
-  CometChatMessageList,
-  CometChatPinnedMessages,
-} from "@cometchat/chat-uikit-react";
-import { ColorFormatter } from "./formatters/ColorFormatter";
-
-<CometChatMessageList group={group} textFormatters={[new ColorFormatter()]} />
-
-{/* The same message can appear pinned — format it there too. */}
-<CometChatPinnedMessages group={group} textFormatters={[new ColorFormatter()]} />
-```
+<Note>
+Display-only surfaces can use their own instance. The shared instance matters only for a composer and its button: each composer (main chat, thread) needs its own formatter and its own button.
+</Note>
 
 <Warning>
-A formatter is only applied where you register it. If you add `textFormatters` to the composer but not the message list, the author sees the marker but readers see raw `{color=...}` text. Register it on every surface that displays the message.
+The token is plain text, so every client that shows these messages has to render it. If your users also chat from other platforms, use the same `{color:#hex}…{/color}` token there, or they will see it as raw text.
 </Warning>
 
-## How It Round-Trips
+## Complete Code
 
-```
-Composer (author)         Wire format                Bubble (reader)
-─────────────────         ───────────                ───────────────
-select "world"            Hello {color=#e5484d}      Hello world
-click 🎨            →      world{/color}        →     (in red, via format())
+Drop these two files into your app, then wire them up as in [Step 6](#step-6-wire-it-into-the-composer) and [Step 7](#step-7-register-it-on-every-surface).
+
+<Accordion title="src/formatters/ColorFormatter.ts">
+
+```typescript
+import { CometChatTextFormatter } from '@cometchat/chat-uikit-react';
+
+/** Class on every colored span, in the composer and in rendered messages. */
+const COLOR_CLASS = 'cc-color';
+/** Accepted color values: 3- to 6-digit hex. */
+const HEX = '#[0-9a-fA-F]{3,6}';
+/** Stored token: `{color:#e5484d}text{/color}`. */
+const TOKEN_REGEX = new RegExp(`\\{color:(${HEX})\\}([\\s\\S]*?)\\{/color\\}`, 'g');
+/**
+ * Upper bound on how many characters one keystroke may color. A fast typist can insert a few
+ * characters before a `keyup` arrives; a larger jump means the caret moved, not that text was typed.
+ */
+const MAX_TYPED_RUN = 16;
+
+/** Content the formatter never colors: mentions and other atomic nodes, code, and links. */
+const DEFAULT_PROTECTED_SELECTORS = ['[contenteditable="false"]', 'code', 'pre', 'a'];
+
+export interface ColorFormatterOptions {
+  /** Extra CSS selectors whose content must not be colored (e.g. another formatter's spans). */
+  protectedSelectors?: string[];
+}
+
+/**
+ * Text color formatter for the CometChat React UI Kit.
+ *
+ * Works like a highlighter pen: pick a color and whatever you type next is colored, or select text
+ * and apply a color to it. In the composer, colored text is a `<span class="cc-color">`. On send it
+ * is stored as `{color:#hex}text{/color}`, and every surface this formatter is registered on renders
+ * that token back to colored text.
+ *
+ * Requires `enableRichTextEditor` on the composer. Share ONE instance between the composer and its
+ * toolbar button, and register the formatter on every surface that displays messages.
+ */
+export class ColorFormatter extends CometChatTextFormatter {
+  readonly id = 'color';
+  override priority = 60;
+
+  private readonly protectedSelectors: string[];
+
+  /** Pen color applied to newly typed text; `null` when the pen is off. */
+  private activeColor: string | null = null;
+  /** Set when the pen is turned off inside a colored run: the next typed char is moved out of it. */
+  private breakoutPending = false;
+
+  private readonly listeners = new Set<() => void>();
+  private selectionHandler: (() => void) | null = null;
+  private domObserver: MutationObserver | null = null;
+  private wasNonEmpty = false;
+
+  /**
+   * Caret offset after the last keystroke or click. `formatText` colors only the text typed since,
+   * so text that was already there is never recolored.
+   */
+  private lastCaret = 0;
+  private trackedRoot: HTMLElement | null = null;
+  private readonly caretSync = (): void => {
+    this.lastCaret = this.getCaretPosition();
+  };
+
+  constructor(options: ColorFormatterOptions = {}) {
+    super();
+    this.protectedSelectors = [...DEFAULT_PROTECTED_SELECTORS, ...(options.protectedSelectors ?? [])];
+  }
+
+  // ── Composer lifecycle ─────────────────────────────────────────────────────
+
+  /** Called by the composer once `inputElementReference` is assigned. */
+  override initializeComposerTracking(): void {
+    const root = this.inputElementReference;
+    if (!root) return;
+    this.domObserver?.disconnect();
+
+    // Clicks move the caret without a keyup, so sync `lastCaret` on mouseup too.
+    if (this.trackedRoot) this.trackedRoot.removeEventListener('mouseup', this.caretSync);
+    this.trackedRoot = root;
+    root.addEventListener('mouseup', this.caretSync);
+
+    // Turn the pen off when the input goes from non-empty to empty (message sent or cleared).
+    this.domObserver = new MutationObserver(() => {
+      const empty = (root.textContent ?? '').trim() === '';
+      if (!empty) {
+        this.wasNonEmpty = true;
+        return;
+      }
+      if (this.wasNonEmpty) {
+        this.wasNonEmpty = false;
+        this.lastCaret = 0;
+        if (this.activeColor !== null || this.breakoutPending) {
+          this.activeColor = null;
+          this.breakoutPending = false;
+          this.notify();
+        }
+      }
+    });
+    this.domObserver.observe(root, { childList: true, subtree: true, characterData: true });
+  }
+
+  // ── Pen state ──────────────────────────────────────────────────────────────
+
+  /** Set the pen color for newly typed text, or `null` to turn the pen off. */
+  setActiveColor(color: string | null): void {
+    this.activeColor = color;
+    if (color === null && this.caretColorSpan()) this.breakoutPending = true;
+    this.notify();
+  }
+
+  getActiveColor(): string | null {
+    return this.activeColor;
+  }
+
+  /**
+   * Subscribe to changes of the pen or of the caret position. Shaped for React's
+   * `useSyncExternalStore(formatter.onColorChange, formatter.getCaretColor)`.
+   */
+  onColorChange = (listener: () => void): (() => void) => {
+    if (this.listeners.size === 0) {
+      this.selectionHandler = () => this.notify();
+      document.addEventListener('selectionchange', this.selectionHandler);
+    }
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0 && this.selectionHandler) {
+        document.removeEventListener('selectionchange', this.selectionHandler);
+        this.selectionHandler = null;
+      }
+    };
+  };
+
+  /** Color of the text at the caret, or `null` when the caret is not in colored text. */
+  getCaretColor = (): string | null => {
+    const span = this.caretColorSpan();
+    return span ? this.colorOf(span) : null;
+  };
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
+
+  // ── Live typing ────────────────────────────────────────────────────────────
+
+  override onKeyUp(event: KeyboardEvent): void {
+    // Skip IME composition; the committed text arrives with a later keyup.
+    if (event.isComposing || event.keyCode === 229) return;
+    this.formatText();
+    this.lastCaret = this.getCaretPosition();
+  }
+
+  /** Color the text typed since the last keystroke according to the pen. */
+  override formatText(): void {
+    const root = this.inputElementReference;
+    if (!root) return;
+    const sel = this.selection();
+    if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    const offset = range.startOffset;
+    if (!root.contains(node) || node.nodeType !== Node.TEXT_NODE || offset === 0) {
+      if (this.activeColor === null) this.breakoutPending = false;
+      return;
+    }
+    if (this.isProtected(node, root)) return;
+
+    const text = node as Text;
+    const span = this.closestColorSpan(text);
+    const caret = this.getCaretPosition();
+
+    // Pen was turned off inside a colored run: move the typed char out, uncolored.
+    if (this.breakoutPending) {
+      this.breakoutPending = false;
+      if (span) {
+        this.breakOutCharBefore(text, offset, span, null);
+        this.setCaretPosition(caret);
+        this.reRender();
+      }
+      return;
+    }
+
+    if (this.activeColor === null) return;
+    // The browser already typed into a run of the pen's color.
+    if (span && this.colorOf(span) === this.activeColor) return;
+
+    if (span) {
+      // Typed inside a run of a different color: move the char out and wrap it in the pen color.
+      this.breakOutCharBefore(text, offset, span, this.activeColor);
+    } else {
+      // Color everything typed since the last keystroke. A delta outside [1, min(offset, cap)]
+      // means the caret jumped, so color just the last char.
+      const delta = caret - this.lastCaret;
+      const runLen = delta >= 1 && delta <= MAX_TYPED_RUN && delta <= offset ? delta : 1;
+      this.wrapRunBefore(text, offset, runLen, this.activeColor);
+    }
+    this.setCaretPosition(caret);
+    this.reRender();
+  }
+
+  // ── Selection actions ──────────────────────────────────────────────────────
+
+  /** Apply `color` to the current selection, replacing any color already there. */
+  applyColorToSelection(color: string): void {
+    const root = this.inputElementReference;
+    if (!root) return;
+    const sel = this.selection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    const spans: HTMLElement[] = [];
+    for (const { node, start, end } of this.collectSlices(sel.getRangeAt(0), root)) {
+      const existing = this.closestColorSpan(node);
+      spans.push(
+        existing
+          ? this.recolorSlice(existing, node, start, end, color)
+          : this.wrapSlice(node, start, end, color)
+      );
+    }
+    if (spans.length === 0) return;
+    this.mergeRun(spans);
+    this.reselect(spans);
+    this.reRender();
+  }
+
+  /** Remove color from the current selection. Colored text outside the selection keeps its color. */
+  clearColorInSelection(): void {
+    const root = this.inputElementReference;
+    if (!root) return;
+    const sel = this.selection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+    const bare: Text[] = [];
+    for (const { node, start, end } of this.collectSlices(sel.getRangeAt(0), root)) {
+      const existing = this.closestColorSpan(node);
+      bare.push(existing ? this.unwrapSlice(existing, node, start, end) : node);
+    }
+    const first = bare[0];
+    const last = bare[bare.length - 1];
+    if (first && last) {
+      const range = this.doc().createRange();
+      range.setStart(first, 0);
+      range.setEnd(last, last.length);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    this.reRender();
+  }
+
+  // ── Token round-trip ───────────────────────────────────────────────────────
+
+  /**
+   * Token → HTML. Used by every display surface (the base `format()` delegates here) and to restore
+   * colors after a paste.
+   */
+  override customLogicToFormatText(text: string): string {
+    return text.replace(TOKEN_REGEX, `<span class="${COLOR_CLASS}" style="color:$1">$2</span>`);
+  }
+
+  /** Composer HTML → token. Used on send and before a paste is sanitized. */
+  override getOriginalText(inputText?: string): string {
+    if (inputText === undefined) return super.getOriginalText();
+    if (!inputText.includes(COLOR_CLASS)) return inputText;
+    // Walk the DOM rather than using a regex: a colored run can contain another element (e.g. a
+    // mention), and a non-greedy `…</span>` regex would stop at that element's closing tag.
+    const doc = new DOMParser().parseFromString(inputText, 'text/html');
+    doc.querySelectorAll(`span.${COLOR_CLASS}`).forEach(el => {
+      const parent = el.parentNode;
+      if (!parent) return;
+      const color = this.colorOf(el as HTMLElement);
+      // Replace the span with `{color:#hex}` + its children + `{/color}`.
+      if (color) parent.insertBefore(doc.createTextNode(`{color:${color}}`), el);
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      if (color) parent.insertBefore(doc.createTextNode('{/color}'), el);
+      parent.removeChild(el);
+    });
+    return doc.body.innerHTML;
+  }
+
+  // ── DOM helpers ────────────────────────────────────────────────────────────
+
+  private doc(): Document {
+    return this.inputElementReference?.ownerDocument ?? document;
+  }
+
+  private selection(): Selection | null {
+    return this.doc().defaultView?.getSelection() ?? null;
+  }
+
+  private colorOf(el: HTMLElement): string {
+    return new RegExp(`color:\\s*(${HEX})`).exec(el.getAttribute('style') ?? '')?.[1] ?? '';
+  }
+
+  private closestColorSpan(node: Node): HTMLElement | null {
+    let el: Node | null = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+    const root = this.inputElementReference;
+    while (el && el !== root) {
+      if (el.nodeType === Node.ELEMENT_NODE && (el as HTMLElement).classList.contains(COLOR_CLASS)) {
+        return el as HTMLElement;
+      }
+      el = el.parentNode;
+    }
+    return null;
+  }
+
+  private caretColorSpan(): HTMLElement | null {
+    const sel = this.selection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const node = sel.getRangeAt(0).startContainer;
+    return this.inputElementReference?.contains(node) ? this.closestColorSpan(node) : null;
+  }
+
+  private isProtected(node: Node, root: HTMLElement): boolean {
+    let el = node.parentElement;
+    while (el && el !== root) {
+      const current = el;
+      if (this.protectedSelectors.some(selector => current.matches(selector))) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  private makeSpan(color: string): HTMLElement {
+    const span = this.doc().createElement('span');
+    span.className = COLOR_CLASS;
+    span.setAttribute('style', `color:${color}`);
+    return span;
+  }
+
+  /** Wrap `[start, end)` of a text node in a new colored span. */
+  private wrapSlice(node: Text, start: number, end: number, color: string): HTMLElement {
+    const mid = start > 0 ? node.splitText(start) : node;
+    if (end - start < mid.length) mid.splitText(end - start);
+    const span = this.makeSpan(color);
+    mid.parentNode?.insertBefore(span, mid);
+    span.appendChild(mid);
+    return span;
+  }
+
+  /** Recolor `[start, end)` of a run; the text before and after keeps the old color. */
+  private recolorSlice(
+    mark: HTMLElement,
+    node: Text,
+    start: number,
+    end: number,
+    color: string
+  ): HTMLElement {
+    const parent = mark.parentNode;
+    if (!parent) return this.makeSpan(color);
+    const mid = start > 0 ? node.splitText(start) : node;
+    if (end - start < mid.length) mid.splitText(end - start);
+    const trailing = this.detachTrailing(mark, mid);
+    const span = this.makeSpan(color);
+    span.appendChild(mid);
+    const anchor = mark.nextSibling;
+    parent.insertBefore(span, anchor);
+    if (trailing) parent.insertBefore(trailing, anchor);
+    if (!mark.firstChild) parent.removeChild(mark);
+    return span;
+  }
+
+  /** Uncolor `[start, end)` of a run; the text before and after keeps its color. */
+  private unwrapSlice(mark: HTMLElement, node: Text, start: number, end: number): Text {
+    const parent = mark.parentNode;
+    if (!parent) return node;
+    const mid = start > 0 ? node.splitText(start) : node;
+    if (end - start < mid.length) mid.splitText(end - start);
+    const trailing = this.detachTrailing(mark, mid);
+    const anchor = mark.nextSibling;
+    parent.insertBefore(mid, anchor);
+    if (trailing) parent.insertBefore(trailing, anchor);
+    if (!mark.firstChild) parent.removeChild(mark);
+    return mid;
+  }
+
+  /** Move everything after `from` inside `mark` into a clone of `mark`, which keeps the color. */
+  private detachTrailing(mark: HTMLElement, from: Node): HTMLElement | null {
+    let sib: ChildNode | null = from.nextSibling;
+    if (!sib) return null;
+    const trailing = mark.cloneNode(false) as HTMLElement;
+    while (sib) {
+      const next: ChildNode | null = sib.nextSibling;
+      trailing.appendChild(sib);
+      sib = next;
+    }
+    return trailing;
+  }
+
+  /** Color the `count` characters before `offset` and merge them into an adjacent same-color run. */
+  private wrapRunBefore(text: Text, offset: number, count: number, color: string): void {
+    const span = this.wrapSlice(text, Math.max(0, offset - count), offset, color);
+    this.mergeRun([span]);
+  }
+
+  /**
+   * Move the char before `offset` out of `span`, re-wrapped in `color` (or left uncolored when
+   * `color` is null). Text after the char stays in the original color.
+   */
+  private breakOutCharBefore(
+    text: Text,
+    offset: number,
+    span: HTMLElement,
+    color: string | null
+  ): void {
+    const parent = span.parentNode;
+    if (!parent) return;
+    const charNode = offset - 1 > 0 ? text.splitText(offset - 1) : text;
+    if (charNode.length > 1) charNode.splitText(1);
+    const trailing = this.detachTrailing(span, charNode);
+    const anchor = span.nextSibling;
+    if (color) {
+      const newSpan = this.makeSpan(color);
+      newSpan.appendChild(charNode);
+      parent.insertBefore(newSpan, anchor);
+      this.mergeRun([newSpan]);
+    } else {
+      parent.insertBefore(charNode, anchor);
+    }
+    if (trailing) parent.insertBefore(trailing, anchor);
+    if (!span.firstChild) parent.removeChild(span);
+  }
+
+  /** Merge each span with an adjacent sibling of the same color. */
+  private mergeRun(spans: HTMLElement[]): void {
+    const isSameColor = (a: HTMLElement, b: Node | null): b is HTMLElement =>
+      !!b &&
+      b.nodeType === Node.ELEMENT_NODE &&
+      (b as HTMLElement).classList.contains(COLOR_CLASS) &&
+      this.colorOf(b as HTMLElement) === this.colorOf(a);
+    for (const span of spans) {
+      if (!span.isConnected) continue;
+      const prev = span.previousSibling;
+      if (isSameColor(span, prev)) {
+        while (span.firstChild) prev.appendChild(span.firstChild);
+        span.remove();
+        continue;
+      }
+      const next = span.nextSibling;
+      if (isSameColor(span, next)) {
+        while (next.firstChild) span.appendChild(next.firstChild);
+        next.remove();
+      }
+    }
+  }
+
+  /** Select from the first to the last of `spans`. */
+  private reselect(spans: HTMLElement[]): void {
+    const alive = spans.filter(s => s.isConnected);
+    const first = alive[0];
+    const last = alive[alive.length - 1];
+    if (!first || !last) return;
+    const range = this.doc().createRange();
+    range.setStart(first, 0);
+    range.setEnd(last, last.childNodes.length);
+    const sel = this.selection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  /** The selected part of each unprotected text node in `range`. */
+  private collectSlices(
+    range: Range,
+    root: HTMLElement
+  ): { node: Text; start: number; end: number }[] {
+    const startNode = range.startContainer;
+    const endNode = range.endContainer;
+    const walker = this.doc().createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT, {
+      acceptNode: n =>
+        range.intersectsNode(n) && (n.textContent ?? '') !== ''
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT,
+    });
+    const nodes: Text[] = [];
+    let n = walker.nextNode();
+    while (n) {
+      nodes.push(n as Text);
+      n = walker.nextNode();
+    }
+    if (nodes.length === 0 && startNode === endNode && startNode.nodeType === Node.TEXT_NODE) {
+      nodes.push(startNode as Text);
+    }
+    return nodes
+      .map(node => ({
+        node,
+        start: node === startNode ? range.startOffset : 0,
+        end: node === endNode ? range.endOffset : node.length,
+      }))
+      .filter(slice => slice.end > slice.start && !this.isProtected(slice.node, root));
+  }
+}
 ```
 
-The marker is plain text on the message, so it survives storage and delivery untouched; each display surface turns it into color independently through the formatter you registered.
+</Accordion>
+
+<Accordion title="src/formatters/ColorPickerButton.tsx">
+
+```tsx
+import { useRef, useState, useSyncExternalStore } from 'react';
+import type { ColorFormatter } from './ColorFormatter';
+
+const DEFAULT_COLOR = '#E7413F';
+
+/** Normalize `#rgb` / `#rrggbb` to the lowercase `#rrggbb` that `<input type="color">` requires. */
+function toInputHex(hex: string | null): string | null {
+  if (!hex) return null;
+  if (/^#[0-9a-fA-F]{6}$/.test(hex)) return hex.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(hex)) {
+    const [, r, g, b] = hex;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return null;
+}
+
+export interface ColorPickerButtonProps {
+  /** The same `ColorFormatter` instance passed to the composer's `textFormatters`. */
+  formatter: ColorFormatter;
+}
+
+/**
+ * Toolbar controls for `ColorFormatter`, meant for the composer's `toolbarTrailingView`.
+ *
+ * - **A** opens a color picker. Picking a color colors the current selection (if any) and turns the
+ *   pen on, so the text typed next is colored too.
+ * - **⌫** removes color from the selection, or turns the pen off when nothing is selected.
+ *
+ * The "A" and its underline show the color at the caret, falling back to the last color picked.
+ */
+export function ColorPickerButton({ formatter }: ColorPickerButtonProps) {
+  const [lastColor, setLastColor] = useState(DEFAULT_COLOR);
+  const caretColor = useSyncExternalStore(formatter.onColorChange, formatter.getCaretColor);
+  const displayColor = toInputHex(caretColor) ?? toInputHex(lastColor) ?? DEFAULT_COLOR;
+  const active = caretColor !== null;
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The native picker takes focus from the editor, which drops the selection. Save it on mousedown
+  // and restore it when a color is picked.
+  const savedRange = useRef<Range | null>(null);
+
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    savedRange.current =
+      sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed
+        ? sel.getRangeAt(0).cloneRange()
+        : null;
+  };
+
+  const applyPicked = (color: string) => {
+    const range = savedRange.current;
+    if (range) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      formatter.applyColorToSelection(color);
+      // The saved range is stale after re-wrapping. Save the new selection so another pick in the
+      // same picker session recolors the same text.
+      saveSelection();
+    }
+    formatter.setActiveColor(color);
+    setLastColor(color);
+  };
+
+  const removeColor = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed) {
+      formatter.clearColorInSelection();
+    } else {
+      formatter.setActiveColor(null);
+    }
+  };
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+      <button
+        type="button"
+        aria-label="Text color"
+        title="Text color"
+        // preventDefault keeps focus (and the selection) in the editor.
+        onMouseDown={e => {
+          e.preventDefault();
+          saveSelection();
+        }}
+        onClick={() => inputRef.current?.click()}
+        style={{
+          display: 'inline-flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 1,
+          border: 'none',
+          borderRadius: 6,
+          cursor: 'pointer',
+          padding: '3px 6px',
+          lineHeight: 1,
+          background: active ? 'var(--cometchat-background-color-04, #eee)' : 'transparent',
+        }}
+      >
+        <span style={{ fontWeight: 700, fontSize: 15, color: displayColor }}>A</span>
+        <span style={{ width: 16, height: 3, borderRadius: 1, background: displayColor }} />
+      </button>
+      <button
+        type="button"
+        aria-label="Remove color"
+        title="Remove color"
+        onMouseDown={e => {
+          e.preventDefault();
+          removeColor();
+        }}
+        style={{
+          border: 'none',
+          background: 'transparent',
+          cursor: 'pointer',
+          padding: '2px 4px',
+          fontSize: 13,
+          lineHeight: 1,
+          color: 'var(--cometchat-text-color-secondary, #727272)',
+        }}
+      >
+        ⌫
+      </button>
+      {/* Hidden native color input, opened by the "A" button. */}
+      <input
+        ref={inputRef}
+        type="color"
+        value={displayColor}
+        aria-hidden
+        tabIndex={-1}
+        onChange={e => applyPicked(e.target.value)}
+        style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
+      />
+    </span>
+  );
+}
+```
+
+</Accordion>
 
 ## Next Steps
 
-- [Text Formatters](/ui-kit/react/plugins/text-formatters) — the built-in formatters and the full `CometChatTextFormatter` API
-- [Message Composer → toolbarTrailingView](/ui-kit/react/components/message-composer#toolbartrailingview) — the toolbar slot in detail
-- [Message Bubble](/ui-kit/react/components/message-bubble) — how bubbles render message content
+- [Text Formatters](/ui-kit/react/plugins/text-formatters): the built-in formatters and the full `CometChatTextFormatter` API
+- [Message Composer → toolbarTrailingView](/ui-kit/react/components/message-composer#toolbartrailingview): the toolbar slot in detail
+- [Threaded Messages](/ui-kit/react/guide-threaded-messages): building the thread panel
