@@ -1,0 +1,184 @@
+---
+title: "Engine Failures"
+description: "Receive the moderation_engine_failed webhook when OpenAI or your Custom API cannot return a moderation decision, and learn how to read its payload."
+---
+
+When a moderation rule uses OpenAI or your own Custom API, CometChat calls that engine for every matching message. If the engine cannot return a usable decision, CometChat sends a `moderation_engine_failed` webhook describing what went wrong.
+
+<Note>
+This event is **additional**. It does not replace `moderation_engine_approved` or `moderation_engine_blocked` — you still receive the usual decision event for the same message.
+</Note>
+
+## What happens to the message
+
+A failure never changes how a message is handled. Your **On Error** setting decides that, exactly as before.
+
+| On Error setting | The message | Rule evaluation |
+| --- | --- | --- |
+| **Approve** | The condition is treated as no match | Continues to the next condition and rule |
+| **Block** | The rule's action is applied | Stops at the first failure |
+
+The setting is configured separately for OpenAI and for Custom API, so one app can approve on an OpenAI failure and block on a Custom API failure at the same time.
+
+## The response contract
+
+<Warning>
+**There is no status code that means "block this message."** The only way to return a decision is HTTP 200 with a valid JSON body. Any non-2xx response is treated as a failure — CometChat does not read the body of a non-2xx response or infer meaning from its status.
+</Warning>
+
+A 400 from your endpoint does not mean "this content is bad". It means your endpoint did not answer, and your On Error setting takes over.
+
+## Failure categories
+
+| Category | Meaning |
+| --- | --- |
+| `http_4xx` | The engine answered with a 4xx status |
+| `http_5xx` | The engine answered with a 5xx status |
+| `timeout` | No answer within the time limit |
+| `connection_error` | The request could not be completed at the network level |
+| `invalid_response` | The engine answered 2xx, but the body held no readable decision |
+| `not_configured` | No engine was configured to call — for example a Custom API list with no URL |
+
+Time limits are 2 seconds for Custom API and 5 seconds for OpenAI text moderation.
+
+## Example payload
+
+A Custom API endpoint that returned HTTP 500 while moderating an image.
+
+```json
+{
+  "trigger": "moderation_engine_failed",
+  "appId": "your-app-id",
+  "region": "us",
+  "webhook": "your-webhook-id",
+  "data": {
+    "resource": {
+      "id": "128",
+      "conversationId": "cometchat-uid-1_user_cometchat-uid-2",
+      "sender": "cometchat-uid-1",
+      "receiverType": "user",
+      "receiver": "cometchat-uid-2",
+      "category": "message",
+      "type": "image",
+      "sentAt": 1791209720
+    },
+    "contentType": "image",
+    "outcome": "disapproved",
+    "completedAt": 1791209723,
+    "failures": [
+      {
+        "category": "http_5xx",
+        "httpStatus": 500,
+        "errorMessage": "Your moderation endpoint returned HTTP 500. CometChat treats any non-2xx response as a moderation failure.",
+        "responseBody": "{\"statusCode\":500,\"message\":[\"service unavailable\"]}",
+        "responseBodyTruncated": false,
+        "timeoutMs": 2000,
+        "failedAt": 1791209723,
+        "context": {
+          "engine": "custom_api",
+          "setting": "drop-message",
+          "rule": {
+            "id": "image-check",
+            "name": "Image Check",
+            "revisionId": "your-app-id_image-check_1"
+          },
+          "condition": {
+            "entity": "message",
+            "operand": "image",
+            "category": "custom-api",
+            "operator": "contains",
+            "listId": "image-check",
+            "threshold": { "comparison": "greaterThan", "percent": 80 }
+          },
+          "request": {
+            "url": "https://moderation.example.com/check",
+            "method": "POST",
+            "bodyBytes": 152,
+            "basicAuthSent": false
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+## Fields
+
+### `data`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `resource` | object | The message that was being moderated. Identifying fields only — the message content is not included |
+| `contentType` | string | Which moderation pass this event came from: `text`, `image`, `video`, `audio` or `file` |
+| `outcome` | string | `approved` or `disapproved` — the message's final status for this pass |
+| `completedAt` | number | Unix timestamp when the pass finished |
+| `failures` | array | Every failure from this pass, in evaluation order |
+
+### `failures[]`
+
+| Field | Type | Present when |
+| --- | --- | --- |
+| `category` | string | always |
+| `errorMessage` | string | always |
+| `failedAt` | number | always |
+| `responseBodyTruncated` | boolean | always |
+| `httpStatus` | number | a response was received |
+| `responseBody` | string | a response body was received |
+| `timeoutMs` | number | a time limit applied to the call |
+| `validationErrors` | array | `category` is `invalid_response` |
+
+### `failures[].context`
+
+| Field | Type | Present when |
+| --- | --- | --- |
+| `engine` | string | always — `openai` or `custom_api` |
+| `setting` | string | always — the On Error setting that applied to this engine |
+| `rule` | object | always — `id`, `name`, `revisionId` |
+| `condition` | object | always — the condition being evaluated, including `listId` and `threshold` |
+| `request` | object | Custom API failures — `url` (query string removed), `method`, `bodyBytes`, `basicAuthSent` |
+| `providerErrorCode` | string | OpenAI failures that carry an error code |
+| `openaiRequestId` | string | OpenAI failures — quote this when contacting OpenAI support |
+
+<Warning>
+**Fields are omitted, not null.** Any field without a value is left out of the payload entirely. Check that a field exists before reading it — `failures[0].context.request.url` throws on an OpenAI failure, because OpenAI failures carry no `request` object.
+</Warning>
+
+## Reading the payload correctly
+
+### One event per moderation pass
+
+All failures from a single pass arrive in one event, in `failures[]` — not one event per failure. Two failing rules produce one event with two entries.
+
+A message can still produce two events when it is moderated twice. An image with a caption goes through text moderation and then image moderation, and each pass reports separately. Use `contentType` to tell them apart.
+
+Because a **Block** setting stops evaluation at the first failure, `failures[]` holds what actually ran, not everything configured.
+
+### `responseBody` is opaque text
+
+It is capped at 2 KB and may be cut mid-string, so it is not guaranteed to be valid JSON even when your endpoint returned JSON. `responseBodyTruncated` tells you when it was cut. Treat it as text for diagnostics — do not parse it.
+
+## When no event is sent
+
+Only a failure of the engine itself produces this event. Problems on the CometChat side do not:
+
+| Situation | Event sent |
+| --- | --- |
+| OpenAI or your Custom API returns an error | Yes |
+| A Custom API list has no URL configured | Yes, as `not_configured` |
+| A CometChat-operated engine fails — keyword, pattern, toxicity, sentiment, image or video moderation, virus scanning | No |
+| An internal CometChat error | No |
+
+## Enabling the event
+
+Enable it in the CometChat Dashboard under:
+
+> **Application → Webhooks → Create Webhook → Triggers → Moderation**
+
+Basic Auth and retry-on-failure work exactly as they do for your other webhooks.
+
+## Related Resources
+
+- [Custom API Moderation](/moderation/custom/custom-api)
+- [OpenAI Moderation](/moderation/open-ai/openai-overview)
+- [Webhooks](/fundamentals/webhooks)
