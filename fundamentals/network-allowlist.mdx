@@ -2,7 +2,7 @@
 title: "Network Allowlist"
 sidebarTitle: "Network Allowlist"
 description: "Every CometChat domain a corporate firewall, proxy, or VPN must allow so chat, calling, AI agents, moderation, media, and the dashboard work — a wildcard shortcut plus the full per-service breakdown across all domain families."
-canonical: "https://www.cometchat.com/docs/network-allowlist"
+canonical: "https://www.cometchat.com/docs/fundamentals/network-allowlist"
 ---
 
 If your users or developers sit behind a corporate firewall, web proxy, or VPN that restricts
@@ -52,9 +52,10 @@ cometchat.com
 
 <Warning>
 Some proxies treat `*.cometchat.io` as matching only one label deep, but several CometChat hosts are
-deeper (e.g. `<appId>.api-<region>.cometchat.io` is two labels under the apex). If your firewall
-matches only one level, use its "match all subdomains / any depth" option (or add `*.*.cometchat.io`)
-so per-app hosts aren't missed. The same applies to `cc-cluster-2.io` and `cc-edge-2.io`.
+deeper: `<appId>.api-<region>.cometchat.io` is two labels under the apex, and the call signalling host
+`<appId>.xmpp.rtcv5-<region>.cometchat.io` is three. If your firewall matches only one level, use its
+"match all subdomains / any depth" option (or add `*.*.cometchat.io` and `*.*.*.cometchat.io`) so
+per-app and calling hosts aren't missed. The same applies to `cc-cluster-2.io` and `cc-edge-2.io`.
 </Warning>
 
 If wildcards are acceptable in your policy, you can stop here. The sections below list the individual
@@ -95,8 +96,24 @@ your app uses, on each family.
 | --- | --- |
 | AI Agent Service | `<appId>.ai-agent-service-<region>.cometchat.io` |
 | Moderation | `rule-<region>.cometchat.io` |
-| Legacy WebSockets | `<appId>.ws-<region>.cometchat.io` |
+| Chat connection for older native SDK versions (TCP 443, 5222, 7443; see [Ports](#ports)) | `<appId>.ws-<region>.cometchat.io` |
 | Chat Widget assets | `widget-js.cometchat.io` |
+
+### Calling (voice and video)
+
+| Host | Purpose |
+| --- | --- |
+| `<appId>.call-<region>.<family>` | Calls REST API (listed above under Runtime, on all three families) |
+| `<appId>.xmpp.rtcv5-<region>.cometchat.io` | Call signalling: joining, leaving and negotiating the call (WebSocket, TCP 443) |
+| `turn.rtcv5-<region>.cometchat.io` | Media relay (TURN over TLS, TCP 443). Audio and video go through it when UDP to the media servers is blocked. |
+| `rtc-<region>.cometchat.io` | Calling host referenced by the iOS SDK |
+
+The media servers themselves have **no hostname to allowlist**. CometChat sends their IP addresses
+during call setup, and media flows to them over UDP (see [Ports](#ports)). If your firewall can't allow
+those UDP flows, media falls back to the TURN relay on TCP 443. Allowing
+`turn.rtcv5-<region>.cometchat.io` is what keeps audio and video working on a locked-down network:
+without it, a call can ring and connect but carry no audio or video. Apart from the Calls REST API,
+these hosts exist on `cometchat.io` only, not on `cc-cluster-2.io` or `cc-edge-2.io`.
 
 ### Media & uploaded files (`cometchat.io`)
 
@@ -153,21 +170,22 @@ All of this traffic is **outbound**. Which ports you need depends on where the C
 | Client | Outbound ports | Notes |
 | --- | --- | --- |
 | **Browser and WebSocket-based SDKs** — JavaScript, React Native and Ionic SDKs, Flutter SDK v5; Widget; React, Angular and React Native UI Kits, Flutter UI Kit v6 | TCP **443** only | APIs and realtime both run over HTTPS; realtime is a WebSocket (WSS) on 443. |
-| **Native iOS and Android** — the iOS and Android SDKs and UI Kits; Flutter SDK v4 and Flutter UI Kits v4 and v5 | TCP **443**, **5222**, **7443** | 5222 and 7443 carry the native chat connection. Flutter SDK v4 (used by Flutter UI Kits v4 and v5) connects through the native iOS and Android SDKs. |
+| **Native iOS and Android** — the iOS and Android SDKs and UI Kits; Flutter SDK v4 and Flutter UI Kits v4 and v5 | TCP **443**; for older SDK versions also **5222** and **7443** to `<appId>.ws-<region>.cometchat.io` | Current native SDKs connect over WSS on 443 to `<appId>.websocket-<region>.cometchat.io`, like the first row. Older native SDK versions connect to `<appId>.ws-<region>.cometchat.io` on 5222 and 7443, so allow those if users may run app versions built with them. Flutter SDK v4 (used by Flutter UI Kits v4 and v5) connects through the native iOS and Android SDKs. |
 | **REST API** — your servers | TCP **443** | |
-| **Voice and video media** — all clients | UDP **10000–20000**, with TCP **443** as fallback | WebRTC media. See [Calls Network Requirements](/calls/platform/compatibility). |
+| **Voice and video** — all clients | Signalling: TCP **443** to `<appId>.xmpp.rtcv5-<region>.cometchat.io`. Media: UDP **10000–20000** to CometChat's media servers, with TCP **443** to `turn.rtcv5-<region>.cometchat.io` as the fallback | The media servers are reached by IP address, sent during call setup; see [Calling](#calling-voice-and-video). See also [Calls Network Requirements](/calls/platform/compatibility). |
 
 React Native, Ionic and Flutter SDK v5 apps run on iOS and Android but use the WebSocket-based SDKs, so they're in the first row. If you're not sure which row applies, allow the native set: it includes 443.
 
 <Note>
-**Ports 5222 and 7443 are for the native iOS and Android SDKs only.** Browsers and the WebSocket-based
-SDKs never use them, and a browser can't even test them. For those apps, don't ask users or IT to
+**Ports 5222 and 7443 are only for older versions of the native iOS and Android SDKs.** Browsers, the
+WebSocket-based SDKs and current native SDKs never use them, and a browser can't even test them. For those apps, don't ask users or IT to
 check 5222 or 7443. Check that 443 is open and that the proxy allows WebSocket (WSS) upgrades.
 </Note>
 
 <Warning>
 An open port 443 isn't always enough. A proxy that blocks or buffers **WebSocket (WSS)** upgrades, or
-a firewall that blocks **UDP 10000–20000**, is the most common cause of a client stuck on
+a firewall that blocks **UDP 10000–20000** without allowing the TURN fallback
+(`turn.rtcv5-<region>.cometchat.io` on TCP 443), is the most common cause of a client stuck on
 "connecting" or a call that rings but has no audio or video. If your firewall must pin destinations,
 the media and TURN IP ranges are provided by CometChat on request, not published as a static set.
 [Contact us](https://help.cometchat.com/).
@@ -199,7 +217,7 @@ CometChat packages are pulled from the standard registries plus CometChat's pack
 | --- | --- |
 | Web / React / Angular / React Native | `registry.npmjs.org` |
 | Android (UI Kit / Calls SDK) | Maven Central and `dl.cloudsmith.io` |
-| iOS (UI Kit / Calls SDK) | GitHub (CocoaPods / Swift Package Manager) and `dl.cloudsmith.io` |
+| iOS (UI Kit / Calls SDK) | GitHub (CocoaPods / Swift Package Manager), `dl.cloudsmith.io` and `library.cometchat.io` (the SDK's WebSocket library for Swift Package Manager) |
 | Flutter | `pub.dev` |
 
 `dl.cloudsmith.io` (path `/public/cometchat/cometchat`) hosts the iOS and Android binaries and the
