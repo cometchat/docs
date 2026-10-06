@@ -1,0 +1,238 @@
+---
+title: "Network Allowlist"
+sidebarTitle: "Network Allowlist"
+description: "Every CometChat domain a corporate firewall, proxy, or VPN must allow so chat, calling, AI agents, moderation, media, and the dashboard work — a wildcard shortcut plus the full per-service breakdown across all domain families."
+canonical: "https://www.cometchat.com/docs/fundamentals/network-allowlist"
+---
+
+If your users or developers sit behind a corporate firewall, web proxy, or VPN that restricts
+outbound traffic, add the CometChat domains below to your allowlist so chat, calling, AI agents,
+moderation, and media work. All of it is **outbound** traffic (HTTPS/WSS plus the few ports listed
+under [Ports](#ports)). The one exception is [webhooks](#webhooks-inbound): if you use them,
+your webhook endpoint must accept inbound HTTPS from CometChat.
+
+<Note>
+**Allow by domain, not by IP.** CometChat runs on elastic cloud infrastructure, so its IP addresses
+change without notice and IP-pinning will eventually break your integration. If your security policy
+requires fixed IP ranges, [contact CometChat](https://help.cometchat.com/) — they are provided on
+request, not published, because they are not static.
+</Note>
+
+## The domain families
+
+CometChat's own hosts are on **four** domains. Most runtime services run on the first three (for
+redundancy and edge routing), so allow all three; `cometchat.com` carries the dashboard and website.
+The JavaScript Calls SDK also fetches from two third-party hosts, listed under
+[UI Kit, calling and sample app assets](#ui-kit-calling-and-sample-app-assets).
+
+| Domain | Used for |
+| --- | --- |
+| `cometchat.io` | Primary runtime + media + CDN + tooling |
+| `cc-cluster-2.io` | Runtime (cluster routing) for most runtime services, plus metrics, Dashboard backends and web UI Kit sounds; see the per-service list |
+| `cc-edge-2.io` | Runtime (edge routing) for most runtime services, plus metrics and Dashboard backends; see the per-service list |
+| `cometchat.com` | Dashboard, preview, support, status, website |
+
+## Quickest option — allow the wildcards
+
+Allowing these wildcard domains, together with the outbound [ports](#ports) below, covers every
+CometChat-owned host. If your app uses the JavaScript Calls SDK, also allow the two hosts outside
+these domains listed under [UI Kit, calling and sample app assets](#ui-kit-calling-and-sample-app-assets)
+(`fonts.googleapis.com` and `fonts.gstatic.com`):
+
+```text
+*.cometchat.io
+*.cc-cluster-2.io
+*.cc-edge-2.io
+*.cometchat.com
+
+# apex domains too (a *.x rule usually does not cover bare x)
+cometchat.io
+cc-cluster-2.io
+cc-edge-2.io
+cometchat.com
+```
+
+<Warning>
+Some proxies treat `*.cometchat.io` as matching only one label deep, but several CometChat hosts are
+deeper: `<appId>.api-<region>.cometchat.io` is two labels under the apex, and the call signalling host
+`<appId>.xmpp.rtcv5-<region>.cometchat.io` is three. If your firewall matches only one level, use its
+"match all subdomains / any depth" option (or add `*.*.cometchat.io` and `*.*.*.cometchat.io`) so
+per-app and calling hosts aren't missed. The same applies to `cc-cluster-2.io` and `cc-edge-2.io`.
+</Warning>
+
+If wildcards are acceptable in your policy, you can stop here. The sections below list the individual
+hosts for teams that must allowlist per-subdomain. New hosts can be added as CometChat adds services,
+so the wildcards above are the only list guaranteed to stay complete.
+
+## Full per-service list
+
+`<region>` is your app's data region — **`us`**, **`eu`**, or **`in`** (find it in your app's endpoint
+on the [Dashboard](https://app.cometchat.com/)); `<appId>` is your App ID. Allow only the region(s)
+your apps run in. Where a service lists three families, allow all three.
+
+### Runtime — chat, calling, AI, moderation
+
+Each of these runs on all three runtime families — `cometchat.io`, `cc-cluster-2.io`, `cc-edge-2.io`:
+
+| Service | Host pattern (× each runtime family) |
+| --- | --- |
+| Admin APIs | `<appId>.api-<region>.<family>` |
+| Client APIs | `<appId>.apiclient-<region>.<family>` |
+| Calls APIs | `<appId>.call-<region>.<family>` |
+| WebSockets (realtime) | `<appId>.websocket-<region>.<family>` |
+
+So, for example, Admin APIs = `<appId>.api-<region>.cometchat.io`, `<appId>.api-<region>.cc-cluster-2.io`,
+and `<appId>.api-<region>.cc-edge-2.io`.
+
+### Extensions
+
+Each extension you enable is served from its own host on all three runtime families, with no App ID
+prefix: `<extension>-<region>.<family>`. For example, `polls-<region>`, `reactions-<region>`,
+`stickers-<region>`, `whiteboard-<region>` (Collaborative Whiteboard) and `document-<region>`
+(Collaborative Document), plus the shared `extensions-<region>`. Allow the host for every extension
+your app uses, on each family.
+
+### Runtime — `cometchat.io` only
+
+| Service | Host |
+| --- | --- |
+| AI Agent Service | `<appId>.ai-agent-service-<region>.cometchat.io` |
+| Moderation | `rule-<region>.cometchat.io` |
+| Chat connection for native iOS and Android SDK v2.x only (TCP 5222, 7443; see [Ports](#ports)) | `<appId>.ws-<region>.cometchat.io` |
+| Chat Widget assets | `widget-js.cometchat.io` |
+
+### Calling (voice and video)
+
+| Host | Purpose |
+| --- | --- |
+| `<appId>.call-<region>.<family>` | Calls REST API (listed above under Runtime, on all three families) |
+| `<appId>.xmpp.rtcv5-<region>.cometchat.io` | Call signalling: joining, leaving and negotiating the call (WebSocket, TCP 443) |
+| `turn.rtcv5-<region>.cometchat.io` | Media relay (TURN over TLS, TCP 443). Audio and video go through it when UDP to the media servers is blocked. |
+| `rtc-<region>.cometchat.io` | Call screen for the older calling built into the Chat SDKs (`startCall` without the separate Calls SDK). Needed only if your app still uses that. |
+
+The media servers themselves have **no hostname to allowlist**. CometChat sends their IP addresses
+during call setup, and media flows to them over UDP (see [Ports](#ports)). If your firewall can't allow
+those UDP flows, media falls back to the TURN relay on TCP 443. Allowing
+`turn.rtcv5-<region>.cometchat.io` is what keeps audio and video working on a locked-down network:
+without it, a call can ring and connect but carry no audio or video. Apart from the Calls REST API,
+these hosts exist on `cometchat.io` only, not on `cc-cluster-2.io` or `cc-edge-2.io`.
+
+### Media & uploaded files (`cometchat.io`)
+
+| Host | Purpose |
+| --- | --- |
+| `data-<region>.cometchat.io` | Uploaded files / attachments |
+| `media-<region>.cometchat.io` | Media |
+| `files-<region>.cometchat.io` | Files |
+
+### CDN
+
+`cdn.cometchat.io`
+
+### UI Kit, calling and sample app assets
+
+Your users' devices fetch these at runtime, so allow them wherever the app runs, not only on your
+team's network:
+
+| Host | What loads from it |
+| --- | --- |
+| `assets.cc-cluster-2.io` | Web UI Kit (React, Angular) call and message sounds (`/uikits/static/audio/`), and the web sample apps' sample-user list (`/sampleapp/v2/sampledata.json`) |
+| `assets.cometchat.io` | The mobile sample apps' sample-user list (`/sampleapp/sampledata.json`) and sample-user avatars (`/sampleapp/v2/users/`) |
+| `data-<region>.cometchat.io` | Sample-user avatars in the web sample apps (`/assets/images/avatars/`), as well as uploaded files |
+| `cdn.cometchat.io` | JavaScript Calls SDK virtual backgrounds (`/calls/v5/virtual-backgrounds/`) and background-blur model files (`/calls/v5/`) |
+| `fonts.googleapis.com`, `fonts.gstatic.com` | The Roboto font used by the JavaScript Calls SDK's call screen |
+
+### Metrics
+
+`metrics-<region>.cometchat.io`, `metrics-<region>.cc-cluster-2.io`, `metrics-<region>.cc-edge-2.io`
+
+### Visual Chat Builder
+
+`apivcb.cometchat.io`, `apivcb.cc-cluster-2.io`, `apivcb.cc-edge-2.io`
+
+### Dashboard, tooling & website (your team, not end users)
+
+| Host | Purpose |
+| --- | --- |
+| `app.cometchat.com`, `app-beta.cometchat.com` | CometChat Dashboard (current and new versions) |
+| `apimgmt.cc-cluster-2.io`, `apimgmt.cometchat.io`, `apimgmt.cc-edge-2.io` | API management (Dashboard backend) |
+| `campaigns.cc-cluster-2.io`, `campaigns.cometchat.io`, `campaigns.cc-edge-2.io` | Campaigns (Dashboard backend) |
+| `api.cometchat.com` | Legacy API used by the Dashboard |
+| `assets.cometchat.io` | Dashboard and SDK static assets (end users need it too; see [UI Kit, calling and sample app assets](#ui-kit-calling-and-sample-app-assets)) |
+| `preview.cometchat.com` | Preview |
+| `help.cometchat.com` | Support portal |
+| `status.cometchat.com` | Service status page |
+| `cometchat.com`, `www.cometchat.com` | Website & documentation |
+| `api-explorer.cometchat.com` | API reference (optional) |
+| `mcp.cometchat.com` | CometChat Docs MCP for AI coding tools (optional) |
+
+## Ports
+
+All of this traffic is **outbound**. Which ports you need depends on where the CometChat client runs:
+
+| Client | Outbound ports | Notes |
+| --- | --- | --- |
+| **All current SDKs and UI Kits** — JavaScript, React Native, Ionic and Flutter SDKs; native iOS and Android SDKs **v3.0 and later**; Widget; all UI Kits | TCP **443** only | APIs and realtime both run over HTTPS; realtime is a WebSocket (WSS) on 443 to `<appId>.websocket-<region>.cometchat.io`. |
+| **Native iOS and Android SDK v2.x** — Android SDK 2.4.x and earlier, iOS SDK 2.4.2 and earlier | TCP **443**, plus **5222** and **7443** to `<appId>.ws-<region>.cometchat.io` | These versions use a raw XMPP connection instead of a WebSocket. Allow 5222 and 7443 only if users may still run app versions built with them. |
+| **REST API** — your servers | TCP **443** | |
+| **Voice and video** — all clients | Signalling: TCP **443** to `<appId>.xmpp.rtcv5-<region>.cometchat.io`. Media: UDP **10000–20000** to CometChat's media servers, with TCP **443** to `turn.rtcv5-<region>.cometchat.io` as the fallback | The media servers are reached by IP address, sent during call setup; see [Calling](#calling-voice-and-video). See also [Calls Network Requirements](/calls/platform/compatibility). |
+
+Flutter SDK v4 and Flutter UI Kits v4 and v5 connect through native SDKs from v3.0 onward, so they're in the first row too. To check an older app, look at the CometChat SDK version it was built with: `pro-android-chat-sdk` 2.x on Android, or `CometChatPro` 2.x on iOS.
+
+<Note>
+**Ports 5222 and 7443 are only for native iOS and Android SDK v2.x.** Browsers, the WebSocket-based
+SDKs and native SDKs from v3.0 onward never use them, and a browser can't even test them. For those
+apps, don't ask users or IT to check 5222 or 7443. Check that 443 is open and that the proxy allows WebSocket (WSS) upgrades.
+</Note>
+
+<Warning>
+An open port 443 isn't always enough. A proxy that blocks or buffers **WebSocket (WSS)** upgrades, or
+a firewall that blocks **UDP 10000–20000** without allowing the TURN fallback
+(`turn.rtcv5-<region>.cometchat.io` on TCP 443), is the most common cause of a client stuck on
+"connecting" or a call that rings but has no audio or video. If your firewall must pin destinations,
+the media and TURN IP ranges are provided by CometChat on request, not published as a static set.
+[Contact us](https://help.cometchat.com/).
+</Warning>
+
+## Webhooks (inbound)
+
+If you use [webhooks](/fundamentals/webhooks), CometChat sends HTTPS `POST` requests **to** your
+webhook URL. Your server, not your users' devices, must accept inbound HTTPS on the port in that URL
+(usually 443). CometChat doesn't publish a fixed list of source IP addresses, so secure the endpoint
+with the webhook's Basic Authentication rather than an IP allowlist. If your policy requires source IPs,
+[contact CometChat](https://help.cometchat.com/).
+
+## Push notifications (delivered by Google and Apple)
+
+Push is delivered through the platform providers, so allow **their** domains, not a CometChat one:
+
+- **FCM** (Android / Web) — Google's push endpoints, e.g. `fcm.googleapis.com`.
+- **APNs** (iOS) — Apple's push endpoints, e.g. `api.push.apple.com`.
+
+See each platform's own network requirements for the authoritative, complete list.
+
+## Installing the SDKs (build and CI networks)
+
+The domains above are for **running** the app. If your build or CI network is also locked down, the
+CometChat packages are pulled from the standard registries plus CometChat's package host:
+
+| Platform | Fetched from |
+| --- | --- |
+| Web / React / Angular / React Native | `registry.npmjs.org` |
+| Android (UI Kit / Calls SDK) | Maven Central and `dl.cloudsmith.io` |
+| iOS (UI Kit / Calls SDK) | GitHub (CocoaPods / Swift Package Manager), `dl.cloudsmith.io` and `library.cometchat.io` (the SDK's WebSocket library for Swift Package Manager) |
+| Flutter | `pub.dev` |
+
+`dl.cloudsmith.io` (path `/public/cometchat/cometchat`) hosts the iOS and Android binaries and the
+React Native calls library.
+
+## Notes
+
+- **Client traffic is outbound only** (see [Ports](#ports)). The only inbound traffic is
+  [webhooks](#webhooks-inbound), sent to your own server.
+- **Region scoping:** allow the `-<region>` subdomains for your app's region; allow `us`, `eu`, and
+  `in` together only if you operate apps in more than one region.
+- **On-premise deployments** host these services on your own domains instead — see
+  [On-Premise Deployment](/on-premise-deployment/docker/overview).
+- Check the [status page](https://status.cometchat.com/) if traffic is allowed but a service still
+  seems unreachable.
