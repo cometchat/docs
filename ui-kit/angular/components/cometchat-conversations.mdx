@@ -1109,6 +1109,81 @@ export class CustomSlotsComponent implements AfterViewInit {
 }
 ```
 
+#### Unread mentions badge
+
+The built-in badge counts unread **messages**. To flag conversations where someone @mentioned the logged-in user, as Slack does, read the per-conversation count the Chat SDK returns with each conversation:
+
+```typescript
+conversation.getUnreadMentionsCount(); // number, 0 when there are none
+```
+
+The value comes from the server when the list is fetched. The UI Kit does not keep it current: a new message raises the unread-message count, not this one, and opening the conversation does not clear it. Keep your own count, starting from the SDK value, raising it when a new message mentions the user (`message.hasMentionedMe()`), and clearing it when the user opens the conversation:
+
+```typescript expandable
+import { Component, DestroyRef, TemplateRef, ViewChild, inject, signal } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { CometChatConversationsComponent, ConversationSlots } from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-mention-badge',
+  standalone: true,
+  imports: [CometChatConversationsComponent],
+  template: `
+    <ng-template #badgeSlot let-conversation let-count="count">
+      @if (mentions(conversation) > 0) {
+        <span class="mention-marker">&#64;</span>
+      }
+      {{ count > 99 ? '99+' : count }}
+    </ng-template>
+
+    <cometchat-conversations
+      [slots]="slots"
+      (itemClick)="onConversationClick($event)"
+    ></cometchat-conversations>
+  `,
+})
+export class MentionBadgeComponent {
+  @ViewChild('badgeSlot') badgeSlot!: TemplateRef<any>;
+
+  /** conversationId → unread mentions this session has seen arrive. */
+  private readonly extra = signal(new Map<string, number>());
+  /** Conversations opened this session; their server count is stale. */
+  private readonly cleared = signal(new Set<string>());
+  private readonly listenerId = 'mention-badge-listener';
+
+  get slots(): ConversationSlots {
+    return { unreadBadge: this.badgeSlot };
+  }
+
+  constructor() {
+    CometChat.addMessageListener(this.listenerId, new CometChat.MessageListener({
+      onTextMessageReceived: (message: CometChat.TextMessage) => {
+        if (!message.hasMentionedMe()) return;
+        const id = message.getConversationId();
+        this.extra.update(map => new Map(map).set(id, (map.get(id) ?? 0) + 1));
+      },
+    }));
+    inject(DestroyRef).onDestroy(() => CometChat.removeMessageListener(this.listenerId));
+  }
+
+  mentions(conversation: CometChat.Conversation): number {
+    const id = conversation.getConversationId();
+    const base = this.cleared().has(id) ? 0 : conversation.getUnreadMentionsCount?.() ?? 0;
+    return base + (this.extra().get(id) ?? 0);
+  }
+
+  onConversationClick(conversation: CometChat.Conversation): void {
+    const id = conversation.getConversationId();
+    this.cleared.update(set => new Set(set).add(id));
+    this.extra.update(map => { const next = new Map(map); next.delete(id); return next; });
+  }
+}
+```
+
+The `unreadBadge` slot renders inside the badge pill, and only while the unread-message count is above zero. That is enough here: an unread mention is itself an unread message. The badge is `aria-hidden`, so the count reaches screen readers through the row's label, not this marker.
+
+Mentions only arrive in text messages, so a text-message listener is enough. The accessor is optional-called because older Chat SDK builds do not expose it.
+
 <Tip>
   Slots and section templates can be combined. For example, use `slots.avatar` to customize just the avatar while using `subtitleView` to replace the entire subtitle section.
 </Tip>
