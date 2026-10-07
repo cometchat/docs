@@ -18,15 +18,15 @@ You do not write a `PKPushRegistryDelegate` or a `CXProviderDelegate`.
   the same SDK handles both.
 </Note>
 
-{/* TODO(RC): every API on this page is from Push SDK 2.0.0-alpha.3 + calls-core 5.1.1-team. Re-check names and the version numbers below against the RC. */}
+{/* TODO(RC): every API on this page is from Push SDK 2.0.0-alpha.5 + calls-core 5.1.3-team (5.1.2-team binary). calls-core is a PRIVATE repo (cometchat-team), so the SPM install below cannot work outside the org until a public Calls SDK ships these APIs. Re-check names and the version numbers below against the RC. */}
 
 ## Requirements
 
 | | |
 |---|---|
 | Minimum iOS | **15.1** |
-| Xcode | **15+** (Swift 5.9) |
-| Calls SDK | `CometChatCallsSDK` **5.1.0+** |
+| Xcode | **16.4+**. The Calls SDK binary is built with Swift 6.1.2 |
+| Calls SDK | `CometChatCallsSDK` **5.1.3+** |
 | Chat SDK | Not needed |
 | Device | **A physical device.** PushKit and CallKit don't work on the Simulator |
 
@@ -65,6 +65,8 @@ end
 ```
 
 Then `pod install`. The Calls pod pulls `CometChatCallsSDK` automatically.
+
+{/* TODO(RC): the 2.0.0-alpha.5 Calls podspec allows `CometChatCallsSDK >= 5.1.0`, but leave(), EndCallStatus.unanswered and the no-data endCall need 5.1.3. Ask the Push team to raise the floor, or pin the Calls pod here. */}
 </Tab>
 </Tabs>
 
@@ -81,6 +83,8 @@ Each item below silences calls **without an error** if it is missing. `ensureRin
 1. **CometChat dashboard:** go to **Notifications → Settings**, enable Push Notifications, and add
    an **APNs** provider with a **token-based `.p8` key**. One `.p8` key serves both the VoIP token
    and the APNs device token. Copy the **Provider ID**.
+
+   {/* TODO(RC): the integration guide shared with the 2.0.0-alpha.5 release says to add TWO providers (APNs Device and APNs VoIP) and pass the VoIP one's ID; the push README and capabilities.md still say one .p8 provider serves both. The SDK sends the single `providerId` with both the apns_ios_device and apns_ios_voip tokens, so the answer is on the backend. Confirm with the Push team before publishing. */}
 2. **Push Notifications** capability, under *Signing & Capabilities*. It is needed for the VoIP
    token.
 3. **Background Modes → Voice over IP.** Without it, PushKit can't wake a terminated app.
@@ -145,9 +149,9 @@ On **logout**, unregister first and wait for it to finish. Unregistering needs t
 token, which logout clears:
 
 ```swift
-CometChatPushNotifications.shared.unregisterTokens { _ in
+CometChatPushNotifications.shared.unregisterTokens(completion: { _ in
     CometChatCalls.logout(onSuccess: { _ in /* ... */ }, onError: { _ in /* ... */ })
-}
+})
 ```
 
 If you log out first, the device keeps ringing for the user who just logged out.
@@ -222,14 +226,19 @@ Rules for `presentCall`:
 | `callerUid` / `callerName` / `callerAvatarUrl` | Who is calling |
 | `callType` / `isVideo` | Audio or video |
 | `receiverType` / `isPeerCall` | 1:1 or group |
-| `initiatedAtMs` / `ringTimeoutMs` / `expiresAtMs` | The ring window |
+| `initiatedAtMs` / `ringTimeoutMs` / `expiresAtMs` | The ring window. It runs from the server's `initiatedAt`, so it closes at the same moment on every device |
 
 `callDidEnd` reasons are listed under [Ringing → Status values](/calls/ios/ringing#status-values).
 
 ### Declining
 
-The user declines from the CallKit screen. The SDK ends the call for the caller as `rejected`,
-or `busy` when the user is already on another call. You write no code for this.
+The user declines from the CallKit screen. For a 1:1 call, the SDK ends the call for the caller
+as `rejected`, or `busy` when the user is already on another call. For a group call, the SDK only
+stops the ring on this device and sends nothing, so the call goes on for the other members. You
+write no code for either.
+
+When a 1:1 call rings out on this device, the SDK ends it as `unanswered`. A group call that rings
+out is left running for the others.
 
 The incoming call always rings through CallKit, even when your app is in the foreground. To answer
 or decline from your own UI, call `CometChatPushNotificationsCalls.answer(sessionId:)` or
@@ -285,19 +294,20 @@ The call options on `PNConfiguration` / `PNConfigurationBuilder`:
 | `requestNotificationPermission` | `true` | Set `false` in a calls-only app to skip the notification prompt |
 | `autoRegisterTokens` | `true` | Register on login, unregister on logout |
 | `authToken` | `nil` | Register under an auth token you mint yourself |
+| `overrideClientHost` | `nil` | Register tokens on a dedicated or staging host. Pass the same host you give the Calls SDK. The `PNConfiguration` initializer calls it `clientHost:` |
 
-{/* TODO(RC): requestNotificationPermission is in 2.0.0-alpha.3 but not yet in the push repo's docs/api.md. Confirm it ships. */}
+{/* TODO(RC): requestNotificationPermission and overrideClientHost are in 2.0.0-alpha.5 but not yet in the push repo's docs/api.md. Confirm they ship. */}
 
 ## Troubleshooting
 
 `ensureRingReady` names the first thing that would stop a call ringing on this device:
 
 ```swift
-CometChatPushNotifications.shared.ensureRingReady { result in
+CometChatPushNotifications.shared.ensureRingReady(completion: { result in
     if case .success(let readiness) = result, readiness != .ready {
         print("Calls won't ring: \(readiness.name)")
     }
-}
+})
 ```
 
 | Value | Meaning | Fix |

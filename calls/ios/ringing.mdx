@@ -16,7 +16,7 @@ your app when the user answers.
   [ringing migration guide](/calls/ios/ringing-migration).
 </Note>
 
-{/* TODO(RC): every API on this page is from calls-core 5.1.1-team + Push SDK 2.0.0-alpha.3. Type-check the snippets against the RC frameworks before publishing. */}
+{/* TODO(RC): every API on this page is from calls-core 5.1.3-team (5.1.2-team binary) + Push SDK 2.0.0-alpha.5. Type-check the snippets against the RC frameworks before publishing. */}
 
 ## How ringing works
 
@@ -70,6 +70,7 @@ options.receiverType = CallReceiverType.user
 options.sessionSettings = SessionSettingsBuilder()
     .setSessionType(.voice)
     .startVideoPaused(true)
+    .setPeerCall(true)                          // 1:1 call: ends for both when either leaves
     .build()
 
 CometChatCalls.initiateCall(receiver: "cometchat-uid-2", options: options, onSuccess: { call in
@@ -89,15 +90,20 @@ CometChatCalls.initiateCall(receiver: "cometchat-uid-2", options: options, onSuc
   `options.sessionSettings` are the settings the session is prepared with. They are fixed from
   this point: the settings you pass to `joinSession` later are ignored. Build them the way you
   want the call to start.
+
+  For a 1:1 call, include `setPeerCall(true)`. The callee's session is prepared as a peer call,
+  so the call ends for both sides when either one leaves. Without it, the caller stays in the
+  session alone after the callee hangs up.
 </Note>
+
+`initiateCall` fails with `SESSION_ALREADY_ACTIVE` while this device is joining or in another call.
+Leave that call first.
 
 | `InitiateCallOptions` | Values | Default |
 |---|---|---|
 | `type` | `CallSessionType.audio` · `CallSessionType.video` | `video` |
 | `receiverType` | `CallReceiverType.user` · `CallReceiverType.group` | `user` |
 | `sessionSettings` | `SessionSettingsBuilder.SessionSettings` | Default session settings |
-
-{/* TODO(RC): v2 rings groups (decided 2026-10-06): the caller joins at once and members ring through CallKit. Add a "Ring a group" section once the iOS group-decline bug is fixed — today one member's decline (endCall rejected) ends the call for everyone. */}
 
 `onSuccess` receives an `InitiatedCall`:
 
@@ -159,15 +165,15 @@ twice.
 To stop ringing before the callee answers, end the call with the `cancelled` status:
 
 ```swift
-CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled, onSuccess: { endedCall in
+CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled, onSuccess: {
     // The callee's device stops ringing.
 }, onError: { error in
     // The callee may have answered or declined at the same moment. The call is over either way.
 })
 ```
 
-`endCall` also tears down the session that `initiateCall` was preparing, so you don't need to
-call `leaveSession()` yourself.
+`onSuccess` carries no data. `endCall` also tears down the session that `initiateCall` was
+preparing, so you don't need to call `leave()` yourself.
 
 <Warning>
   If your outgoing-call screen closes for any other reason while the call is still ringing, cancel
@@ -176,22 +182,28 @@ call `leaveSession()` yourself.
 
 ## Stop ringing after a timeout
 
-The caller decides how long to ring. Start a timer when `initiateCall` succeeds, and cancel the
-call when it fires:
+Start a timer when `initiateCall` succeeds, and end the call as `unanswered` when it fires:
 
 ```swift
 let ringTimeout: TimeInterval = 45   // the callee's ring window when the push carries none
 
 ringTimer = DispatchWorkItem { [weak self] in
     guard let self else { return }
-    CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled,
-                           onSuccess: { _ in }, onError: { _ in })
+    CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.unanswered,
+                           onSuccess: { }, onError: { _ in })
     // Show "No answer" and dismiss.
 }
 DispatchQueue.main.asyncAfter(deadline: .now() + ringTimeout, execute: ringTimer!)
 ```
 
 Cancel the timer in `onParticipantJoined` and `onConnectionClosed`.
+
+The callee's device also stops ringing on its own. Its ring window runs from the moment the server
+created the call, so for a 1:1 call it usually ends first and reports `unanswered` itself. Your
+`onConnectionClosed` then fires before your timer does. Keep the timer anyway: it covers a callee
+whose device never received the push.
+
+{/* TODO(RC): the iOS reference app (cometchatconnect) still sends `cancelled` on the 1:1 ring timer; the SDK doc comment and the Android reference app send `unanswered`. Confirm with the Calls team. */}
 
 ## Join when the callee answers
 
@@ -214,6 +226,41 @@ CometChatCalls.joinSession(
 
 From here the call is an ordinary session. See [Join a session](/calls/ios/join-session) and
 [Events](/calls/ios/events).
+
+## Ring a group
+
+Pass a group's GUID and `CallReceiverType.group`. Every member's device rings through CallKit.
+
+```swift
+let options = InitiateCallOptions()
+options.type = CallSessionType.video
+options.receiverType = CallReceiverType.group
+options.sessionSettings = SessionSettingsBuilder()
+    .setSessionType(.video)
+    .build()                                    // no setPeerCall: a group call goes on when someone leaves
+
+CometChatCalls.initiateCall(receiver: "group-guid", options: options, onSuccess: { call in
+    // Members are ringing.
+}, onError: { error in
+    print("Call failed: \(error?.errorDescription ?? "")")
+})
+```
+
+A group call differs from a 1:1 call in these ways:
+
+| | 1:1 call | Group call |
+|---|---|---|
+| Caller joins | On `onParticipantJoined` | On the **first** `onParticipantJoined`. Later answers just join the call |
+| A member declines | The call ends as `rejected` for the caller | Only that member's ring stops. Nothing is sent, and the call goes on for everyone else |
+| A member's ring window runs out | The call ends as `unanswered` | Only that member's ring stops. The call goes on |
+| Caller's ring timer fires with no answer | `endCall` with `EndCallStatus.unanswered` | `endCall` with `EndCallStatus.cancelled` |
+| Someone leaves after joining | The call ends for both (`setPeerCall(true)`) | The call goes on for the others, the caller included |
+
+The receiving side needs no extra code. `IncomingCall.isPeerCall` is `false` for a group call, and
+`IncomingCall.receiverUid` holds the group's GUID. The push doesn't carry the group's name. Fetch
+it yourself if your call screen shows it.
+
+{/* TODO(RC): confirm with the Calls team (a) that `cancelled` is the right status for the group ring timer on iOS too (Android reference app: unanswered is per member), and (b) whether the dashboard ringing v2 toggle covers groups. */}
 
 ## Show outgoing calls in CallKit (optional)
 
@@ -257,9 +304,9 @@ in time, the SDK ends the call as `failed`. The full setup is on
 
 ## Decline a call
 
-The user declines from the CallKit screen. The SDK ends the call for the caller with the
-`rejected` status, or with `busy` when the user is already on another call. Your app writes no
-code for this.
+The user declines from the CallKit screen. For a 1:1 call, the SDK ends the call for the caller
+with the `rejected` status, or with `busy` when the user is already on another call. For a group
+call, only this device stops ringing. Your app writes no code for this.
 
 To answer or decline from your own UI, call
 `CometChatPushNotificationsCalls.answer(sessionId:)` or `decline(sessionId:)`. These do exactly
@@ -278,7 +325,8 @@ final class IncomingCallLogger: NSObject, CometChatIncomingCallListener {
     }
 
     func onIncomingCallEnded(call: CometChatIncomingCall, reason: String) {
-        // reason: answered, answeredElsewhere, cancelled, declined, timedOut, remoteEnded, failed, filtered
+        // reason is the call's status: cancelled, rejected, busy, ended, unanswered,
+        // ongoing (answered on another device), or failed / filtered
     }
 }
 
@@ -289,13 +337,37 @@ CometChatCalls.removeIncomingCallListener("incoming-call-logger")
 
 Listeners are held weakly. Keep a strong reference to `logger`.
 
+`onIncomingCallEnded` fires once per call, and never for a call answered on this device. Its
+`reason` is the server's call status, not a `CallEndReason`:
+
+| `reason` | Meaning |
+|---|---|
+| `cancelled` | The caller cancelled before anyone answered |
+| `rejected` | Declined on this device |
+| `busy` | Declined because this user was on another call |
+| `unanswered` | Nobody answered within the ring window |
+| `ongoing` | Answered on another of the callee's devices |
+| `ended` | The call ended before it was answered here (for example, the session closed) |
+| `failed` | The call could not be set up |
+| `filtered` | Dropped before ringing |
+
+<Warning>
+  The Calls SDK's `CometChatIncomingCall` has the same name as the UI Kit's incoming-call screen.
+  In a file that imports both `CometChatCallsSDK` and `CometChatUIKitSwift`, write
+  `CometChatCallsSDK.CometChatIncomingCall`, or the compiler reports the type as ambiguous.
+</Warning>
+
+{/* TODO(RC): the name clash with the UI Kit's CometChatIncomingCall is raised with the Calls team; drop this Warning if the SDK type is renamed. */}
+
 ## End a call in progress
 
 Once both sides have joined, leave the session as in any other call:
 
 ```swift
-CallSession.shared.leaveSession()
+CallSession.shared.leave()
 ```
+
+`leave()` replaces `leaveSession()`, which is deprecated.
 
 ## Status values
 
@@ -304,13 +376,16 @@ CallSession.shared.leaveSession()
 | Value | Who sends it | When |
 |---|---|---|
 | `EndCallStatus.cancelled` | Caller | The caller gives up before the callee answers |
+| `EndCallStatus.unanswered` | Caller | The caller's ring timer fired with no answer (1:1 calls) |
 | `EndCallStatus.rejected` | Callee | The callee declines (the default) |
 | `EndCallStatus.busy` | Callee | The callee is already on another call |
 
-The Push Notifications SDK sends `rejected` and `busy` for you when the user declines from CallKit.
+The Push Notifications SDK sends `rejected` and `busy` for you when the user declines a 1:1 call
+from CallKit, and `unanswered` when a 1:1 call rings out on the callee's device.
 
 **`CallEndReason`** — why a call stopped ringing on the receiving device (`callDidEnd` on the push
-delegate, `onIncomingCallEnded` on the incoming-call listener):
+delegate). The incoming-call listener reports call statuses instead; see
+[Observe incoming calls](#observe-incoming-calls-optional).
 
 | Value | Meaning |
 |---|---|
