@@ -2,472 +2,323 @@
 title: "Ringing"
 sidebarTitle: "Ringing"
 sdk_version: "5.x"
-description: "Configure CometChat Calls SDK v5 ringing on iOS for incoming calls, outgoing calls, call alerts, and accept or reject flows."
+description: "Ring another user on iOS with the CometChat Calls SDK and the Push Notifications SDK 2.0 — place, cancel, answer, decline and join 1:1 calls, with CallKit on the receiving side."
 ---
 
-Implement incoming and outgoing call notifications with accept/reject functionality. Ringing enables real-time call signaling between users, allowing them to initiate calls and respond to incoming call requests.
+Ring another user, let them answer or decline, and join the call when they answer. The Calls SDK
+places and ends the call. On the receiving device, the
+[Push Notifications SDK](/calls/ios/voip-calling) rings it through CallKit and hands it to
+your app when the user answers.
 
 <Note>
-Ringing functionality requires the CometChat Chat SDK to be integrated alongside the Calls SDK. The Chat SDK handles call signaling (initiating, accepting, rejecting calls), while the Calls SDK manages the actual call session.
+  This flow needs **no Chat SDK**. If your app rings with the Chat SDK today
+  (`CometChat.initiateCall`, `acceptCall`, `CallListener`), see the
+  [ringing migration guide](/calls/ios/ringing-migration).
 </Note>
 
-## How Ringing Works
+{/* TODO(RC): every API on this page is from calls-core 5.1.1-team + Push SDK 2.0.0-alpha.3. Type-check the snippets against the RC frameworks before publishing. */}
 
-The ringing flow involves two SDKs working together:
-
-1. **Chat SDK** - Handles call signaling (initiate, accept, reject, cancel)
-2. **Calls SDK** - Manages the actual call session once accepted
+## How ringing works
 
 ```mermaid
 sequenceDiagram
-    participant Caller
-    participant ChatSDK
-    participant Receiver
-    participant CallsSDK
-    
-    Caller->>ChatSDK: initiateCall()
-    ChatSDK->>Receiver: onIncomingCallReceived
-    Receiver->>ChatSDK: acceptCall()
-    ChatSDK-->>Caller: onOutgoingCallAccepted
-    Caller->>CallsSDK: joinSession()
-    Receiver->>CallsSDK: joinSession()
+    participant Caller as Caller app
+    participant Server as CometChat
+    participant Push as Push SDK (callee)
+    participant Callee as Callee app
+
+    Caller->>Server: CometChatCalls.initiateCall()
+    Note over Caller: Session starts preparing
+    Server->>Push: VoIP push
+    Push->>Push: Prepare the session, ring CallKit
+    Push-->>Caller: onParticipantConnected (callee's device is ringing)
+    Push->>Callee: presentCall(_:) after the user taps Answer
+    Callee->>Server: CometChatCalls.joinSession(sessionID:)
+    Server-->>Caller: onParticipantJoined (the callee answered)
+    Caller->>Server: CometChatCalls.joinSession(sessionID:)
 ```
 
-## Initiate a Call
+Some things work differently from Chat SDK ringing:
 
-Use the Chat SDK to initiate a call to a user or group:
+- **The receiving device always rings through CallKit**, even when your app is in the
+  foreground. There is no in-app incoming-call screen to build.
+- **The caller has no "accepted" or "rejected" callback.** The caller watches the call's session
+  instead: the callee joining means they answered, and the session closing while it rings means
+  they declined, were busy, or did not answer.
+- **Session settings are fixed when the session is prepared.** The settings you pass to
+  `joinSession` for a ringing call are ignored.
 
-<Tabs>
-<Tab title="Swift">
+## Before you start
+
+- The Calls SDK is [set up](/calls/ios/setup) and the user is
+  [logged in](/calls/ios/authentication) on both devices.
+- The **receiving** app has the Push Notifications SDK's Calls product set up. See
+  [VoIP Calling](/calls/ios/voip-calling). Without it the callee's device
+  never rings.
+
+## Place a call
+
+`initiateCall` creates the call on the server and rings the receiver. It also starts preparing
+the session in the background, so joining is almost instant once the callee answers.
+
 ```swift
-let receiverID = "USER_ID"
-let receiverType: CometChat.ReceiverType = .user
-let callType: CometChat.CallType = .video
+import CometChatCallsSDK
 
-let call = Call(receiverId: receiverID, callType: callType, receiverType: receiverType)
+let options = InitiateCallOptions()
+options.type = CallSessionType.audio            // or CallSessionType.video — always set it
+options.receiverType = CallReceiverType.user
+options.sessionSettings = SessionSettingsBuilder()
+    .setSessionType(.voice)
+    .startVideoPaused(true)
+    .build()
 
-CometChat.initiateCall(call: call, onSuccess: { call in
-    print("Call initiated: \(call?.sessionID ?? "")")
-    // Show outgoing call UI
+CometChatCalls.initiateCall(receiver: "cometchat-uid-2", options: options, onSuccess: { call in
+    // The callee is ringing. Keep call.sessionId — you need it to cancel or join.
+    print("Ringing session \(call.sessionId)")
 }, onError: { error in
-    print("Call initiation failed: \(error?.errorDescription ?? "")")
+    print("Call failed: \(error?.errorDescription ?? "")")
 })
 ```
-</Tab>
-<Tab title="Swift (with Timeout)">
+
+<Warning>
+  **`options.type` defaults to video.** Always set it. An audio call placed without it rings the
+  callee as a video call.
+</Warning>
+
+<Note>
+  `options.sessionSettings` are the settings the session is prepared with. They are fixed from
+  this point: the settings you pass to `joinSession` later are ignored. Build them the way you
+  want the call to start.
+</Note>
+
+| `InitiateCallOptions` | Values | Default |
+|---|---|---|
+| `type` | `CallSessionType.audio` · `CallSessionType.video` | `video` |
+| `receiverType` | `CallReceiverType.user` · `CallReceiverType.group` | `user` |
+| `sessionSettings` | `SessionSettingsBuilder.SessionSettings` | Default session settings |
+
+{/* TODO(RC): v2 rings groups (decided 2026-10-06): the caller joins at once and members ring through CallKit. Add a "Ring a group" section once the iOS group-decline bug is fixed — today one member's decline (endCall rejected) ends the call for everyone. */}
+
+`onSuccess` receives an `InitiatedCall`:
+
+| Property | Description |
+|---|---|
+| `sessionId` | The call's session ID. Use it with `joinSession` and `endCall` |
+| `receiver` / `receiverType` | Who the call was placed to |
+| `type` | `audio` or `video` |
+| `status` | `initiated` |
+| `initiatedAt` | When the call was created, in seconds |
+| `session` | The `CallSession` being prepared for this call |
+
+## Watch for the callee's answer
+
+Listen on the call's session. Add the listeners **before** you call `initiateCall`, so you don't
+miss an early event:
+
 ```swift
-let receiverID = "USER_ID"
-let receiverType: CometChat.ReceiverType = .user
-let callType: CometChat.CallType = .video
+final class OutgoingCallObserver: NSObject, SessionStatusListener, ParticipantEventListener {
 
-let call = Call(receiverId: receiverID, callType: callType, receiverType: receiverType)
+    func start() {
+        CallSession.shared.addSessionStatusListener(self)
+        CallSession.shared.addParticipantEventListener(self)
+    }
 
-// Set a custom timeout of 30 seconds (default is 45 seconds)
-CometChat.initiateCall(call: call, timeout: 30, onSuccess: { call in
-    print("Call initiated: \(call?.sessionID ?? "")")
-    // Show outgoing call UI
+    func stop() {
+        CallSession.shared.removeSessionStatusListener(self)
+        CallSession.shared.removeParticipantEventListener(self)
+    }
+
+    // The callee's device received the call and is ringing.
+    func onParticipantConnected(participant: Participant) {
+        // Show "Ringing…"
+    }
+
+    // The callee answered. Join the session now (see below).
+    func onParticipantJoined(participant: Participant) {
+        // Stop your ring timer, then join.
+    }
+
+    // The session closed while ringing: the callee declined, was busy, or didn't answer.
+    func onConnectionClosed() {
+        // Show "Call ended" and dismiss.
+    }
+}
+```
+
+| Event while ringing | Meaning |
+|---|---|
+| `onParticipantConnected` | The callee's device received the call and is ringing |
+| `onParticipantJoined` | The callee answered. This is the only "accepted" signal |
+| `onConnectionClosed` | The call ended before anyone answered |
+
+Ignore a second `onParticipantJoined`. It can arrive when the callee rejoins, and you must not join
+twice.
+
+## Cancel a call
+
+To stop ringing before the callee answers, end the call with the `cancelled` status:
+
+```swift
+CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled, onSuccess: { endedCall in
+    // The callee's device stops ringing.
 }, onError: { error in
-    print("Call initiation failed: \(error?.errorDescription ?? "")")
+    // The callee may have answered or declined at the same moment. The call is over either way.
 })
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-NSString *receiverID = @"USER_ID";
-ReceiverType receiverType = ReceiverTypeUser;
-CallType callType = CallTypeVideo;
 
-Call *call = [[Call alloc] initWithReceiverId:receiverID 
-                                     callType:callType 
-                                 receiverType:receiverType];
-
-[CometChat initiateCallWithCall:call 
-                      onSuccess:^(Call * call) {
-    NSLog(@"Call initiated: %@", call.sessionID);
-    // Show outgoing call UI
-} onError:^(CometChatException * error) {
-    NSLog(@"Call initiation failed: %@", error.errorDescription);
-}];
-```
-</Tab>
-</Tabs>
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `receiverID` | String | UID of the user or GUID of the group to call |
-| `receiverType` | ReceiverType | `.user` or `.group` |
-| `callType` | CallType | `.video` or `.audio` |
-| `timeout` | Int | Optional. The timeout duration in seconds for the call to be answered before it's automatically cancelled. Defaults to 45 seconds. |
-
-## Listen for Incoming Calls
-
-Register a call listener to receive incoming call notifications:
-
-<Tabs>
-<Tab title="Swift">
-```swift
-let listenerID = "UNIQUE_LISTENER_ID"
-
-CometChat.addCallListener(listenerID, self)
-
-// Implement CometChatCallDelegate
-extension CallViewController: CometChatCallDelegate {
-    
-    func onIncomingCallReceived(incomingCall: Call?, error: CometChatException?) {
-        guard let call = incomingCall else { return }
-        print("Incoming call from: \((call.callInitiator as? User)?.name ?? "")")
-        // Show incoming call UI with accept/reject options
-    }
-
-    func onOutgoingCallAccepted(acceptedCall: Call?, error: CometChatException?) {
-        guard let call = acceptedCall else { return }
-        print("Call accepted, joining session...")
-        joinCallSession(sessionId: call.sessionID ?? "")
-    }
-
-    func onOutgoingCallRejected(rejectedCall: Call?, error: CometChatException?) {
-        print("Call rejected")
-        // Dismiss outgoing call UI
-    }
-
-    func onIncomingCallCancelled(canceledCall: Call?, error: CometChatException?) {
-        print("Incoming call cancelled")
-        // Dismiss incoming call UI
-    }
-
-    func onCallEndedMessageReceived(endedCall: Call?, error: CometChatException?) {
-        print("Call ended")
-    }
-}
-```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-NSString *listenerID = @"UNIQUE_LISTENER_ID";
-
-[CometChat addCallListener:listenerID delegate:self];
-
-// Implement CometChatCallDelegate
-- (void)onIncomingCallReceivedWithIncomingCall:(Call *)incomingCall 
-                                         error:(CometChatException *)error {
-    NSLog(@"Incoming call from: %@", ((User *)incomingCall.callInitiator).name);
-    // Show incoming call UI with accept/reject options
-}
-
-- (void)onOutgoingCallAcceptedWithAcceptedCall:(Call *)acceptedCall 
-                                         error:(CometChatException *)error {
-    NSLog(@"Call accepted, joining session...");
-    [self joinCallSessionWithSessionId:acceptedCall.sessionID];
-}
-
-- (void)onOutgoingCallRejectedWithRejectedCall:(Call *)rejectedCall 
-                                         error:(CometChatException *)error {
-    NSLog(@"Call rejected");
-    // Dismiss outgoing call UI
-}
-
-- (void)onIncomingCallCancelledWithCanceledCall:(Call *)canceledCall 
-                                           error:(CometChatException *)error {
-    NSLog(@"Incoming call cancelled");
-    // Dismiss incoming call UI
-}
-
-- (void)onCallEndedMessageReceivedWithEndedCall:(Call *)endedCall 
-                                          error:(CometChatException *)error {
-    NSLog(@"Call ended");
-}
-```
-</Tab>
-</Tabs>
-
-| Callback | Description |
-|----------|-------------|
-| `onIncomingCallReceived` | A new incoming call is received |
-| `onOutgoingCallAccepted` | The receiver accepted your outgoing call |
-| `onOutgoingCallRejected` | The receiver rejected your outgoing call |
-| `onIncomingCallCancelled` | The caller cancelled the incoming call |
-| `onCallEndedMessageReceived` | The call has ended |
+`endCall` also tears down the session that `initiateCall` was preparing, so you don't need to
+call `leaveSession()` yourself.
 
 <Warning>
-Remember to remove the call listener when it's no longer needed to prevent memory leaks:
-```swift
-CometChat.removeCallListener(listenerID)
-```
+  If your outgoing-call screen closes for any other reason while the call is still ringing, cancel
+  the call too. Otherwise the callee keeps ringing for a call nobody is waiting on.
 </Warning>
 
-## Accept a Call
+## Stop ringing after a timeout
 
-When an incoming call is received, accept it using the Chat SDK:
+The caller decides how long to ring. Start a timer when `initiateCall` succeeds, and cancel the
+call when it fires:
 
-<Tabs>
-<Tab title="Swift">
 ```swift
-func acceptIncomingCall(sessionId: String) {
-    CometChat.acceptCall(sessionID: sessionId, onSuccess: { call in
-        print("Call accepted")
-        self.joinCallSession(sessionId: call?.sessionID ?? "")
-    }, onError: { error in
-        print("Accept call failed: \(error?.errorDescription ?? "")")
-    })
+let ringTimeout: TimeInterval = 45   // the callee's ring window when the push carries none
+
+ringTimer = DispatchWorkItem { [weak self] in
+    guard let self else { return }
+    CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled,
+                           onSuccess: { _ in }, onError: { _ in })
+    // Show "No answer" and dismiss.
 }
+DispatchQueue.main.asyncAfter(deadline: .now() + ringTimeout, execute: ringTimer!)
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)acceptIncomingCallWithSessionId:(NSString *)sessionId {
-    [CometChat acceptCallWithSessionID:sessionId 
-                             onSuccess:^(Call * call) {
-        NSLog(@"Call accepted");
-        [self joinCallSessionWithSessionId:call.sessionID];
-    } onError:^(CometChatException * error) {
-        NSLog(@"Accept call failed: %@", error.errorDescription);
-    }];
-}
-```
-</Tab>
-</Tabs>
 
-## Reject a Call
+Cancel the timer in `onParticipantJoined` and `onConnectionClosed`.
 
-Reject an incoming call:
+## Join when the callee answers
 
-<Tabs>
-<Tab title="Swift">
+In `onParticipantJoined`, join by session ID. This takes over the session `initiateCall`
+prepared, so the call connects almost instantly:
+
 ```swift
-func rejectIncomingCall(sessionId: String) {
-    let status: CometChat.callStatus = .rejected
-
-    CometChat.rejectCall(sessionID: sessionId, status: status, onSuccess: { call in
-        print("Call rejected")
-        // Dismiss incoming call UI
-    }, onError: { error in
-        print("Reject call failed: \(error?.errorDescription ?? "")")
-    })
-}
-```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)rejectIncomingCallWithSessionId:(NSString *)sessionId {
-    [CometChat rejectCallWithSessionID:sessionId 
-                                status:callStatusRejected 
-                             onSuccess:^(Call * call) {
-        NSLog(@"Call rejected");
-        // Dismiss incoming call UI
-    } onError:^(CometChatException * error) {
-        NSLog(@"Reject call failed: %@", error.errorDescription);
-    }];
-}
-```
-</Tab>
-</Tabs>
-
-## Cancel a Call
-
-Cancel an outgoing call before it's answered:
-
-<Tabs>
-<Tab title="Swift">
-```swift
-func cancelOutgoingCall(sessionId: String) {
-    let status: CometChat.callStatus = .cancelled
-
-    CometChat.rejectCall(sessionID: sessionId, status: status, onSuccess: { call in
-        print("Call cancelled")
-        // Dismiss outgoing call UI
-    }, onError: { error in
-        print("Cancel call failed: \(error?.errorDescription ?? "")")
-    })
-}
-```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)cancelOutgoingCallWithSessionId:(NSString *)sessionId {
-    [CometChat rejectCallWithSessionID:sessionId 
-                                status:callStatusCancelled 
-                             onSuccess:^(Call * call) {
-        NSLog(@"Call cancelled");
-        // Dismiss outgoing call UI
-    } onError:^(CometChatException * error) {
-        NSLog(@"Cancel call failed: %@", error.errorDescription);
-    }];
-}
-```
-</Tab>
-</Tabs>
-
-## Join the Call Session
-
-After accepting a call (or when your outgoing call is accepted), join the call session using the Calls SDK:
-
-<Tabs>
-<Tab title="Swift">
-```swift
-func joinCallSession(sessionId: String) {
-    let sessionSettings = CometChatCalls.sessionSettingsBuilder
-        .setSessionType(.video)
-        .build()
-
-    CometChatCalls.joinSession(
-        sessionID: sessionId,
-        callSetting: sessionSettings,
-        container: callViewContainer,
-        onSuccess: { message in
-            print("Joined call session")
-        },
-        onError: { error in
-            print("Failed to join: \(error?.errorDescription ?? "")")
-        }
-    )
-}
-```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)joinCallSessionWithSessionId:(NSString *)sessionId {
-    SessionSettings *sessionSettings = [[[CometChatCalls sessionSettingsBuilder]
-        setSessionType:SessionTypeVideo]
-        build];
-
-    [CometChatCalls joinSessionWithSessionID:sessionId
-                                 callSetting:sessionSettings
-                                   container:self.callViewContainer
-                                   onSuccess:^(NSString * message) {
-        NSLog(@"Joined call session");
-    } onError:^(CometChatCallException * error) {
-        NSLog(@"Failed to join: %@", error.errorDescription);
-    }];
-}
-```
-</Tab>
-</Tabs>
-
-## End a Call
-
-Properly ending a call requires coordination between both SDKs to ensure all participants are notified and call logs are recorded correctly.
-
-<Warning>
-Always call `CometChat.endCall()` when ending a call. This notifies the other participant and ensures the call is properly logged. Without this, the other user won't know the call has ended and call logs may be incomplete.
-</Warning>
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant CallsSDK
-    participant ChatSDK
-    participant OtherParticipant
-    
-    User->>CallsSDK: leaveSession()
-    User->>ChatSDK: endCall(sessionId)
-    ChatSDK->>OtherParticipant: onCallEndedMessageReceived
-    OtherParticipant->>CallsSDK: leaveSession()
-```
-
-When using the default call UI, listen for the end call button click using `ButtonClickListener` and call `endCall()`:
-
-<Tabs>
-<Tab title="Swift">
-```swift
-class CallViewController: UIViewController, ButtonClickListener {
-    
-    var currentSessionId: String = ""
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        CallSession.shared.addButtonClickListener(self)
+CometChatCalls.joinSession(
+    sessionID: sessionId,
+    callSetting: SessionSettingsBuilder().build(),   // ignored — the settings from initiateCall apply
+    container: callViewContainer,
+    onSuccess: { _ in
+        // In the call.
+    },
+    onError: { error in
+        print("Join failed: \(error?.errorDescription ?? "")")
     }
-    
-    func onLeaveSessionButtonClicked() {
-        endCall(sessionId: currentSessionId)
-    }
-    
-    func endCall(sessionId: String) {
-        // 1. Leave the call session (Calls SDK)
-        CallSession.shared.leaveSession()
-
-        // 2. Notify other participants (Chat SDK)
-        CometChat.endCall(sessionID: sessionId, onSuccess: { call in
-            print("Call ended successfully")
-            self.navigationController?.popViewController(animated: true)
-        }, onError: { error in
-            print("End call failed: \(error?.errorDescription ?? "")")
-            self.navigationController?.popViewController(animated: true)
-        })
-    }
-    
-    // Other ButtonClickListener callbacks...
-}
+)
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-@interface CallViewController () <ButtonClickListener>
-@property (nonatomic, strong) NSString *currentSessionId;
-@end
 
-@implementation CallViewController
+From here the call is an ordinary session. See [Join a session](/calls/ios/join-session) and
+[Events](/calls/ios/events).
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    [[CallSession shared] addButtonClickListener:self];
-}
+## Show outgoing calls in CallKit (optional)
 
-- (void)onLeaveSessionButtonClicked {
-    [self endCallWithSessionId:self.currentSessionId];
-}
+If the caller's app also links the Push Notifications SDK's Calls product, report outgoing calls
+to CallKit. The call then survives a cellular interruption, appears in Recents and can be ended
+from the lock screen.
 
-- (void)endCallWithSessionId:(NSString *)sessionId {
-    // 1. Leave the call session (Calls SDK)
-    [[CallSession shared] leaveSession];
-
-    // 2. Notify other participants (Chat SDK)
-    [CometChat endCallWithSessionID:sessionId 
-                          onSuccess:^(Call * call) {
-        NSLog(@"Call ended successfully");
-        [self.navigationController popViewControllerAnimated:YES];
-    } onError:^(CometChatException * error) {
-        NSLog(@"End call failed: %@", error.errorDescription);
-        [self.navigationController popViewControllerAnimated:YES];
-    }];
-}
-
-@end
-```
-</Tab>
-</Tabs>
-
-The other participant receives `onCallEndedMessageReceived` callback and should leave the session:
-
-<Tabs>
-<Tab title="Swift">
 ```swift
-func onCallEndedMessageReceived(endedCall: Call?, error: CometChatException?) {
-    CallSession.shared.leaveSession()
-    navigationController?.popViewController(animated: true)
+import CometChatPushNotificationsCalls
+
+// When the session joins:
+CometChatPushNotificationsCalls.reportOutgoingCall(sessionId: sessionId, calleeName: "Alice", hasVideo: false)
+CometChatPushNotificationsCalls.reportCallConnected(sessionId: sessionId)
+
+// When the call is over (safe to call more than once):
+CometChatPushNotificationsCalls.reportCallEnded(sessionId: sessionId)
+```
+
+These calls do nothing for an answered incoming call. The SDK already has that call in CallKit.
+
+## Receive a call
+
+On the receiving device, the Push Notifications SDK does the ringing:
+
+1. A VoIP push arrives, in any app state, including when the app was terminated.
+2. The SDK prepares the session and rings CallKit.
+3. The user taps **Answer**. The SDK calls your delegate's `presentCall(_:)`.
+4. Your app presents its call screen and joins with
+   `CometChatCalls.joinSession(sessionID: call.sessionId, …)`.
+
+```swift
+func presentCall(_ call: IncomingCall) -> Bool {
+    // Present your call screen, then join call.sessionId.
+    return true
 }
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)onCallEndedMessageReceivedWithEndedCall:(Call *)endedCall 
-                                          error:(CometChatException *)error {
-    [[CallSession shared] leaveSession];
-    [self.navigationController popViewControllerAnimated:YES];
+
+Join within 20 seconds of `presentCall`. If you return `false`, have no delegate, or don't join
+in time, the SDK ends the call as `failed`. The full setup is on
+[VoIP Calling](/calls/ios/voip-calling#3-present-the-call).
+
+## Decline a call
+
+The user declines from the CallKit screen. The SDK ends the call for the caller with the
+`rejected` status, or with `busy` when the user is already on another call. Your app writes no
+code for this.
+
+To answer or decline from your own UI, call
+`CometChatPushNotificationsCalls.answer(sessionId:)` or `decline(sessionId:)`. These do exactly
+what CallKit's buttons do.
+
+## Observe incoming calls (optional)
+
+To update your UI or logs when a call rings or stops ringing on this device, add an incoming-call
+listener. It is informational only: CallKit already shows the call.
+
+```swift
+final class IncomingCallLogger: NSObject, CometChatIncomingCallListener {
+
+    func onIncomingCallReceived(call: CometChatIncomingCall) {
+        print("Ringing: \(call.sessionId) from \(call.callerName ?? "")")
+    }
+
+    func onIncomingCallEnded(call: CometChatIncomingCall, reason: String) {
+        // reason: answered, answeredElsewhere, cancelled, declined, timedOut, remoteEnded, failed, filtered
+    }
 }
+
+CometChatCalls.addIncomingCallListener("incoming-call-logger", logger)
+// Later:
+CometChatCalls.removeIncomingCallListener("incoming-call-logger")
 ```
-</Tab>
-</Tabs>
 
-## Call Status Values
+Listeners are held weakly. Keep a strong reference to `logger`.
 
-| Status | Description |
-|--------|-------------|
-| `initiated` | Call has been initiated but not yet answered |
-| `ongoing` | Call is currently in progress |
-| `busy` | Receiver is busy on another call |
-| `rejected` | Receiver rejected the call |
-| `cancelled` | Caller cancelled before receiver answered |
-| `ended` | Call ended normally |
-| `missed` | Receiver didn't answer in time |
-| `unanswered` | Call was not answered |
+## End a call in progress
+
+Once both sides have joined, leave the session as in any other call:
+
+```swift
+CallSession.shared.leaveSession()
+```
+
+## Status values
+
+**`EndCallStatus`** — the status you pass to `endCall`:
+
+| Value | Who sends it | When |
+|---|---|---|
+| `EndCallStatus.cancelled` | Caller | The caller gives up before the callee answers |
+| `EndCallStatus.rejected` | Callee | The callee declines (the default) |
+| `EndCallStatus.busy` | Callee | The callee is already on another call |
+
+The Push Notifications SDK sends `rejected` and `busy` for you when the user declines from CallKit.
+
+**`CallEndReason`** — why a call stopped ringing on the receiving device (`callDidEnd` on the push
+delegate, `onIncomingCallEnded` on the incoming-call listener):
+
+| Value | Meaning |
+|---|---|
+| `answeredElsewhere` | Answered on another of the callee's devices |
+| `cancelled` | The caller cancelled before anyone answered |
+| `declined` | Declined on this device |
+| `timedOut` | Nobody answered within the ring window |
+| `remoteEnded` | The other side ended the call |
+| `failed` | The call could not be set up or joined |
+| `filtered` | Dropped before ringing: stale, duplicate, not for this user, or blocked by Focus |
+| `answered` | Answered on this device. Never delivered to `callDidEnd` |

@@ -1,0 +1,385 @@
+---
+title: "Ringing Migration Guide"
+sidebarTitle: "Ringing v1 to v2"
+sdk_version: "5.x"
+description: "Move an iOS app from Chat SDK ringing and Push Notifications SDK 1.0 to Calls SDK ringing with Push Notifications SDK 2.0."
+---
+
+Ringing v2 moves call signalling out of the Chat SDK and into the Calls SDK, and the
+Push Notifications SDK 2.0 takes over PushKit and CallKit on the receiving device. This guide
+covers both changes:
+
+1. **Chat SDK ringing → Calls SDK ringing** — every app that rings with `CometChat.initiateCall`.
+2. **Push Notifications SDK 1.0 → 2.0** — apps that used the 1.0 SDK for VoIP calls. Apps that
+   wired PushKit and CallKit by hand, following the earlier version of the VoIP Calling guide,
+   replace that code with the 2.0 SDK.
+
+<Warning>
+  **This is not a drop-in upgrade.** The Calls SDK v4 → v5 upgrade keeps old APIs working, but
+  ringing v2 is a different flow: the APIs, the callbacks, and who owns CallKit all change. Push
+  Notifications SDK 2.0 removes the 1.0 call APIs with no compatibility layer.
+</Warning>
+
+## Rolling out
+
+Your users won't all update at once, so for a while some devices run your old app (v1 ringing)
+and some run the new one (v2 ringing). Turn on the **ringing v2 migration** setting in the
+CometChat dashboard before you release the v2 app. With it on, calls between v1 and v2 apps
+work in both directions, so you don't need to force every user to update on the same day.
+
+{/* TODO(RC): add the setting's exact name and dashboard path and a screenshot once the toggle ships. Confirm:
+    1. Its default (off?), and whether an app with no v1 users still needs it on.
+    2. What a v1↔v2 call looks like on each side (e.g. does a v1 callee see the Chat SDK incoming-call UI; does a v2 callee ring through CallKit).
+    3. Group calls: the backend design doc (Chat API/Calls Consumer §0.4) keeps groups on v1, while the Push SDK 2.0 rings groups.
+    4. Neither iOS SDK (calls-core 5.1.1-team, Push 2.0.0-alpha.3) sends the `x-cc-capabilities: ringing-v2` header or `ringingFlowVersion` from that design — check the toggle doesn't depend on them. */}
+
+## What changes
+
+| | v1 | v2 |
+|---|---|---|
+| Signalling | Chat SDK (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`) | Calls SDK (`CometChatCalls.initiateCall`, `joinSession`, `endCall`) |
+| SDKs needed | Chat SDK + Calls SDK | Calls SDK + Push Notifications SDK 2.0. No Chat SDK |
+| Incoming call while the app is open | Chat SDK `onIncomingCallReceived`; your own incoming-call screen | CallKit, always. No in-app incoming-call screen |
+| Incoming call in the background or terminated | Hand-wired PushKit + CallKit, or Push Notifications SDK 1.0 | Push Notifications SDK 2.0 |
+| Accept | Callee calls `CometChat.acceptCall`, then joins | User taps **Answer** in CallKit; your app joins in `presentCall` |
+| Caller learns the call was accepted | `onOutgoingCallAccepted` | `onParticipantJoined` on the call's session |
+| Caller learns the call was rejected | `onOutgoingCallRejected` | `onConnectionClosed` on the call's session while ringing |
+| Ring timeout | `timeout:` on `initiateCall` (default 45 s) | Your own timer on the caller; cancel with `endCall` |
+| Call type | `callType` is required on `Call(…)` | `InitiateCallOptions.type` is optional and **defaults to video** |
+| Session settings | Passed to `joinSession` | Passed to `initiateCall` and fixed from then on; the `joinSession` settings are ignored |
+| End a joined call | `leaveSession()` **and** `CometChat.endCall` | `leaveSession()` |
+
+## Part 1: Chat SDK ringing → Calls SDK ringing
+
+### Place a call
+
+<Tabs>
+<Tab title="v1">
+```swift
+let call = Call(receiverId: "cometchat-uid-2", callType: .audio, receiverType: .user)
+
+CometChat.initiateCall(call: call, onSuccess: { call in
+    // Show the outgoing-call screen; keep call?.sessionID
+}, onError: { error in })
+```
+</Tab>
+<Tab title="v2">
+```swift
+let options = InitiateCallOptions()
+options.type = CallSessionType.audio          // optional, defaults to video — always set it
+options.receiverType = CallReceiverType.user
+options.sessionSettings = SessionSettingsBuilder()
+    .setSessionType(.voice)
+    .startVideoPaused(true)
+    .build()
+
+CometChatCalls.initiateCall(receiver: "cometchat-uid-2", options: options, onSuccess: { call in
+    // Show the outgoing-call screen; keep call.sessionId; start your ring timer
+}, onError: { error in })
+```
+</Tab>
+</Tabs>
+
+<Warning>
+  In v1 you couldn't build a `Call` without a call type. In v2 `type` is optional and defaults to
+  **video**, so an audio call without it rings the callee as a video call.
+</Warning>
+
+### Know when the callee answers or declines
+
+<Tabs>
+<Tab title="v1">
+```swift
+CometChat.addCallListener("listener-id", self)
+
+func onOutgoingCallAccepted(acceptedCall: Call?, error: CometChatException?) {
+    // Join the session
+}
+
+func onOutgoingCallRejected(rejectedCall: Call?, error: CometChatException?) {
+    // Dismiss
+}
+```
+</Tab>
+<Tab title="v2">
+```swift
+// Add before initiateCall.
+CallSession.shared.addSessionStatusListener(self)
+CallSession.shared.addParticipantEventListener(self)
+
+func onParticipantConnected(participant: Participant) {
+    // The callee's device is ringing
+}
+
+func onParticipantJoined(participant: Participant) {
+    // Answered — join the session
+}
+
+func onConnectionClosed() {
+    // Declined, busy, or no answer — dismiss
+}
+```
+</Tab>
+</Tabs>
+
+There is no separate "rejected" and "busy" signal for the caller in v2. Both close the session.
+
+### Cancel and time out
+
+<Tabs>
+<Tab title="v1">
+```swift
+CometChat.rejectCall(sessionID: sessionId, status: .cancelled, onSuccess: { _ in }, onError: { _ in })
+
+// Timeout: pass timeout: to initiateCall
+```
+</Tab>
+<Tab title="v2">
+```swift
+CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled,
+                       onSuccess: { _ in }, onError: { _ in })
+
+// Timeout: run your own timer and send the same endCall when it fires
+```
+</Tab>
+</Tabs>
+
+`status` is a `String` in v2. Use the `EndCallStatus` constants: `cancelled`, `rejected`, `busy`.
+
+### Receive, accept and decline
+
+In v1 the callee showed its own incoming-call screen and called `acceptCall` or `rejectCall`.
+In v2 the Push Notifications SDK rings CallKit and handles Answer and Decline. Delete your
+incoming-call screen and the accept/reject code, and implement `presentCall`:
+
+<Tabs>
+<Tab title="v1">
+```swift
+func onIncomingCallReceived(incomingCall: Call?, error: CometChatException?) {
+    // Show your incoming-call screen
+}
+
+// Accept button
+CometChat.acceptCall(sessionID: sessionId, onSuccess: { call in
+    // joinSession
+}, onError: { _ in })
+
+// Decline button
+CometChat.rejectCall(sessionID: sessionId, status: .rejected, onSuccess: { _ in }, onError: { _ in })
+```
+</Tab>
+<Tab title="v2">
+```swift
+// CometChatPushNotificationsCallsDelegate — the user already tapped Answer in CallKit.
+func presentCall(_ call: IncomingCall) -> Bool {
+    // Present your call screen and join call.sessionId within 20 seconds
+    return true
+}
+
+func callDidEnd(_ call: IncomingCall, reason: CallEndReason) {
+    // Dismiss your call screen
+}
+
+// Decline: handled by CallKit and the SDK — no code
+```
+</Tab>
+</Tabs>
+
+See [VoIP Calling](/calls/ios/voip-calling) for the full setup.
+
+To keep observing incoming calls (for logs or badges), replace `onIncomingCallReceived` with
+`CometChatCalls.addIncomingCallListener`. It is informational only.
+
+### Join
+
+`joinSession(sessionID:callSetting:container:…)` is unchanged, but for a ringing call it takes over
+the session that was prepared while ringing, and **ignores the settings you pass**:
+
+- **Caller:** the settings from `InitiateCallOptions.sessionSettings` apply.
+- **Callee:** the Push Notifications SDK prepares the session from the call type (video or audio,
+  camera off for audio calls, speaker audio).
+
+Move any session settings you used to pass at join to `initiateCall`.
+
+### End a call
+
+<Tabs>
+<Tab title="v1">
+```swift
+CallSession.shared.leaveSession()
+CometChat.endCall(sessionID: sessionId, onSuccess: { _ in }, onError: { _ in })
+```
+</Tab>
+<Tab title="v2">
+```swift
+CallSession.shared.leaveSession()
+```
+</Tab>
+</Tabs>
+
+### API mapping
+
+| v1 (Chat SDK) | v2 |
+|---|---|
+| `Call(receiverId:callType:receiverType:)` + `CometChat.initiateCall(call:)` | `CometChatCalls.initiateCall(receiver:options:)` |
+| `initiateCall(call:timeout:)` | Your own timer + `endCall(status: EndCallStatus.cancelled)` |
+| `CometChat.acceptCall(sessionID:)` | CallKit Answer → `presentCall(_:)` → `CometChatCalls.joinSession(sessionID:…)` |
+| `CometChat.rejectCall(sessionID:status: .rejected / .busy)` | CallKit Decline (the SDK sends `rejected` or `busy`). From your own UI: `CometChatPushNotificationsCalls.decline(sessionId:)` |
+| `CometChat.rejectCall(sessionID:status: .cancelled)` | `CometChatCalls.endCall(sessionID:status: EndCallStatus.cancelled)` |
+| `CometChat.endCall(sessionID:)` | `CallSession.shared.leaveSession()` |
+| `CometChat.addCallListener` / `CometChatCallDelegate` | Caller: `SessionStatusListener` + `ParticipantEventListener` on `CallSession.shared`. Callee: `CometChatPushNotificationsCallsDelegate` |
+| `onIncomingCallReceived` | `presentCall(_:)` (after Answer); `CometChatCalls.addIncomingCallListener` for information only |
+| `onOutgoingCallAccepted` | `onParticipantJoined` |
+| `onOutgoingCallRejected` | `onConnectionClosed` while ringing |
+| `onIncomingCallCancelled` | `callDidEnd(_:reason: .cancelled)` |
+| `CometChat.getActiveCall()` | `CometChatCalls.getActiveSession()` |
+
+{/* TODO(RC): confirm getActiveSession() is the public replacement for getActiveCall() and type-check every v2 snippet on this page against the RC frameworks. */}
+
+## Part 2: Push Notifications SDK 1.0 → 2.0
+
+### Packages
+
+1.0 shipped one library. 2.0 ships three products; add the ones your app needs:
+
+| Product | Add it for |
+|---|---|
+| `CometChatPushNotificationsSwift` (Core) | Always |
+| `CometChatPushNotificationsCalls` | Incoming calls |
+| `CometChatPushNotificationsChat` | Chat notifications |
+
+```ruby
+# CocoaPods
+- pod 'CometChatPushNotifications', '1.0.0'
++ pod 'CometChatPushNotificationsSwift', '2.0.0'
++ pod 'CometChatPushNotificationsCalls', '2.0.0'
++ pod 'CometChatPushNotificationsChat', '2.0.0'   # only for chat notifications
+```
+
+A Notification Service Extension links Core + Chat only, never Calls, and imports
+`CometChatPushNotificationsChat` instead of `CometChatPushNotificationsSwift`.
+
+### Initialize
+
+<Tabs>
+<Tab title="1.0">
+```swift
+// After CometChat.init
+CometChatPushNotifications.shared.initialize(config: .init(
+    providerId: "YOUR_PROVIDER_ID",
+    callkitIconName: "CallKitIcon",
+    callkitRingtoneName: "ringtone.caf",
+    foregroundCallPresentation: .callKit
+))
+```
+</Tab>
+<Tab title="2.0">
+```swift
+// In didFinishLaunching — required
+CometChatPushNotifications.shared.initialize(
+    config: PNConfiguration.builder(appId: "YOUR_APP_ID", region: "YOUR_REGION")
+        .providerId("YOUR_PROVIDER_ID")
+        .callKit(name: "Your App", iconTemplateImageName: "CallKitIcon",
+                 ringtone: "ringtone.caf", includeInRecents: true, supportsVideo: true)
+        .build()
+)
+```
+</Tab>
+</Tabs>
+
+- `appId` and `region` are now required. The SDK registers tokens and starts the Calls SDK on a
+  cold launch by itself.
+- `initialize` **must** run in `didFinishLaunching`, because it creates the PushKit registry.
+- Remove `registerForVoIPPushes()`. The SDK captures the VoIP token itself.
+- Remove `notifyCallsSDKReady()` / `callsSDKReinitComplete()`. The SDK starts the Calls SDK
+  itself on a cold launch.
+
+### Delegate
+
+<Tabs>
+<Tab title="1.0">
+```swift
+extension Coordinator: CometChatPushNotificationsDelegate {
+    func presentCallScreen(for call: Call, sessionId: String) {
+        // Generate a token and join
+    }
+    func onCallCleanupComplete() { }
+    func onCallMissed(call: Call, reason: CometChatMissedCallReason) { }
+}
+```
+</Tab>
+<Tab title="2.0">
+```swift
+final class CallPushDelegate: NSObject, CometChatPushNotificationsCallsDelegate {
+    func presentCall(_ call: IncomingCall) -> Bool {
+        // Present the call screen; joinSession(sessionID: call.sessionId, …)
+        return true
+    }
+    func callDidEnd(_ call: IncomingCall, reason: CallEndReason) {
+        // Dismiss. reason covers missed (timedOut, cancelled), declined, failed, …
+    }
+}
+```
+</Tab>
+</Tabs>
+
+The 2.0 delegate is an Objective-C protocol, so the object must inherit from `NSObject`. The SDK
+holds it weakly.
+
+### Removed and replaced APIs
+
+| 1.0 | 2.0 |
+|---|---|
+| `CometChatPushNotificationsConfig(providerId:…)` | `PNConfiguration(appId:region:…)` or `PNConfiguration.builder(appId:region:)` |
+| `callkitIconName`, `callkitRingtoneName` | `CallKitBranding`, set with `.callKit(…)` |
+| `foregroundCallPresentation`, `incomingCallStyle`, `CometChatIncomingCallView`, `CometChatIncomingCallStyle` | Removed. Calls always ring through CallKit |
+| `registerForVoIPPushes()` | Removed. With `.pushKitOwnership(.app)`, forward `handleVoIPToken` / `handleIncomingVoIPPush` |
+| `notifyCallsSDKReady()`, `callsSDKReinitComplete()` | Removed |
+| `presentCallScreen(for: Call, sessionId:)` | `presentCall(_ call: IncomingCall) -> Bool`, then `CometChatCalls.joinSession(sessionID:)` |
+| `onCallCleanupComplete`, `onCallMissed`, `onIncomingCallCancelled` | `callDidEnd(_:reason:)` |
+| `onOutgoingCallAccepted`, `onOutgoingCallRejected` | Removed. The caller watches the session (see Part 1) |
+| `endCallKitSession()`, `endActiveCall()`, `clearActiveCall()` | Removed. CallKit follows the Calls session. For outgoing calls: `reportCallEnded(sessionId:reason:)` |
+| `setCallMuted`, `onCallMuteStateChanged` | Removed. Mute syncs with CallKit automatically |
+| `activeCallSessionId` | Removed. `getDiagnostics()["activeCall"]` for debugging |
+| `registerDeviceToken(_:onSuccess:onError:)` | `registerDeviceToken(_:completion:)` with `PNResult<String>` |
+| `onPushTokenRegistrationFailed(platform:error: CometChatException)` | `error: PNError` |
+| `navigateToChat(for:)` on the main delegate | `CometChatPushNotificationsChatDelegate` (Chat product) |
+
+Chat-notification APIs that didn't change are listed under "Upgrading from 1.0" on the
+[iOS Push Notifications SDK](/notifications/ios-push-notifications-sdk) page.
+
+### Logout
+
+Tokens still register on login. On logout, call `unregisterTokens` and **wait for it** before you
+log out. Unregistering needs the auth token that logout clears:
+
+```swift
+CometChatPushNotifications.shared.unregisterTokens { _ in
+    CometChatCalls.logout(onSuccess: { _ in }, onError: { _ in })
+}
+```
+
+## Replacing hand-wired PushKit and CallKit
+
+If you wired PushKit and CallKit yourself, following the earlier version of the VoIP Calling
+guide, remove:
+
+- your `PKPushRegistry` and `PKPushRegistryDelegate`,
+- your `CXProvider`, `CXProviderDelegate` and `CXCallController` code,
+- VoIP token registration (`CometChatNotifications.registerPushToken(… .APNS_IOS_VOIP …)`),
+- your `AVAudioSession` handling for calls. Never call `setActive` yourself; CallKit owns the session.
+
+Then follow [VoIP Calling](/calls/ios/voip-calling). If another part of your
+app needs its own `PKPushRegistry`, keep it and set `.pushKitOwnership(.app)`.
+
+## Checklist
+
+- [ ] `initiateCall` moved to `CometChatCalls.initiateCall`, with `options.type` set
+- [ ] Session settings moved from `joinSession` to `InitiateCallOptions.sessionSettings`
+- [ ] Caller listens on `CallSession.shared` for `onParticipantJoined` / `onConnectionClosed`
+- [ ] Caller runs its own ring timer and cancels with `EndCallStatus.cancelled`
+- [ ] In-app incoming-call screen and `acceptCall` / `rejectCall` removed
+- [ ] Push Notifications SDK 2.0 initialized in `didFinishLaunching`; `presentCall` joins within 20 s
+- [ ] `CometChat.endCall` after `leaveSession` removed
+- [ ] `unregisterTokens` awaited before logout
+- [ ] Tested on a device: foreground, background, terminated and locked; answer, decline, cancel and no answer

@@ -1,12 +1,12 @@
 ---
 title: "iOS APNs Push Notifications"
-description: "Implement APNs push notifications with CometChat UIKit for iOS, including CallKit integration for VoIP calls."
+description: "Implement APNs chat push notifications with CometChat UIKit for iOS."
 ---
 
 <Card
   title="iOS UI Kit Sample App"
   icon="github"
-  href="https://github.com/cometchat/cometchat-uikit-ios/tree/v5/SampleAppPushNotificationAPNs/Push%20Notification%20%2B%20VoIP"
+  href="https://github.com/cometchat/cometchat-uikit-ios/tree/v5/SampleAppPushNotificationAPNs"
 >
   Reference implementation of iOS UIKit, APNs and Push Notification Setup.
 </Card>
@@ -15,31 +15,32 @@ description: "Implement APNs push notifications with CometChat UIKit for iOS, in
   **There is a drop-in alternative to this guide.** The
   [iOS Push Notifications SDK](/notifications/ios-push-notifications-sdk)
   (`CometChatPushNotifications`) ships everything below — token registration, foreground
-  presentation, quick reply, badge counts, PushKit and CallKit — as a dependency, so you do not
-  copy helper files or write a `CXProviderDelegate`. It works with or without the UI Kit.
+  presentation, quick reply and badge counts — as a dependency, so you do not copy helper files.
+  It works with or without the UI Kit.
 
-  Use this page when you need direct control over the PushKit and CallKit layer.
+  This page covers **chat notifications only**. For incoming calls (PushKit + CallKit), see
+  [Calls: VoIP Calling](/calls/ios/voip-calling).
 </Note>
 
 ## What this guide covers
 
-- CometChat dashboard setup (enable push, add APNs Device + APNs VoIP providers) with screenshots.
-- APNs + PushKit/CallKit wiring (tokens, delegates, CallKit).
-- Incoming message/call handling and deep links.
+- CometChat dashboard setup (enable push, add an APNs Device provider) with screenshots.
+- APNs wiring (token, notification center delegate, quick reply).
+- Incoming message handling and deep links.
 - Badge count and grouped notifications.
 - Payload customization and testing.
 
 {/* ## What you need first
 
-- CometChat App ID, Region, Auth Key; Push Notifications with **APNs Device provider ID** and **APNs VoIP provider ID**.
-- Apple capabilities: Push Notifications, Background Modes (Remote notifications, Voice over IP), CallKit usage descriptions. Physical device required.
+- CometChat App ID, Region, Auth Key; Push Notifications with an **APNs Device provider ID**.
+- Apple capabilities: Push Notifications, Background Modes (Remote notifications). Physical device recommended.
 - `.p8` APNs key (Key ID, Team ID, Bundle ID) or certificates. */}
 
 ## How APNs + CometChat work together
 
-- **APNs is the transport:** Apple issues the APNs device/VoIP tokens and delivers the payloads. No FCM bridge is involved.
-- **CometChat providers:** The APNs Device and APNs VoIP providers you add in the CometChat dashboard hold your APNs key/cert. When you call `CometChatNotifications.registerPushToken(..., .APNS_IOS_DEVICE / .APNS_IOS_VOIP, providerId)` after login, CometChat binds those tokens to the logged-in user and sends to APNs for you.
-- **Flow:** Permission prompt → APNs returns device + VoIP tokens → after `CometChat.login`, register both tokens with the matching provider IDs → CometChat sends to APNs → APNs delivers → `UNUserNotificationCenterDelegate` (and `PushKit`/`CallKit` for VoIP) surface the notification/tap.
+- **APNs is the transport:** Apple issues the APNs device token and delivers the payloads. No FCM bridge is involved.
+- **CometChat providers:** The APNs Device provider you add in the CometChat dashboard holds your APNs key/cert. When you call `CometChatNotifications.registerPushToken(..., .APNS_IOS_DEVICE, providerId)` after login, CometChat binds the token to the logged-in user and sends to APNs for you.
+- **Flow:** Permission prompt → APNs returns the device token → after `CometChat.login`, register it with the provider ID → CometChat sends to APNs → APNs delivers → `UNUserNotificationCenterDelegate` surfaces the notification/tap.
 
 ## 1. Enable push and add providers (CometChat Dashboard)
 
@@ -54,7 +55,7 @@ description: "Implement APNs push notifications with CometChat UIKit for iOS, in
 
 2. Click **Add Credentials**:
    - Add an **APNs Device** provider (alerts) using your `.p8` key, Team ID, Key ID, and Bundle ID; copy the Provider ID.
-   - Add an **APNs VoIP** provider (calls) with the same `.p8` (recommended for CallKit reliability); copy the Provider ID.
+   - If the same app also receives calls, use a token-based (`.p8`) key. See [VoIP Calling](/calls/ios/voip-calling).
 
 <Warning>
 **`.p12` certificates are deprecated.** Apple recommends using `.p8` Auth Keys for push notifications. `.p8` keys are simpler to manage (one key works for all your apps), never expire, and are the only format actively supported going forward. If you are still using `.p12`, migrate to `.p8` at your earliest convenience.
@@ -67,11 +68,11 @@ description: "Implement APNs push notifications with CometChat UIKit for iOS, in
   />
 </Frame>
 
-Keep the provider IDs—you’ll paste them into your app constants.
+Keep the provider ID—you’ll paste it into your app constants.
 
 ## 2. Apple setup
 
-1. Capabilities: Push Notifications, Background Modes → Remote notifications & Voice over IP, CallKit usage descriptions in `Info.plist` (mic/camera).
+1. Capabilities: Push Notifications, Background Modes → Remote notifications.
 2. APNs Auth Key: generate `.p8` (or use cert), note **Key ID**, **Team ID**, and **Bundle ID**; upload to CometChat providers.
 
 <Frame>
@@ -81,11 +82,11 @@ Keep the provider IDs—you’ll paste them into your app constants.
   />
 </Frame>
 
-## 3. Wiring APNs + PushKit/CallKit
+## 3. Wiring APNs
 
-- From below code, copy `CometChatAPNsHelper.swift`, `CometChatPNHelper.swift`, and the two `AppDelegate` extensions (`AppDelegate+PN.swift` and `AppDelegate+VoIP.swift`) into your project.
-- These files implement APNs + PushKit/CallKit handling, notification presentation, tap and quick-reply actions, and call management.
-- Update bundle ID, team ID, and provider IDs (`AppConstants.PROVIDER_ID` etc.). Keep the `voip` push type.
+- From below code, copy `CometChatAPNsHelper.swift`, `CometChatPNHelper.swift`, and the `AppDelegate+PN.swift` extension into your project.
+- These files implement APNs token registration, notification presentation, and tap and quick-reply actions.
+- Update bundle ID, team ID, and the provider ID (`AppConstants.PROVIDER_ID`).
 
 <Tabs>
   <Tab title="AppDelegate + PN.swift">
@@ -134,174 +135,14 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 
 ```
   </Tab>
-  <Tab title="AppDelegate + VoIP.swift">
-  ```swift lines
-#if canImport(CometChatCallsSDK)
-
-import Foundation
-import PushKit
-import CallKit
-import AVFoundation
-import CometChatSDK
-import CometChatCallsSDK
-
-extension AppDelegate: PKPushRegistryDelegate, CXProviderDelegate {
-
-    // MARK: - VoIP Push Token Updates
-
-    func pushRegistry(
-        _ registry: PKPushRegistry,
-        didUpdate pushCredentials: PKPushCredentials,
-        for type: PKPushType
-    ) {
-        print("VoIP token updated for type: \(type.rawValue)")
-        cometchatAPNsHelper.registerForVoIPCalls(pushCredentials: pushCredentials)
-    }
-
-    func pushRegistry(
-        _ registry: PKPushRegistry,
-        didInvalidatePushTokenFor type: PKPushType
-    ) {
-        print("VoIP push token invalidated for type: \(type.rawValue)")
-        initializePushKit()
-        refreshPushCredentials()
-    }
-
-    // MARK: - PushKit Setup
-
-    func initializePushKit() {
-        if pushRegistry == nil {
-            let registry = PKPushRegistry(queue: DispatchQueue.main)
-            registry.delegate = self
-            registry.desiredPushTypes = [.voIP]
-            pushRegistry = registry
-            print("Push registry initialized")
-        } else {
-            print("Push registry already initialized")
-        }
-    }
-
-    func refreshPushCredentials() {
-        guard let registry = pushRegistry else {
-            print("Push registry is nil")
-            return
-        }
-
-        registry.desiredPushTypes = []
-        registry.desiredPushTypes = [.voIP]
-        print("VoIP token refreshed")
-    }
-
-    // MARK: - Incoming VoIP Push
-
-    func pushRegistry(
-        _ registry: PKPushRegistry,
-        didReceiveIncomingPushWith payload: PKPushPayload,
-        for type: PKPushType,
-        completion: @escaping () -> Void
-    ) {
-        print("Incoming VoIP push received")
-        let provider = cometchatAPNsHelper.didReceiveIncomingPushWith(payload: payload)
-        provider?.setDelegate(self, queue: nil)
-        completion()
-    }
-
-    // MARK: - CallKit Delegates
-
-    func providerDidReset(_ provider: CXProvider) {
-        print("CallKit provider did reset")
-        cometchatAPNsHelper.onProviderDidReset(provider: provider)
-    }
-
-    func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        print("User answered call")
-
-        // CRITICAL: Configure audio session BEFORE answering
-        configureAudioSession()
-
-        cometchatAPNsHelper.onAnswerCallAction(action: action)
-    }
-
-    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        print("User ended call")
-        cometchatAPNsHelper.onEndCallAction(action: action)
-        action.fulfill()
-    }
-
-    func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
-        print("User toggled mute: \(action.isMuted)")
-        // v5: the deprecated CometChatCalls.audioMuted(_:) maps to these.
-        action.isMuted ? CallSession.shared.muteAudio() : CallSession.shared.unmuteAudio()
-        action.fulfill()
-    }
-
-    // MARK: - Audio Session Delegates
-
-    /// Called when CallKit activates the audio session
-    func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        print("Audio session activated")
-
-        // Configure audio session for VoIP
-        configureAudioSession()
-    }
-
-    /// Called when CallKit deactivates the audio session
-    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
-        print("Audio session deactivated")
-    }
-
-    // MARK: - Audio Session Configuration
-
-    /// Configure AVAudioSession for VoIP calls
-    private func configureAudioSession() {
-        let audioSession = AVAudioSession.sharedInstance()
-
-        do {
-            // Set category for VoIP with speaker and bluetooth support
-            try audioSession.setCategory(
-                .playAndRecord,
-                mode: .voiceChat,
-                options: [.allowBluetooth, .allowBluetoothA2DP]
-            )
-
-            // Activate the session
-            try audioSession.setActive(true)
-
-            print("Audio session configured successfully")
-
-        } catch {
-            print("Failed to configure audio session: \(error.localizedDescription)")
-        }
-    }
-}
-
-#endif
-```
-
-  </Tab>
   <Tab title="CometChatAPNsHelper.swift">
 ```swift lines
 import Foundation
 import UIKit
 import CometChatSDK
 import CometChatUIKitSwift
-import PushKit
-import CallKit
-import AVFAudio
-
-#if canImport(CometChatCallsSDK)
-import CometChatCallsSDK
-#endif
 
 class CometChatAPNsHelper {
-
-    var uuid: UUID?
-    var activeCall: Call?
-    var cancelCall: Bool = true
-    var onCall = true
-    var callController = CXCallController()
-    let voipRegistry = PKPushRegistry(queue: DispatchQueue.main)
-    var provider: CXProvider? = nil
 
     // MARK: - Configure Push Notifications
     public func configurePushNotification(application: UIApplication, delegate: AppDelegate) {
@@ -349,12 +190,6 @@ class CometChatAPNsHelper {
         // Add login listener
         CometChat.addLoginListener("loginlistener-pnToken-register-login", self)
 
-        #if canImport(CometChatCallsSDK)
-        let voipRegistry: PKPushRegistry = PKPushRegistry(queue: DispatchQueue.main)
-        voipRegistry.delegate = (delegate as? PKPushRegistryDelegate)
-        voipRegistry.desiredPushTypes = [PKPushType.voIP]
-        CometChatCallEvents.addListener("loginlistener-pnToken-register-login", self)
-        #endif
     }
 
     // MARK: - Register APNs Token
@@ -408,78 +243,6 @@ class CometChatAPNsHelper {
         return data
     }
 
-    // MARK: - VoIP Registration
-    public func registerForVoIPCalls(pushCredentials: PKPushCredentials) {
-        guard CometChat.getLoggedInUser() != nil else {
-            print("Cannot register VoIP token: User not logged in")
-            return
-        }
-
-        let deviceToken = pushCredentials.token.reduce("", {$0 + String(format: "%02X", $1) })
-        UserDefaults.standard.set(deviceToken, forKey: "voipToken")
-        print("VoIP token: \(deviceToken)")
-
-        CometChatNotifications.registerPushToken(
-            pushToken: deviceToken,
-            platform: CometChatNotifications.PushPlatforms.APNS_IOS_VOIP,
-            providerId: AppConstants.PROVIDER_ID,
-            onSuccess: { success in
-                print("VoIP token registered successfully: \(success)")
-            },
-            onError: { error in
-                print("VoIP token registration failed: \(error.errorCode) - \(error.errorDescription)")
-            }
-        )
-    }
-
-    // MARK: - Missed Call Notification
-    public func handleMissedCallNotification(payload: [AnyHashable: Any]) {
-        guard let senderName = payload["senderName"] as? String,
-              let senderAvatar = payload["senderAvatar"] as? String else {
-            print("Missing required payload fields for missed call")
-            return
-        }
-
-        let content = UNMutableNotificationContent()
-        if let avatarURL = URL(string: senderAvatar), let imageData = try? Data(contentsOf: avatarURL) {
-            do {
-                let fileManager = FileManager.default
-                let temporaryDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
-                let fileURL = temporaryDirectory.appendingPathComponent("avatar.png")
-                try imageData.write(to: fileURL)
-                let attachment = try UNNotificationAttachment(identifier: "avatar", url: fileURL, options: nil)
-                content.attachments = [attachment]
-            } catch {
-                print("Error creating notification attachment: \(error.localizedDescription)")
-            }
-        }
-
-        content.title = "\(senderName)"
-        content.body = "Missed call"
-        content.sound = UNNotificationSound.default
-
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                print("Error displaying missed call notification: \(error.localizedDescription)")
-            } else {
-                print("Missed call notification displayed")
-            }
-        }
-    }
-
-    func reloadViewController(_ rootViewController : UIViewController) {
-        if let navigationController = rootViewController as? UINavigationController {
-            if let visibleViewController = navigationController.visibleViewController {
-                visibleViewController.viewWillAppear(true)
-                visibleViewController.viewDidAppear(true)
-            }
-        } else {
-            rootViewController.viewWillAppear(true)
-            rootViewController.viewDidAppear(true)
-        }
-    }
-
     // MARK: - Present Message From Payload
     public func presentMessageFromPayload(response: UNNotificationResponse) {
         let notification = response.notification.request.content.userInfo as? [String: Any]
@@ -529,16 +292,6 @@ extension CometChatAPNsHelper: CometChatLoginDelegate {
 
         // Check for pending token
         registerPendingTokenIfNeeded()
-
-        #if canImport(CometChatCallsSDK)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                let registry = PKPushRegistry(queue: DispatchQueue.main)
-                registry.delegate = appDelegate
-                appDelegate.pushRegistry(registry, didInvalidatePushTokenFor: .voIP)
-            }
-        }
-        #endif
     }
 
     func onLoginFailed(error: CometChatSDK.CometChatException?) {
@@ -554,290 +307,6 @@ extension CometChatAPNsHelper: CometChatLoginDelegate {
     }
 
 }
-
-// MARK: - VoIP & CallKit Functions
-#if canImport(CometChatCallsSDK)
-
-extension CometChatAPNsHelper {
-
-    public func didReceiveIncomingPushWith(payload: PKPushPayload) -> CXProvider? {
-        guard let sender = payload.dictionaryPayload["sender"] as? String,
-              let senderName = payload.dictionaryPayload["senderName"] as? String,
-              let body = payload.dictionaryPayload["body"] as? String,
-              let callAction = payload.dictionaryPayload["callAction"] as? String,
-              let receiver = payload.dictionaryPayload["receiver"] as? String,
-              let type = payload.dictionaryPayload["type"] as? String,
-              let callType = payload.dictionaryPayload["callType"] as? String,
-              let sessionId = payload.dictionaryPayload["sessionId"] as? String,
-              let conversationId = payload.dictionaryPayload["conversationId"] as? String else {
-            print("Incomplete VoIP payload")
-            return nil
-        }
-
-        let applicationState = UIApplication.shared.applicationState
-        print("VoIP push received - Action: \(callAction), State: \(applicationState.rawValue)")
-
-        if type == "call" {
-            switch callAction {
-            case "initiated":
-                switch applicationState {
-                case .active:
-                    if CometChat.getActiveCall() != nil {
-                        print("User already on a call, rejecting with busy...")
-                        CometChat.rejectCall(sessionID: sessionId, status: .busy, onSuccess: { rejectedCall in
-                            print("Rejected incoming call with busy status")
-                        }, onError: { error in
-                            print("Failed to reject with busy: \(error?.errorDescription ?? "")")
-                        })
-                        return nil
-                    } else {
-                        return updatedInitiateCall(sender: sender, senderName: senderName, body: body, callAction: callAction, receiver: receiver, callType: callType, sessionId: sessionId, conversationId: conversationId)
-                    }
-                case .inactive, .background:
-                    return updatedInitiateCall(sender: sender, senderName: senderName, body: body, callAction: callAction, receiver: receiver, callType: callType, sessionId: sessionId, conversationId: conversationId)
-                @unknown default:
-                    break
-                }
-
-            case "ongoing":
-                print("Call ongoing")
-                break
-
-            case "unanswered":
-                provider?.reportCall(with: uuid!, endedAt: Date(), reason: .unanswered)
-                handleMissedCallNotification(payload: payload.dictionaryPayload)
-
-            case "rejected":
-                provider?.reportCall(with: uuid!, endedAt: Date(), reason: .unanswered)
-
-            case "busy":
-                if let uuid = uuid {
-                    provider?.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
-                    self.uuid = nil
-                }
-
-            case "cancelled":
-                provider?.reportCall(with: uuid!, endedAt: Date(), reason: .failed)
-                handleMissedCallNotification(payload: payload.dictionaryPayload)
-
-            case "ended":
-                provider?.reportCall(with: uuid!, endedAt: Date(), reason: .remoteEnded)
-
-            default:
-                provider?.reportCall(with: uuid!, endedAt: Date(), reason: .remoteEnded)
-            }
-        }
-
-        return nil
-    }
-
-    public func onAnswerCallAction(action: CXAnswerCallAction) {
-        if activeCall != nil {
-            startCall()
-        }
-        action.fulfill()
-    }
-
-    private func updatedInitiateCall(sender: String, senderName: String, body: String, callAction: String, receiver: String, callType: String, sessionId: String, conversationId: String) -> CXProvider? {
-
-        let callTypeValue: CometChat.CallType = callType == "audio" ? .audio : .video
-        let receiverType: CometChat.ReceiverType = conversationId.contains("group") ? .group : .user
-        let call = Call(receiverId: receiver, callType: callTypeValue, receiverType: receiverType)
-        call.sessionID = sessionId
-        call.callStatus = .initiated
-        call.initiatedAt = Date().timeIntervalSince1970
-        call.callInitiator = User(uid: sender, name: senderName)
-        call.callType = callTypeValue
-        call.callReceiver = User(uid: receiver, name: receiver)
-
-        activeCall = call
-        uuid = UUID()
-
-        let callerName = senderName
-        let config = CXProviderConfiguration(localizedName: "APNS + Callkit")
-        config.iconTemplateImageData = UIImage(named: "AppIcon")?.pngData()
-        config.includesCallsInRecents = true
-        config.ringtoneSound = "ringtone.caf"
-        config.supportsVideo = true
-
-        provider = CXProvider(configuration: config)
-
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: callerName.capitalized)
-        update.hasVideo = callType == "video"
-
-        provider?.reportNewIncomingCall(with: uuid!, update: update, completion: { error in
-            if error == nil {
-                self.configureAudioSession()
-            }
-        })
-
-        return provider!
-    }
-
-    private func configureAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(AVAudioSession.Category.playAndRecord, options: [.mixWithOthers, .allowBluetooth, .defaultToSpeaker])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch let error as NSError {
-            print("Audio session error: \(error)")
-        }
-    }
-
-    private func startCall() {
-        let cometChatOngoingCall = CometChatOngoingCall()
-
-        CometChat.acceptCall(sessionID: activeCall?.sessionID ?? "") { call in
-            DispatchQueue.main.async {
-                let isAudioCall = (self.activeCall?.callType == .audio)
-                var callSettingsBuilder = CometChatCallsSDK.CallSettingsBuilder()
-                callSettingsBuilder = callSettingsBuilder.setIsAudioOnly(isAudioCall)
-                cometChatOngoingCall.set(callSettingsBuilder: callSettingsBuilder)
-                cometChatOngoingCall.set(callWorkFlow: .defaultCalling)
-                cometChatOngoingCall.set(sessionId: call?.sessionID ?? "")
-                cometChatOngoingCall.modalPresentationStyle = .fullScreen
-
-                if let sceneDelegate = UIApplication.shared.connectedScenes.first?.delegate as? SceneDelegate,
-                   let window = sceneDelegate.window,
-                   let rootViewController = window.rootViewController {
-                    var currentController = rootViewController
-                    while let presentedController = currentController.presentedViewController {
-                        currentController = presentedController
-                    }
-                    currentController.present(cometChatOngoingCall, animated: true)
-                }
-            }
-
-            cometChatOngoingCall.setOnCallEnded { [weak self] call in
-                DispatchQueue.main.async {
-                    if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
-                        if let rootViewController = scene.windows.first?.rootViewController {
-                            self?.dismissCometChatIncomingCall(from: rootViewController)
-                            self?.reloadViewController(rootViewController)
-                        }
-                    }
-                }
-                self?.provider?.reportCall(with: self?.uuid ?? UUID(), endedAt: Date(), reason: .remoteEnded)
-            }
-        } onError: { error in
-            print("Error accepting call: \(error?.errorDescription ?? "")")
-        }
-    }
-
-    func onCallEnded(call: CometChatSDK.Call) {
-        guard let uuid = uuid else { return }
-
-        if activeCall != nil {
-            let transaction = CXTransaction(action: CXEndCallAction(call: uuid))
-            callController.request(transaction, completion: { error in })
-            activeCall = nil
-        }
-
-        DispatchQueue.main.sync { [self] in
-            if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
-                if let rootViewController = scene.windows.first?.rootViewController {
-                    dismissCometChatIncomingCall(from: rootViewController)
-                    self.reloadViewController(rootViewController)
-                }
-            }
-        }
-    }
-
-    func onCallInitiated(call: CometChatSDK.Call) {
-        let callerName = (call.callReceiver as? User)?.name
-        callController = CXCallController()
-        uuid = UUID()
-
-        let transactionCallStart = CXTransaction(action: CXStartCallAction(call: uuid!, handle: CXHandle(type: .generic, value: callerName ?? "")))
-        callController.request(transactionCallStart, completion: { error in })
-    }
-
-    private func dismissCometChatIncomingCall(from viewController: UIViewController) {
-        if let presentedViewController = viewController.presentedViewController {
-            if presentedViewController is CometChatIncomingCall {
-                presentedViewController.dismiss(animated: false, completion: nil)
-            } else {
-                dismissCometChatIncomingCall(from: presentedViewController)
-            }
-        }
-    }
-
-    public func onProviderDidReset(provider: CXProvider) {
-        if let uuid = self.uuid {
-            onCall = true
-            provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
-        }
-    }
-
-    public func onEndCallAction(action: CXEndCallAction) {
-        let endCallAction = CXEndCallAction(call: uuid!)
-        let transaction = CXTransaction()
-        transaction.addAction(endCallAction)
-
-        callController.request(transaction) { error in
-            if let error = error {
-                print("Error requesting transaction: \(error)")
-            } else {
-                print("Requested transaction successfully")
-            }
-        }
-
-        if let activeCall = activeCall {
-            if CometChat.getActiveCall() == nil || (CometChat.getActiveCall()?.callStatus == .initiated && CometChat.getActiveCall()?.callInitiator != CometChat.getLoggedInUser()) {
-                CometChat.rejectCall(sessionID: activeCall.sessionID ?? "", status: .rejected, onSuccess: { [self] (rejectedCall) in
-                    action.fulfill()
-                    print("CallKit: Reject call success")
-                    DispatchQueue.main.async { [self] in
-                        if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
-                            if let rootViewController = scene.windows.first?.rootViewController {
-                                self.dismissCometChatIncomingCall(from: rootViewController)
-                                self.reloadViewController(rootViewController)
-                            }
-                        }
-                        if let uuid = uuid {
-                            provider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
-                            self.uuid = nil
-                        }
-                    }
-                }) { (error) in
-                    print("CallKit: Reject call failed: \(error?.errorDescription ?? "")")
-                }
-            } else {
-                CometChat.endCall(sessionID: CometChat.getActiveCall()?.sessionID ?? "") { call in
-                    CallSession.shared.leaveSession()
-                    action.fulfill()
-                    print("CallKit: End call success")
-                    DispatchQueue.main.async { [self] in
-                        if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
-                            if let rootViewController = scene.windows.first?.rootViewController {
-                                self.dismissCometChatIncomingCall(from: rootViewController)
-                                self.reloadViewController(rootViewController)
-                            }
-                        }
-                    }
-                } onError: { error in
-                    print("CallKit: End call failed: \(error?.errorDescription ?? "")")
-                }
-            }
-        }
-    }
-
-}
-
-extension CometChatAPNsHelper: CometChatCallEventListener {
-func ccCallEnded(call: Call) {
-guard let uuid = uuid else { return }
-
-        if activeCall != nil {
-            let transactionCallAccepted = CXTransaction(action: CXEndCallAction(call: uuid))
-            callController.request(transactionCallAccepted, completion: { error in })
-            activeCall = nil
-        }
-    }
-
-}
-
-#endif
 
 ```
 </Tab>
@@ -870,15 +339,6 @@ static func handleTapActionOnNotification(userInfo: [AnyHashable: Any], completi
       handleGroupChatNotification(userInfo: userInfo)
     } else {
       print("Invalid receiver type for chat notification")
-    }
-
-  case "call":
-    if receiverType == "user" {
-      handleChatNotification(userInfo: userInfo)
-    } else if receiverType == "group" {
-      handleGroupChatNotification(userInfo: userInfo)
-    } else {
-      print("Invalid receiver type for call notification")
     }
 
   default:
@@ -1013,39 +473,6 @@ static func handleGroupChatNotification(userInfo: [AnyHashable: Any]) {
   }
 }
 
-static func handleCallNotification(userInfo: [AnyHashable: Any]) {
-  guard let sender = userInfo["sender"] as? String,
-     let senderName = userInfo["senderName"] as? String else {
-    print("Sender information missing in payload")
-    return
-  }
-
-  let user = User(uid: sender, name: senderName)
-  user.avatar = userInfo["senderAvatar"] as? String
-  DispatchQueue.main.async {
-    let callViewController = MessagesVC()
-    callViewController.user = user
-    CometChatPNHelper.navigateToViewController(callViewController)
-  }
-}
-
-static func handleGroupCallNotification(userInfo: [AnyHashable: Any]) {
-  guard let groupID = userInfo["receiver"] as? String,
-     let groupName = userInfo["receiverName"] as? String else {
-    print("Group information missing in payload")
-    return
-  }
-
-  let groupUser = Group(guid: groupID, name: groupName, groupType: .private, password: nil)
-  groupUser.icon = userInfo["receiverAvatar"] as? String
-  DispatchQueue.main.async {
-
-    let callViewController = MessagesVC()
-    callViewController.group = groupUser
-    CometChatPNHelper.navigateToViewController(callViewController)
-  }
-}
-
 static func navigateToDefaultScreen() {
   DispatchQueue.main.async {
     let defaultViewController = MessagesVC()
@@ -1138,15 +565,14 @@ UserDefaults.standard.set(REGION, forKey: "region")
 </Tab>
 </Tabs>
 
-## 4. Register APNs device + VoIP tokens with CometChat
+## 4. Register the APNs device token with CometChat
 
 - In your `AppDelegate.swift`, implement the following methods to handle APNs registration success and failure, and to register the device token with CometChat.
 - Make sure to import the necessary modules at the top of the file.
 - Complete your `AppDelegate.swift` as shown below:
 
-```Swift lines highlight={17, 19, 22}
+```Swift lines highlight={15, 17}
 import UIKit
-import PushKit
 import CometChatSDK
 import CometChatUIKitSwift
 
@@ -1154,7 +580,6 @@ import CometChatUIKitSwift
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
-    var pushRegistry: PKPushRegistry?
     let cometchatAPNsHelper = CometChatAPNsHelper()
     func application(
         _ application: UIApplication,
@@ -1164,9 +589,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         UNUserNotificationCenter.current().delegate = self
 
         cometchatAPNsHelper.configurePushNotification(application: application, delegate: self)
-
-        // Initialize PushKit
-        initializePushKit()
 
         return true
     }
@@ -1324,21 +746,17 @@ The `navigateToViewController` helper (shown in `CometChatPNHelper.swift` above)
 ## 8. Testing checklist
 
 1. Install on a device; grant notification permission. Verify APNs device token logs.
-2. Log in, then confirm both device + VoIP tokens register with CometChat (success callbacks).
+2. Log in, then confirm the device token registers with CometChat (success callback).
 3. Send a message from another user:
    - Foreground: ensure `willPresent` shows your chosen presentation.
    - Background/terminated: tapping opens the correct conversation.
-4. Trigger an incoming call; CallKit UI should show caller info. Accept should join the call; Decline should reject via CometChat and end CallKit.
-5. Rotate tokens (reinstall or toggle VoIP) to ensure re-registration works.
 
-## 6. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom                            | Quick checks                                                                                                                              |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | No pushes                          | Entitlements set, APNs provider creds correct, bundle ID matches dashboard, permission granted.                                           |
-| Token registration fails           | Run after login; provider IDs correct for device vs VoIP.                                                                                 |
+| Token registration fails           | Run after login; provider ID matches the APNs Device provider.                                                                            |
 | Taps do nothing                    | Verify notification center delegate and navigation readiness before routing.                                                              |
-| Call UI missing                    | Ensure PushKit delegate fires, CallKit capabilities enabled, VoIP provider ID set.                                                        |
-| Audio errors                       | Configure `AVAudioSession` for playAndRecord when reporting/accepting calls.                                                              |
 | Badge count not showing            | Verify **Unread Badge Count** is enabled in CometChat Dashboard and that your app reads `unreadMessageCount` from the payload.            |
 | Notification tap does not navigate | Ensure `UNUserNotificationCenterDelegate` is set, payload contains `receiverType`/`sender`/`receiver`, and root view controller is ready. |
