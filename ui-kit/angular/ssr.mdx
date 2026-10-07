@@ -1,0 +1,170 @@
+---
+title: "Server-Side Rendering"
+sidebarTitle: "SSR"
+description: "Run the CometChat Angular UI Kit in an app that uses Angular SSR or Angular Universal — browser-only initialization, deferred components, and the APIs that are not safe on the server."
+---
+
+## Overview
+
+The CometChat SDK is a browser library. It reads `window`, writes to `localStorage`, and
+opens a WebSocket. None of those exist during a server render, so an unguarded
+`CometChatUIKit.init()` throws `ReferenceError: window is not defined` and takes the whole
+server render with it.
+
+The [Integration](/ui-kit/angular/integration) guide scaffolds with `--ssr false` to keep
+first-run setup simple. This page covers what to do when you cannot take that default.
+
+<Note>
+Nothing about the UI Kit is incompatible with SSR. The kit's components render on the client
+like any other browser-only widget — you just have to keep initialization and rendering off
+the server pass.
+</Note>
+
+## Rule of thumb
+
+| Runs where | What belongs there |
+| ---------- | ------------------ |
+| **Browser only** | `CometChatUIKit.init()`, `login()`, `logout()`, every `<cometchat-*>` component, `CometChatSoundManager`, anything reading `localStorage` |
+| **Safe anywhere** | Importing types and constants, building a `UIKitSettingsBuilder`, your own route and layout code |
+
+If a line of code needs a live connection or a DOM, it is browser-only.
+
+## Step 1 — Guard initialization
+
+Initialize inside an `APP_INITIALIZER`-style provider that no-ops on the server, or guard the
+call directly with `isPlatformBrowser`.
+
+```ts title="src/app/cometchat.init.ts" expandable
+import { APP_INITIALIZER, PLATFORM_ID, Provider } from '@angular/core';
+import { isPlatformBrowser } from '@angular/common';
+import { CometChatUIKit, UIKitSettingsBuilder } from '@cometchat/chat-uikit-angular';
+import { environment } from '../environments/environment';
+
+export function initCometChat(platformId: object): () => Promise<unknown> {
+  return () => {
+    // Server render: do nothing and resolve immediately.
+    if (!isPlatformBrowser(platformId)) {
+      return Promise.resolve();
+    }
+
+    const settings = new UIKitSettingsBuilder()
+      .setAppId(environment.cometchat.appId)
+      .setRegion(environment.cometchat.region)
+      .setAuthKey(environment.cometchat.authKey)
+      .subscribePresenceForAllUsers()
+      .build();
+
+    return CometChatUIKit.init(settings);
+  };
+}
+
+export const provideCometChat = (): Provider => ({
+  provide: APP_INITIALIZER,
+  useFactory: initCometChat,
+  deps: [PLATFORM_ID],
+  multi: true,
+});
+```
+
+<Tip>
+On Angular 19 and later you can write the same thing with `provideAppInitializer()`. The
+`APP_INITIALIZER` form above works on every version in the supported range.
+</Tip>
+
+```ts title="src/app/app.config.ts"
+import { ApplicationConfig } from '@angular/core';
+import { provideCometChat } from './cometchat.init';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideCometChat(),
+    // ...your other providers
+  ],
+};
+```
+
+<Warning>
+Do **not** call `CometChatUIKit.init()` at module top level in `main.ts` when SSR is enabled.
+Module-level code runs during the server render, before any platform check.
+</Warning>
+
+## Step 2 — Keep components off the server pass
+
+Kit components must not render on the server. Use `@defer` with a browser condition, which
+also keeps the kit out of your server bundle's critical path.
+
+```html title="src/app/chat/chat.component.html" expandable
+@defer (when isBrowser) {
+  <div class="chat">
+    <cometchat-message-header [user]="user" />
+    <cometchat-message-list [user]="user" />
+    <cometchat-message-composer [user]="user" />
+  </div>
+} @placeholder {
+  <div class="chat chat--loading">Loading chat…</div>
+}
+```
+
+```ts title="src/app/chat/chat.component.ts"
+import { Component, PLATFORM_ID, inject } from '@angular/core';
+import { isPlatformBrowser } from '@angular/common';
+
+@Component({ /* ... */ })
+export class ChatComponent {
+  protected readonly isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
+}
+```
+
+The `@placeholder` block is what the server renders and what the user sees before hydration,
+so give it real dimensions — otherwise the page reflows when the chat mounts.
+
+## Step 3 — Guard your own session code
+
+Anything of yours that touches the kit needs the same treatment. A common case is restoring a
+session on startup:
+
+```ts expandable
+import { Component, PLATFORM_ID, inject, OnInit } from '@angular/core';
+import { isPlatformBrowser } from '@angular/common';
+import { CometChatUIKit } from '@cometchat/chat-uikit-angular';
+
+@Component({ /* ... */ })
+export class AppComponent implements OnInit {
+  private readonly isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
+
+  async ngOnInit(): Promise<void> {
+    if (!this.isBrowser) return;
+
+    const user = await CometChatUIKit.getLoggedinUser();
+    if (!user) {
+      // send them to your login flow
+    }
+  }
+}
+```
+
+## Theming under SSR
+
+`ThemeService` is SSR-safe by design: it writes `data-theme` through Angular's `DOCUMENT`
+token rather than touching `document` directly, and it guards its `matchMedia` listener with a
+`typeof window` check. You can inject it anywhere.
+
+It resolves the theme from the OS on the **client**, so the server render has no theme
+information and a dark-mode user may see one light frame before hydration. If that flash
+matters, set `data-theme` on the server from a cookie you control, and let `ThemeService` take
+over afterwards. See [Theming](/ui-kit/angular/customization/theming).
+
+## Common errors
+
+| Error | Cause | Fix |
+| ----- | ----- | --- |
+| `ReferenceError: window is not defined` | `init()` or a kit component ran on the server | Add the `isPlatformBrowser` guard from Step 1; wrap components in `@defer` |
+| `localStorage is not defined` | Your own code read session state during server render | Guard it the same way |
+| Hydration mismatch around the chat area | Server rendered a different tree than the client | Render the same `@placeholder` markup the client shows before the chat mounts |
+| Server render hangs | A WebSocket or an unresolved `init()` promise on the server | Ensure the server branch returns `Promise.resolve()` and never calls `init()` |
+
+## Related
+
+* [Integration](/ui-kit/angular/integration) — first-run setup
+* [Methods](/ui-kit/angular/methods) — init, login and logout
+* [Production Checklist](/ui-kit/angular/production) — going live
