@@ -199,6 +199,126 @@ navigationItem.leftBarButtonItem = UIBarButtonItem(
 | Loading states | Display a `UIActivityIndicatorView` during fetch/send operations |
 | Blocked users | Remove the composer and display a blocked status label |
 
+## Thread Subscription
+
+<Note>
+Thread subscription is **enabled by default from v5.2.0**. On **v5.1.22–v5.1.23** it is opt-in: nothing on this page renders until you pass `UIKitSettings().enable(threadSubscription: true)` to `CometChatUIKit.init`. The same setter still works from v5.2.0, where it takes effect immediately, and is the only app-wide way to turn the feature off — see [enable(threadSubscription:)](/ui-kit/ios/methods#init). The feature needs `CometChatUIKitSwift` v5.1.22 or later, which depends on `CometChatSDK` v4.1.9.
+</Note>
+
+Thread subscription gives users Slack-style control over thread noise: they can **subscribe** to a thread to be notified about its replies, or **unsubscribe** from one to mute it. The **server** also subscribes users automatically when they send a message (to that message's own thread), reply in a thread, or are @-mentioned in a reply — these happen server-side, so they apply to any app on the SDK, and the UI Kit reflects them as soon as they occur. Subscribing explicitly is how users opt in to a conversation they haven't participated in yet.
+
+The UI Kit ships two surfaces for the same toggle, wired out of the box and kept in sync automatically:
+
+1. A **Subscribe to thread / Unsubscribe from thread** option in the message action sheet.
+2. A **subscription bell** in the thread screen's header.
+
+### The Message Action Sheet Option
+
+[CometChatMessageList](/ui-kit/ios/message-list) adds a **Subscribe to thread** / **Unsubscribe from thread** option to the long-press action sheet. The label and icon reflect the current state, read synchronously from the SDK when the sheet is built.
+
+The option appears only on **parent messages** — never on a reply inside a thread. A subscription is always rooted at the thread's parent message, and offering the option on a reply would create a thread row the user can never open. It is **not** gated on reply count — subscribing to a message with no replies yet is the point. It is offered in **one-on-one conversations as well as groups**.
+
+To hide the option while keeping the rest of the feature:
+
+```swift lines
+// This flag lives on AdditionalConfiguration, so it is reached through the
+// list's own configuration object rather than set directly.
+messageListView.getAdditionalConfiguration().hideThreadSubscriptionOption = true
+```
+
+To replace the kit's behavior with your own, supply an `onItemClick` on a custom option with the id `MessageOptionConstants.threadSubscription` — the kit calls your handler instead of its own.
+
+### The Thread Header Bell
+
+[CometChatMessageHeader](/ui-kit/ios/message-header#thread-subscription) renders the subscription bell in its trailing area when it is in **thread mode** — set `parentMessage` and host it as the thread screen's navigation bar. A conversation header never shows the bell. It flips optimistically on tap and reverts with a toast if the request fails.
+
+```swift lines
+let messageHeaderView = CometChatMessageHeader()
+messageHeaderView.set(parentMessage: parentMessage)     // thread mode renders the bell
+
+// Hide the bell (e.g. because you host your own — see below)
+messageHeaderView.set(hideThreadSubscriptionButton: true)
+
+// Observe state changes (isSubscribed = the new state)
+extension ThreadedMessagesVC: CometChatThreadEventListener {
+    func ccThreadSubscriptionChanged(parentMessageId: Int, isSubscribed: Bool) {
+        guard parentMessageId == parentMessage?.id else { return }
+        print("Thread subscribed: \(isSubscribed)")
+    }
+}
+```
+
+Pin the header to the safe-area top and hide the system bar, exactly as a conversation screen does, with [CometChatThreadedMessageHeader](/ui-kit/ios/threaded-messages-header) directly beneath it for the parent message and reply count:
+
+```swift lines
+override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    navigationController?.setNavigationBarHidden(true, animated: animated)
+}
+
+func buildUI() {
+    view.addSubview(messageHeaderView)
+    // Before v5.2.1 the reply-count bar draws a bell of its own; hide it so the
+    // screen shows one. From v5.2.1 it is hidden by default.
+    threadHeaderView.set(hideThreadSubscriptionButton: true)
+
+    view.addSubview(threadHeaderView)   // reply-count bar, directly beneath
+    view.addSubview(messageListView)
+
+    NSLayoutConstraint.activate([
+        messageHeaderView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+        messageHeaderView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+        messageHeaderView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+        threadHeaderView.topAnchor.constraint(equalTo: messageHeaderView.bottomAnchor),
+        threadHeaderView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+        threadHeaderView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+    ])
+}
+```
+
+<Note>
+The bell needs `parentMessage`, on a parent whose message has been sent. Without it the header renders no thread control — that is deliberate, so a thread control can never appear on a non-thread screen.
+</Note>
+
+#### Hosting the Bell in Your Own Top Bar
+
+If your thread screen keeps the system navigation bar instead of `CometChatMessageHeader`, draw your own bell there and drive it with the SDK. Publish the change on success so the action-sheet option stays in step:
+
+```swift lines
+// If the screen also renders CometChatMessageHeader in thread mode, hide its bell:
+messageHeaderView.set(hideThreadSubscriptionButton: true)
+
+// On tap: flip your icon optimistically, then call the SDK
+CometChat.subscribeToThread(parentMessageId: parentMessage.id) { _ in
+    CometChatThreadEvents.ccThreadSubscriptionChanged(parentMessageId: parentMessage.id,
+                                                      isSubscribed: true)
+} onError: { error in
+    // revert the icon and show a toast
+}
+```
+
+### Subscription Behavior
+
+- **Optimistic with revert** — both surfaces flip instantly on tap, keep one request in flight per thread, and revert with a toast if the server rejects the change. An offline tap fails visibly and reverts; nothing is queued.
+- **Auto-subscribe on reply** — sending a reply in a thread, or being @-mentioned in one, subscribes the user, and every surface flips to the subscribed state automatically.
+- **Unsubscribing is not sticky** — replying again, or being @-mentioned, re-subscribes the user. The kit says so in the toast rather than letting the user discover it.
+- **Unknown state renders as unsubscribed** — a message whose subscription state hasn't been learned yet (for example, one that just arrived in real time) shows the enabled subscribe control, never a spinner.
+- **Toasts in both directions** — subscribing and unsubscribing each confirm with a toast, and both surfaces use the same copy.
+- **VoiceOver announces the subscribed state** — the subscribed control carries an accessibility label that is not shown as visible text.
+
+### Cross-Surface Sync
+
+Both surfaces observe the UI Kit event bus, so toggling in one place updates the other without a refetch. The kit emits `CometChatThreadEvents.ccThreadSubscriptionChanged(parentMessageId:isSubscribed:)` only after a successful toggle, so every surface keeps showing the state the server still holds. If you build your own subscription control, publish through `CometChatThreadEvents` and conform to `CometChatThreadEventListener` to stay in step — see [Events](/ui-kit/ios/events).
+
+<Warning>
+Thread listeners are keyed by id, and registering a duplicate id **evicts** the previous listener. Use a distinct id per screen — the kit randomises its own for exactly this reason.
+</Warning>
+
+### Notifications
+
+Whether a subscribed thread actually produces a push notification is governed by the user's notification preferences: the replies preference supports notifying only for **threads the user is subscribed to** (`SUBSCRIBE_TO_SUBSCRIBED_THREADS`). See [Thread Subscription (SDK)](/sdk/ios/thread-subscription#notification-preferences).
+
 ## Feature Matrix
 
 | Feature | Implementation |
@@ -208,6 +328,7 @@ navigationItem.leftBarButtonItem = UIBarButtonItem(
 | Display threaded messages | `CometChatMessageList.set(parentMessage:)` |
 | Send threaded message | `CometChatMessageComposer.set(parentMessageId:)` |
 | Thread header | `CometChatThreadedMessageHeader` |
+| Subscribe / unsubscribe | Action-sheet option + `CometChatMessageHeader` bell in thread mode |
 | Handle blocked user | Remove composer and show a blocked user label |
 
 ## Related Components
@@ -228,8 +349,8 @@ navigationItem.leftBarButtonItem = UIBarButtonItem(
 ## Related Guides
 
 <CardGroup cols={2}>
-  <Card title="Thread Subscription" icon="bell" href="/ui-kit/ios/guide-thread-subscription">
-    Let users subscribe to or unsubscribe from a thread's replies
+  <Card title="Thread Subscription (SDK)" icon="bell" href="/sdk/ios/thread-subscription">
+    The underlying subscription APIs, including building a thread inbox
   </Card>
   <Card title="Threaded Messages Header" icon="heading" href="/ui-kit/ios/threaded-messages-header">
     Customize the thread header component
