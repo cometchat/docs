@@ -11,14 +11,24 @@ This event is **additional**. It does not replace `moderation_engine_approved` o
 
 ## What happens to the message
 
-A failure never changes how a message is handled. Your **On Error** setting decides that, exactly as before.
+A failure never changes how a message is handled. Your error-handling setting
+decides that, exactly as before — **On OpenAI Error** and **On Custom API Error**
+under Moderation → Settings → Advanced Settings.
 
-| On Error setting | The message | Rule evaluation |
-| --- | --- | --- |
-| **Approve** | The condition is treated as no match | Continues to the next condition and rule |
-| **Block** | The rule's action is applied | Stops at the first failure |
+| Dashboard option | Value in `context.setting` | The message | Rule evaluation |
+| --- | --- | --- | --- |
+| **Approve Message** | `approve-message` | The condition is treated as no match | Continues to the next condition and rule |
+| **Block Message** | `drop-message` | The rule's own action is applied | Stops at the first failure |
 
-The setting is configured separately for OpenAI and for Custom API, so one app can approve on an OpenAI failure and block on a Custom API failure at the same time.
+<Note>
+**Block Message applies the rule's configured action, which is not always a block.**
+If the rule's action is to flag for review, a failure flags the message rather than
+blocking it, and `outcome` reads `approved`. The message is only blocked when the
+rule's action list includes blocking.
+</Note>
+
+The two settings are independent, so one app can approve on an OpenAI failure and
+block on a Custom API failure at the same time.
 
 ## The response contract
 
@@ -26,7 +36,7 @@ The setting is configured separately for OpenAI and for Custom API, so one app c
 **There is no status code that means "block this message."** The only way to return a decision is HTTP 200 with a valid JSON body. Any non-2xx response is treated as a failure — CometChat does not read the body of a non-2xx response or infer meaning from its status.
 </Warning>
 
-A 400 from your endpoint does not mean "this content is bad". It means your endpoint did not answer, and your On Error setting takes over.
+A 400 from your endpoint does not mean "this content is bad". It means your endpoint did not answer, and your **On Custom API Error** setting takes over.
 
 ## Failure categories
 
@@ -39,7 +49,7 @@ A 400 from your endpoint does not mean "this content is bad". It means your endp
 | `invalid_response` | The engine answered 2xx, but the body held no readable decision |
 | `not_configured` | No engine was configured to call — for example a Custom API list with no URL |
 
-Time limits are 2 seconds for Custom API and 5 seconds for OpenAI text moderation.
+Time limits are 2 seconds for Custom API and 5 seconds for OpenAI text moderation. OpenAI image moderation scales with the number of images — 5 seconds for the first, 3 seconds for each additional one, capped at 30 seconds.
 
 ## Example payload
 
@@ -126,16 +136,16 @@ A Custom API endpoint that returned HTTP 500 while moderating an image.
 | `httpStatus` | number | a response was received |
 | `responseBody` | string | a response body was received |
 | `timeoutMs` | number | a time limit applied to the call |
-| `validationErrors` | array | `category` is `invalid_response` |
+| `validationErrors` | array of strings | `category` is `invalid_response` — one sentence per validation problem found in the body |
 
 ### `failures[].context`
 
 | Field | Type | Present when |
 | --- | --- | --- |
 | `engine` | string | always — `openai` or `custom_api` |
-| `setting` | string | always — the On Error setting that applied to this engine |
+| `setting` | string | always — `approve-message` or `drop-message`, the error-handling setting that applied to this engine |
 | `rule` | object | always — `id`, `name`, `revisionId` |
-| `condition` | object | always — the condition being evaluated, including `listId` and `threshold` |
+| `condition` | object | always — the condition being evaluated. Fields vary by condition type; commonly `entity`, `operand`, `category`, `operator`, `message`, and for AI conditions `listId` and `threshold` |
 | `request` | object | Custom API failures — `url` (query string removed), `method`, `bodyBytes`, `basicAuthSent` |
 | `providerErrorCode` | string | OpenAI failures that carry an error code |
 | `openaiRequestId` | string | OpenAI failures — quote this when contacting OpenAI support |
