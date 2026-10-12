@@ -63,7 +63,7 @@ When you click **Export**, a "Review Your Export" modal appears (Step 1 of 3). T
 
 | Requirement | Version                                                        |
 | ----------- | -------------------------------------------------------------- |
-| Node.js     | 20.19 or later (22.12+ recommended — the Angular 21 minimum)   |
+| Node.js     | 20.19+, 22.12+ or 24+ (Angular 21's supported ranges)          |
 | npm         | 10 or later                                                    |
 | Angular     | 21.x — already pinned in the export's `package.json`           |
 
@@ -73,7 +73,7 @@ When you click **Export**, a "Review Your Export" modal appears (Step 1 of 3). T
 
 The export is a complete, standalone Angular application. You can run it before integrating anything — this step is optional and can be skipped if you want to go straight to integration.
 
-> 1. Unzip and open the `cometchat-app-angular` folder.
+> 1. Unzip the export (`cometchat-builder-angular.zip`) into a new folder and open it. The archive is packed flat — `package.json` and `src/` are at the top level.
 > 2. Install dependencies:
 >
 > ```bash
@@ -103,8 +103,10 @@ If you already have an Angular application, you do not need the export's shell �
 ### **Step 1: Install Dependencies**
 
 ```bash
-npm install @cometchat/chat-uikit-angular@5.1.0 @cometchat/chat-sdk-javascript@^4.1.13 @cometchat/calls-sdk-javascript@^5.0.0 @cometchat/cards-angular@^1.0.0 @cometchat/cards@^1.0.0 dompurify@^3.3.1
+npm install @cometchat/chat-uikit-angular@5.2.1 @cometchat/chat-sdk-javascript@^4.2.0 @cometchat/calls-sdk-javascript@^5.0.6 @cometchat/cards-angular@^1.0.0 @cometchat/cards@^1.0.0 dompurify@^3.3.1
 ```
+
+These match the versions pinned in the export's `package.json`.
 
 ### **Step 2: Copy the App Code**
 
@@ -119,6 +121,11 @@ Copy these from the export into your project, keeping the paths:
 | `src/app/config/`                   | Your Builder settings and the flags that read them  |
 | `src/app/i18n/`                     | Translations                                        |
 | `src/assets/`                       | Icons used by these components                      |
+| `src/environments/environment.ts`   | Your App ID, region and Auth Key, read by `config/credentials.ts` |
+
+<Note>
+  If your app already has an `environment.ts`, add the `appId`, `region` and `authKey` keys to it instead of replacing it. `config/credentials.ts` imports it from `src/environments/environment`, so keep that path or update the import.
+</Note>
 
 ### **Step 3: Register the Styles and Assets**
 
@@ -139,76 +146,117 @@ In your `angular.json`, add the UI Kit's CSS variables ahead of your own stylesh
   Without the second asset entry the chat renders but every icon is missing.
 </Warning>
 
+The copied components also rely on a few global layout rules. Angular host elements are inline by default, so without them the UI Kit components don't stretch to fill their panels. Copy these blocks from the export's `src/styles.css` into your global stylesheet:
+
+- **UIKit Host Element Layout Fixes** — the `display: flex` / `flex: 1` rules for `cometchat-selector`, `cometchat-tabs`, `cometchat-messages`, `cometchat-threaded-messages`, `cometchat-message-list`, `cometchat-message-composer` and the other host elements
+- **Thread panel** — the `.cometchat-threaded-messages` background override
+- **Skip Navigation Link** — the `.cometchat-skip-link` rules, if you keep the skip link
+
+The `html`, `body` and focus-ring rules in the same file are the standalone app's own page styles. Your app likely has its own, so they're optional.
+
 ### **Step 4: Apply Your Builder Settings at Startup**
 
 In your `app.config.ts`:
 
 ```typescript app.config.ts
 import { ApplicationConfig, inject, provideAppInitializer } from '@angular/core';
-import { builderSettings, SettingsService } from './config';
+import { builderSettings, SettingsService, ThemeStylesService } from './config';
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    provideAppInitializer(() => inject(SettingsService).applySettings(builderSettings)),
+    provideAppInitializer(() => {
+      inject(SettingsService).applySettings(builderSettings);
+      // Writes the Builder's colours and typography out as CSS variables. Nothing
+      // else injects it, so without this line it is never constructed.
+      inject(ThemeStylesService);
+    }),
     // ...your own providers
   ],
 };
 ```
 
+Both injections are required. `SettingsService` applies the feature toggles and `ThemeStylesService` applies the appearance settings. If you omit the second, the app still runs, but the Builder's brand color, text colors, theme and typography are silently ignored.
+
 This is synchronous — the settings are bundled rather than fetched, so there is no window in which the first screen renders against defaults.
+
+<Note>
+  **Angular 18:** `provideAppInitializer` was added in Angular 19. On 18, use the `APP_INITIALIZER` token with the same two injections:
+
+  ```typescript
+  import { APP_INITIALIZER, inject } from '@angular/core';
+
+  {
+    provide: APP_INITIALIZER,
+    multi: true,
+    useFactory: () => {
+      const settings = inject(SettingsService);
+      inject(ThemeStylesService);
+      return () => settings.applySettings(builderSettings);
+    },
+  }
+  ```
+</Note>
 
 ### **Step 5: Initialize CometChat and Log In**
 
 The UI Kit needs two calls before the component renders. In your `main.ts`:
 
 ```typescript main.ts
-import { CometChatUIKit, UIKitSettingsBuilder } from '@cometchat/chat-uikit-angular';
-
-const COMETCHAT_CONSTANTS = {
-  APP_ID: 'YOUR_APP_ID',     // Replace with your App ID
-  REGION: 'YOUR_REGION',     // Replace with your App Region
-  AUTH_KEY: 'YOUR_AUTH_KEY', // Replace with your Auth Key
-};
+import { bootstrapApplication } from '@angular/platform-browser';
+import { CometChatLocalize, CometChatUIKit, UIKitSettingsBuilder } from '@cometchat/chat-uikit-angular';
+import { AppComponent } from './app/app.component';
+import { appConfig } from './app/app.config';
+import { sampleAppTranslations } from './app/i18n';
+import { environment } from './environments/environment';
 
 const settings = new UIKitSettingsBuilder()
-  .setAppId(COMETCHAT_CONSTANTS.APP_ID)
-  .setRegion(COMETCHAT_CONSTANTS.REGION)
-  .setAuthKey(COMETCHAT_CONSTANTS.AUTH_KEY)
+  .setAppId(environment.appId)
+  .setRegion(environment.region)
+  .setAuthKey(environment.authKey)
   .subscribePresenceForAllUsers()
   .setCallingEnabled(true)
   .build();
 
-await CometChatUIKit.init(settings);
-await CometChatUIKit.login('YOUR_UID');
+// init() returns undefined, not a rejected promise, when no app ID is set.
+// Turn that into a rejection so the chain below still bootstraps.
+(CometChatUIKit.init(settings) ?? Promise.reject(new Error('CometChat app ID is not set')))
+  .then(() => CometChatUIKit.login('YOUR_UID'))
+  .then(() => {
+    // The copied components use keys the UI Kit does not ship (for example
+    // create_group_title). Without this the UI shows raw keys.
+    CometChatLocalize.addTranslation(sampleAppTranslations);
+  })
+  .catch((err) => console.error('CometChat init failed:', err))
+  // Bootstrap either way, so a failed init or login doesn't blank the whole host app.
+  .finally(() => bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err)));
 ```
 
+Chain the promises rather than using top-level `await`. Top-level `await` does not build in an app that uses zone.js, which is the default for existing Angular 18–20 apps. It fails with `Top-level await is not available in the configured target environment`. The export's own `src/main.ts` chains them the same way.
+
 <Info>
-  Your app credentials (`APP_ID`, `AUTH_KEY`, `REGION`) are prepopulated in the exported code, in `src/environments/environment.ts`. If you need different credentials, you can find them in the Credentials block of your app's [Overview section](https://app.cometchat.com) on the CometChat Dashboard.
+  Your app credentials (`appId`, `region`, `authKey`) are prepopulated in the export's `src/environments/environment.ts`, which you copied in Step 2. If you need different credentials, you can find them in the Credentials block of your app's [Overview section](https://app.cometchat.com) on the CometChat Dashboard.
 </Info>
 
 CometChat uses a UID (User ID) to identify each user. You can either:
 
-1. **Create new users** on the **[CometChat Dashboard](https://app.cometchat.com)**, via a **[UI Kit method](/ui-kit/angular/methods)**, or **[via the API](https://www.cometchat.com/docs/rest-api/users/create)**.
+1. **Create new users** on the **[CometChat Dashboard](https://app.cometchat.com)**, via a **[UI Kit method](/ui-kit/angular/methods)**, or **[via the API](/rest-api/users/create)**.
 2. **Use pre-generated test users**: `cometchat-uid-1` through `cometchat-uid-5`
 
-To avoid logging in a user who is already signed in, check first:
+To avoid logging in a user who is already signed in, replace the `login` step in the chain above with a check:
 
-```typescript
-import { CometChat } from '@cometchat/chat-sdk-javascript';
-import { CometChatUIKit } from '@cometchat/chat-uikit-angular';
-
-await CometChatUIKit.init(settings);
-
-const loggedInUser = await CometChatUIKit.getLoggedinUser();
-if (!loggedInUser) {
-  await CometChatUIKit.login('YOUR_UID');
-}
+```typescript main.ts
+(CometChatUIKit.init(settings) ?? Promise.reject(new Error('CometChat app ID is not set')))
+  .then(() => CometChatUIKit.getLoggedinUser())
+  .then((user) => user ?? CometChatUIKit.login('YOUR_UID'))
+  .then(() => CometChatLocalize.addTranslation(sampleAppTranslations))
+  .catch((err) => console.error('CometChat init failed:', err))
+  .finally(() => bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err)));
 ```
 
 <Note>
   **Auth Key vs Auth Token**
 
-  Auth Key is perfect for prototyping. For production apps, switch to Auth Token for secure authentication and call `CometChatUIKit.login(authToken)` instead of `CometChatUIKit.login(uid)`. See [Authentication and User Management](/fundamentals/user-auth) for details.
+  Auth Key is perfect for prototyping. For production apps, switch to Auth Token for secure authentication and call `CometChatUIKit.loginWithAuthToken(authToken)` instead of `CometChatUIKit.login(uid)`. See [Authentication and User Management](/fundamentals/user-auth) for details.
 </Note>
 
 ### **Step 6: Render the Component**
@@ -231,9 +279,9 @@ if (!loggedInUser) {
 
 Import it like any other standalone component:
 
-```typescript app.component.ts
+```typescript src/app/app.component.ts
 import { Component } from '@angular/core';
-import { CometChatAppComponent } from './app/cometchat-app.component';
+import { CometChatAppComponent } from './cometchat-app.component';
 
 @Component({
   selector: 'app-root',
@@ -300,6 +348,9 @@ npm start
 | Login fails with an opaque error           | App ID, region or Auth Key is wrong, or the region does not match the app          |
 | A feature you switched off still appears   | `cometchat-builder-settings.json` was not copied, or was replaced after export     |
 | Styling looks unthemed                     | `css-variables.css` is missing from `angular.json`'s `styles`, or listed after your own stylesheet |
+| Builder colors and fonts are ignored       | `ThemeStylesService` is not injected in `provideAppInitializer`                    |
+| UI shows raw keys such as `create_group_title` | `CometChatLocalize.addTranslation(sampleAppTranslations)` was not called after init |
+| Panels don't fill their space              | The host-element layout rules from the export's `src/styles.css` were not copied   |
 
 For issues with the UI Kit itself, see [Angular UI Kit Troubleshooting](/ui-kit/angular/troubleshooting).
 
