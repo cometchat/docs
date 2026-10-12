@@ -1,0 +1,180 @@
+---
+title: "Thread Subscription"
+sidebarTitle: "Thread Subscription"
+description: "Let users subscribe to or unsubscribe from message threads in the CometChat Flutter UI Kit so notifications only reach the people who care."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_chat_uikit` |
+| Import | `import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';` |
+| Purpose | Let users subscribe to or unsubscribe from message threads so notifications only reach the people who care. |
+| Feature gate | `UIKitSettingsBuilder.enableThreadSubscription` — `false` by default |
+| Key widgets | `CometChatMessageList` · `CometChatMessageHeader` · `CometChatThreadedHeader` |
+| Key events | `CometChatMessageEvents.ccThreadSubscriptionChanged` |
+| Prerequisites | Threaded messages working in your app — see [Threaded Messages](/ui-kit/flutter/guide-threaded-messages). |
+| Related | [Thread Subscription (SDK)](/sdk/flutter/thread-subscription) · [Threaded Messages Header](/ui-kit/flutter/threaded-messages-header) |
+
+</Accordion>
+
+<Note>
+**Available from UI Kit v6.1.1.** This feature requires `cometchat_chat_uikit` v6.1.1 or later, which depends on `cometchat_sdk` v5.0.7.
+</Note>
+
+## Overview
+
+Thread subscription gives users control over thread noise: they can **subscribe** to a thread to be notified about its replies, or **unsubscribe** from one to mute it. The server subscribes users automatically when they start a thread, reply in one, or are @-mentioned in one — subscribing explicitly is how they opt in to a thread they have not taken part in yet.
+
+The UI Kit ships three surfaces for the same toggle, kept in sync automatically:
+
+1. A **Subscribe to thread** / **Unsubscribe from thread** option in the message action menu.
+2. A **notification bell** on the thread screen's `CometChatMessageHeader`.
+3. A **subscribe control** in the reply-count row of `CometChatThreadedHeader`.
+
+## Prerequisites
+
+- Threaded messages working in your app — see [Threaded Messages](/ui-kit/flutter/guide-threaded-messages).
+- CometChat UI Kit for Flutter v6.1.1 or later, with Chat SDK v5.0.7 or later.
+
+## Enable the Feature
+
+Thread subscription is **off by default** and is enabled per app through `UIKitSettings` at init time. With the gate off, none of the surfaces render and no subscription request is ever made, whatever the individual visibility flags say.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+UIKitSettings uiKitSettings = (UIKitSettingsBuilder()
+  ..subscriptionType = CometChatSubscriptionType.allUsers
+  ..autoEstablishSocketConnection = true
+  ..region = CometChatConfig.region
+  ..appId = CometChatConfig.appId
+  ..authKey = CometChatConfig.authKey
+  ..enableThreadSubscription = true // opt in — default is false
+).build();
+
+CometChatUIKit.init(
+  uiKitSettings: uiKitSettings,
+  onSuccess: (successMessage) => debugPrint('CometChat Initialized'),
+  onError: (error) => debugPrint('CometChat Initialization error'),
+);
+```
+</Tab>
+</Tabs>
+
+Anywhere you build your own UI around the feature, check the gate the kit reads:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final bool enabled =
+    CometChatUIKit.authenticationSettings?.enableThreadSubscription == true;
+```
+</Tab>
+</Tabs>
+
+## Surface 1: The Message Action Menu Option
+
+With the gate on, [CometChatMessageList](/ui-kit/flutter/message-list) adds **Subscribe to thread** / **Unsubscribe from thread** to the action menu. The label reflects the current state, and the option appears on every message — whether or not it has replies yet. On a thread reply it targets the thread's parent message, so subscribing works from anywhere in the thread.
+
+A successful change shows a toast — "Subscribed. You'll be notified about new replies in this thread." or "Unsubscribed. Notifications are off until you reply or are mentioned."
+
+To hide the option while keeping the rest of the feature:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChatMessageList(
+  user: user,
+  hideThreadSubscriptionOption: true,
+)
+```
+</Tab>
+</Tabs>
+
+## Surface 2: The Header Bell
+
+On the thread screen, pass the thread's root message as `parentMessage` to [CometChatMessageHeader](/ui-kit/flutter/message-header#thread-subscription). The header switches to thread mode and renders a bell in its trailing area that reflects the live subscription state; tapping it toggles the subscription.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChatMessageHeader(
+  user: user,
+  group: group,
+  parentMessage: parentMessage, // thread mode + subscription bell
+)
+```
+</Tab>
+</Tabs>
+
+Set `threadSubscriptionVisibility: false` on the header to hide the bell.
+
+## Surface 3: The Threaded Header Control
+
+[CometChatThreadedHeader](/ui-kit/flutter/threaded-messages-header#thread-subscription) renders a subscribe control in its reply-count row. It flips on tap, ignores taps while a request is in flight, and reverts with a "Couldn't update. Please try again." toast if the server rejects the change.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChatThreadedHeader(
+  parentMessage: parentMessage,
+  loggedInUser: loggedInUser,
+  // hide it when the header bell above already carries the toggle
+  threadSubscriptionVisibility: false,
+)
+```
+</Tab>
+</Tabs>
+
+When both the header bell and this control are on screen, hide one of them so the thread screen carries a single toggle.
+
+## Behavior
+
+- **Unknown state renders as unsubscribed** — a message whose state has not been fetched yet (for example, one that just arrived in real time) shows the "Subscribe" affordance. Subscribing is idempotent, so the extra request is harmless.
+- **Auto-subscribe is reflected** — when the user sends a reply in a thread, is @-mentioned in an incoming message, or receives the first reply to their own message, the kit flips every surface to subscribed without making a request.
+- **Unsubscribing is not sticky** — replying again, or being @-mentioned, re-subscribes the user.
+
+## Cross-Surface Sync
+
+All three surfaces listen to the UI Kit event bus, so toggling in one place updates the others without a refetch. If you build your own control, or keep your own list of followed threads, listen for `ccThreadSubscriptionChanged` on `CometChatMessageEvents` — it carries the parent message ID and the new state:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class _ThreadInboxState extends State<ThreadInbox>
+    with CometChatMessageEventListener {
+  @override
+  void initState() {
+    super.initState();
+    CometChatMessageEvents.addMessagesListener("thread_inbox", this);
+  }
+
+  @override
+  void dispose() {
+    CometChatMessageEvents.removeMessagesListener("thread_inbox");
+    super.dispose();
+  }
+
+  @override
+  void ccThreadSubscriptionChanged(int parentMessageId, bool subscribed) {
+    // An unsubscribe removes the thread from the user's participated list
+    if (!subscribed) _removeThreadRow(parentMessageId);
+  }
+}
+```
+</Tab>
+</Tabs>
+
+`CometChatThreadedHeader.onThreadSubscriptionChange` reports only toggles made on that control; the event covers every surface. See [Events](/ui-kit/flutter/events).
+
+## Notifications
+
+Whether a subscribed thread actually produces a push notification is governed by the user's notification preferences: the replies preference supports notifying only for **threads the user is subscribed to** (`SUBSCRIBE_TO_SUBSCRIBED_THREADS`). See [Thread Subscription (SDK)](/sdk/flutter/thread-subscription#notification-preferences).
+
+## Next Steps & Further Reading
+
+- [Thread Subscription (SDK)](/sdk/flutter/thread-subscription) — the underlying APIs, including fetching the threads a user participates in to build a thread inbox.
+- [Threaded Messages Header](/ui-kit/flutter/threaded-messages-header) — the full component reference.
+- [Message List](/ui-kit/flutter/message-list) — action-menu options.
