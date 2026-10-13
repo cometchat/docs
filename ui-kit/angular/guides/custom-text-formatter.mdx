@@ -1,6 +1,7 @@
 ---
 title: "Custom Text Formatter"
-description: "Extend the CometChatTextFormatter base class to implement custom inline text patterns with regex and callbacks in Angular."
+sidebarTitle: "Custom Text Formatter"
+description: "Build a text color formatter: add a color from the composer toolbar, send it as a token, and render it on every surface that shows the message."
 ---
 
 <Accordion title="AI Integration Quick Reference">
@@ -11,194 +12,332 @@ description: "Extend the CometChatTextFormatter base class to implement custom i
 | Key class | `CometChatTextFormatter` (abstract base class for custom formatters) |
 | Required setup | `CometChatUIKit.init(uiKitSettings)` then `CometChatUIKit.login("UID")` |
 | Purpose | Extend to create custom inline text patterns with regex, styling, and callbacks |
-| Features | Text formatting, customizable styles, dynamic text replacement, input field integration, key event callbacks |
+| Features | Token → HTML rendering, live highlighting in the rich-text composer, toolbar authoring via `toolbarTrailingView` |
 | Related | [ShortCut Formatter](/ui-kit/angular/guides/shortcut-formatter) \| [Mentions Formatter](/ui-kit/angular/guides/mentions-formatter) \| [All Guides](/ui-kit/angular/guides/guides-overview) |
 
 </Accordion>
 
-`CometChatTextFormatter` is an abstract class for formatting text in the message composer and message bubbles. Extend it to build custom formatters — hashtags, keywords, or any regex-based pattern.
+## Goal
 
-| Capability | Description |
-| --- | --- |
-| Text formatting | Auto-format text based on regex patterns and styles |
-| Custom styles | Set colors, fonts, and backgrounds for matched text |
-| Dynamic replacement | Regex-based find-and-replace in user input |
-| Input integration | Real-time monitoring of the composer input field |
-| Key event callbacks | Hooks for `keyUp` and `keyDown` events |
+By the end of this guide you will have a **text color formatter**, working end to end:
 
-<Warning>
-Formatter output is always sanitized (via DOMPurify in the text bubble) before it is rendered — there is no way to bypass sanitization. Make sure your custom HTML is sanitizer-compatible (DOMPurify-safe). Wrapping formatted output in a `<span>` with a CSS class (e.g. `"custom-hashtag"`) is only a styling and identification hook; it does NOT render the output as-is or bypass sanitization.
-</Warning>
+- **Composer:** a toolbar button inserts a color token. The composer tints the token in that color as you type.
+- **Send:** the token is stored on the message as plain text, `{color:#e5484d}text{/color}`.
+- **Display:** the token renders as colored text in message bubbles, the thread header, pinned messages, and message information.
 
----
+Each step below explains one part of the formatter with an excerpt. The [complete code](#complete-code) at the end is ready to drop into your app.
 
-## Steps
+<Note>
+For the full `CometChatTextFormatter` API, see the [Formatter API Reference](#formatter-api-reference) at the end of this page. For the built-in formatters, see the [Mentions](/ui-kit/angular/guides/mentions-formatter), [URL](/ui-kit/angular/guides/url-formatter), and [Hashtag](/ui-kit/angular/guides/hashtag-formatter) guides.
+</Note>
 
-### 1. Import the base class
+## Prerequisites
 
-```typescript
-import { CometChatTextFormatter } from "@cometchat/chat-uikit-angular";
+- Completed the [Integration Guide](/ui-kit/angular/angular-conversation)
+- A chat screen using `cometchat-message-list` and `cometchat-message-composer`
+- The rich-text composer enabled (`[enableRichText]="true"`, `[hideRichTextToolbar]="false"`) — the toolbar button lives in its toolbar
+
+## How It Works
+
+```
+Composer        {color:#e5484d}world{/color}        (token visible, tinted as you type)
+   │  send: the token is sent as plain text
+   ▼
+Message text    {color:#e5484d}world{/color}
+   │  display: format()
+   ▼
+Every surface   <span class="cc-color cc-color-e5484d">world</span>
 ```
 
-### 2. Extend it
+A formatter has two jobs here, and `ColorFormatter` does both:
+
+| Job | Where it runs | Methods |
+|:----|:--------------|:--------|
+| **Display**: token → HTML | Every surface the formatter is registered on | `getRegex`, `format` |
+| **Live highlight**: tint the token as you type | The rich-text composer | The composer runs `getRegex` and `format` on the editor text |
+
+The rich-text composer re-runs your formatters shortly after typing stops. It wraps each match in a span and copies the `class` from the span your `format()` returns, so the token is tinted in place. The token itself stays visible in the composer; it becomes plain colored text once it is sent and rendered.
+
+## Step 1: Token and Display
+
+The token is plain text, so it survives storage and delivery unchanged. `format()` turns it into a span that carries the color as a CSS class.
+
+_File: src/app/formatters/color-formatter.ts (excerpt)_
 
 ```typescript
-class HashTagTextFormatter extends CometChatTextFormatter {
-  readonly id = "hashtag-formatter";
-  override priority = 15;
+import { CometChatTextFormatter } from '@cometchat/chat-uikit-angular';
+
+/** Stored token: `{color:#e5484d}text{/color}` — a 6-digit hex color, then the wrapped text. */
+const TOKEN_REGEX = /\{color:#([0-9a-fA-F]{6})\}([\s\S]*?)\{\/color\}/g;
+
+export class ColorFormatter extends CometChatTextFormatter {
+  readonly id = 'color';
+  override priority = 60;
 
   getRegex(): RegExp {
-    return /\B#(\w+)\b/g;
+    return TOKEN_REGEX;
   }
 
+  /** Token → HTML. Used by every display surface and by the composer's live highlight. */
   format(text: string): string {
-    // Apply formatting logic
-    return text;
-  }
-}
-```
-
-### 3. Implement the regex pattern
-
-Return the regex that matches your target pattern from `getRegex()`:
-
-```typescript
-getRegex(): RegExp {
-  return /\B#(\w+)\b/g;
-}
-```
-
-### 4. Implement the format method
-
-The `format()` method receives the raw text and returns formatted HTML:
-
-```typescript
-format(text: string): string {
-  if (!text) {
-    this.originalText = "";
-    this.formattedText = "";
-    return "";
-  }
-
-  this.originalText = text;
-  this.formattedText = text.replace(
-    this.getRegex(),
-    '<span class="custom-hashtag" style="color: #30b3ff;">#$1</span>'
-  );
-  return this.formattedText;
-}
-```
-
-### 5. Optionally implement shouldFormat
-
-Control when the formatter is applied:
-
-```typescript
-shouldFormat(text: string, message?: CometChat.BaseMessage): boolean {
-  return this.getRegex().test(text);
-}
-```
-
----
-
-## Example
-
-A hashtag formatter used with `cometchat-message-list` and `cometchat-message-composer`.
-
-<Frame>
-  <img src="/images/53d9b07c-custom_hashtag_formatter_web_screens-c7f853c807e9f2fa63e0e1f6245e0a27.png" />
-</Frame>
-
-<Tabs>
-<Tab title="HashTagTextFormatter.ts">
-```typescript expandable
-import { CometChatTextFormatter } from "@cometchat/chat-uikit-angular";
-
-export class HashTagTextFormatter extends CometChatTextFormatter {
-  readonly id = "hashtag-text-formatter";
-  override priority = 15;
-
-  private hashtags: string[] = [];
-
-  getRegex(): RegExp {
-    return /\B#(\w+)\b/g;
-  }
-
-  format(text: string): string {
-    if (!text) {
-      this.originalText = "";
-      this.formattedText = "";
-      this.hashtags = [];
-      this.metadata = { hashtags: this.hashtags };
-      return "";
-    }
-
-    this.originalText = text;
-    this.hashtags = [];
-
-    this.formattedText = text.replace(this.getRegex(), (match, tag) => {
-      this.hashtags.push(`#${tag}`);
-      return `<span class="custom-hashtag" style="color: #5dff05;">#${tag}</span>`;
-    });
-
-    this.metadata = { hashtags: this.hashtags };
+    this.originalText = text ?? '';
+    this.formattedText = this.originalText.replace(
+      new RegExp(TOKEN_REGEX.source, TOKEN_REGEX.flags),
+      (_match, hex: string, inner: string) =>
+        `<span class="cc-color cc-color-${hex.toLowerCase()}">${inner}</span>`,
+    );
     return this.formattedText;
   }
-
-  getHashtags(): string[] {
-    return [...this.hashtags];
-  }
-
-  override reset(): void {
-    super.reset();
-    this.hashtags = [];
-  }
 }
 ```
-</Tab>
 
-<Tab title="Component Usage">
+<Note>
+`format()` must store `originalText`, set `formattedText`, and return the formatted string — the pipeline reads those fields. Keep it fast: it runs on every text message render.
+</Note>
 
-Pass the formatter via the `textFormatters` input on the message list and composer.
+<Note>
+Formatters run in `priority` order, lowest first. The built-in URL formatter runs at 10, mentions at 20, and markdown at 30. At 60, the color token is replaced after the built-in formatters have rendered inside it.
+</Note>
+
+## Step 2: Style the Colors
+
+Each color is a CSS class, not an inline `style`. Angular sanitizes HTML bound through `[innerHTML]` and removes `style` attributes, so an inline color would never reach the message bubble. Classes survive, so define one per color your button offers.
+
+The spans are rendered inside the UI Kit's components, so put the rules in your **global** stylesheet, not in a component's encapsulated styles.
+
+_File: src/styles.css_
+
+```css
+.cc-color-e5484d { color: #e5484d; } /* red */
+.cc-color-30a46c { color: #30a46c; } /* green */
+.cc-color-0090ff { color: #0090ff; } /* blue */
+```
+
+A token whose color has no matching class still renders, just in the default text color.
+
+## Step 3: The Toolbar Button
+
+The composer renders [`toolbarTrailingView`](/ui-kit/angular/components/cometchat-message-composer#toolbar-trailing-view) at the end of the rich-text toolbar, after the built-in groups and an automatically inserted separator. Its template context carries the `composer`, so a button can write into the editor with `insertTextIntoRichTextEditor()`.
+
+_File: src/app/chat/chat.component.html (excerpt)_
+
+```html
+<ng-template #colorButtons let-composer="composer">
+  <span class="color-buttons">
+    @for (color of colors; track color.hex) {
+      <button
+        type="button"
+        class="color-buttons__swatch"
+        [style.color]="color.hex"
+        [attr.aria-label]="'Insert ' + color.name + ' text'"
+        (mousedown)="$event.preventDefault()"
+        (click)="composer.insertTextIntoRichTextEditor('{color:' + color.hex + '}text{/color}')">
+        A
+      </button>
+    }
+  </span>
+</ng-template>
+```
+
+<Note>
+`(mousedown)="$event.preventDefault()"` keeps focus in the editor. Without it, clicking the button moves focus out of the editor before your handler runs.
+</Note>
+
+Offer only the colors you defined classes for in Step 2.
+
+## Step 4: Wire It Into the Composer
+
+Pass the button to `toolbarTrailingView` and the formatter to `textFormatters`. The toolbar — and therefore the trailing view — renders only while the rich-text editor and its toolbar are enabled.
+
+_File: src/app/chat/chat.component.html_
+
+```html
+<cometchat-message-list [user]="user" [textFormatters]="formatters"></cometchat-message-list>
+<cometchat-message-composer
+  [user]="user"
+  [enableRichText]="true"
+  [hideRichTextToolbar]="false"
+  [textFormatters]="formatters"
+  [toolbarTrailingView]="colorButtons">
+</cometchat-message-composer>
+```
+
+<Warning>
+Passing `textFormatters` **replaces** the built-in formatters on that component — it does not add to them. Include the built-ins in the list, or markdown, links, and mentions stop rendering:
+
+```typescript
+formatters = [
+  new CometChatMentionsFormatter(),
+  new CometChatMarkdownFormatter(),
+  new CometChatUrlFormatter(),
+  new ColorFormatter(),
+];
+```
+</Warning>
+
+## Step 5: Register It on Every Surface
+
+A formatter only applies where it is registered. If a surface doesn't have it, readers see the raw `{color:…}` token there. These components color the token:
+
+| Component | What it colors |
+|:----------|:---------------|
+| `cometchat-message-list` | Text bubbles |
+| `cometchat-message-composer` | The token while you type |
+| `cometchat-thread-header` | The parent message at the top of a thread |
+| `cometchat-pinned-messages` | Pinned message rows |
+| `cometchat-message-information` | The message preview |
+| `cometchat-conversations` | The last-message preview in each row |
+| `cometchat-saved-messages` | Saved message rows |
+
+To set one list app-wide instead of per component, use `textFormatters` in [Global Configuration](/ui-kit/angular/customization/global-config) — every component falls back to it when its own input is unset:
+
+_File: src/app/app.config.ts (excerpt)_
+
+```typescript
+{
+  provide: COMETCHAT_GLOBAL_CONFIG,
+  useValue: {
+    textFormatters: [
+      new CometChatMentionsFormatter(),
+      new CometChatMarkdownFormatter(),
+      new CometChatUrlFormatter(),
+      new ColorFormatter(),
+    ],
+  },
+}
+```
+
+A thread panel has its own message list and composer, so register the formatter there too — or rely on the global configuration.
+
+## Complete Code
+
+<Accordion title="src/app/formatters/color-formatter.ts">
 
 ```typescript expandable
-import { Component, OnInit } from "@angular/core";
-import { CometChat } from "@cometchat/chat-sdk-javascript";
-import { CometChatMessageListComponent, CometChatMessageComposerComponent } from "@cometchat/chat-uikit-angular";
-import { HashTagTextFormatter } from "./HashTagTextFormatter";
+import { CometChatTextFormatter } from '@cometchat/chat-uikit-angular';
 
-@Component({
-  selector: "app-message-demo",
-  standalone: true,
-  imports: [CometChatMessageListComponent, CometChatMessageComposerComponent],
-  template: `
-    <cometchat-message-list
-      [user]="chatUser"
-      [textFormatters]="textFormatters">
-    </cometchat-message-list>
-    <cometchat-message-composer
-      [user]="chatUser"
-      [textFormatters]="textFormatters">
-    </cometchat-message-composer>
-  `,
-})
-export class MessageDemoComponent implements OnInit {
-  chatUser: CometChat.User | undefined;
-  textFormatters = [new HashTagTextFormatter()];
+/** Stored token: `{color:#e5484d}text{/color}` — a 6-digit hex color, then the wrapped text. */
+const TOKEN_REGEX = /\{color:#([0-9a-fA-F]{6})\}([\s\S]*?)\{\/color\}/g;
 
-  ngOnInit() {
-    CometChat.getUser("uid").then((user) => {
-      this.chatUser = user;
-    });
+/** Colors the toolbar offers. Each needs a matching `.cc-color-<hex>` rule in styles.css. */
+export const COLORS = [
+  { name: 'red', hex: '#e5484d' },
+  { name: 'green', hex: '#30a46c' },
+  { name: 'blue', hex: '#0090ff' },
+];
+
+export class ColorFormatter extends CometChatTextFormatter {
+  readonly id = 'color';
+  override priority = 60;
+
+  getRegex(): RegExp {
+    return TOKEN_REGEX;
+  }
+
+  format(text: string): string {
+    this.originalText = text ?? '';
+    this.formattedText = this.originalText.replace(
+      new RegExp(TOKEN_REGEX.source, TOKEN_REGEX.flags),
+      (_match, hex: string, inner: string) =>
+        `<span class="cc-color cc-color-${hex.toLowerCase()}">${inner}</span>`,
+    );
+    return this.formattedText;
   }
 }
 ```
-</Tab>
-</Tabs>
 
----
+</Accordion>
 
-## Methods Reference
+<Accordion title="src/styles.css">
+
+```css
+.cc-color-e5484d { color: #e5484d; }
+.cc-color-30a46c { color: #30a46c; }
+.cc-color-0090ff { color: #0090ff; }
+
+.color-buttons { display: inline-flex; gap: 4px; }
+.color-buttons__swatch {
+  border: none;
+  background: transparent;
+  font-weight: 700;
+  cursor: pointer;
+}
+```
+
+</Accordion>
+
+<Accordion title="src/app/chat/chat.component.ts">
+
+```typescript expandable
+import { Component, OnInit } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import {
+  CometChatMessageListComponent,
+  CometChatMessageComposerComponent,
+  CometChatMentionsFormatter,
+  CometChatMarkdownFormatter,
+  CometChatUrlFormatter,
+} from '@cometchat/chat-uikit-angular';
+import { ColorFormatter, COLORS } from '../formatters/color-formatter';
+
+@Component({
+  selector: 'app-chat',
+  standalone: true,
+  imports: [CometChatMessageListComponent, CometChatMessageComposerComponent],
+  templateUrl: './chat.component.html',
+})
+export class ChatComponent implements OnInit {
+  user?: CometChat.User;
+  colors = COLORS;
+  formatters = [
+    new CometChatMentionsFormatter(),
+    new CometChatMarkdownFormatter(),
+    new CometChatUrlFormatter(),
+    new ColorFormatter(),
+  ];
+
+  ngOnInit(): void {
+    CometChat.getUser('uid').then(user => (this.user = user));
+  }
+}
+```
+
+</Accordion>
+
+<Accordion title="src/app/chat/chat.component.html">
+
+```html expandable
+@if (user) {
+  <cometchat-message-list [user]="user" [textFormatters]="formatters"></cometchat-message-list>
+  <cometchat-message-composer
+    [user]="user"
+    [enableRichText]="true"
+    [hideRichTextToolbar]="false"
+    [textFormatters]="formatters"
+    [toolbarTrailingView]="colorButtons">
+  </cometchat-message-composer>
+}
+
+<ng-template #colorButtons let-composer="composer">
+  <span class="color-buttons">
+    @for (color of colors; track color.hex) {
+      <button
+        type="button"
+        class="color-buttons__swatch"
+        [style.color]="color.hex"
+        [attr.aria-label]="'Insert ' + color.name + ' text'"
+        (mousedown)="$event.preventDefault()"
+        (click)="composer.insertTextIntoRichTextEditor('{color:' + color.hex + '}text{/color}')">
+        A
+      </button>
+    }
+  </span>
+</ng-template>
+```
+
+</Accordion>
+
+## Formatter API Reference
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -213,43 +352,10 @@ export class MessageDemoComponent implements OnInit {
 | `shouldFormat(text, message?)` | `method` | Returns whether this formatter should process the given text (default: true) |
 
 <Warning>
-Formatters are applied in priority order (lower priority number = earlier in pipeline). The built-in URL formatter uses priority 10, mentions uses 20. Choose your custom formatter's priority accordingly.
+Formatter output is always sanitized before it is rendered — there is no way to bypass sanitization. Make sure your HTML is sanitizer-compatible: use a `<span>` with CSS classes rather than inline styles.
 </Warning>
 
----
-
-## Override Methods
-
 <Tabs>
-<Tab title="format">
-
-The core method that applies formatting. Store original text, apply transformations, store metadata, and return the result.
-
-```typescript
-format(text: string): string {
-  if (!text) {
-    this.originalText = "";
-    this.formattedText = "";
-    return "";
-  }
-  this.originalText = text;
-  this.formattedText = this.customLogicToFormatText(text);
-  return this.formattedText;
-}
-```
-</Tab>
-
-<Tab title="getRegex">
-
-Returns the regex pattern used to detect formattable content.
-
-```typescript
-getRegex(): RegExp {
-  return /\B#(\w+)\b/g;
-}
-```
-</Tab>
-
 <Tab title="shouldFormat">
 
 Optionally override to conditionally skip formatting.
@@ -266,7 +372,7 @@ shouldFormat(text: string, message?: CometChat.BaseMessage): boolean {
 
 Override to clear custom state alongside the base state.
 
-```typescript expandable
+```typescript
 override reset(): void {
   super.reset();
   // Clear any custom state
@@ -276,116 +382,9 @@ override reset(): void {
 </Tab>
 </Tabs>
 
----
-
-## Giving Users a Way to Author It
-
-A formatter has two halves. Everything above is the **rendering** half — turning a marker in the raw message text into styled output wherever the message is displayed. The other half is **authoring**: giving users a way to produce that marker in the first place.
-
-The composer's [`toolbarTrailingView`](/ui-kit/angular/components/cometchat-message-composer#toolbar-trailing-view) is where that control goes. It renders at the trailing end of the rich-text formatting toolbar, after the built-in groups and an automatically inserted separator, and its template context carries the composer itself so your button can write into the editor.
-
-### 1. The formatter
-
-Say the marker is `{color=VALUE}…{/color}`. The formatter turns it into a colored `<span>`:
-
-_File: src/app/formatters/color-formatter.ts_
-
-```typescript expandable
-import { CometChatTextFormatter } from '@cometchat/chat-uikit-angular';
-
-/** Matches {color=#e5484d}text{/color} — a CSS color, then the wrapped text. */
-const COLOR_REGEX = /\{color=(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\}([\s\S]*?)\{\/color\}/g;
-
-export class ColorFormatter extends CometChatTextFormatter {
-  readonly id = 'color-formatter';
-  override priority = 30; // after the URL (10) and mentions (20) formatters
-
-  getRegex(): RegExp {
-    return COLOR_REGEX;
-  }
-
-  format(text: string): string {
-    this.originalText = text ?? '';
-    this.formattedText = this.originalText.replace(
-      this.getRegex(),
-      (_match, color: string, inner: string) => `<span style="color: ${color}">${inner}</span>`,
-    );
-    return this.formattedText;
-  }
-}
-```
-
-<Note>
-  `format()` must store `originalText`, set `formattedText`, and return the formatted string — the pipeline reads those fields. Keep it fast: it runs on every text message render.
-</Note>
-
-### 2. The toolbar button
-
-Put the button in `toolbarTrailingView` and let it write the marker through the `composer` handle the template context provides.
-
-_File: src/app/chat/chat.component.html_
-
-```html expandable
-<cometchat-message-composer
-  [group]="group"
-  [enableRichText]="true"
-  [hideRichTextToolbar]="false"
-  [textFormatters]="formatters"
-  [toolbarTrailingView]="colorButton">
-</cometchat-message-composer>
-
-<ng-template #colorButton let-composer="composer">
-  <button
-    type="button"
-    class="my-color-button"
-    aria-label="Color selected text"
-    (mousedown)="$event.preventDefault()"
-    (click)="composer.insertTextIntoRichTextEditor('{color=#e5484d}text{/color}')">
-    🎨
-  </button>
-</ng-template>
-```
-
-<Note>
-  `(mousedown)="$event.preventDefault()"` is the detail that matters. Without it, clicking the button moves focus out of the editor and clears the selection before your handler runs.
-</Note>
-
-The toolbar — and therefore the trailing view — renders only while the rich-text editor and its toolbar are enabled, so pass `[enableRichText]="true"` with `[hideRichTextToolbar]="false"`.
-
-### 3. Register it on every surface
-
-The marker only becomes color where a surface actually runs the formatter. Register the same formatter everywhere the message can appear:
-
-```html expandable
-<cometchat-message-list [group]="group" [textFormatters]="formatters"></cometchat-message-list>
-<cometchat-conversations [textFormatters]="formatters"></cometchat-conversations>
-<cometchat-pinned-messages [group]="group" [textFormatters]="formatters"></cometchat-pinned-messages>
-<cometchat-saved-messages [textFormatters]="formatters"></cometchat-saved-messages>
-```
-
-<Warning>
-A formatter applies only where it is registered. Add `textFormatters` to the composer but not the message list and the author sees color while readers see raw `{color=…}` text. To set one list app-wide instead of per component, use `textFormatters` in [Global Configuration](/ui-kit/angular/customization/global-config) — every component falls back to it when its own input is unset.
-</Warning>
-
-### How it round-trips
-
-The marker is plain text on the message, so it survives storage and delivery untouched. Each display surface turns it into color independently, through the formatter you registered there.
-
----
-
 ## Next Steps
 
-<CardGroup cols={2}>
-  <Card title="Mentions Formatter" href="/ui-kit/angular/guides/mentions-formatter">
-    Add @mentions with styled tokens.
-  </Card>
-  <Card title="Message Composer" href="/ui-kit/angular/components/cometchat-message-composer">
-    Customize the message input component.
-  </Card>
-  <Card title="All Guides" href="/ui-kit/angular/guides/guides-overview">
-    Browse all feature and formatter guides.
-  </Card>
-  <Card title="ShortCut Formatter" href="/ui-kit/angular/guides/shortcut-formatter">
-    Implement text expansion shortcuts.
-  </Card>
-</CardGroup>
+- [Message Composer → Toolbar Trailing View](/ui-kit/angular/components/cometchat-message-composer#toolbar-trailing-view): the toolbar slot in detail
+- [Global Configuration](/ui-kit/angular/customization/global-config): set `textFormatters` once for every component
+- [Threaded Messages](/ui-kit/angular/guides/threaded-messages): building the thread panel
+- [Mentions Formatter](/ui-kit/angular/guides/mentions-formatter): add @mentions with styled tokens
