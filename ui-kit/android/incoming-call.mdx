@@ -1,9 +1,13 @@
 ---
 title: "Incoming Call"
-description: "Full-screen incoming call banner with caller avatar, name, call type indicator, and accept/reject buttons."
+description: "Deprecated incoming call screen, kept for apps that draw the ring screen themselves; incoming calls now ring through the Push Notifications SDK."
 ---
 
-`CometChatIncomingCall` renders when the logged-in user receives an incoming voice or video call, displaying the caller's information and providing accept/reject controls.
+<Warning>
+**Deprecated.** Incoming calls now ring through the CometChat Push Notifications SDK, which draws its own incoming-call screen in every app state, including when the app is not running. `CometChatIncomingCall` is kept only for apps that opt into drawing the ring screen themselves with `PNConfiguration.setIncomingCallActivity`. New integrations need no incoming-call component: see [Calling Integration](/ui-kit/android/calling-integration).
+</Warning>
+
+`CometChatIncomingCall` shows the caller's avatar, name and call type with accept and decline controls. In the current ringing flow the Push SDK owns the ringtone, the ring timeout, the pre-warmed session and the decline; this component only draws the screen and forwards Accept and Decline to the Push SDK.
 
 <Frame>
   <img src="/images/ef9ae7b8-Incoming_call-060686ee2b9aa89ad7c163fc8290d390.png" />
@@ -11,62 +15,78 @@ description: "Full-screen incoming call banner with caller avatar, name, call ty
 
 ---
 
-## Where It Fits
+## When to use it
 
-`CometChatIncomingCall` is a call-handling component. It renders the incoming call screen and transitions to the ongoing call screen when the user accepts. Wire it to `CometChatOngoingCallActivity` after the user accepts the call.
-
-<Tabs>
-<Tab title="Kotlin (XML Views)">
-
-```xml activity_call.xml lines
-<com.cometchat.uikit.kotlin.presentation.incomingcall.CometChatIncomingCall
-    android:id="@+id/incoming_call"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent" />
-```
-
-```kotlin lines
-val incomingCall = findViewById<CometChatIncomingCall>(R.id.incoming_call)
-incomingCall.setCall(call)
-```
-
-</Tab>
-<Tab title="Jetpack Compose">
-
-```kotlin lines
-CometChatIncomingCall(
-    call = call
-)
-```
-
-</Tab>
-</Tabs>
+| You want | Do this |
+| --- | --- |
+| The default incoming-call screen | Nothing. The Push SDK's screen is themed by the `cometchat_pn_call_*` colour resources; the UI Kit already matches them to its palette. See [Styling the incoming-call screen](/ui-kit/android/calling-integration#styling-the-incoming-call-screen) |
+| The UI Kit's incoming-call screen instead of the Push SDK's | Register the UI Kit's `CometChatCallActivity` as the ring screen (below). You get this component's view slots and style |
+| A fully custom ring screen | Your own activity with the Push SDK's `CometChatCallNotifications` API; see [Your own incoming-call screen](/calls/android/voip-calling#your-own-incoming-call-screen) |
 
 ---
 
-## Quick Start
+## Quick Start: the UI Kit screen as the ring screen
+
+Register `CometChatCallActivity` with the Push SDK. It reads the ringing call from the intent, shows over the lock screen, hosts `CometChatIncomingCall`, asks for the microphone and camera on Accept, answers and declines through the Push SDK, and closes itself when the call ends elsewhere.
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
 
-Add to your layout XML:
+```kotlin lines
+import com.cometchat.uikit.kotlin.calls.CometChatCallActivity
+import com.cometchat.uikit.kotlin.presentation.ongoingcall.ui.CometChatOngoingCallActivity
 
-```xml lines
-<com.cometchat.uikit.kotlin.presentation.incomingcall.CometChatIncomingCall
-    android:id="@+id/incoming_call"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent" />
+PNConfiguration.Builder(APP_ID, REGION)
+    .setProviderId(PROVIDER_ID)
+    .setAnswerActivity(CometChatOngoingCallActivity::class.java)
+    .setIncomingCallActivity(CometChatCallActivity::class.java)
+    .build()
 ```
 
-Set the `Call` object — this is required:
+</Tab>
+<Tab title="Jetpack Compose">
 
 ```kotlin lines
-override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    setContentView(R.layout.layout_activity)
+import com.cometchat.uikit.compose.calls.CometChatCallActivity
+import com.cometchat.uikit.compose.presentation.ongoingcall.ui.CometChatOngoingCallActivity
 
-    val incomingCall = findViewById<CometChatIncomingCall>(R.id.incoming_call)
-    incomingCall.setCall(call)
+PNConfiguration.Builder(APP_ID, REGION)
+    .setProviderId(PROVIDER_ID)
+    .setAnswerActivity(CometChatOngoingCallActivity::class.java)
+    .setIncomingCallActivity(CometChatCallActivity::class.java)
+    .build()
+```
+
+</Tab>
+</Tabs>
+
+### Embedding the component yourself
+
+If you host the component in your own ring activity, that activity must also tell the Push SDK when it opens and closes, so the SDK can dismiss it when the caller cancels or the ring times out. `CallRingingUtils` wraps the Push SDK calls and converts the push's call into the `Call` the component takes.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+class MyRingActivity : AppCompatActivity() {
+    private var sessionId: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true); setTurnScreenOn(true)
+        setContentView(R.layout.activity_ring)
+
+        val call = CallRingingUtils.getCall(intent) ?: return finish()
+        sessionId = call.sessionId
+        CallRingingUtils.onRingScreenOpened(call.sessionId) { finish() }
+
+        findViewById<CometChatIncomingCall>(R.id.incoming_call).setCall(call)
+    }
+
+    override fun onDestroy() {
+        sessionId?.let { CallRingingUtils.onRingScreenClosed(it) }
+        super.onDestroy()
+    }
 }
 ```
 
@@ -74,18 +94,30 @@ override fun onCreate(savedInstanceState: Bundle?) {
 <Tab title="Jetpack Compose">
 
 ```kotlin lines
-@Composable
-fun IncomingCallScreen() {
-    CometChatIncomingCall(
-        call = call
-    )
+class MyRingActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true); setTurnScreenOn(true)
+        val call = CallRingingUtils.getCall(intent) ?: return finish()
+        CallRingingUtils.onRingScreenOpened(call.sessionId) { finish() }
+        setContent {
+            CometChatTheme {
+                CometChatIncomingCall(call = call, onRejectClick = { finish() })
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        CallRingingUtils.getCall(intent)?.let { CallRingingUtils.onRingScreenClosed(it.sessionId) }
+        super.onDestroy()
+    }
 }
 ```
 
 </Tab>
 </Tabs>
 
-Prerequisites: CometChat SDK initialized with `CometChatUIKit.init()`, a user logged in, and the UI Kit dependency added.
+Prerequisites: `CometChatUIKit.init()` with `setEnableCalling(true)`, the Push SDK initialised with `setAnswerActivity(CometChatOngoingCallActivity::class.java)`, and a user logged in.
 
 ---
 
@@ -95,7 +127,7 @@ Prerequisites: CometChat SDK initialized with `CometChatUIKit.init()`, a user lo
 
 #### `onAcceptClick`
 
-Fires when the user taps the accept button.
+Fires when the user taps Accept. By default the component answers through the Push SDK (`CometChatCallNotifications.answer`), which stops the ring and opens the answer activity (`CometChatOngoingCallActivity`), and the ring screen is closed by the Push SDK. Provide the callback to replace that behaviour. Ask for the microphone (and camera) before answering: the Push SDK only prompts for its notification's Answer action.
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
@@ -112,7 +144,9 @@ incomingCall.setOnAcceptClickListener {
 ```kotlin lines
 CometChatIncomingCall(
     call = call,
-    onAcceptClick = { /* custom accept logic */ }
+    onAcceptClick = { /* custom accept logic */ },
+    // Runs before the default answer; call proceed() once permissions are granted
+    onAcceptRequested = { proceed -> requestMicAndCamera { proceed() } }
 )
 ```
 
@@ -121,7 +155,7 @@ CometChatIncomingCall(
 
 #### `onRejectClick`
 
-Fires when the user taps the reject button.
+Fires when the user taps Decline. By default the component declines through the Push SDK (`CometChatCallNotifications.decline`), which sends `rejected`, or `busy` when the user is in another call, through a queue that survives the process dying. Provide the callback to replace that behaviour.
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
@@ -178,15 +212,16 @@ CometChatIncomingCall(
 
 | Event | Fires when | Payload |
 | --- | --- | --- |
-| `ccCallAccepted` | A call is accepted | `Call` |
-| `ccCallRejected` | A call is rejected | `Call` |
+| `ccCallAccepted` | Accept tapped on this screen | `Call` |
+| `ccCallRejected` | Decline tapped on this screen | `Call` |
 
 ### SDK Events (Real-Time, Automatic)
 
-| SDK Listener | Internal behavior |
+| Calls SDK listener | Internal behavior |
 | --- | --- |
-| `onIncomingCallReceived` | Triggers the incoming call screen display |
-| `onIncomingCallCancelled` | Dismisses the incoming call screen |
+| `IncomingCallListener.onIncomingCallEnded` for this session | The ring ended elsewhere (caller cancelled, answered on another device, timed out): `rejectedCall` is emitted so the screen closes |
+
+The component does not open itself on an incoming call. The Push SDK launches the registered ring activity; the Chat SDK's `CallListener` is deprecated and not used.
 
 ---
 
@@ -198,8 +233,9 @@ CometChatIncomingCall(
 | `setOnAcceptClickListener { }` | `onAcceptClick = { }` | Override accept button behavior |
 | `setOnRejectClickListener { }` | `onRejectClick = { }` | Override reject button behavior |
 | `setOnError { }` | `onError = { }` | Error callback |
-| `setDisableSoundForCalls(true)` | `disableSoundForCalls = true` | Disable incoming call ringtone |
-| `setCustomSoundForCalls(R.raw.tone)` | `customSoundForCalls = R.raw.tone` | Custom ringtone |
+| — | `onAcceptRequested = { proceed -> }` | Compose only: gate the answer (e.g. a permission prompt), then call `proceed()` |
+| `setDisableSoundForCalls(true)` | `disableSoundForCalls = true` | No effect when the Push SDK is present: the Push SDK plays the ringtone and the component stays silent to avoid two ringtones |
+| `setCustomSoundForCalls(R.raw.tone)` | `customSoundForCalls = R.raw.tone` | Only used without the Push SDK calls module |
 
 ---
 
@@ -399,6 +435,8 @@ CometChatIncomingCall(
 <Frame>
   <img src="/images/d771544a-incoming_call_styled-4a37ea9ee6fd91529ac0dc12725739a7.png" />
 </Frame>
+
+`CometChatIncomingCallStyle` is deprecated with the component; it only styles this screen. The Push SDK's own screen is themed by the `cometchat_pn_call_*` resources instead.
 
 See [Component Styling](/ui-kit/android/component-styling) for the full reference.
 
