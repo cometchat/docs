@@ -8,7 +8,7 @@ description: "CometChat push notifications and VoIP calls in React Native apps o
 | Field | Value |
 | --- | --- |
 | Platform | Android (FCM) |
-| Package | `@cometchat/push-notifications-react-native` |
+| Package | `@cometchat/push-notifications-react-native` — plus `@cometchat/push-notifications-voip-react-native` if the app has calling |
 | Key APIs | `CometChatPushNotifications.init()`, `onNotificationTap()`, `onCallAccepted()`, `onCallEnded()`, `onMessageReceived()`, `unregister()`, `registerBackgroundCallTask()`, `CometChatPNHelper.requestNotificationPermission()` |
 | Push Platform | `FCM_REACT_NATIVE_ANDROID`, registered by `init()` with `fcmProviderId` |
 | Native setup | `google-services.json` + Google Services plugin, `minSdkVersion 24`, an `ic_notification` drawable. No manifest or Kotlin changes |
@@ -91,6 +91,8 @@ export const AppCredentials = {
 
 ```bash
 npm install @cometchat/push-notifications-react-native
+# plus, if your app has calling:
+npm install @cometchat/push-notifications-voip-react-native
 ```
 
 <Warning>
@@ -107,7 +109,7 @@ The JavaScript below is the same for Android and iOS — one set of files serves
 
 ```js index.js lines
 import { AppRegistry } from 'react-native';
-import { registerBackgroundCallTask } from '@cometchat/push-notifications-react-native';
+import { registerBackgroundCallTask } from '@cometchat/push-notifications-voip-react-native';
 import App from './App';
 import { name as appName } from './app.json';
 
@@ -221,7 +223,7 @@ export function setupPushOnLogin(): () => void {
       apnsProviderId: AppCredentials.apnsProviderId, // iOS (APNs device + VoIP)
       notificationSmallIcon: 'ic_notification', // Android status-bar icon
       showInForeground: true, // one notification while the app is open, too
-      ringInForeground: false, // your app rings while it's open — see src/calls/IncomingCall.tsx
+      ringInForeground: true, // the VoIP package rings while the app is open too
     });
   };
   start().catch(error => console.log('Push setup failed:', error));
@@ -328,55 +330,26 @@ whatever was on screen before — not to the conversation the reply belongs to. 
 conversation underneath, push it first and then the thread, or use a reset that builds both entries.
 </Note>
 
-**`src/calls/IncomingCall.tsx`** — `init()` above sets `ringInForeground: false`, so **while the app is open the package doesn't ring: your app must show its own incoming-call screen**, or calls won't ring at all while it's open. Calls reach an open app over the Chat SDK's connection; this component listens for them and shows the UI Kit's `CometChatIncomingCall`, which accepts the call and shows the call screen itself:
+**Incoming calls.** Nothing in this guide rings a call. Since Push Notifications SDK 2.0, ringing is owned by `@cometchat/push-notifications-voip-react-native`, which rings in every app state — foreground, background and killed — and replaces the `CometChat.addCallListener` + `CometChatIncomingCall` pattern earlier versions of this guide described.
 
-```tsx src/calls/IncomingCall.tsx lines
-import React, { useEffect, useState } from 'react';
-import { CometChat } from '@cometchat/chat-sdk-react-native';
-import { CometChatIncomingCall, CometChatUIEventHandler } from '@cometchat/chat-uikit-react-native';
-
-const LISTENER_ID = 'incoming-call';
-
-/**
- * Rings for a call while the app is open — init() sets ringInForeground: false, so the
- * package leaves this to the app. CometChatIncomingCall accepts the call and shows the call
- * screen itself; this component shows it when a call arrives and removes it when the call is
- * declined, cancelled by the caller, or ends.
- */
-export function IncomingCall() {
-  const [call, setCall] = useState<CometChat.Call | null>(null);
-
-  useEffect(() => {
-    CometChat.addCallListener(
-      LISTENER_ID,
-      new CometChat.CallListener({
-        onIncomingCallReceived: (incoming: CometChat.Call) => setCall(incoming),
-        onIncomingCallCancelled: () => setCall(null), // the caller hung up while it was ringing
-      }),
-    );
-    // An accepted call ended.
-    CometChatUIEventHandler.addCallListener(LISTENER_ID, { ccCallEnded: () => setCall(null) });
-
-    return () => {
-      CometChat.removeCallListener(LISTENER_ID);
-      CometChatUIEventHandler.removeCallListener(LISTENER_ID);
-    };
-  }, []);
-
-  if (!call) return null;
-  return <CometChatIncomingCall call={call} onDecline={() => setCall(null)} />;
-}
+```bash
+npm install @cometchat/push-notifications-voip-react-native
 ```
 
-<Tip>
-Your app already shows an incoming-call screen while it's open? Keep it and skip this file. Don't want one? Set `ringInForeground: true` — the default — and skip this file: the package then rings with the system call UI while the app is open, too.
-</Tip>
+```ts
+import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
 
-<Note>
-Not using the UI Kit? Delete the `@cometchat/chat-uikit-react-native` import and the `emitMessageEvent` block in `markConversationRead`, point `SCREENS` and the route params at your own screens, and in `logout.ts` call `CometChat.logout()` instead of `CometChatUIKit.logout()`. For calls while the app is open, set `ringInForeground: true`, or build your own incoming-call screen on `CometChat.addCallListener` in place of `IncomingCall.tsx`.
-</Note>
+await CometChatVoipNotifications.init();          // AFTER the core init, with NO config
+CometChatVoipNotifications.onCallAccepted(call => navigate(SCREENS.ongoingCall, call));
+```
 
-**`App.tsx`** — call `usePushOnLogin()` once, in a component that renders **after** CometChat is initialized, pass `navigationRef` to your `NavigationContainer`, and render `<IncomingCall />` **before** your navigator:
+<Warning>
+Passing a config to `CometChatVoipNotifications.init()` in a chat app re-runs the core initialisation and drops every chat option set above, including `notificationSmallIcon` and the channel settings. Only a calls-only app passes its config there.
+</Warning>
+
+See [Push Ringing](/calls/react-native/voip-calling) for the whole calling setup, [Ringing](/calls/react-native/ringing) for placing and answering calls, and [Migrating from Legacy Ringing](/calls/react-native/migrating-from-legacy-ringing) if your app still uses `CometChat.addCallListener`.
+
+**`App.tsx`** — call `usePushOnLogin()` once, in a component that renders **after** CometChat is initialized, pass `navigationRef` to your `NavigationContainer`:
 
 ```tsx App.tsx lines
 import React, { useEffect, useState } from 'react';
@@ -387,7 +360,6 @@ import { CometChatUIKit, UIKitSettings } from '@cometchat/chat-uikit-react-nativ
 import { AppCredentials } from './src/AppCredentials';
 import { navigationRef } from './src/navigation/navigationRef';
 import { usePushOnLogin } from './src/push/pushNotifications';
-import { IncomingCall } from './src/calls/IncomingCall';
 
 export default function App() {
   const [initialized, setInitialized] = useState(false);
@@ -414,14 +386,13 @@ function Root() {
 
   return (
     <NavigationContainer ref={navigationRef}>
-      <IncomingCall /> {/* before your navigator: it shows at the top, and an accepted call fills the screen */}
       <RootStack /> {/* your existing navigator */}
     </NavigationContainer>
   );
 }
 ```
 
-`usePushOnLogin()` starts push after a fresh login **and** when a session is restored on launch, and removes the handlers when the user logs out — so a later login never registers them twice. `<IncomingCall />` goes before your navigator because the UI Kit's incoming-call screen isn't a modal: rendered first, it shows at the top of the screen, and an accepted call fills the screen.
+`usePushOnLogin()` starts push after a fresh login **and** when a session is restored on launch, and removes the handlers when the user logs out — so a later login never registers them twice.
 
 ### 3.3 Align dependencies and configuration
 
@@ -430,7 +401,7 @@ function Root() {
   - `fcmProviderId` (Android) and `apnsProviderId` (iOS) — from step 1.
   - `notificationSmallIcon` — the Android status-bar icon.
   - `showInForeground` (default `false`) — show chat notifications while the app is open.
-  - `ringInForeground` (default `true`) — ring with the system call UI while the app is open. With `false`, a call that arrives while the app is open is left to your app, so your app must show its own incoming-call screen — `IncomingCall.tsx` above. With `false` and no such screen, calls don't ring while the app is open.
+  - `ringInForeground` (default `true`) — ring with the system call UI while the app is open. With `false`, a call that arrives while the app is open is left to your app, which must then draw its own incoming-call screen on `CometChatVoipNotifications.onCallRinging`; with `false` and no such screen, calls don't ring while the app is open. See [Your own incoming-call screen](/calls/react-native/voip-calling#your-own-incoming-call-screen).
   - `voip` (default `true`) — `false` turns calls off for a chat-only app: no call rings, and iOS doesn't register the VoIP token.
   - `androidChannelId`, `androidChannelName` — the Android notification channel.
 
@@ -610,7 +581,7 @@ await CometChatPushNotifications.registerToken('fcm', token); // or 'apns' / 'vo
 
 | Event | What happens |
 | --- | --- |
-| **Call push arrives** | App in the background or killed: the package starts a phone-call foreground service with the full-screen ringing screen, over the lock screen too. App open: it rings the same way unless `ringInForeground` is `false` — then your app's `IncomingCall` screen rings instead. The ring stops itself after 45 seconds if nothing ends it. |
+| **Call push arrives** | App in the background or killed: the package starts a phone-call foreground service with the full-screen ringing screen, over the lock screen too. App open: it rings the same way unless `ringInForeground` is `false` — then ringing is left to your app. The ring stops itself after 45 seconds if nothing ends it. |
 | **Accept** | The app opens and the package accepts the call through the Chat SDK; then `onCallAccepted` fires and `openCallScreen` opens your call screen. |
 | **Decline** | The package rejects the call through the Chat SDK. In a **fully killed** app the background task registered in `index.js` does it, so the caller sees the call rejected right away. |
 | **Caller hangs up** | A cancel push stops the ring and `onCallEnded` fires; `endCall` tears the call down and leaves the call screen. |
@@ -748,7 +719,8 @@ Use physical devices and a **release** build: a debug build loads its JavaScript
 | Declining a call in a killed app doesn't reject it | `registerBackgroundCallTask()` is called at module scope in `index.js`, and the app has been opened and logged in once since installing (so `init()` saved the Chat SDK settings). Test on a release build. |
 | Token registration errors | The provider IDs match the dashboard exactly, and `usePushOnLogin()` is rendered after CometChat is initialized. |
 | No notification while the app is open | Expected with `showInForeground: false` (the default) — set it to `true`. For calls, `ringInForeground` decides whether the system call UI or your in-app screen rings. |
-| A call doesn't ring while the app is open | `ringInForeground` is `false`, so your app must ring: render `<IncomingCall />` before your navigator (see *Wire the entry points*), or set `ringInForeground: true`. |
+| A call never rings at all, in any state | `@cometchat/push-notifications-voip-react-native` is not installed, or `CometChatVoipNotifications.init()` was never called — `getDiagnostics()` reports `voip: false`. |
+| A call doesn't ring while the app is open | `ringInForeground` is `false`, so your app must ring: draw your own screen on `onCallRinging`, or set `ringInForeground: true`. |
 | Tapping a notification opens the app but not the conversation | `navigationRef` is passed to your `NavigationContainer`, navigation goes through `navigate()` from `navigationRef.ts`, and the route names in `SCREENS` match your navigator. |
 | Thread reply opens an empty thread screen | The thread screen is given the user or group as well as the parent message, as `openFromNotification` does. |
 | Handlers fire twice after logging out and in | Use `usePushOnLogin()` rather than calling `setupPushOnLogin()` directly — its cleanup must run on logout. |
