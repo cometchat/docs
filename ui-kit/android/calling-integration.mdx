@@ -5,7 +5,7 @@ description: "Add voice and video calling to your Android UI Kit application usi
 
 ## Overview
 
-With calling enabled, the UI Kit places calls from the message header and call logs, shows the outgoing call screen, and hosts the in-call screen. Incoming calls ring through the CometChat Push Notifications SDK: it shows the call notification and the full-screen incoming-call screen, plays the ringtone, and opens the UI Kit's call screen when the user answers, with the app in the foreground, in the background or not running at all.
+With calling enabled, the UI Kit places calls from the message header and call logs, shows the outgoing call screen, and hosts the in-call screen. Incoming calls ring through the CometChat Push Notifications SDK: it shows the call notification and the full-screen incoming-call screen, plays the ringtone, and opens your answer activity when the user answers, which hands the call to the UI Kit's call screen, with the app in the foreground, in the background or not running at all.
 
 <Info>
 Make sure you've completed the [Getting Started](/ui-kit/android/getting-started) guide before proceeding.
@@ -23,13 +23,13 @@ sequenceDiagram
     BE-->>P: Push (initiated)
     P->>P: Rings: notification, full-screen screen, ringtone
     P-->>A: Callee's device reached → "ringing…"
-    P->>U: Answer → mic/camera prompt → CometChatOngoingCallActivity
+    P->>U: Answer → mic/camera prompt → your answer activity → CometChatOngoingCallActivity
     U->>U: joinSession
     U-->>A: Callee joined → caller joins
     Note over A,U: In call. Hang-up leaves the session on both sides.
 ```
 
-What you write: the UI Kit settings with calling enabled, the Push SDK configuration, a three-line Firebase service, and the manifest permissions. There is no call listener to register and no incoming-call UI to show.
+What you write: the UI Kit settings with calling enabled, the Push SDK configuration, a small answer activity, a three-line Firebase service, and the manifest permissions. There is no call listener to register and no incoming-call UI to show.
 
 ## Step 1: Dependencies
 
@@ -110,38 +110,98 @@ Run this in `Application.onCreate` from stored credentials, not only after a scr
 
 ## Step 3: Configure push ringing
 
-Initialise the Push Notifications SDK once, after the UI Kit (the FCM provider id and the answer activity are all it needs). `CometChatOngoingCallActivity` is the UI Kit's in-call screen; registered as the answer activity it reads the answered call from its intent and joins.
+Initialise the Push Notifications SDK once, after the UI Kit. It needs the FCM provider id and an answer activity: the screen the Push SDK opens when the user taps **Answer**.
+
+```kotlin
+private fun initPushNotifications() {
+    val config = PNConfiguration.Builder(APP_ID, REGION)
+        .setProviderId(PROVIDER_ID)                         // FCM provider id from the dashboard
+        .setAnswerActivity(CallAnswerActivity::class.java)  // opened on Answer, call in its intent
+        .setNotificationSmallIcon(R.drawable.ic_notification)
+        .build()
+    CometChatPushNotifications.init(this, config)
+}
+```
+
+The UI Kit does not depend on the Push SDK, so the answer activity is a small class in your app. It reads the answered call from its intent, opens the UI Kit's call screen with it, and finishes:
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
 ```kotlin
+import com.cometchat.chat.constants.CometChatConstants
+import com.cometchat.pushnotification.calls.CallBundles
+import com.cometchat.uikit.core.utils.CallRingingUtils
 import com.cometchat.uikit.kotlin.presentation.ongoingcall.ui.CometChatOngoingCallActivity
 
-private fun initPushNotifications() {
-    val config = PNConfiguration.Builder(APP_ID, REGION)
-        .setProviderId(PROVIDER_ID)                                   // FCM provider id from the dashboard
-        .setAnswerActivity(CometChatOngoingCallActivity::class.java)  // the UI Kit's call screen
-        .setNotificationSmallIcon(R.drawable.ic_notification)
-        .build()
-    CometChatPushNotifications.init(this, config)
+class CallAnswerActivity : Activity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+
+        val incoming = CallBundles.getCall(intent) ?: return finish()
+        val call = CallRingingUtils.buildIncomingCall(
+            sessionId = incoming.sessionId,
+            callType = if (incoming.isVideo) CometChatConstants.CALL_TYPE_VIDEO else CometChatConstants.CALL_TYPE_AUDIO,
+            receiverType = incoming.receiverType,
+            receiverUid = incoming.receiverUid,
+            callerUid = incoming.callerUid,
+            callerName = incoming.callerName,
+            callerAvatarUrl = incoming.callerAvatarUrl,
+            initiatedAtMs = incoming.initiatedAtMs,
+            conversationId = incoming.conversationId
+        )
+        CometChatOngoingCallActivity.launchOngoingCallActivity(this, call)
+        finish()
+    }
 }
 ```
 </Tab>
 <Tab title="Jetpack Compose">
 ```kotlin
+import com.cometchat.chat.constants.CometChatConstants
+import com.cometchat.pushnotification.calls.CallBundles
+import com.cometchat.uikit.core.utils.CallRingingUtils
 import com.cometchat.uikit.compose.presentation.ongoingcall.ui.CometChatOngoingCallActivity
 
-private fun initPushNotifications() {
-    val config = PNConfiguration.Builder(APP_ID, REGION)
-        .setProviderId(PROVIDER_ID)                                   // FCM provider id from the dashboard
-        .setAnswerActivity(CometChatOngoingCallActivity::class.java)  // the UI Kit's call screen
-        .setNotificationSmallIcon(R.drawable.ic_notification)
-        .build()
-    CometChatPushNotifications.init(this, config)
+class CallAnswerActivity : Activity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+
+        val incoming = CallBundles.getCall(intent) ?: return finish()
+        val call = CallRingingUtils.buildIncomingCall(
+            sessionId = incoming.sessionId,
+            callType = if (incoming.isVideo) CometChatConstants.CALL_TYPE_VIDEO else CometChatConstants.CALL_TYPE_AUDIO,
+            receiverType = incoming.receiverType,
+            receiverUid = incoming.receiverUid,
+            callerUid = incoming.callerUid,
+            callerName = incoming.callerName,
+            callerAvatarUrl = incoming.callerAvatarUrl,
+            initiatedAtMs = incoming.initiatedAtMs,
+            conversationId = incoming.conversationId
+        )
+        CometChatOngoingCallActivity.launchOngoingCallActivity(this, call)
+        finish()
+    }
 }
 ```
 </Tab>
 </Tabs>
+
+```xml AndroidManifest.xml
+<activity
+    android:name=".CallAnswerActivity"
+    android:exported="false"
+    android:excludeFromRecents="true"
+    android:noHistory="true"
+    android:showWhenLocked="true"
+    android:turnScreenOn="true"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+```
 
 Then hand every push to the SDK from your Firebase service:
 
@@ -166,7 +226,7 @@ class AppFCMService : FirebaseMessagingService() {
 
 The push token is registered on login and unregistered on logout by the SDK. Do not skip call pushes when the app is in the foreground: the push is the only incoming-call signal, in every app state. Call pushes must be sent at high FCM priority.
 
-Every option of `PNConfiguration` (ring timeout, missed-call notifications, your own ring screen, MANUAL mode) is on the Calls SDK's [Push Ringing](/calls/android/voip-calling) page.
+The other `PNConfiguration` options (ring timeout, missed-call notifications, your own ring screen) are on the Calls SDK's [Push Ringing](/calls/android/voip-calling) page.
 
 ## Step 4: Permissions
 
@@ -176,7 +236,7 @@ Every option of `PNConfiguration` (ring timeout, missed-call notifications, your
 <uses-permission android:name="android.permission.CAMERA" />
 ```
 
-The remaining permissions and components (full-screen intent, the ringing foreground service, the ring screen) come from the Push SDK's manifest.
+The remaining permissions come from the Push SDK's manifest.
 
 At runtime:
 
@@ -237,7 +297,7 @@ CometChatMessageHeader(
 | Waiting | "calling…", then "ringing…" when the callee's device is reached; End cancels the call; 45 s with no answer ends it as unanswered | [Outgoing Call](/ui-kit/android/outgoing-call) |
 | Callee declines / is busy / does not answer | The outgoing screen closes with the reason | Outgoing Call |
 | Incoming call | The Push SDK rings and draws the incoming-call screen | Push SDK (no UI Kit component) |
-| Answer | `CometChatOngoingCallActivity` opens and joins the session | [Ongoing Call](/ui-kit/android/ongoing-call) |
+| Answer | Your answer activity opens `CometChatOngoingCallActivity`, which joins the session | [Ongoing Call](/ui-kit/android/ongoing-call) |
 | Hang-up | The session is left; the other side's screen closes | Ongoing Call |
 | Call history | Call logs list from the Calls SDK; the call icon calls back | [Call Logs](/ui-kit/android/call-logs) |
 | Group call | The group call button sends a meeting message; tapping it joins the conference | Call Buttons, Ongoing Call |

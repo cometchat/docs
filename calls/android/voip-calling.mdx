@@ -2,7 +2,7 @@
 title: "Push Ringing"
 sidebarTitle: "Push Ringing (VoIP)"
 sdk_version: "5.x"
-description: "Ring incoming CometChat calls on Android with the Push Notifications SDK 2.0 calls module: FCM setup, configuration, the answer activity, permissions, busy and missed calls, your own ring screen, and behaviour when the app is killed."
+description: "Ring incoming CometChat calls on Android with the Push Notifications SDK 2.0 calls module: FCM setup, configuration, the answer activity, permissions, missed calls and your own ring screen."
 ---
 
 The Push Notifications SDK's calls module turns a CometChat call push into a ringing phone: a call-style notification with Answer and Decline, a full-screen screen over the lock screen, the ringtone, a ring timeout, missed-call notifications and busy handling. It works with the app in the foreground, in the background or not running at all, and needs no Telecom `ConnectionService`.
@@ -19,7 +19,7 @@ flowchart LR
     D -->|another call ringing| B[Declined as busy]
     R -->|Answer| P[Mic / camera prompt]
     P --> A[Your answer activity → joinSession]
-    R -->|Decline| Q["endCall(rejected) via durable queue"]
+    R -->|Decline| Q["endCall(rejected)"]
     R -->|45 s| T["endCall(unanswered) + missed call"]
 ```
 
@@ -42,7 +42,7 @@ dependencies {
 }
 ```
 
-Adding the calls artifact is the whole opt-in: core detects it and installs the ringer. The Chat SDK is optional for both artifacts; a calls-only app works.
+Adding the calls artifact turns ringing on. The Chat SDK is optional; a calls-only app works.
 
 ## Step 2: Initialise once
 
@@ -77,13 +77,10 @@ CometChatPushNotifications.init(
 </Tab>
 </Tabs>
 
-A calls-only app can start from the settings it already has: `PNConfiguration.from(callAppSettings)` in Kotlin (an extension in the calls module: `import com.cometchat.pushnotification.calls.from`), `CometChatCallPushConfig.from(callAppSettings)` in Java.
-
 | Setter | Default | What it does |
 |--------|---------|--------------|
 | `setProviderId(id)` | none | The dashboard FCM provider the token is registered under |
 | `setAnswerActivity(Class)` | none, **required** | Started when the user answers, with the call in its extras |
-| `setCallMode(CallMode.AUTO \| MANUAL)` | `AUTO` | `AUTO` rings. `MANUAL` only parses and forwards; see [MANUAL mode](#manual-mode) |
 | `setIncomingCallActivity(Class?)` | the SDK's own screen | Your full-screen ring screen; see [Your own incoming-call screen](#your-own-incoming-call-screen) |
 | `setMissedCallActivity(Class?)` | none | Opened when a missed-call notification is tapped. Without it an individual missed-call notification has no tap action |
 | `setNotificationSmallIcon(res)` | none | Status-bar icon for every notification |
@@ -91,9 +88,6 @@ A calls-only app can start from the settings it already has: `PNConfiguration.fr
 | `setShowMissedCallNotification(bool)` | `true` | Post a missed-call notification |
 | `setRequestCallPermissions(bool)` | `true` | Ask for microphone (and camera) on Answer |
 | `setInlineReplyEnabled(bool)` | `true` | Reply from a chat notification (needs the Chat SDK) |
-| `setTokenRegistrar(CHAT \| CALLS \| AUTO)`, `setAuthToken`, `setAutoRegisterToken` | `AUTO`, none, `true` | Token registration; leave the defaults |
-
-`build()` throws if the calls module is present, the mode is `AUTO`, and no answer activity is set.
 
 ## Step 3: Delegate from your Firebase service
 
@@ -157,7 +151,7 @@ public class MyFirebaseService extends FirebaseMessagingService {
 
 ## Step 4: Join from the answer activity
 
-On **Answer** the SDK stops the ring, asks for the microphone (and the camera for a video call), dismisses the keyguard and starts your answer activity with the call in its extras. Read it and join; there is nothing to "accept".
+On **Answer** the SDK stops the ring, asks for the microphone (and the camera for a video call) and starts your answer activity with the call in its extras. Read it and join; there is nothing to "accept".
 
 <Tabs>
 <Tab title="Kotlin">
@@ -232,7 +226,7 @@ public class CallScreenActivity extends AppCompatActivity {
 </Tab>
 </Tabs>
 
-`IncomingCall` fields: `sessionId`, `callerUid`, `callerName`, `callerAvatarUrl`, `callType`, `receiverType`, `receiverUid`, `conversationId`, `initiatedAtMs`, `ringTimeoutMs`, `source` (`PUSH`; `WEBSOCKET` is reserved for web), `extras`, plus the derived `isVideo`, `isPeerCall`, `initials` and `expiresAtMs`. The ring window is anchored to the caller's `initiatedAtMs`, not to a timer on this device, so both sides stop ringing together however late the push arrived; prefer `expiresAtMs` to a timer of your own.
+`IncomingCall` gives you `sessionId`, `callerUid`, `callerName`, `callerAvatarUrl`, `isVideo`, `receiverType` and `receiverUid`.
 
 Declare the activity so it can show over the lock screen:
 
@@ -246,7 +240,7 @@ Declare the activity so it can show over the lock screen:
 ```
 
 <Note>
-The notification stays as a silent "Connecting call…" entry until the Calls SDK reports the session joined (60 s at most). Once joined, any in-call notification is yours to show; the SDK posts none. For a foreground service during the call see [Background Handling](/calls/android/background-handling).
+The SDK posts no notification during the call. For a foreground service while the call runs, see [Background Handling](/calls/android/background-handling).
 </Note>
 
 ## Step 5: Permissions and ring readiness
@@ -259,9 +253,9 @@ Declare in the manifest what the SDKs only request:
 <uses-permission android:name="android.permission.CAMERA" />
 ```
 
-Everything else (full-screen intent, foreground service of type `phoneCall`, wake lock, vibrate, the ring activity, the answer trampoline and the ring service) comes from the calls module's own manifest. No `MANAGE_OWN_CALLS`, `READ_PHONE_STATE` or `ANSWER_PHONE_CALLS`.
+Everything else comes from the calls module's own manifest.
 
-**Microphone and camera.** The SDK asks at the moment of answering: the answer is recorded first so the ring stops, the system prompt appears, and your answer activity opens whatever the user chose. A denied microphone joins muted and never fails the call. Ask earlier as well (at sign-in, for example) so the first call is not where the user meets the prompt, and give your call screen a way to the app's settings page for a permission denied for good. If your app prompts itself, turn the SDK prompt off with `setRequestCallPermissions(false)`.
+**Microphone and camera.** The SDK asks when the user answers. A denied microphone joins muted and does not fail the call. Ask earlier as well (at sign-in, for example) so the first call is not where the user meets the prompt, and give your call screen a way to the app's settings page for a permission denied for good. If your app prompts itself, turn the SDK prompt off with `setRequestCallPermissions(false)`.
 
 **Ring readiness.** Several device settings silence a call with no error anywhere. Check once after sign-in and tell the user:
 
@@ -302,88 +296,27 @@ CometChatPushNotifications.ensureRingReady(this, result -> {
 
 Call `ensureRingReady` only after any other permission request of yours has returned; Android drops a request made while another dialog is open.
 
-**Diagnostics for a bug report.** `getDiagnostics(context)` returns a redacted snapshot (whether a provider id exists, never what it is; never a token or payload):
-
-| Key | Read it as |
-|-----|------------|
-| `hasPersistedConfig` | `false`: `init` never ran, or ran with a different app id |
-| `callsModulePresent` | `false`: the calls artifact is not on the classpath, nothing will ring |
-| `answerActivityResolves` | `false`: the configured answer activity cannot be found |
-| `hasProviderId`, `firebasePresent` | `false`: token registration cannot complete |
-| `canUseFullScreenIntent` | `false` on Android 14+: no ring screen on a locked device |
-| `incomingChannelImportance` | below `IMPORTANCE_HIGH`: no heads-up and no sound |
-| `interruptionFilter` | anything but `INTERRUPTION_FILTER_ALL`: Do Not Disturb is filtering |
-| `chatSdkPresent`, `chatLoggedIn`, `callMode`, `sdkInt`, `manufacturer`, `model` | Which auth token registration can use; `MANUAL` explains a phone that never rings by design; OEM background restrictions |
-
-`verifyPushSetup(callback)` registers the token and reports `OK`, `TOKEN_NOT_REGISTERED`, `NOT_LOGGED_IN`, `TEST_PUSH_UNAVAILABLE` (registration worked, the loopback test push is not available on the backend yet: a warning, not a failure) or `TEST_PUSH_TIMEOUT` (the test push never arrived: delivery is broken).
-
-Anything that takes a `PNCallback` can fail with `NOT_INITIALISED`, `NOT_LOGGED_IN`, `PROVIDER_REQUIRED`, `FCM_UNAVAILABLE`, `SERVER_ERROR` or `NETWORK_ERROR`. The token value is never logged, only its length and a six-character prefix.
-
 ## How a ring ends
 
-Every way out is handled by the SDK and needs no code in your app.
+The SDK handles every way a ring ends; you write no code for it. A decline sends `rejected` to the caller (`busy` if the user is in another call). A 1:1 call nobody answers stops after the ring window (45 s by default), posts a missed call and sends `unanswered`. A cancel by the caller, or an answer on another device, stops the ring here.
 
-| What happened | On the callee's device | What the caller learns |
-|---------------|------------------------|------------------------|
-| The user answers | Ring stops, "Connecting call…" until your screen joins | `onParticipantJoined` |
-| The user declines | Ring stops; `endCall(sessionId, "rejected")` is queued and retried across process death | `onIncomingCallEnded(call, "rejected")` |
-| The user declines while in another call | Same, with `"busy"` | `"busy"` |
-| The caller cancels | Ring stops on the `cancelled` push, or sooner when the prepared session closes; missed-call notification | Nothing; the caller ended it |
-| Nobody answers a 1:1 call | At the ring window (45 s by default, anchored to the caller's `initiatedAt`) the ring stops, a missed call is posted and `endCall(sessionId, "unanswered")` is sent | `"unanswered"` |
-| Answered on another device | Ring stops on the `ongoing` push, no missed call | `onParticipantJoined` |
-| Nobody answers a group call | Ring stops, missed call posted, **nothing sent**; the call keeps running | Nothing |
-| The user declines a group call | Ring stops here only; the prepared session is left, nothing sent | Nothing |
-| The user logs out while ringing | Ring stops, nothing sent, no missed call | Rings to its own window, then `"unanswered"` |
-
-On a decline or a 1:1 timeout the SDK does not leave the prepared session first: `endCall` announces the status to the room while still in it, then leaves, so the caller hears it at once. Once the session is prepared, the Calls SDK reporting it ended also stops the ring immediately, without waiting for a terminal push.
-
-Declines and `unanswered` go through a WorkManager queue (`cometchat-pn-decline-<sessionId>`): network required, exponential backoff from 10 s, given up after 5 attempts, and a call the server already ended (`ERR_CALL_TERMINATED`) counts as delivered.
-
-## A call while in a call
-
-Call waiting, the way the phone app does it. "In a call" means the Calls SDK is joined to a session, or a call answered here is still joining; a session that is only prepared while it rings does not count.
-
-| Situation | Behaviour |
-|-----------|-----------|
-| Call while in a call | Rings over the live call with the normal ring; the text adds "Answering ends your current call". The live call is untouched |
-| Answer (End & accept) | Leaves the live call, waits for the Calls SDK to release it, prepares the new session, opens the answer activity (`onNewIntent` if it is still up) |
-| Decline | `busy` to the caller; the live call continues |
-| No action | `unanswered` to the caller, missed call; the live call continues |
-| Call while another one is already ringing here | Declined as `busy` without ringing, missed call. The first keeps ringing |
-| Call while the user's own outgoing call is ringing | Declined as `busy` without ringing, missed call |
+A call that arrives during another call rings over it with "Answering ends your current call". Answering leaves the live call and joins the new one; declining sends `busy` and the live call continues.
 
 ## Missed calls
 
-Posted on channel `missed_calls_v1` as "Missed call" / "Missed group call" with the caller's name and call type, one per session, grouped under the SDK's own summary ("N missed calls") so Android never folds them into your other notifications. The summary is rebuilt from the tray, so it survives the process dying.
-
-Posted when: nobody answers in the ring window; a `cancelled`, `unanswered` or `timed_out` push ends a ring here; such a push arrives for a call that never rang here (the `initiated` push was lost or overtaken); an `initiated` push arrives already expired; a call is declined as busy without ringing.
-
-Not posted when: answered here or on another device; declined (`rejected` or `busy`) here; ended; the user's own outgoing call; logout while ringing.
-
-Tapping the summary opens the launcher. Tapping an individual missed call opens the activity from `setMissedCallActivity` with the call in its extras; **without that setting it does nothing**. Turn missed calls off with `setShowMissedCallNotification(false)`. This is a notification only; call history comes from [Call Logs](/calls/android/call-logs).
+The SDK posts a missed-call notification when a call is not answered here. Tapping it opens the activity from `setMissedCallActivity` with the call in its extras; **without that setting the tap does nothing**. Turn them off with `setShowMissedCallNotification(false)`. Call history comes from [Call Logs](/calls/android/call-logs).
 
 ## When the app is killed
 
-This is the case the push exists for.
+The high-priority push starts the app process and the SDK rings from its saved configuration. Initialise the Calls SDK (and your own SDK setup) in `Application.onCreate` from stored credentials, not only after a screen opens, so the answer activity finds a ready SDK.
 
-1. The high-priority push starts the app process to run your Firebase service.
-2. `handlePushNotification` finds no in-memory configuration and restores it from disk, then installs the calls module.
-3. If the Calls SDK is not initialised yet the module initialises it, and resolves the auth token (Chat SDK, then Calls SDK, then an explicit `setAuthToken`).
-4. The ring runs on a foreground service of type `phoneCall`, so the system keeps the process alive through the answer. An alarm backs up the ring timeout.
-5. On Answer, the trampoline activity asks for permissions and starts your answer activity, which joins.
-6. A decline or timeout is sent through the WorkManager queue, so it goes out even if the process dies right after the tap.
+## Tokens and logout
 
-Initialise the Calls SDK (and your own SDK setup) in `Application.onCreate` from stored credentials, not only after a screen opens, so the answer activity finds a ready SDK.
-
-## Tokens
-
-You do not register the push token. The SDK fetches it from Firebase and registers it on login, under the Chat auth token when there is one and the Calls auth token otherwise; it unregisters on logout. `registerToken()` / `unregisterToken()` exist for apps that set `setAutoRegisterToken(false)`.
-
-Log out of the Calls SDK when the user signs out (`CometChatCalls.logout`, or `CometChatUIKit.logout` with the UI Kit). That is what stops a ring still playing for the old user and unregisters the token; `CometChat.logout` alone does neither.
+You do not register the push token: the SDK registers it on login and unregisters it on logout. Log out of the Calls SDK when the user signs out (`CometChatCalls.logout`, or `CometChatUIKit.logout` with the UI Kit). That stops a ring still playing for the old user and unregisters the token; `CometChat.logout` alone does neither.
 
 ## Your own incoming-call screen
 
-Set `setIncomingCallActivity(...)`. The SDK still owns the ringtone, the pre-warm, the timeout, the keep-alive and the decline queue; only the full-screen UI is yours.
+Set `setIncomingCallActivity(...)`. The SDK still plays the ringtone and handles the timeout and the decline; only the full-screen UI is yours.
 
 <Tabs>
 <Tab title="Kotlin">
@@ -456,14 +389,6 @@ public class MyRingActivity extends AppCompatActivity {
 </Tab>
 </Tabs>
 
-If the same activity is also your answer activity (one screen that rings, then becomes the call), the ring ends with `RING_END_ANSWERED` a moment before the answer intent reaches it through `onNewIntent`. Use the overload that passes the reason and finish only on other reasons:
-
-```kotlin
-CometChatCallNotifications.onIncomingCallScreenOpened(call.sessionId) { reason ->
-    if (reason != CometChatCallNotifications.RING_END_ANSWERED) finish()
-}
-```
-
 Without `onIncomingCallScreenOpened`, a cancelled call leaves your screen on the lock screen showing an Answer button for a call that no longer exists.
 
 ## Theming the SDK's incoming-call screen
@@ -486,34 +411,11 @@ The SDK's screen and notifications read their look from resources. Override any 
 <color name="cometchat_pn_call_decline">#F44649</color>
 ```
 
-Also overridable:
-
-- **Strings**: `cometchat_pn_incoming_call_text`, `cometchat_pn_incoming_group_call_text`, `cometchat_pn_action_answer`, `cometchat_pn_action_decline`, `cometchat_pn_call_type_audio`, `cometchat_pn_call_type_video`, `cometchat_pn_connecting_call_text`, `cometchat_pn_call_waiting_text`, `cometchat_pn_missed_call_title`, `cometchat_pn_missed_group_call_title`, `cometchat_pn_missed_call_text`, `cometchat_pn_missed_calls_summary`, and the channel names and descriptions `cometchat_pn_channel_{incoming,ongoing,missed}_{name,description}`.
-- **Drawables**: `cometchat_pn_ic_call`, `cometchat_pn_ic_call_end`, `cometchat_pn_ic_notification_call`, `cometchat_pn_ic_notification_call_missed`, `cometchat_pn_bg_button_accept`, `cometchat_pn_bg_button_decline`, `cometchat_pn_bg_avatar_circle`.
-- **Theme**: `CometChatPNIncomingCallTheme`.
-- **Layout**: `cometchat_pn_activity_incoming_call`, which must keep the view ids `cometchat_pn_initials`, `cometchat_pn_caller_name`, `cometchat_pn_call_type`, `cometchat_pn_decline` and `cometchat_pn_answer`.
-
-The avatar is always the caller's initials; the screen does not load the avatar URL. The ringtone is the device's default ringtone on channel `incoming_calls_v1`; because Android freezes a channel's sound at creation, the SDK never changes it afterwards.
+The strings, drawables and layout of the screen (all prefixed `cometchat_pn_`) can be overridden the same way.
 
 <Note>
 If you use the CometChat UI Kit, it already overrides the six colours with its own light and dark palette. Your app's override still wins over the UI Kit's.
 </Note>
-
-## MANUAL mode
-
-`setCallMode(CallMode.MANUAL)` makes the SDK parse, gate and forward only. It never rings and never touches the Calls SDK on its own. The call reaches `CometChatCalls.IncomingCallListener.onIncomingCallReceived`, and from there every step is yours:
-
-```kotlin
-CometChatCallNotifications.Calls.showIncomingNotification(context, call)   // post the ring, arm expiry
-CometChatCallNotifications.Calls.verify(context, call)                     // pre-warm connect()
-CometChatCallNotifications.Calls.keepAlive(context, call)                  // foreground service while ringing
-CometChatCallNotifications.Calls.stopRinging(context, sessionId)
-CometChatCallNotifications.Calls.showMissedCall(context, call)
-```
-
-<Warning>
-In MANUAL mode with nothing built, the call is silently lost: no notification, no ringtone, no screen, nothing sent to the caller, who rings out to `unanswered`. Use MANUAL only if you are rebuilding the whole ring.
-</Warning>
 
 ## Knowing about a call in your own code
 
@@ -527,15 +429,6 @@ CometChatCalls.addIncomingCallListener("my-screen", object : CometChatCalls.Inco
 ```
 
 Ids are keys: the same id registered twice replaces the listener. Remove it when the screen goes away.
-
-## Push SDK identifiers
-
-| Kind | Value |
-|------|-------|
-| Notification channels | `incoming_calls_v1` (high, ringtone, vibration), `ongoing_calls_v1` (low, "Connecting call…"), `missed_calls_v1` (default) |
-| Statuses the SDK sends with `endCall` | `rejected`, `busy`, `unanswered` |
-| Intent extras | `com.cometchat.pushnotification.calls.call.<key>`; read with `CallBundles.getCall` |
-| Timings | ring window 45 s default, answer connecting cap 60 s, decline queue 5 attempts |
 
 ## Troubleshooting
 
