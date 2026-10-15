@@ -1,0 +1,406 @@
+---
+title: "Flutter"
+description: "Add CometChat chat push notifications to a Flutter app (Android + iOS) with the drop-in cometchat_push_notifications SDK."
+---
+
+## What this guide covers
+
+- Adding the `cometchat_push_notifications` plugin and initializing it.
+- Platform wiring: Gradle/Firebase on Android, Podfile/capabilities on iOS.
+- Requesting permission and registering tokens (FCM on Android, APNs on iOS) after login.
+- Receiving pushes and letting the SDK show chat notifications.
+- Handling notification taps, the conversation on screen, and badge counts.
+- Testing and troubleshooting.
+
+<Info>
+The `cometchat_push_notifications` plugin replaces the previous approach of copying the UI Kit sample's `lib/notifications` stack and hand-wiring `PNRegistry` / `CometChatPushRegistry` and native `MainActivity` / `AppDelegate` bridges. Token registration, notification display, delivery receipts, notification taps and badge management are handled inside the plugin.
+</Info>
+
+<Note>
+This guide covers **chat notifications** only. To ring incoming calls in every app state, see [Ringing Flow](/calls/flutter/ringing-flow), which uses the `cometchat_voip` package.
+</Note>
+
+## How it works
+
+- **Android (FCM):** Firebase issues the registration token and delivers the CometChat payload as a data message. Your `firebase_messaging` handler forwards `message.data` to `handlePushNotification`, and the plugin shows the notification.
+- **iOS (APNs):** Apple issues the APNs device token, and the system shows the chat alert from the APNs payload.
+- **CometChat's role:** The providers you add in the dashboard bind your registered tokens to the logged-in user so CometChat can route pushes on your behalf.
+- **The plugin's role:** `cometchat_push_notifications` registers the token with CometChat, parses payloads, shows notifications on Android and sends delivery receipts. It builds on [`cometchat_sdk`](https://pub.dev/packages/cometchat_sdk), which pub resolves for you.
+
+## Prerequisites
+
+- The providers, Firebase project, and Apple/APNs credentials from **[Getting Started](/notifications/push-getting-started)** (this guide assumes those are done).
+- Flutter 3.3.0+ / Dart 3.10.8+.
+- **Android:** Kotlin **2.0+**, `minSdkVersion 24`, `compileSdkVersion 36`.
+- **iOS:** iOS 13.0+.
+- A physical device — background delivery is unreliable on emulators/simulators.
+
+<Info>
+**Complete the [Getting Started](/notifications/push-getting-started) guide first** — enable Push Notifications, add your providers (FCM for Android, APNs for iOS), and finish the Firebase/Apple setup. This guide covers only the Flutter app wiring.
+</Info>
+
+## 1. Store your credentials
+
+Keep the values from Getting Started somewhere your app can read them. Only the fields for the platforms you ship are needed:
+
+```dart lines
+class AppCredentials {
+  static const appId = "YOUR_APP_ID";
+  static const region = "YOUR_REGION";
+  static const authKey = "YOUR_AUTH_KEY";
+
+  // Android
+  static const fcmProviderId = "FCM-PROVIDER-ID";
+
+  // iOS
+  static const apnProviderId = "APNS-PROVIDER-ID";
+}
+```
+
+## 2. Add the plugin and configure the platform
+
+Add the plugin to `pubspec.yaml`. On Android also add Firebase Messaging (used to receive the FCM data messages):
+
+```yaml lines
+dependencies:
+  cometchat_push_notifications: ^2.0.0
+  # Android only — to receive FCM data messages:
+  firebase_core: ^3.9.0
+  firebase_messaging: ^15.1.6
+```
+
+`cometchat_sdk` is pulled in transitively. Run `flutter pub get`.
+
+<Tabs>
+  <Tab title="Android">
+    With `google-services.json` already in `android/app/` (from [Getting Started](/notifications/push-getting-started)):
+
+    1. Apply the Google Services plugin and ensure Kotlin is **2.0+** in `android/settings.gradle.kts`:
+
+    ```kotlin lines
+    plugins {
+      id("dev.flutter.flutter-plugin-loader") version "1.0.0"
+      id("com.android.application") version "8.11.1" apply false
+      id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+      id("com.google.gms.google-services") version "4.4.2" apply false
+    }
+    ```
+
+    2. Apply the plugins in `android/app/build.gradle.kts`:
+
+    ```kotlin lines
+    plugins {
+      id("com.android.application")
+      id("kotlin-android")
+      id("com.google.gms.google-services")
+      id("dev.flutter.flutter-gradle-plugin")
+    }
+    ```
+
+    3. Set `applicationId` to your package name and keep `minSdk = 24` or higher. Run `flutterfire configure` if you still need `firebase_options.dart`.
+
+    4. Add a notification icon to `android/app/src/main/res/drawable/` (for example `ic_notification.png`) and pass its name as `androidSmallIcon` in step 3. Android draws the small icon as a flat silhouette, so it must be white on transparent; a launcher icon shows as a grey square.
+
+    <Note>
+    You do **not** need to add notification permissions to your `AndroidManifest.xml`. The plugin declares what it needs, and Gradle merges it into your app automatically.
+    </Note>
+  </Tab>
+  <Tab title="iOS">
+    1. Set the deployment target in `ios/Podfile`, then install pods:
+
+    ```ruby
+    platform :ios, '13.0'
+    ```
+
+    ```bash
+    cd ios && pod install && cd ..
+    ```
+
+    2. Open `ios/Runner.xcworkspace` in Xcode and set the development team that owns the APNs key. (The **Push Notifications** / **Background Modes** capabilities come from [Getting Started](/notifications/push-getting-started).)
+
+    3. No push code is needed in your `AppDelegate`. The plugin registers with APNs and gets the device token itself.
+
+    4. **Optional: Notification Service Extension.** For delivery receipts, sender avatars and conversation grouping while the app is in the background or killed, add a Notification Service Extension:
+
+       1. In Xcode: **File → New → Target → Notification Service Extension**.
+       2. In your `Podfile`, add the extension's pod to the extension target only:
+
+       ```ruby
+       target 'NotificationService' do
+         pod 'CometChatPushNotificationsNSE',
+             :path => '.symlinks/plugins/cometchat_push_notifications/ios'
+       end
+       ```
+
+       3. Replace the generated `NotificationService.swift` with:
+
+       ```swift lines
+       import CometChatPushNotificationsNSE
+
+       class NotificationService: CometChatNotificationServiceExtension {}
+       ```
+
+       4. Add the app and the extension to a shared App Group, and add the key `CometChatExtensionGroupID` with that group's identifier to the extension's `Info.plist`.
+  </Tab>
+</Tabs>
+
+## 3. Initialize the SDK
+
+Initialize the plugin before `runApp`. On Android you also initialize Firebase and forward FCM messages to the plugin (including a background isolate handler).
+
+<Tabs>
+  <Tab title="Android">
+    ```dart lines
+    import 'package:firebase_core/firebase_core.dart';
+    import 'package:firebase_messaging/firebase_messaging.dart';
+    import 'package:flutter/material.dart';
+    import 'package:cometchat_push_notifications/cometchat_push_notifications_export.dart';
+
+    /// Runs in a background isolate for data messages delivered while the app is
+    /// terminated or backgrounded. Must initialize the plugin before handling.
+    @pragma('vm:entry-point')
+    Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
+      await Firebase.initializeApp();
+      await CometChatPushNotifications.init(
+        const CometChatNotificationConfig(
+          appId: AppCredentials.appId,
+          region: AppCredentials.region,
+          androidSmallIcon: 'ic_notification',
+        ),
+      );
+      await CometChatPushNotifications.handlePushNotification(message.data);
+    }
+
+    Future<void> main() async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await Firebase.initializeApp();
+
+      await CometChatPushNotifications.init(
+        const CometChatNotificationConfig(
+          appId: AppCredentials.appId,
+          region: AppCredentials.region,
+          androidSmallIcon: 'ic_notification',
+        ),
+      );
+
+      // Forward FCM data messages to the plugin.
+      FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+      FirebaseMessaging.onMessage.listen((message) {
+        CometChatPushNotifications.handlePushNotification(message.data);
+      });
+
+      runApp(const MyApp());
+    }
+    ```
+  </Tab>
+  <Tab title="iOS">
+    ```dart lines
+    import 'package:flutter/material.dart';
+    import 'package:cometchat_push_notifications/cometchat_push_notifications_export.dart';
+
+    Future<void> main() async {
+      WidgetsFlutterBinding.ensureInitialized();
+
+      await CometChatPushNotifications.init(
+        const CometChatNotificationConfig(
+          appId: AppCredentials.appId,
+          region: AppCredentials.region,
+        ),
+      );
+
+      runApp(const MyApp());
+    }
+    ```
+  </Tab>
+</Tabs>
+
+`handlePushNotification` returns `true` when it handled a chat push, and `false` for any other push, which is still yours to handle.
+
+The `CometChatNotificationConfig` also accepts:
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `showInAppNotifications` | `false` | Show chat pushes as notifications while the app is in the foreground. |
+| `enableBadgeCount` | `true` | Mirror `unreadMessageCount` onto the iOS app icon badge. |
+| `sendDeliveryReceipts` | `true` | Mark each received message as delivered with CometChat. |
+| `androidSmallIcon` | launcher icon | Drawable name of the Android notification icon. |
+| `androidChannelId` | `cometchat_messages` | Android notification channel to post to. |
+| `androidChannelName` | `Chat Messages` | Channel name shown in Android settings. |
+| `androidChannelDescription` | `New message notifications` | Channel description shown in Android settings. |
+
+<Note>
+Android fixes a channel's importance, sound and vibration when it's first created. To change any of them later, use a new `androidChannelId`.
+</Note>
+
+### If your app also rings calls
+
+If your app uses `cometchat_voip` for incoming calls, hand each push to it first, and to this plugin only when it isn't a call:
+
+```dart lines
+Future<void> handlePush(RemoteMessage message) async {
+  final isCall = await CometChatVoip.handlePushNotification(
+    message.data,
+    sentTime: message.sentTime,
+  );
+  if (!isCall) {
+    await CometChatPushNotifications.handlePushNotification(message.data);
+  }
+}
+```
+
+See [Ringing Flow](/calls/flutter/ringing-flow) for the calls setup.
+
+## 4. Request permission and register tokens
+
+Request permission early, and register tokens **after** your CometChat user logs in (registration binds the token to the session):
+
+```dart lines
+await CometChatPushNotifications.requestPermission();
+```
+
+<Tabs>
+  <Tab title="Android">
+    ```dart lines
+    // After CometChatUIKit.login(...) / CometChat.login(...) succeeds:
+    final token = await FirebaseMessaging.instance.getToken();
+    await CometChatPushNotifications.registerPushToken(
+      token: token,
+      platform: PushPlatform.FCM_FLUTTER_ANDROID,
+      providerId: AppCredentials.fcmProviderId,
+    );
+    ```
+  </Tab>
+  <Tab title="iOS">
+    Omit the token: the plugin registers with APNs itself and uses the device token it gets back.
+
+    ```dart lines
+    // After CometChatUIKit.login(...) / CometChat.login(...) succeeds:
+    await CometChatPushNotifications.registerPushToken(
+      platform: PushPlatform.APNS_FLUTTER_DEVICE,
+      providerId: AppCredentials.apnProviderId,
+    );
+    ```
+  </Tab>
+</Tabs>
+
+`registerPushToken` returns the server's response, or `null` when registration failed.
+
+On Android, register the new token again whenever Firebase rotates it:
+
+```dart lines
+FirebaseMessaging.instance.onTokenRefresh.listen((token) {
+  CometChatPushNotifications.registerPushToken(
+    token: token,
+    platform: PushPlatform.FCM_FLUTTER_ANDROID,
+    providerId: AppCredentials.fcmProviderId,
+  );
+});
+```
+
+Before logging the user out, unregister the token while the session that owns it still exists:
+
+```dart lines
+await CometChatPushNotifications.unregisterPushToken();
+// then CometChatUIKit.logout(...) / CometChat.logout(...)
+```
+
+## 5. Notification taps and the conversation on screen
+
+Subscribe to taps to open the right conversation (same on both platforms). A tap that launched the app from a cold start is held until you subscribe:
+
+```dart lines
+CometChatPushNotifications.onNotificationTap.listen((response) {
+  // response.conversationId, response.receiverType, response.sender,
+  // response.senderName, response.messageId
+  // Navigate to your messages screen for this conversation.
+});
+```
+
+Tell the plugin which conversation is on screen, so pushes for it aren't shown while the user is already reading it:
+
+```dart lines
+@override
+void initState() {
+  super.initState();
+  CometChatPushNotifications.setActiveConversation(
+    id: widget.uid,
+    receiverType: CometChatPushReceiverType.user,
+  );
+}
+
+@override
+void dispose() {
+  CometChatPushNotifications.setActiveConversation();
+  super.dispose();
+}
+```
+
+## 6. Badge count
+
+CometChat's Enhanced Push Notification payload includes an `unreadMessageCount` field (the total unread across all conversations). Enable it once on the dashboard:
+
+1. Go to **CometChat Dashboard → Notification Engine → Settings → Preferences → Push Notification Preferences**.
+2. Enable the **Unread Badge Count** toggle.
+
+<Tabs>
+  <Tab title="Android">
+    Android has no app icon badge. `setBadgeCount` and `getBadgeCount` do nothing there.
+  </Tab>
+  <Tab title="iOS">
+    With `enableBadgeCount: true` (the default), the plugin mirrors `unreadMessageCount` onto the app icon. To set it yourself:
+
+    ```dart lines
+    await CometChatPushNotifications.setBadgeCount(0);
+    ```
+  </Tab>
+</Tabs>
+
+Dismiss stale notifications when the app opens and on every resume:
+
+```dart lines
+await CometChatPushNotifications.clearNotifications();
+```
+
+Pass `conversationId` to clear only that conversation's notifications. Add a `WidgetsBindingObserver` to your root widget and clear in `initState` and on `AppLifecycleState.resumed`.
+
+## 7. Testing checklist
+
+1. Run on a physical device. Grant notification permission when prompted (Android 13+ requires `POST_NOTIFICATIONS`).
+2. Send a message from another user:
+   - Foreground: no banner unless `showInAppNotifications: true` (and you're not already in that chat).
+   - Background: a notification appears; tapping opens the right conversation via `onNotificationTap`.
+3. Force-quit the app, send another message, tap the notification, and confirm it navigates to the conversation.
+4. Open a conversation and send a message to it from another user: no notification is shown for it.
+5. Toggle Wi-Fi/cellular and reinstall to confirm token registration survives refreshes.
+
+## 8. Troubleshooting
+
+| Symptom | Platform | Quick checks |
+| --- | --- | --- |
+| No notifications received | Android | Confirm `google-services.json` is in `android/app/`, the package name matches Firebase, permission is granted (Android 13+), and your `firebase_messaging` handlers call `handlePushNotification(message.data)`. |
+| Build fails after adding the plugin | Android | Ensure Kotlin is **2.0+** in `android/settings.gradle.kts` and `minSdk = 24`. |
+| Notification icon is a grey square | Android | Set `androidSmallIcon` to a white-on-transparent drawable. |
+| Channel sound or importance doesn't change | Android | Android keeps a channel's settings once created. Use a new `androidChannelId`. |
+| No notifications received | iOS | Ensure Push Notifications and Background Modes → Remote notifications are enabled, the bundle ID matches the CometChat APNs provider, and you registered with `PushPlatform.APNS_FLUTTER_DEVICE`. |
+| No receipts or avatars while the app is killed | iOS | Add the Notification Service Extension and the shared App Group (step 2). |
+| Token registration errors | Both | Verify the provider IDs match the dashboard exactly and that `registerPushToken` runs **after** login. |
+| Notification taps ignored | Both | Subscribe to `onNotificationTap` once your navigator is ready. |
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card
+    title="cometchat_push_notifications"
+    icon="cube"
+    href="https://pub.dev/packages/cometchat_push_notifications"
+  >
+    The drop-in chat push plugin on pub.dev.
+  </Card>
+  <Card
+    title="SDK source"
+    icon="github"
+    href="https://github.com/cometchat/push-notifications-sdk-flutter"
+  >
+    Source, changelog, and example app.
+  </Card>
+</CardGroup>
