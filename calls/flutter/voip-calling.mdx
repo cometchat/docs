@@ -1,491 +1,328 @@
 ---
-title: "VoIP Calling"
-sidebarTitle: "VoIP Calling"
+title: "Push Ringing"
+sidebarTitle: "Push Ringing (VoIP)"
 sdk_version: "5.x"
-description: "Set up CometChat Calls SDK v5 VoIP calling on Flutter for call notifications, incoming call handling, and app wake flows."
+description: "Ring incoming CometChat calls on Flutter with cometchat_voip: setup, initialization, handing over call pushes, the push token, ring readiness, the call modes, call waiting, missed calls, and behaviour when the app is killed."
 ---
 
-Implement native VoIP calling that works when your app is in the background or killed. This guide shows how to integrate platform-specific push notification services with CometChat to display system call UI and provide a native calling experience.
+`cometchat_voip` turns a CometChat call push into a ringing phone: a call notification with Answer and Decline, a full-screen ring screen over the lock screen (CallKit on iOS), the ringtone, a ring timeout, missed calls and busy handling, whether your app is in the foreground, in the background or killed.
 
-## Overview
-
-VoIP calling differs from [basic in-app ringing](/calls/flutter/ringing) by leveraging platform-native call frameworks to:
-- Show incoming calls on lock screen with system UI
-- Handle calls when app is in background or killed
-- Integrate with Bluetooth, car systems, and wearables
-- Provide consistent call experience across devices
-
-```mermaid
-flowchart TB
-    subgraph "Incoming Call Flow"
-        A[Push Notification] --> B{Platform?}
-        B -->|Android| C[FCM]
-        B -->|iOS| D[APNs + CallKit]
-        C --> E[Foreground Service / System UI]
-        D --> F[CallKit Native UI]
-        E --> G{User Action}
-        F --> G
-        G -->|Accept| H[CometChat.acceptCall]
-        G -->|Reject| I[CometChat.rejectCall]
-        H --> J[CometChatCalls.joinSession]
-    end
-```
-
-## Prerequisites
-
-Before implementing VoIP calling, ensure you have:
-
-- [CometChat Chat SDK](/sdk/flutter/overview) and [Calls SDK](/calls/flutter/setup) integrated
-- Push notifications configured for both platforms:
-  - [Firebase Cloud Messaging (FCM)](/notifications/android-push-notifications) for Android
-  - [APNs](/notifications/ios-apns-push-notifications) for iOS
-- [Push notifications enabled](/notifications/push-overview) in CometChat Dashboard
-
-<Warning>
-VoIP calling in Flutter requires native platform code alongside your Dart code. The push notification handling and system call UI integration must be implemented natively on each platform, then bridged to Flutter via method channels or platform-specific plugins.
-</Warning>
-
-<Note>
-This documentation builds on the [Ringing](/calls/flutter/ringing) functionality. Make sure you understand basic call signaling before implementing VoIP.
-</Note>
-
----
-
-## Architecture Overview
-
-The VoIP implementation consists of platform-specific components working together with your Flutter app:
+This page covers the push side of ringing. Starting, answering and ending calls with the Calls SDK is on the [Ringing](/calls/flutter/ringing) page.
 
 ```mermaid
 flowchart LR
-    subgraph "Flutter App"
-        A[Dart Call Logic]
-        B[Method Channel]
-    end
-    
-    subgraph "Android Native"
-        C[FirebaseMessagingService]
-        D[ConnectionService]
-    end
-    
-    subgraph "iOS Native"
-        E[PushKit / APNs]
-        F[CallKit]
-    end
-    
-    subgraph "CometChat"
-        G[Chat SDK]
-        H[Calls SDK]
-    end
-    
-    B <--> C
-    B <--> E
-    C -->|Call Push| D
-    E -->|VoIP Push| F
-    D -->|Accept| G
-    F -->|Accept| G
-    G -->|Session| H
-    H --> A
+    FCM["FCM push (Android)"] --> S["Your onMessage / onBackgroundMessage"]
+    S --> H["CometChatVoip.handlePushNotification()"]
+    VOIP["VoIP push (iOS)"] --> D
+    H --> D{cometchat_voip decides}
+    D -->|ring| R["Notification + ring screen + ringtone<br/>CallKit on iOS"]
+    D -->|in another call| W[Rings over the live call]
+    D -->|another call ringing| B["Declined as busy (Android)"]
+    R -->|Answer| P[Mic / camera prompt]
+    P --> A["onCallAnswered → joinSession"]
+    R -->|Decline| Q["endCall(rejected), queued until sent"]
+    R -->|45 s| T["endCall(unanswered) + missed call"]
 ```
 
-| Component | Platform | Purpose |
-|-----------|----------|---------|
-| `FirebaseMessagingService` | Android | Receives push notifications for incoming calls when app is in background |
-| `ConnectionService` | Android | Android Telecom framework integration — manages call state with the system |
-| `PushKit` / APNs | iOS | Receives VoIP push notifications to wake the app |
-| `CallKit` | iOS | Displays native iOS call UI on lock screen and in-app |
-| Method Channel | Flutter | Bridges native call events to Dart code |
+{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip 2.0.0-beta (release/2.0). Re-check the snippets against the released packages before publishing. */}
 
----
+## Prerequisites
 
-## Android: FCM Integration
+- The [Calls SDK set up](/calls/flutter/setup) and the user [logged in](/calls/flutter/authentication).
+- Push notifications enabled in the CometChat dashboard, with the push providers, Firebase project and Apple credentials set up. See [Getting Started](/notifications/push-getting-started). Keep each provider's **Provider ID** at hand.
+- **Android:** Firebase set up in your app with `firebase_core` and `firebase_messaging`. Call pushes reach your app through `firebase_messaging`.
+- **iOS:** an APNs provider for VoIP pushes, set up as described in [Getting Started](/notifications/push-getting-started). Test on a real device; CallKit and VoIP pushes don't run in the simulator.
 
-On Android, incoming calls are delivered via Firebase Cloud Messaging (FCM). When a call notification arrives while the app is in the background, you use Android's `ConnectionService` to show the system call UI.
+## Step 1: Add the packages
 
-### Step 1: Add FCM Dependencies
-
-Add Firebase Messaging to your Android `build.gradle`:
-
-```groovy
-dependencies {
-    implementation 'com.google.firebase:firebase-messaging:23.4.0'
-}
+```yaml
+dependencies:
+  cometchat_calls_sdk: ^5.1.0
+  cometchat_voip: ^2.0.0
 ```
 
-### Step 2: Create FirebaseMessagingService
+{/* TODO(RC): confirm the published versions of cometchat_calls_sdk and cometchat_voip on pub.dev. */}
 
-In your Android native code (`android/app/src/main/`), create a service to handle incoming call push notifications:
+<Tabs>
+<Tab title="Android">
+Set `minSdk 26` in `android/app/build.gradle`. `cometchat_voip` adds the permissions, services and screens it needs to your manifest.
+</Tab>
+<Tab title="iOS">
+1. Set `platform :ios, '15.1'` in the `Podfile`.
+2. In Xcode, add the **Push Notifications** capability, and under **Background Modes** check **Voice over IP** and **Remote notifications**.
+3. Add `NSMicrophoneUsageDescription` to `Info.plist`, and `NSCameraUsageDescription` for video calls.
 
-```kotlin
-class CallFirebaseMessagingService : FirebaseMessagingService() {
+No `AppDelegate` code is needed: `cometchat_voip` creates the app's PushKit registry and reports calls to CallKit.
+</Tab>
+</Tabs>
 
-    override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        val data = remoteMessage.data
+<Warning>
+Don't create a `PKPushRegistry` of your own on iOS. A second registry takes the VoIP pushes, and those calls never ring, with no error.
+</Warning>
 
-        // Check if this is a call notification
-        if (data["type"] == "call") {
-            handleIncomingCall(data)
-        }
-    }
+## Step 2: Initialize
 
-    private fun handleIncomingCall(data: Map<String, String>) {
-        val sessionId = data["sessionId"] ?: return
-        val callerName = data["senderName"] ?: "Unknown"
-        val callerUid = data["senderUid"] ?: return
-        val callType = data["callType"] ?: "video"
-
-        // If app is in foreground, let CometChat's CallListener handle it
-        if (isAppInForeground()) return
-
-        // App is in background/killed — show system call UI
-        // Use ConnectionService or a high-priority notification
-        showIncomingCallNotification(sessionId, callerName, callerUid, callType)
-    }
-
-    override fun onNewToken(token: String) {
-        // Register the FCM token with CometChat
-        // Bridge to Flutter via method channel or shared preferences
-    }
-}
-```
-
-### Step 3: Register in AndroidManifest
-
-```xml
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <!-- VoIP permissions -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <application>
-        <service
-            android:name=".CallFirebaseMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-    </application>
-</manifest>
-```
-
-<Note>
-For the full Android `ConnectionService` implementation including `PhoneAccount` registration, `CallConnection`, and `CallNotificationManager`, refer to the [Android VoIP Calling](/calls/android/voip-calling) documentation. The native Android code is identical whether used in a native Android app or a Flutter app's Android module.
-</Note>
-
----
-
-## iOS: APNs + CallKit Integration
-
-On iOS, incoming VoIP calls are delivered via Apple Push Notification service (APNs) with VoIP push certificates. CallKit provides the native iOS call UI.
-
-### Step 1: Enable Capabilities
-
-In Xcode, enable the following capabilities for your iOS target:
-- **Push Notifications**
-- **Background Modes** → Voice over IP, Remote notifications
-
-### Step 2: Configure PushKit and CallKit
-
-In your iOS native code (`ios/Runner/`), set up PushKit to receive VoIP pushes and CallKit to display the call UI:
-
-```swift
-import PushKit
-import CallKit
-import Flutter
-
-class CallKitManager: NSObject, PKPushRegistryDelegate, CXProviderDelegate {
-    static let shared = CallKitManager()
-    
-    private let provider: CXProvider
-    private let voipRegistry = PKPushRegistry(queue: .main)
-    private var methodChannel: FlutterMethodChannel?
-    
-    override init() {
-        let config = CXProviderConfiguration()
-        config.supportsVideo = true
-        config.maximumCallsPerGroup = 1
-        config.supportedHandleTypes = [.generic]
-        provider = CXProvider(configuration: config)
-        
-        super.init()
-        provider.setDelegate(self, queue: nil)
-        voipRegistry.delegate = self
-        voipRegistry.desiredPushTypes = [.voIP]
-    }
-    
-    func setMethodChannel(_ channel: FlutterMethodChannel) {
-        methodChannel = channel
-    }
-    
-    // MARK: - PKPushRegistryDelegate
-    
-    func pushRegistry(
-        _ registry: PKPushRegistry,
-        didUpdate pushCredentials: PKPushCredentials,
-        for type: PKPushType
-    ) {
-        let token = pushCredentials.token
-            .map { String(format: "%02x", $0) }
-            .joined()
-        // Register VoIP token with CometChat
-        methodChannel?.invokeMethod("onVoIPToken", arguments: token)
-    }
-    
-    func pushRegistry(
-        _ registry: PKPushRegistry,
-        didReceiveIncomingPushWith payload: PKPushPayload,
-        for type: PKPushType,
-        completion: @escaping () -> Void
-    ) {
-        guard type == .voIP else { completion(); return }
-        
-        let data = payload.dictionaryPayload
-        let sessionId = data["sessionId"] as? String ?? ""
-        let callerName = data["senderName"] as? String ?? "Unknown"
-        let callType = data["callType"] as? String ?? "video"
-        let hasVideo = callType == "video"
-        
-        // Report incoming call to CallKit
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: sessionId)
-        update.localizedCallerName = callerName
-        update.hasVideo = hasVideo
-        
-        let uuid = UUID()
-        provider.reportNewIncomingCall(with: uuid, update: update) { error in
-            if let error = error {
-                print("Failed to report call: \(error)")
-            }
-            completion()
-        }
-    }
-    
-    // MARK: - CXProviderDelegate
-    
-    func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // User tapped Accept — bridge to Flutter
-        methodChannel?.invokeMethod("onCallAccepted", arguments: nil)
-        action.fulfill()
-    }
-    
-    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        // User tapped Decline or End — bridge to Flutter
-        methodChannel?.invokeMethod("onCallDeclined", arguments: nil)
-        action.fulfill()
-    }
-    
-    func providerDidReset(_ provider: CXProvider) {
-        // Provider was reset — clean up
-    }
-}
-```
-
-### Step 3: Bridge to Flutter
-
-Set up a method channel in your `AppDelegate` to communicate between native iOS code and Flutter:
-
-```swift
-import Flutter
-
-@UIApplicationMain
-@objc class AppDelegate: FlutterAppDelegate {
-    override func application(
-        _ application: UIApplication,
-        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-    ) -> Bool {
-        let controller = window?.rootViewController as! FlutterViewController
-        let channel = FlutterMethodChannel(
-            name: "com.yourapp/calls",
-            binaryMessenger: controller.binaryMessenger
-        )
-        
-        CallKitManager.shared.setMethodChannel(channel)
-        
-        channel.setMethodCallHandler { (call, result) in
-            switch call.method {
-            case "endCall":
-                // End CallKit call from Flutter side
-                result(nil)
-            default:
-                result(FlutterMethodNotImplemented)
-            }
-        }
-        
-        GeneratedPluginRegistrant.register(with: self)
-        return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-    }
-}
-```
-
----
-
-## Flutter: Handle Call Events
-
-On the Dart side, set up a method channel to receive call events from native code and manage the call lifecycle:
+Initialize `cometchat_voip` after the Calls SDK, as early as possible at app start, and before your app handles any call push. Build its configuration from the same `CallAppSettings` you give the Calls SDK, so the app ID and region match.
 
 ```dart
-import 'package:flutter/services.dart';
-import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
+CallAppSettings callAppSettings = (CallAppSettingBuilder()
+      ..appId = "APP_ID"
+      ..region = "REGION")
+    .build();
 
-class VoIPCallManager {
-  static const _channel = MethodChannel('com.yourapp/calls');
-
-  static void initialize() {
-    _channel.setMethodCallHandler(_handleMethodCall);
-  }
-
-  static Future<void> _handleMethodCall(MethodCall call) async {
-    switch (call.method) {
-      case 'onCallAccepted':
-        // User accepted the call from native UI
-        await _acceptAndJoinCall();
-        break;
-      case 'onCallDeclined':
-        // User declined the call from native UI
-        await _rejectCall();
-        break;
-      case 'onVoIPToken':
-        // Register VoIP token with CometChat (iOS)
-        final token = call.arguments as String;
-        _registerVoIPToken(token);
-        break;
-    }
-  }
-
-  static Future<void> _acceptAndJoinCall() async {
-    // Accept via CometChat Chat SDK, then join via Calls SDK
-    // Navigate to call screen
-  }
-
-  static Future<void> _rejectCall() async {
-    // Reject via CometChat Chat SDK
-  }
-
-  static void _registerVoIPToken(String token) {
-    // Register token with CometChat push notification service
-  }
-}
+// After CometChatCalls.init(callAppSettings, ...) succeeds:
+await CometChatVoip.init(
+  CometChatVoipConfig.fromCallAppSettings(
+    callAppSettings,
+    providerId: "PROVIDER_ID", // the FCM provider on Android, the APNs provider on iOS
+  ),
+);
 ```
 
----
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `providerId` | none | The dashboard push provider the token is registered under |
+| `callMode` | `CometChatCallMode.auto` | Who rings the call and draws the ring screen. See [Receive a call](#receive-a-call) |
+| `defaultRingTimeout` | 45 seconds | How long a call rings when the push doesn't say |
+| `showMissedCallNotification` | `true` | Show a notification for a call that rang out or was cancelled |
+| `requestCallPermissions` | `true` | Ask for the microphone (and the camera for video) when the user answers |
+| `requestNotificationPermission` | `true` | Ask for notification permission during `init` |
+| `autoRegisterPushToken` | `true` | Register the push token again on every Calls SDK login. On Android, hand over the FCM token once first (Step 4) |
+| `dropExpiredCalls` | `true` | Don't ring a push that arrives after its call stopped ringing |
+| `callKit` | `CometChatCallKitOptions()` | iOS CallKit options: icon, ringtone, whether calls appear in Recents |
 
-## Register FCM Token
+## Step 3: Hand call pushes to cometchat_voip
 
-Register the FCM token with CometChat to receive push notifications on Android:
+On Android, pass the data of every push your app receives to `handlePushNotification`, from both your foreground and your background message handlers. It returns `true` for a call push, which `cometchat_voip` then rings. Other pushes, such as chat messages, are left to your own handling.
 
 ```dart
-import 'package:firebase_messaging/firebase_messaging.dart';
-
-Future<void> registerPushToken() async {
-  final token = await FirebaseMessaging.instance.getToken();
-  if (token != null) {
-    // Register with CometChat Chat SDK
-    // CometChat.registerTokenForPushNotification(token, ...)
+// Foreground: register with FirebaseMessaging.onMessage.listen(...)
+Future<void> onForegroundMessage(RemoteMessage message) async {
+  bool isCallPush = await CometChatVoip.handlePushNotification(
+    message.data,
+    sentTime: message.sentTime,
+  );
+  if (!isCallPush) {
+    // Not a call: handle the push as you do today.
   }
 }
-```
 
----
+// Background and killed: register with FirebaseMessaging.onBackgroundMessage(...)
+@pragma('vm:entry-point')
+Future<void> onBackgroundMessage(RemoteMessage message) async {
+  // Runs in a separate isolate when the app is in the background or killed.
+  // Your app's startup code hasn't run here, so initialize the Calls SDK and
+  // cometchat_voip (Step 2) before handing over the push.
+  if (!CometChatVoip.isInitialized) {
+    // CometChatCalls.init(...), then CometChatVoip.init(...)
+  }
 
-## Initiate Outgoing Calls
-
-To make an outgoing VoIP call, use the CometChat Chat SDK to initiate the call, then join the session:
-
-```dart
-Future<void> initiateVoIPCall({
-  required String receiverId,
-  required String callType,
-}) async {
-  // Initiate call via CometChat Chat SDK
-  // This sends a push notification to the receiver
-  // On success, navigate to call screen and join session
-
-  final sessionSettings = (SessionSettingsBuilder()
-      ..setType(callType == "video" ? SessionType.video : SessionType.audio))
-      .build();
-
-  CometChatCalls.joinSession(
-    sessionId: sessionId,
-    sessionSettings: sessionSettings,
-    onSuccess: (Widget? widget) {
-      // Navigate to call screen with the widget
-    },
-    onError: (CometChatCallsException e) {
-      debugPrint("Failed to join: ${e.message}");
-    },
+  await CometChatVoip.handlePushNotification(
+    message.data,
+    sentTime: message.sentTime,
   );
 }
 ```
 
----
+<Warning>
+**Pass `sentTime` and hand over every push.** Firebase can hold a push while the phone dozes; without the sent time a push delivered late rings for a call that's already over. Don't skip call pushes when the app is in the foreground: `cometchat_voip` rings them in every app state.
+</Warning>
 
-## Complete Flow Diagram
+<Warning>
+**Send call pushes at high priority.** Android only lets a background app stay alive through the answer when a high-priority push woke it.
+</Warning>
 
-This diagram shows the complete flow for both incoming and outgoing VoIP calls:
+On iOS there's nothing to hand over: VoIP pushes go straight to `cometchat_voip`.
 
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant CallerApp
-    participant CometChat
-    participant PushService
-    participant ReceiverApp
-    participant NativeUI
-    participant Receiver
+## Step 4: Register the push token
 
-    Note over Caller,Receiver: Outgoing Call Flow
-    Caller->>CallerApp: Tap call button
-    CallerApp->>CometChat: initiateCall()
-    CometChat-->>CallerApp: onSuccess(sessionId)
-    CallerApp->>CallerApp: Navigate to call screen
-    CallerApp->>CometChat: joinSession()
-    CometChat->>PushService: Send push (FCM / APNs)
-    
-    Note over Caller,Receiver: Incoming Call Flow
-    PushService->>ReceiverApp: Push notification received
-    
-    alt Android (FCM)
-        ReceiverApp->>NativeUI: ConnectionService / Notification
-    else iOS (APNs + CallKit)
-        ReceiverApp->>NativeUI: CallKit native call UI
-    end
-    
-    NativeUI->>Receiver: Show incoming call
-    Receiver->>NativeUI: Accept / Reject
-    
-    alt Call Accepted
-        NativeUI->>ReceiverApp: Bridge to Flutter
-        ReceiverApp->>CometChat: acceptCall()
-        ReceiverApp->>CometChat: joinSession()
-        Note over CallerApp,ReceiverApp: Call Connected
-    else Call Rejected
-        NativeUI->>ReceiverApp: Bridge to Flutter
-        ReceiverApp->>CometChat: rejectCall()
-    end
+| Method | Platform | When |
+|--------|----------|------|
+| `registerPushToken(token:)` | Android | After login, with the FCM token |
+| `handleTokenRefresh(token)` | Android | When FCM issues a new token |
+| `unregisterPushToken()` | Android, iOS | Before logout, while the user's session still works |
+
+On iOS, `cometchat_voip` gets the PushKit token and registers it when the user logs in.
+
+```dart
+// Android: after login
+String? fcmToken = await FirebaseMessaging.instance.getToken();
+if (fcmToken != null) {
+  await CometChatVoip.registerPushToken(token: fcmToken);
+}
+
+// Android: when the token changes
+FirebaseMessaging.instance.onTokenRefresh.listen(CometChatVoip.handleTokenRefresh);
+
+// Before logout
+await CometChatVoip.unregisterPushToken();
 ```
 
----
+## Step 5: Permissions and ring readiness
+
+**Microphone and camera.** `cometchat_voip` asks at the moment of answering (with `requestCallPermissions` on, the default): the ring stops, the system prompt appears, and the call joins whatever the user chose.
+
+**Ring readiness.** Some device settings silence a call with no error anywhere. Check once after login and tell the user:
+
+```dart
+CometChatRingReadiness readiness = await CometChatVoip.checkRingReadiness();
+if (readiness != CometChatRingReadiness.ready) {
+  // Explain why to the user, then open the right settings page:
+  await CometChatVoip.openSettings(readiness);
+}
+```
+
+| Result | Meaning |
+|--------|---------|
+| `ready` | Nothing in the way |
+| `notificationsOff` | The app can't show notifications |
+| `channelMuted` | The user muted the incoming call notifications (Android) |
+| `fullScreenIntentDenied` | Full-screen alerts aren't allowed (Android 14 and later): no ring screen on a locked phone, only the notification |
+| `doNotDisturb` | Do Not Disturb is blocking calls |
+| `microphoneDenied` | The user refused the microphone: calls still ring but join muted |
+| `backgroundModeMissing` | The Voice over IP background mode is missing (iOS) |
+| `voipEntitlementMissing` | The push notifications entitlement is missing (iOS) |
+
+`CometChatVoip.verifyPushSetup()` checks the rest of the setup and reports `ok`, `notInitialized`, `notLoggedIn`, `tokenNotRegistered`, `tokenRegistrationFailed`, `notificationsBlocked` or `ringNotReady`.
+
+## Receive a call
+
+How an incoming call rings depends on `callMode`:
+
+| | Auto | Auto + your own ring screen | Manual |
+|---|---|---|---|
+| `callMode` | `CometChatCallMode.auto` (default) | `CometChatCallMode.autoCustomScreen` | `CometChatCallMode.manual` |
+| Ringing and the ring screen | `cometchat_voip` | `cometchat_voip` rings; the ring screen is your Flutter screen | Your app |
+| Platforms | Android, iOS | Android (iOS behaves as Auto) | Android |
+
+In every mode, when the user answers, your app joins the call (see [Answer a call](/calls/flutter/ringing#answer-a-call)).
+
+### Auto
+
+`cometchat_voip` does all of the ringing, including its own ring screen. Listen for an answer, and for a call that stops ringing:
+
+```dart
+CometChatVoip.onCallAnswered.listen((CometChatVoipCall call) {
+  // The user answered: show your call screen and join call.sessionId.
+});
+
+CometChatVoip.onCallEnded.listen((CometChatCallEnded ended) {
+  // The call stopped ringing without an answer on this device.
+  // ended.reason says why; ended.reason.isMissed is true for a missed call.
+});
+```
+
+### Your own ring screen
+
+With `callMode: CometChatCallMode.autoCustomScreen`, the full-screen alert and a tap on the notification open your Flutter ring screen instead of `cometchat_voip`'s. The notification, its ringtone, its Answer and Decline buttons and the ring timeout are still `cometchat_voip`'s. Android only.
+
+```dart
+CometChatVoip.onRingScreenRequested.listen((CometChatRingRequest request) {
+  // Show your ring screen for request.call.
+  // If request.answerEndsActiveCall is true, tell the user that answering ends their current call.
+  // Answer button:  CometChatVoip.answer(request.call.sessionId)
+  // Decline button: CometChatVoip.decline(request.call.sessionId)
+});
+
+CometChatVoip.onCallAnswered.listen((CometChatVoipCall call) {
+  // Close your ring screen, then show your call screen and join.
+});
+
+CometChatVoip.onCallEnded.listen((CometChatCallEnded ended) {
+  // The call stopped ringing: close your ring screen.
+});
+```
+
+`answer` asks for the microphone (and the camera for a video call) by itself. A call that arrives while your app is in the foreground shows a notification instead of the full-screen alert; to show your ring screen then too, also listen to `CometChatVoip.onCallRinging`.
+
+### Manual
+
+With `callMode: CometChatCallMode.manual`, `cometchat_voip` only reads the push: it drops duplicates, expired calls, calls this user placed and calls meant for someone else, and passes every new call to `onCallRinging`. Every other step is yours. Android only.
+
+```dart
+CometChatVoip.onCallRinging.listen((CometChatVoipCall call) async {
+  await CometChatVoip.ringSurfaces.showIncomingNotification(call); // ring, keep alive, stop at call.expiresAt
+  await CometChatVoip.ringSurfaces.verify(call);                   // the caller sees "Ringing…"
+});
+
+CometChatVoip.onCallEnded.listen((CometChatCallEnded ended) {
+  CometChatVoip.ringSurfaces.stopRinging(ended.call.sessionId);
+});
+```
+
+Report what the user chose with `CometChatVoip.accept(sessionId)` (fires `onCallAnswered`) or `CometChatVoip.decline(sessionId)`. For your own ring UI without `showIncomingNotification`, keep the app alive with `ringSurfaces.keepAlive(call)`, stop at `call.expiresAt` and show a missed call with `ringSurfaces.showMissedCall(call)`. A second call while one is ringing or live is yours to refuse with `decline(sessionId, busy: true)`. In Manual mode, `decline` retries a few times and then throws; it doesn't survive the app being killed.
+
+<Warning>
+In Manual mode with nothing built, the call is silently lost: no notification, no ringtone, no screen, nothing sent to the caller, who rings out to `unanswered`. Use Manual only if you are building the whole ring yourself.
+</Warning>
+
+## Incoming call events
+
+Listen to `cometchat_voip`'s events: `onCallAnswered` to join, `onCallEnded` to close. The Calls SDK's `IncomingCallListener` (`CometChatCalls.addIncomingCallListener`) reports the same rings and ends if you prefer it, and the caller uses it to learn that a call was declined.
+
+## How a ring ends
+
+Every way out is handled by `cometchat_voip` and needs no code in your app.
+
+| What happened | On the callee's phone | What the caller learns |
+|---------------|-----------------------|------------------------|
+| The user answers | The ring stops; `onCallAnswered` fires | `onParticipantJoined` |
+| The user declines | The ring stops; `rejected` is sent and retried until delivered | `onIncomingCallEnded(call, "rejected")` |
+| The user declines while in another call | The same, with `busy` | `"busy"` |
+| The caller cancels | The ring stops; missed call | Nothing; the caller ended it |
+| Nobody answers a 1:1 call | At the ring time (45 seconds by default) the ring stops, a missed call is shown and `unanswered` is sent | `"unanswered"` |
+| Answered on another device | The ring stops, no missed call | `onParticipantJoined` |
+| Nobody answers a group call, or the user declines it | The ring stops here only; nothing is sent | Nothing |
+
+## A call while in a call
+
+Call waiting, the way the phone app does it. "In a call" means the Calls SDK is joined to a session.
+
+| Situation | Android | iOS |
+|-----------|---------|-----|
+| A call while in a call | Rings over the live call; the ring adds "Answering ends your current call". The live call is untouched | CallKit call waiting |
+| Answer | Ends the live call, then `onCallAnswered` fires for the new call | The same, through CallKit's **End & Accept** |
+| Decline | `busy` to the caller; the live call continues | The same |
+| No action | `unanswered` to the caller, missed call; the live call continues | The same |
+| A call while another one is already ringing here | Declined as `busy` without ringing, missed call. The first keeps ringing | Shown by CallKit |
+| A call while the user's own outgoing call is ringing | Declined as `busy` without ringing, missed call | Shown by CallKit |
+
+In Manual mode, your app decides how to handle these calls.
+
+## Missed calls
+
+With `showMissedCallNotification` on (the default), a missed call is shown when nobody answers in the ring time, or when the caller cancels before an answer. It isn't shown when the call is answered here or on another device, or declined here. On `onCallEnded`, `ended.reason.isMissed` is `true` for these calls.
+
+## When the app is killed or the phone is locked
+
+1. The call push wakes the app: a high-priority FCM push runs your background message handler on Android; a VoIP push wakes `cometchat_voip` on iOS.
+2. On Android, the handler initializes the Calls SDK and `cometchat_voip` and hands over the push (Step 3).
+3. `cometchat_voip` rings: on Android on a foreground service that keeps the app alive through the answer, with the ring screen over the lock screen; on iOS through CallKit.
+4. On **Answer**, it asks for the microphone (and camera), opens the app, and `onCallAnswered` fires as soon as your code listens. Join the call there.
+5. A decline or a timeout is sent from a queue, so it goes out even if the app is killed right after the tap.
+
+Initialize the Calls SDK and `cometchat_voip`, and log the user in, at app start from stored credentials, not only after a screen opens, so an answered call finds a ready SDK.
+
+## Logout
+
+Before logging the user out, call `CometChatVoip.unregisterPushToken()` while the session that owns the token still works, then log out of the Calls SDK with `CometChatCalls.logout`.
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Calls not received in background (Android) | Verify [FCM configuration](/notifications/android-push-notifications) and ensure high-priority notifications are enabled |
-| Calls not received in background (iOS) | Ensure VoIP push certificate is configured and PushKit is registered |
-| CallKit UI not showing (iOS) | Verify Background Modes capability includes "Voice over IP" |
-| System call UI not showing (Android) | Ensure PhoneAccount is registered and enabled in system settings |
-| Audio routing issues | Ensure `audioModeIsVoip` is set on the Android Connection |
-| Method channel not responding | Verify channel name matches between native and Dart code |
+| Symptom | Check |
+|---------|-------|
+| The phone doesn't ring when the app is killed (Android) | The background handler is registered, initializes the Calls SDK and `cometchat_voip`, and calls `handlePushNotification` |
+| The call rings, but the app is killed before the answer (Android) | Call pushes are sent at normal priority; send them at high priority |
+| The phone doesn't ring at all | `CometChatVoip.verifyPushSetup()` and `CometChatVoip.checkRingReadiness()` say what's missing |
+| iOS never rings | Push Notifications and the Voice over IP background mode are on, the APNs provider is set up as in Getting Started, and no other `PKPushRegistry` exists |
+| The caller never sees "Ringing…" | The callee's app has `cometchat_voip` initialized and a push token registered, and the caller doesn't join right after `initiateCall` |
+| The caller doesn't learn about a decline | The caller's app has `cometchat_voip` initialized and a push token registered |
+| An audio call rings as video | `InitiateCallOptions.type` isn't set; it defaults to video |
+| Two ringtones or two ring screens | Earlier ringing code is still in the app: your own CallKit or `flutter_callkit_incoming` handling, or a Chat SDK `CallListener` that shows an incoming call screen. Remove it |
+| Calls still ring after sign-out | `unregisterPushToken()` wasn't called before logout |
 
----
+## Related
 
-## Related Documentation
-
-- [Ringing](/calls/flutter/ringing) - Basic in-app call signaling
-- [Actions](/calls/flutter/actions) - Control call functionality
-- [Events](/calls/flutter/events) - Listen for call state changes
-- [Background Handling](/calls/flutter/background-handling) - Keep active calls alive in background
+- [Ringing](/calls/flutter/ringing): start, answer, decline, cancel and end calls with the Calls SDK.
+- [Migrating from legacy ringing](/calls/flutter/migrating-from-legacy-ringing).
+- [Background Handling](/calls/flutter/background-handling): keep a joined call running when the app goes to the background.
