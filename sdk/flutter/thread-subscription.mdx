@@ -1,0 +1,366 @@
+---
+title: "Thread Subscription"
+description: "Subscribe to and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat Flutter SDK."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_sdk` |
+| Import | `import 'package:cometchat_sdk/cometchat_sdk.dart';` |
+| Purpose | Subscribe to and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat Flutter SDK. |
+| Key methods | `subscribeToThread()` · `unsubscribeFromThread()` · `getMessageDetails()` |
+| Key classes | `ThreadsRequestBuilder` · `ThreadsRequest` · `MessageThread` · `BaseMessage` · `RepliesOptions` |
+| Key fields | `BaseMessage.threadSubscribed` · `MessageThread.subscribed` |
+| Prerequisites | SDK initialised via [`CometChat.init()`](/sdk/flutter/setup) and a logged-in user via [`CometChat.login()`](/sdk/flutter/authentication-overview). |
+| Constraints | A thread is identified by its **parent message ID**. The SDK keeps no subscription state and fires no subscription event — the resolved call is the acknowledgement. |
+| Related | [Threaded Messages](/sdk/flutter/threaded-messages) · [Notification Preferences](/notifications/preferences) |
+| Full reference | [`BaseMessage`](/sdk/reference/messages#basemessage) · [`CometChatException`](/sdk/reference/auxiliary#cometchatexception) |
+
+</Accordion>
+
+<Note>
+**Available from Chat SDK v5.0.7.** These APIs require `cometchat_sdk` v5.0.7 or later. See [Setup](/sdk/flutter/setup) to upgrade.
+</Note>
+
+Thread subscription gives users control over thread noise. A user can **subscribe** to a message thread to be notified of future replies, or **unsubscribe** to mute it.
+
+The server subscribes a user to a thread automatically when they start it, reply in it, or are @-mentioned in it — and they can explicitly subscribe to any parent message, even one that has no replies yet.
+
+<Note>
+Thread subscription builds on [Threaded Messages](/sdk/flutter/threaded-messages). A thread is identified by the ID of its **parent message** — there is no separate thread ID.
+</Note>
+
+## How State Works
+
+The SDK keeps **no subscription state of its own**. There is no cache and no listener to reconcile:
+
+- Message-list fetches and `getMessageDetails()` ask the server for the flag, and it arrives on the message as the `threadSubscribed` field.
+- `subscribeToThread()` and `unsubscribeFromThread()` complete when the server has accepted the change. The `onSuccess` callback **is** the acknowledgement — there is no follow-up event.
+
+Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
+
+## Subscribe to a Thread
+
+Use `subscribeToThread()` with the ID of the thread's parent message. The call is **idempotent** — subscribing to a thread the user already follows succeeds silently. Subscribing to a message with zero replies is allowed; the user is notified when the first reply arrives.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int parentMessageId = 103;
+
+CometChat.subscribeToThread(parentMessageId, onSuccess: (String response) {
+  // The server has accepted it — flip your toggle here.
+  debugPrint("Subscribed to thread: $response");
+}, onError: (CometChatException e) {
+  debugPrint("Thread subscription failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+## Unsubscribe from a Thread
+
+Use `unsubscribeFromThread()`. This is idempotent too — unsubscribing from a thread the user does not follow succeeds silently.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int parentMessageId = 103;
+
+CometChat.unsubscribeFromThread(parentMessageId, onSuccess: (String response) {
+  debugPrint("Unsubscribed from thread: $response");
+}, onError: (CometChatException e) {
+  debugPrint("Thread unsubscription failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+<Warning>
+Unsubscribing is **not sticky**. If the user replies in the thread again, or is @-mentioned in it, the server re-subscribes them. Do not promise users that they will never hear about the thread again.
+</Warning>
+
+Unsubscribing hard-deletes the subscription server-side, so a thread you are showing in a "following" list should be removed from that list when the call resolves.
+
+## Read the Subscription State
+
+The state rides the **parent message**. Read it from the `threadSubscribed` field:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (parentMessage.threadSubscribed) {
+  // Show the "Unsubscribe" affordance
+} else {
+  // Show the "Subscribe" affordance
+}
+```
+
+</Tab>
+</Tabs>
+
+`MessagesRequest` fetches and `getMessageDetails()` send `withThreadSubscribed=true`, so any message you obtained from them carries the flag. Other responses do not ask for it — the message returned by `pinMessage()` or `saveMessage()`, and a conversation's last message — so those read `false`. The flag is per-viewer: the same message yields different values for different users.
+
+<Note>
+A message delivered over the **socket**, or returned by a call that did not ask for the flag, reads `false`. That is not a claim that the user is unsubscribed — it means nobody asked. Because subscribing is idempotent, rendering that `false` as the "Subscribe" affordance is safe: an unnecessary subscribe is harmless.
+</Note>
+
+### Re-read the State for One Message
+
+When you need an authoritative flag for a single message — after acting on a socket-delivered message, or for a deep link to a thread you have not fetched — fetch the parent message with `getMessageDetails()` and read the flag off the result.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+int messageId = 103;
+
+CometChat.getMessageDetails(messageId, onSuccess: (BaseMessage message) {
+  debugPrint("Thread subscribed: ${message.threadSubscribed}");
+}, onError: (CometChatException e) {
+  debugPrint("Message details fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+### You Are Subscribed to Your Own Messages
+
+Sending a message subscribes you to the thread it may later grow — there is nothing to call. A message you sent comes back with `threadSubscribed` set to `true` on later fetches, and **only for you**: the flag is per-viewer, so the same message reads `false` for everybody else until they subscribe themselves.
+
+That default is what makes the flag meaningful on your own messages. Since it starts out `true`, a `false` on a message **you sent** — read from a fetch, not the socket — is not silence. It means you unsubscribed, and nothing should quietly put you back.
+
+This only holds for a message you sent and obtained from a fetch that asked for the flag. On anyone else's message, or on anything socket-delivered, `false` still just means the server was not asked.
+
+### Keeping Your Own Copies in Sync
+
+The same thread can be represented by several message objects at once — a row in the message list, the header of an open thread view, an entry in a thread inbox. Because the SDK caches nothing, align the copies you hold once you know the answer. `threadSubscribed` is a mutable field for exactly this:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.subscribeToThread(parentMessage.id, onSuccess: (String response) {
+  // The server accepted it — bring the objects you are rendering into line.
+  parentMessage.threadSubscribed = true;
+}, onError: (CometChatException e) {
+  debugPrint("Thread subscription failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+<Warning>
+Assigning `threadSubscribed` is **local only** — it changes the object in memory and sends nothing to the server. Use `subscribeToThread()` / `unsubscribeFromThread()` to change the actual subscription.
+</Warning>
+
+## Reacting to Replies
+
+A thread reply is an **ordinary message** with `parentMessageId` set, delivered through the standard `MessageListener` alongside every other message. There is no separate thread listener.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class Class_Name with MessageListener {
+
+  //CometChat.addMessageListener("listenerId", this);
+
+  @override
+  void onTextMessageReceived(TextMessage textMessage) {
+    if (textMessage.parentMessageId != 0) {
+      // A reply landed in a thread — bump your thread row here.
+      debugPrint("A reply landed in thread ${textMessage.parentMessageId}");
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Using `MessageListener` also gets you `onMessageEdited` and `onMessageDeleted` for replies, which a thread-only channel would not.
+
+Replies sent from **this** device do not arrive on a listener — bump your thread row from the send call's `onSuccess` callback instead. Replies the same user sends from another device do arrive on `MessageListener`.
+
+## Fetch the Threads a User Participates In
+
+Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to — presence in the list *is* a subscription. `ThreadsRequest`, `MessageThread` and `ConversationListener` are exported from `package:cometchat_sdk/cometchat_sdk.dart`, not from the modular `core.dart` or `messaging.dart` entry points.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
+      ..setParticipatedByMe(true)
+      ..setLimit(30))
+    .build();
+
+threadsRequest.fetchNext(onSuccess: (List<MessageThread> threads) {
+  debugPrint("Fetched ${threads.length} threads");
+}, onError: (CometChatException e) {
+  debugPrint("Thread fetching failed with exception: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+`fetchNext()` takes **required** `onSuccess` and `onError` callbacks, like every other request in the SDK. Call it repeatedly on the same object to page through the list, using `hasMore()` as the loop condition — page on it rather than on the size of the last result. Once the list is exhausted, `fetchNext()` resolves an empty list.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final List<MessageThread> threads = [];
+
+while (threadsRequest.hasMore()) {
+  threads.addAll(await threadsRequest.fetchNext(
+    onSuccess: (_) {},
+    onError: (CometChatException e) => debugPrint(e.message),
+  ));
+}
+```
+
+</Tab>
+</Tabs>
+
+Scope the list to one conversation with `setUid()` for a one-on-one counterpart or `setGuid()` for a group. The two are mutually exclusive.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+ThreadsRequest threadsRequest = (ThreadsRequestBuilder()
+      ..setGuid("cometchat-guid-1")
+      ..setLimit(30))
+    .build();
+```
+
+</Tab>
+</Tabs>
+
+| Method | Description |
+| --- | --- |
+| `setLimit(int)` | Threads per page. Accepts 1–1000; defaults to 30. |
+| `setParticipatedByMe(bool)` | Restrict the list to threads the logged-in user participates in. Defaults to `true`. |
+| `setUid(String)` | Only threads in the one-on-one conversation with this user. |
+| `setGuid(String)` | Only threads in this group. |
+
+If you insert a row into the list yourself — for example after the user subscribes to a thread from the message view — call `threadsRequest.markSeen(parentMessageId)` so the next `fetchNext()` does not return it again as a duplicate.
+
+<Note>
+A `ThreadsRequest` is **single-use and one-directional**: it accumulates its paging state internally and has no reset. To refresh a list, build a new request from the builder and replace the list rather than re-running an exhausted one. This is the same contract as `ConversationsRequest` and `MessagesRequest`.
+</Note>
+
+### The MessageThread Model
+
+Each row is a `MessageThread`:
+
+| Field | Description |
+| --- | --- |
+| `parentMessageId` | The thread's identifier — the parent message's ID. |
+| `parentMessage` | The parent `BaseMessage`, or `null` if it could not be parsed. |
+| `replyCount` | Number of replies in the thread. |
+| `lastReply` | The most recent reply, or `null` for a thread with no replies. |
+| `unreadReplyCount` | Unread replies, or `null` when the server did not send a count — `null` is not the same as `0`. |
+| `subscribed` | Whether the user follows this thread. Always `true` for list rows. |
+| `updatedAt` | The server's paging cursor, in Unix **seconds**. Treat it as opaque. |
+| `conversationId` | The conversation the thread belongs to. |
+| `receiverType` | `"user"` or `"group"`. |
+| `receiverUid` | The raw UID or GUID of the thread's conversation counterpart. |
+| `rawData` | The untouched payload, for fields the SDK does not model. |
+
+<Note>
+Sort a thread inbox on `lastReply?.sentAt` falling back to `parentMessage?.sentAt` — a thread with no replies has no last reply, and `updatedAt` is a cursor, not a sort key. A row carries only the raw `receiverUid`, with no name or avatar: render the ID immediately and resolve the display name lazily with `CometChat.getUser()` or `CometChat.getGroup()` rather than dropping the row.
+</Note>
+
+## Notification Preferences
+
+The notification preference for replies carries a value that pairs with this feature, so a user can be notified only about the threads they follow: `SUBSCRIBE_TO_SUBSCRIBED_THREADS` in the `RepliesOptions` enum.
+
+| Value | Behavior |
+| --- | --- |
+| `DONT_SUBSCRIBE` | No notifications for thread replies. |
+| `SUBSCRIBE_TO_ALL` | Notifications for all thread replies. |
+| `SUBSCRIBE_TO_MENTIONS` | Notifications only for replies that mention the user. |
+| `SUBSCRIBE_TO_SUBSCRIBED_THREADS` | Notifications for replies in threads the user is subscribed to. |
+
+Threads exist in one-on-one conversations as well as groups, so set it on whichever preferences you are updating:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+NotificationPreferences updatedPreferences = NotificationPreferences();
+
+updatedPreferences.groupPreferences = GroupPreferences(
+  replies: RepliesOptions.SUBSCRIBE_TO_SUBSCRIBED_THREADS,
+);
+updatedPreferences.oneOnOnePreferences = OneOnOnePreferences(
+  replies: RepliesOptions.SUBSCRIBE_TO_SUBSCRIBED_THREADS,
+);
+
+CometChatNotifications.updatePreferences(updatedPreferences,
+    onSuccess: (NotificationPreferences preferences) {
+  debugPrint("updatePreferences:success");
+}, onError: (CometChatException e) {
+  debugPrint("updatePreferences:error: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+`updatePreferences()` merges what you set, so sending only the fields you changed is enough.
+</Note>
+
+<Warning>
+A **threaded reply** (a message posted into a thread) and a **quoted reply** (a reply to one specific message) are configured through two different enums — `RepliesOptions` and `QuotedRepliesOptions` — and their fourth values differ. The `quotedReplies` field on `GroupPreferences` and `OneOnOnePreferences` is typed `QuotedRepliesOptions`, so passing a `RepliesOptions` value there does not compile.
+</Warning>
+
+See [Notification Preferences](/notifications/preferences) for reading and updating a user's preferences, and for the full `QuotedRepliesOptions` list.
+
+## Error Handling
+
+The calls on this page report failures through `onError` with a `CometChatException`. Branch on `e.code` rather than the message text:
+
+| Code | Raised by | Meaning |
+| --- | --- | --- |
+| `ERR_INVALID_ARGUMENT` | `subscribeToThread()` · `unsubscribeFromThread()` | The parent message ID is not a positive integer. |
+| `ERR_INVALID_LIMIT` | `ThreadsRequest.fetchNext()` | The limit is outside 1–1000. |
+| `ERR_INVALID_FILTER` | `ThreadsRequest.fetchNext()` | Both `setUid()` and `setGuid()` were set. |
+| `ERR_REQUEST_IN_PROGRESS` | `ThreadsRequest.fetchNext()` | A fetch is already in flight on this request — wait for it before calling again. |
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.subscribeToThread(0, onSuccess: (String response) {
+  debugPrint("Subscribed: $response");
+}, onError: (CometChatException e) {
+  // code: "ERR_INVALID_ARGUMENT"
+  debugPrint("${e.code}: ${e.message}");
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Threaded Messages" icon="comments" href="/sdk/flutter/threaded-messages">
+    Send, receive and fetch messages inside a thread
+  </Card>
+  <Card title="All Real Time Listeners" icon="tower-broadcast" href="/sdk/flutter/real-time-listeners">
+    Every listener the SDK exposes, in one place
+  </Card>
+  <Card title="Mentions" icon="at" href="/sdk/flutter/mentions">
+    Mention users in messages
+  </Card>
+  <Card title="Notification Preferences" icon="bell" href="/notifications/preferences">
+    Read and update a user's notification preferences
+  </Card>
+</CardGroup>
