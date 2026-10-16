@@ -1,0 +1,338 @@
+---
+title: "Ongoing Call"
+description: "In-call screen that joins the call session and renders the Calls SDK's call UI, for outgoing, answered incoming and group calls."
+---
+
+`CometChatOngoingCall` renders the active call: the Calls SDK's video tiles and controls (mute, camera, switch camera, end). `CometChatOngoingCallActivity` hosts it full-screen, supports picture-in-picture, and is where an answered incoming call ends up: your app's answer activity opens it with the answered call, and it joins the session.
+
+---
+
+## Where It Fits
+
+Every call ends up here:
+
+| Path | How the screen opens |
+|------|----------------------|
+| Incoming call answered | The Push SDK starts your answer activity (`PNConfiguration.setAnswerActivity`), which builds the call with `CallRingingUtils.buildIncomingCall` and calls `CometChatOngoingCallActivity.launchOngoingCallActivity(context, call)` |
+| Outgoing call answered | The [Outgoing Call](/ui-kit/android/outgoing-call) screen hands over once the callee joins: XML Views embed `CometChatOngoingCall` in the same activity, Compose launches `CometChatOngoingCallActivity` |
+| Group call / meeting | [Call Buttons](/ui-kit/android/call-buttons) send a meeting message; tapping it launches the activity with `CallWorkFlow.MEETING` |
+| Your own flow | `CometChatOngoingCallActivity.launchOngoingCallActivity(context, sessionId, callType)` or the component directly |
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+import com.cometchat.uikit.kotlin.presentation.ongoingcall.ui.CometChatOngoingCallActivity
+
+CometChatOngoingCallActivity.launchOngoingCallActivity(
+    context = this,
+    sessionId = sessionId,
+    callType = CometChatConstants.CALL_TYPE_VIDEO
+)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+import com.cometchat.uikit.compose.presentation.ongoingcall.ui.CometChatOngoingCallActivity
+
+CometChatOngoingCallActivity.launchOngoingCallActivity(
+    context = context,
+    sessionId = sessionId,
+    callType = CometChatConstants.CALL_TYPE_VIDEO
+)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Quick Start
+
+### From your answer activity (incoming calls)
+
+The Push SDK opens your answer activity with the answered call in its intent. Turn it into a UI Kit `Call` and launch this screen; it asks for the microphone and camera and joins:
+
+```kotlin lines
+val incoming = CallBundles.getCall(intent) ?: return finish()
+val call = CallRingingUtils.buildIncomingCall(
+    sessionId = incoming.sessionId,
+    callType = if (incoming.isVideo) CometChatConstants.CALL_TYPE_VIDEO else CometChatConstants.CALL_TYPE_AUDIO,
+    receiverType = incoming.receiverType,
+    receiverUid = incoming.receiverUid,
+    callerUid = incoming.callerUid,
+    callerName = incoming.callerName,
+    callerAvatarUrl = incoming.callerAvatarUrl,
+    initiatedAtMs = incoming.initiatedAtMs,
+    conversationId = incoming.conversationId
+)
+CometChatOngoingCallActivity.launchOngoingCallActivity(this, call)
+finish()
+```
+
+See [Calling Integration](/ui-kit/android/calling-integration#step-3-configure-push-ringing) for the full answer activity and its manifest entry.
+
+### Launching it yourself
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+CometChatOngoingCallActivity.launchOngoingCallActivity(
+    context = this,
+    sessionId = sessionId,
+    callType = CometChatConstants.CALL_TYPE_AUDIO,
+    callWorkFlow = CallWorkFlow.DEFAULT,          // MEETING for a group call
+    callSettingsBuilder = null,                  // or your SessionSettingsBuilder
+    style = null
+)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatOngoingCallActivity.launchOngoingCallActivity(
+    context = context,
+    sessionId = sessionId,
+    callType = CometChatConstants.CALL_TYPE_AUDIO,
+    callWorkFlow = CallWorkFlow.DEFAULT,          // MEETING for a group call
+    callSettingsBuilder = null,                  // or your SessionSettingsBuilder
+    style = null
+)
+```
+
+</Tab>
+</Tabs>
+
+### Embedding the component
+
+Use the component directly when you host the call in your own screen.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```xml activity_call.xml lines
+<com.cometchat.uikit.kotlin.presentation.ongoingcall.ui.CometChatOngoingCall
+    android:id="@+id/ongoing_call"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+```
+
+```kotlin lines
+val ongoingCall = findViewById<CometChatOngoingCall>(R.id.ongoing_call)
+ongoingCall.setSessionId(sessionId)
+ongoingCall.setCallType(CometChatConstants.CALL_TYPE_VIDEO)
+ongoingCall.setCallWorkFlow(CallWorkFlow.DEFAULT)
+ongoingCall.setSessionSettingsBuilder(CometChatCalls.SessionSettingsBuilder())
+ongoingCall.startCall()
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatOngoingCall(
+    sessionId = sessionId,
+    callType = CometChatConstants.CALL_TYPE_VIDEO,
+    callWorkFlow = CallWorkFlow.DEFAULT,
+    onCallEnded = { finish() },
+    onError = { e -> Log.e("Call", e.message ?: "") }
+)
+```
+
+</Tab>
+</Tabs>
+
+Prerequisites: `CometChatUIKit.init()` with `setEnableCalling(true)`, a user logged in, and `RECORD_AUDIO` and `CAMERA` declared in the manifest.
+
+---
+
+## Actions and Events
+
+### Callback Methods
+
+#### `onCallEnded`
+
+Fires when this device has left the session: the user tapped End, the other side hung up, the session timed out, or the connection closed. Close the screen here.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+The hosting `CometChatOngoingCallActivity` finishes itself. When you embed the component, observe the ViewModel's events:
+
+```kotlin lines
+lifecycleScope.launch {
+    ongoingCall.getViewModel()?.events?.collect { event ->
+        if (event is OngoingCallEvent.CallEnded) finish()
+    }
+}
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatOngoingCall(
+    sessionId = sessionId,
+    callType = callType,
+    onCallEnded = { finish() }
+)
+```
+
+</Tab>
+</Tabs>
+
+#### `onError`
+
+Fires when the session could not be joined (bad session id, no network, the Calls SDK not logged in) or the microphone permission is missing.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+ongoingCall.setOnError { exception ->
+    Log.e("OngoingCall", "Error: ${exception.message}")
+}
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatOngoingCall(
+    sessionId = sessionId,
+    callType = callType,
+    onError = { exception ->
+        Log.e("OngoingCall", "Error: ${exception.message}")
+    }
+)
+```
+
+</Tab>
+</Tabs>
+
+### ViewModel Events (`OngoingCallEvent`)
+
+| Event | Fires when |
+| --- | --- |
+| `CallEnded` | This device left the session (End tapped, remote hang-up, connection closed) |
+| `SessionTimeout` | The session timed out |
+| `UserJoined(userId, isCurrentUser)` | A participant joined |
+| `UserLeft(userId)` | A participant left |
+| `Error(exception)` | Join failed or a permission is missing |
+
+### Global UI Events (`CometChatEvents.callEvents`)
+
+| Event | Fires when | Payload |
+| --- | --- | --- |
+| `CometChatCallEvent.CallEnded` | A 1:1 call ends on this device | `Call` (the answered call, when the screen was opened by the Push SDK) |
+
+### SDK Events (Real-Time, Automatic)
+
+| Calls SDK listener | Internal behavior |
+| --- | --- |
+| `SessionStatusListener.onSessionLeft` | Local clean-up, `CallEnded` |
+| `SessionStatusListener.onSessionTimedOut` | `SessionTimeout`, screen ends |
+| `SessionStatusListener.onConnectionClosed` | Screen ends, `CallEnded` (a join whose connection closed without a leave event) |
+| `ParticipantEventListener.onParticipantJoined / Left` | `UserJoined` / `UserLeft` |
+| `ButtonClickListener.onLeaveSessionButtonClicked` | The Calls SDK has already left; local clean-up only |
+
+---
+
+## Functionality
+
+| Method (Kotlin XML) | Compose Parameter | Description |
+| --- | --- | --- |
+| `setSessionId(id)` | `sessionId` | Session to join (required) |
+| `setCallType(type)` | `callType` | `CometChatConstants.CALL_TYPE_AUDIO` or `CALL_TYPE_VIDEO`; sets the session type |
+| `setCallWorkFlow(flow)` | `callWorkFlow` | `DEFAULT` for 1:1 calls, `MEETING` for group calls |
+| `setSessionSettingsBuilder(builder)` | `callSettingsBuilder` | Calls SDK `SessionSettingsBuilder` for layout, controls, audio mode. The component sets the session type on it |
+| `startCall()` | automatic | Joins the session |
+| `setOnError { }` | `onError` | Error callback |
+| `setStyle(style)` | `style` | Container styling |
+| `getViewModel()` | `viewModel` | Access to state and events |
+
+---
+
+## Hang-up and clean-up
+
+Hanging up leaves the Calls SDK session with `CallSession.leave()`; nothing is sent to the Chat SDK. For a 1:1 call (`DEFAULT`) the UI Kit also clears its active-call state and emits `CometChatCallEvent.CallEnded` on `CometChatEvents.callEvents`. For a `MEETING` it only leaves and clears the meeting flag; the conference continues for the others.
+
+`CometChatOngoingCallActivity` leaves the session when it is destroyed, but only its **own** session: after answering a second call over a live one, the Push SDK opens a fresh activity for the new session (the answer intent arrives in `onNewIntent` with `SINGLE_TOP`), and the old screen's clean-up does not touch it.
+
+---
+
+## Picture-in-Picture
+
+`CometChatOngoingCallActivity` declares `supportsPictureInPicture` and enters PiP when the user leaves the screen during a call; the Calls SDK switches to its PiP layout (`enablePictureInPictureLayout` / `disablePictureInPictureLayout`). Dismissing the PiP window ends the call. Nothing to configure.
+
+---
+
+## Second call during a call
+
+Handled by the Push SDK: the new call rings over the live one with "Answering ends your current call". Answer leaves the live session, prepares the new one and opens `CometChatOngoingCallActivity` again for it; Decline sends `busy` and keeps the current call.
+
+---
+
+## Style
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+val style = CometChatOngoingCallStyle.Builder(this)
+    .setBackgroundColor(Color.parseColor("#141414"))
+    .setProgressIndicatorColor(Color.parseColor("#6852D6"))
+    .setCornerRadius(0f)
+    .build()
+
+CometChatOngoingCallActivity.launchOngoingCallActivity(
+    context = this,
+    sessionId = sessionId,
+    callType = callType,
+    style = style
+)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatOngoingCall(
+    sessionId = sessionId,
+    callType = callType,
+    style = CometChatOngoingCallStyle.default().copy(
+        backgroundColor = Color(0xFF141414),
+        progressIndicatorColor = Color(0xFF6852D6)
+    )
+)
+```
+
+</Tab>
+</Tabs>
+
+The style covers the container around the call surface (background, progress indicator while joining, corner radius, stroke). The call UI itself (tiles, buttons, layouts) is the Calls SDK's and is configured through its `SessionSettingsBuilder`; see [Session Settings](/calls/android/session-settings) and [Call Layouts](/calls/android/call-layouts).
+
+See [Component Styling](/ui-kit/android/component-styling) for the full reference.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Calling Integration" icon="phone" href="/ui-kit/android/calling-integration">
+    Enable calling and push ringing
+  </Card>
+  <Card title="Outgoing Call" icon="phone-arrow-up-right" href="/ui-kit/android/outgoing-call">
+    Calling and ringing states before the answer
+  </Card>
+  <Card title="Call Logs" icon="clock-rotate-left" href="/ui-kit/android/call-logs">
+    View call history
+  </Card>
+  <Card title="Push Ringing" icon="bell" href="/calls/android/voip-calling">
+    How incoming calls ring
+  </Card>
+</CardGroup>
