@@ -226,7 +226,7 @@ class AppFCMService : FirebaseMessagingService() {
 
 The push token is registered on login and unregistered on logout by the SDK. Do not skip call pushes when the app is in the foreground: the push is the only incoming-call signal, in every app state. Call pushes must be sent at high FCM priority.
 
-The other `PNConfiguration` options (ring timeout, missed-call notifications, your own ring screen) are on the Calls SDK's [Push Ringing](/calls/android/voip-calling) page.
+To colour the incoming-call screen with your UI Kit theme, see [Styling the incoming-call screen](#styling-the-incoming-call-screen). The other `PNConfiguration` options (ring timeout, missed-call notifications, your own ring screen) are on the Calls SDK's [Push Ringing](/calls/android/voip-calling) page.
 
 ## Step 4: Permissions
 
@@ -318,18 +318,76 @@ lifecycleScope.launch {
 
 ## Styling the incoming-call screen
 
-The incoming-call screen belongs to the Push SDK and is themed by resources, not by the UI Kit theme. The UI Kit ships overrides for the six colour resources so the screen matches its light and dark palette; your app's own override wins:
+The incoming-call screen belongs to the Push SDK, which draws it even when your app is not running, so it cannot read the UI Kit theme at that moment. Instead you pass it your UI Kit theme once, as a `CometChatPNIncomingCallTheme`, when you initialise push. Light and dark are both included, and the screen and the call notifications then follow your theme.
 
-```xml res/values/colors.xml
-<color name="cometchat_pn_call_background">#FFFFFF</color>
-<color name="cometchat_pn_call_text">#141414</color>
-<color name="cometchat_pn_call_text_secondary">#727272</color>
-<color name="cometchat_pn_call_avatar">#6852D6</color>
-<color name="cometchat_pn_call_accept">#09C26F</color>
-<color name="cometchat_pn_call_decline">#F44649</color>
+The UI Kit reads its own theme into a `CometChatIncomingCallTheme`:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+```kotlin
+// Reads your app's manifest theme (based on CometChatTheme.DayNight), light and dark
+val uikitTheme = CometChatTheme.getIncomingCallTheme(this)
+```
+</Tab>
+<Tab title="Jetpack Compose">
+```kotlin
+// The same colour schemes you give CometChatTheme { }
+val uikitTheme = incomingCallTheme(light = lightScheme, dark = darkScheme)
+```
+</Tab>
+</Tabs>
+
+The UI Kit has no dependency on the Push SDK, so a small function in your app copies the colours across. The field names match one to one:
+
+```kotlin calls/IncomingCallTheme.kt
+fun CometChatIncomingCallTheme.toCometChatPNIncomingCallTheme(): CometChatPNIncomingCallTheme =
+    CometChatPNIncomingCallTheme.Builder()
+        .setLightColors(light.toPNColors())
+        .setDarkColors(dark.toPNColors())
+        .build()
+
+private fun CometChatIncomingCallTheme.Colors.toPNColors(): CometChatPNIncomingCallTheme.Colors =
+    CometChatPNIncomingCallTheme.Colors.Builder()
+        .setBackground(background)
+        .setCallerName(callerName)
+        .setSubtitle(subtitle)
+        .setAvatarBackground(avatarBackground)
+        .setAvatarText(avatarText)
+        .setAcceptButton(acceptButton)
+        .setAcceptIcon(acceptIcon)
+        .setAcceptLabel(acceptLabel)
+        .setDeclineButton(declineButton)
+        .setDeclineIcon(declineIcon)
+        .setDeclineLabel(declineLabel)
+        .build()
 ```
 
-Strings, drawables, the theme and the layout can be overridden the same way; the full list is under [Theming the SDK's incoming-call screen](/calls/android/voip-calling#theming-the-sdks-incoming-call-screen). To draw the screen yourself, register the UI Kit's `CometChatCallActivity` or your own activity with `setIncomingCallActivity`; see the deprecated [Incoming Call](/ui-kit/android/incoming-call) component.
+Then add one line to the configuration from [Step 3](#step-3-configure-push-ringing):
+
+```kotlin
+val config = PNConfiguration.Builder(APP_ID, REGION)
+    // ...
+    .setIncomingCallTheme(uikitTheme.toCometChatPNIncomingCallTheme())
+    .build()
+```
+
+If your app changes its UI Kit colours while running, pass the new theme with `CometChatPushNotifications.setIncomingCallTheme(context, theme)`.
+
+Each field comes from one UI Kit colour:
+
+| Incoming-call field | UI Kit colour |
+|---|---|
+| `background` | `backgroundColor1` |
+| `callerName` | `textColorPrimary` |
+| `subtitle`, `acceptLabel`, `declineLabel` | `textColorSecondary` |
+| `avatarBackground` | `primaryColor` |
+| `avatarText`, `acceptIcon`, `declineIcon` | `colorWhite` |
+| `acceptButton` | `successColor` |
+| `declineButton` | `errorColor` |
+
+Without this line, the screen still uses the UI Kit's default colours. The UI Kit overrides the `cometchat_pn_call_*` colour resources with its light and dark palette at build time. Those overrides win over the Push SDK's defaults only when your app lists the UI Kit dependency before the Push SDK artifacts. Your app's own overrides always win.
+
+To change a single colour, override its resource, or chain any `CometChatPNIncomingCallTheme.Colors.Builder` setter after mapping. The full list of colours, strings, drawables and the layout is under [Theming the SDK's incoming-call screen](/calls/android/voip-calling#theming-the-sdks-incoming-call-screen). To draw the screen yourself, register the UI Kit's `CometChatCallActivity` or your own activity with `setIncomingCallActivity`; see the deprecated [Incoming Call](/ui-kit/android/incoming-call) component.
 
 ## Upgrading from an app that used `CometChat.addCallListener`
 
