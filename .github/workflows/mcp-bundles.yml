@@ -1,0 +1,59 @@
+name: MCP bundles
+
+# The Docs MCP server (mcp.cometchat.com) serves mcp-bundles/*.md to AI coding agents
+# and picks up this repo's main branch within about 10 minutes. This keeps them current:
+# on every PR that touches them, and weekly, because a kit release makes a bundle stale
+# without any change here.
+
+on:
+  pull_request:
+    paths:
+      - "mcp-bundles/**"
+      - ".github/scripts/check-mcp-bundles.mjs"
+      - ".github/workflows/mcp-bundles.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mcp-bundles/**"
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          sparse-checkout: |
+            mcp-bundles
+            .github/scripts
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Check bundles
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/check-mcp-bundles.mjs 2>&1 | tee check.log; exit ${PIPESTATUS[0]}
+      # A scheduled run has no PR to fail on: open (or update) one issue instead.
+      - name: Report a stale bundle
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="MCP bundles are out of date"
+          body="$(printf 'The weekly check of \`mcp-bundles/\` failed. The Docs MCP serves these to AI coding agents, so fix them soon.\n\n\`\`\`\n%s\n\`\`\`\n\nRun: %s/%s/actions/runs/%s\nHow to update a bundle: mcp-bundles/README.md' "$(cat check.log)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
