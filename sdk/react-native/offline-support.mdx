@@ -4,36 +4,21 @@ sidebarTitle: "Offline Support"
 description: "Cache conversations and messages on the device, show them instantly, and queue messages sent without a connection with the CometChat React Native SDK."
 ---
 
-{/* TL;DR for Agents and Quick Reference */}
 <Accordion title="AI Integration Quick Reference">
 
-```javascript
-// Install the local database (required) and file system module (for media caching)
-// npm install @op-engineering/op-sqlite react-native-fs
-
-// Enable before CometChat.init() — offline support is OFF by default
-const appSettings = new CometChat.AppSettingsBuilder()
-  .setRegion("APP_REGION")
-  .setOfflineConfig(new CometChat.OfflineConfig({ enabled: true }))
-  .build();
-await CometChat.init("APP_ID", appSettings);
-
-// Is it actually running for the logged-in user?
-const running = CometChat.isOfflineEnabled(); // boolean
-
-// Cached first, then server
-request.fetchPrevious({ onCachedMessages, onServerMessages, onError });
-
-// Queue a send while offline — only sends that pass a listener are queued
-CometChat.sendMessage(message, { onMessagePending, onMessageSent, onError })
-  .catch((e) => { /* e.code === "ERROR_OFFLINE_MESSAGE_QUEUED" when queued */ });
-
-// Messages still in the outbox
-const pending = await CometChat.getPendingMessages();
-
-// Catch-up sync after reconnect
-CometChat.addSyncListener("ID", { onConversationSyncCompleted, onMessageSyncCompleted });
-```
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-sdk-react-native` |
+| Import | `import { CometChat } from "@cometchat/chat-sdk-react-native";` |
+| Extra deps | `@op-engineering/op-sqlite` (required — offline stays off without it) · `react-native-fs` (media caching) · `react-native-keychain` (encryption only). Native modules — Expo needs a development build |
+| Enable | `new CometChat.AppSettingsBuilder().setOfflineConfig(new CometChat.OfflineConfig({ enabled: true, ... }))` before `CometChat.init()` — offline support is **off by default**, and an `OfflineConfig` created without `enabled: true` stays off |
+| Key methods | `CometChat.isOfflineEnabled()` · `CometChat.getPendingMessages()` · `CometChat.addSyncListener(id, listener)` / `CometChat.removeSyncListener(id)` · `CometChat.getOfflineEncryptionStatus()` |
+| Two-phase reads | Pass a plain-object listener to `fetchPrevious()` / `fetchNext()` — e.g. `{ onCachedMessages, onServerMessages, onError }`; `CometChat.getConversation(with, type, { onCachedConversation, onServerConversation, onError })` |
+| Queued sends | Pass `{ onMessagePending, onMessageSent, onError }` as the second argument of `sendMessage()` / `sendMediaMessage()` / `sendCustomMessage()` |
+| Offline send result | `onMessagePending` only; the Promise rejects with `ERROR_OFFLINE_MESSAGE_QUEUED` (`CometChat.OfflineErrorCode.MESSAGE_QUEUED`) while the message stays queued → `onMessageSent` after reconnect. A send **without** a listener is not queued |
+| Storage | SQLite database per app ID and user, deleted on logout |
+| Constraints | Cached reads skip any request that uses a server-only filter such as `setSearchKeyword()`. Encryption is opt-in and covers the database only, not cached media |
+| Related | [Send Messages](/sdk/react-native/send-message) · [Receive Messages](/sdk/react-native/receive-messages) · [Retrieve Conversations](/sdk/react-native/retrieve-conversations) · [Connection Status](/sdk/react-native/connection-status) |
 
 </Accordion>
 
@@ -143,9 +128,18 @@ Every option is optional. Anything you leave out uses its default.
 
 `CometChat.isOfflineEnabled()` returns `true` only while offline support is actually running for the logged-in user: you enabled it, a user is logged in, and the local store is open. It returns `false` before login, after logout, and when CometChat has switched offline support off for your app. Read it each time you need it instead of storing the value.
 
-```javascript
-const offlineRunning = CometChat.isOfflineEnabled();
-```
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let offlineRunning: boolean = CometChat.isOfflineEnabled();
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let offlineRunning = CometChat.isOfflineEnabled();
+    ```
+  </Tab>
+</Tabs>
 
 CometChat can turn offline support off for an app from the server. When that happens, the SDK stops using the local store, deletes the cached data and `isOfflineEnabled()` returns `false`. Your app keeps working online.
 
@@ -220,37 +214,77 @@ The call still returns a Promise that settles with the server result, so handle 
 
 ### Conversations
 
-```javascript
-let conversationsRequest = new CometChat.ConversationsRequestBuilder()
-  .setLimit(30)
-  .build();
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let conversationsRequest: CometChat.ConversationsRequest =
+      new CometChat.ConversationsRequestBuilder().setLimit(30).build();
 
-conversationsRequest
-  .fetchNext({
-    onCachedConversations: (conversations) => {
-      // Render the cached list
-    },
-    onServerConversations: (conversations) => {
-      // Replace it with the server's list
-    },
-    onError: (error) => {
-      // Offline or failed
-    },
-  })
-  .catch(() => {});
-```
+    conversationsRequest
+      .fetchNext({
+        onCachedConversations: (conversations: CometChat.Conversation[]) => {
+          // Render the cached list
+        },
+        onServerConversations: (conversations: CometChat.Conversation[]) => {
+          // Replace it with the server's list
+        },
+        onError: (error: CometChat.CometChatException) => {
+          // Offline or failed
+        },
+      })
+      .catch(() => {});
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let conversationsRequest = new CometChat.ConversationsRequestBuilder()
+      .setLimit(30)
+      .build();
+
+    conversationsRequest
+      .fetchNext({
+        onCachedConversations: (conversations) => {
+          // Render the cached list
+        },
+        onServerConversations: (conversations) => {
+          // Replace it with the server's list
+        },
+        onError: (error) => {
+          // Offline or failed
+        },
+      })
+      .catch(() => {});
+    ```
+  </Tab>
+</Tabs>
 
 ### A Single Conversation
 
-`getConversation()` accepts a third argument. `onCachedConversation` receives `undefined` when the conversation is not cached.
+`getConversation()` accepts a third argument. When the conversation is not cached, `onCachedConversation` is called with `undefined`.
 
-```javascript
-CometChat.getConversation("UID", "user", {
-  onCachedConversation: (conversation) => {},
-  onServerConversation: (conversation) => {},
-  onError: (error) => {},
-}).catch(() => {});
-```
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let conversationWith: string = "UID";
+    let conversationType: string = "user";
+
+    CometChat.getConversation(conversationWith, conversationType, {
+      onCachedConversation: (conversation: CometChat.Conversation | undefined) => {},
+      onServerConversation: (conversation: CometChat.Conversation) => {},
+      onError: (error: CometChat.CometChatException) => {},
+    }).catch(() => {});
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.getConversation("UID", "user", {
+      onCachedConversation: (conversation) => {},
+      onServerConversation: (conversation) => {},
+      onError: (error) => {},
+    }).catch(() => {});
+    ```
+  </Tab>
+</Tabs>
 
 ### Other Lists
 
@@ -352,10 +386,22 @@ Every queued message carries an SDK-assigned ID, `message.getLocalMessageId()`, 
 
 `CometChat.getPendingMessages()` resolves with the messages that are still in the outbox. Use it to show queued messages again after the app restarts.
 
-```javascript
-const pending = await CometChat.getPendingMessages();
-console.log("Messages waiting to be sent:", pending);
-```
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    CometChat.getPendingMessages().then((messages: CometChat.BaseMessage[]) => {
+      console.log("Messages waiting to be sent:", messages);
+    });
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    CometChat.getPendingMessages().then((messages) => {
+      console.log("Messages waiting to be sent:", messages);
+    });
+    ```
+  </Tab>
+</Tabs>
 
 It resolves with an empty list while offline support is not running.
 
@@ -363,25 +409,50 @@ It resolves with an empty list while offline support is not running.
 
 After a reconnect, the SDK runs a catch-up sync in two phases: conversations, then messages. Register a sync listener to know when each phase starts, finishes or fails — for example, to refresh a screen once the sync is complete.
 
-```javascript
-const listenerID = "UNIQUE_LISTENER_ID";
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let listenerID: string = "UNIQUE_LISTENER_ID";
 
-CometChat.addSyncListener(listenerID, {
-  onConversationSyncStarted: () => {},
-  onConversationSyncCompleted: () => {
-    // Re-fetch the conversation list
-  },
-  onConversationSyncError: (error) => {},
-  onMessageSyncStarted: () => {},
-  onMessageSyncCompleted: () => {
-    // Re-fetch the open message list
-  },
-  onMessageSyncError: (error) => {},
-});
+    CometChat.addSyncListener(listenerID, {
+      onConversationSyncStarted: () => {},
+      onConversationSyncCompleted: () => {
+        // Re-fetch the conversation list
+      },
+      onConversationSyncError: (error: CometChat.CometChatException) => {},
+      onMessageSyncStarted: () => {},
+      onMessageSyncCompleted: () => {
+        // Re-fetch the open message list
+      },
+      onMessageSyncError: (error: CometChat.CometChatException) => {},
+    });
 
-// Remove it when you no longer need it
-CometChat.removeSyncListener(listenerID);
-```
+    // Remove it when you no longer need it
+    CometChat.removeSyncListener(listenerID);
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let listenerID = "UNIQUE_LISTENER_ID";
+
+    CometChat.addSyncListener(listenerID, {
+      onConversationSyncStarted: () => {},
+      onConversationSyncCompleted: () => {
+        // Re-fetch the conversation list
+      },
+      onConversationSyncError: (error) => {},
+      onMessageSyncStarted: () => {},
+      onMessageSyncCompleted: () => {
+        // Re-fetch the open message list
+      },
+      onMessageSyncError: (error) => {},
+    });
+
+    // Remove it when you no longer need it
+    CometChat.removeSyncListener(listenerID);
+    ```
+  </Tab>
+</Tabs>
 
 ## Encrypt the Cache
 
@@ -403,9 +474,24 @@ Set `encryption: true` to encrypt the local database with SQLCipher. Encryption 
    npm install react-native-keychain
    ```
 
-```javascript
-new CometChat.OfflineConfig({ enabled: true, encryption: true });
-```
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    let offlineConfig: CometChat.OfflineConfig = new CometChat.OfflineConfig({
+      enabled: true,
+      encryption: true,
+    });
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    let offlineConfig = new CometChat.OfflineConfig({
+      enabled: true,
+      encryption: true,
+    });
+    ```
+  </Tab>
+</Tabs>
 
 `CometChat.getOfflineEncryptionStatus()` reports what is actually in effect — `enabled` is what you asked for, and `atRest`, `keyStorage` and `cipherAvailable` describe what the SDK achieved. If encryption can't run (for example, SQLCipher isn't in the build), the SDK does not write an unencrypted cache; offline support stays off and the app works online only.
 
