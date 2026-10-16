@@ -127,6 +127,90 @@ sequenceDiagram
 
 ---
 
+## Use Case: Live "is typing…" Indicator
+
+**Goal:** show "Alex is typing…" while a member composes, then hide it when they send, blur the composer, or go idle.
+
+This is a delegate-bind flow on the receive side and a debounced send on the local side. Bind the delegates once, before Login (see [Real-Time Events](/sdk/unreal/real-time-events)).
+
+**Receive — show the indicator:**
+
+1. Get a reference to the **CometChat Subsystem**
+2. **Bind Event** to **On Typing Started** → add `Sender.Uid` to a "currently typing" set, refresh the label, and (re)start a UI timeout timer
+3. **Bind Event** to **On Typing Ended** → remove `Sender.Uid` from the set and refresh the label
+
+**Send — notify others:**
+
+4. On the composer's **Text Changed**, if you haven't already flagged the local user as typing, call **Start Typing** once and set the flag
+5. (Re)start a short idle timer on each change; when it fires — or on **send** / **focus lost** — call **End Typing** and clear the flag
+
+<Info>
+`StartTyping` and `EndTyping` are fire-and-forget void calls — there is no On Success/On Failure pin. They only reach other users while you are connected, so guard them with `IsLoggedIn()` first. Treat `OnTypingStarted`/`OnTypingEnded` as best-effort too: a dropped connection pauses these events, so always keep a receiver-side timeout (so a missed `OnTypingEnded` can't leave a stale "is typing…" on screen) and pair the indicator with a [connection banner](/sdk/unreal/connection-status).
+</Info>
+
+### Reference: sample UI
+
+The bundled `UCometChatGroupChatBox` widget implements this exact debounce + timeout. Trimmed from `CometChatGroupChatBox.cpp`:
+
+```cpp
+// CometChatGroupChatBox.cpp — OnInputChanged(): debounced StartTyping + idle EndTyping
+void UCometChatGroupChatBox::OnInputChanged(const FText& Text)
+{
+    UCometChatSubsystem* Sub = GetChatSubsystem();
+    if (!Sub) return;
+
+    const FCometChatTypingIndicator Ind{ GroupGuid, TEXT("group"), TEXT(""), FCometChatUser{} };
+
+    // Send StartTyping only on the first keystroke of a burst, not on every one
+    if (!Text.IsEmpty() && !bIsLocalUserTyping)
+    {
+        bIsLocalUserTyping = true;
+        Sub->StartTyping(Ind);
+    }
+
+    // Reset a 3s idle timer; when it fires (or the box is emptied) send EndTyping
+    UWorld* World = GetWorld();
+    World->GetTimerManager().ClearTimer(LocalTypingEndHandle);
+    if (!Text.IsEmpty())
+    {
+        World->GetTimerManager().SetTimer(LocalTypingEndHandle, [this, Sub, Ind]()
+        {
+            bIsLocalUserTyping = false;
+            Sub->EndTyping(Ind);
+        }, 3.0f, false);
+    }
+    else
+    {
+        bIsLocalUserTyping = false;
+        Sub->EndTyping(Ind);
+    }
+}
+
+// CometChatGroupChatBox.cpp — HandleTypingStarted(): receiver arms an auto-clear timeout
+void UCometChatGroupChatBox::HandleTypingStarted(const FCometChatTypingIndicator& Indicator)
+{
+    if (Indicator.ReceiverId != GroupGuid || Indicator.Sender.Uid == CurrentUserUid) return;
+
+    TypingUsers.Add(Indicator.Sender.Uid,
+        Indicator.Sender.Name.IsEmpty() ? Indicator.Sender.Uid : Indicator.Sender.Name);
+    UpdateTypingIndicatorUI();
+
+    // If OnTypingEnded never arrives, OnTypingTimeout() clears the label after TypingTimeoutSeconds
+    GetWorld()->GetTimerManager().SetTimer(TypingTimeoutHandle, this,
+        &UCometChatGroupChatBox::OnTypingTimeout, TypingTimeoutSeconds, false);
+}
+```
+
+<Tip>
+**Best practice:** debounce. Send `StartTyping` once when a typing burst begins — not on every keystroke — and always send `EndTyping` on message send, composer blur, and idle timeout. Keep a receiver-side timeout so a missed end event self-heals.
+</Tip>
+
+<Warning>
+**Avoid** calling `StartTyping` on every `OnTextChanged`/keystroke. It floods the socket, invites rate-limiting (`OnFeatureThrottled`), and makes remote indicators flicker. One `StartTyping` per burst is enough.
+</Warning>
+
+---
+
 ## Next Steps
 
 <CardGroup cols={2}>
