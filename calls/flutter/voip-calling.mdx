@@ -24,7 +24,7 @@ flowchart LR
     R -->|45 s| T["endCall(unanswered) + missed call"]
 ```
 
-{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip 2.0.0-beta (release/2.0). Re-check the snippets against the released packages before publishing. */}
+{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip release/2.0. Re-check the snippets against the released packages before publishing. */}
 
 ## Prerequisites
 
@@ -90,6 +90,7 @@ await CometChatVoip.init(
 | `autoRegisterPushToken` | `true` | Register the push token again on every Calls SDK login. On Android, hand over the FCM token once first (Step 4) |
 | `dropExpiredCalls` | `true` | Don't ring a push that arrives after its call stopped ringing |
 | `callKit` | `CometChatCallKitOptions()` | iOS CallKit options: icon, ringtone, whether calls appear in Recents |
+| `acceptOnAnswer` | `true` | Also mark the call answered with CometChat (status `ongoing`) when the user answers, the way the Chat SDK's `acceptCall` did. Keep it on while any caller is still on legacy ringing. See [Rolling out](/calls/flutter/migrating-from-legacy-ringing#rolling-out) |
 
 ## Step 3: Hand call pushes to cometchat_voip
 
@@ -193,7 +194,7 @@ How an incoming call rings depends on `callMode`:
 |---|---|---|---|
 | `callMode` | `CometChatCallMode.auto` (default) | `CometChatCallMode.autoCustomScreen` | `CometChatCallMode.manual` |
 | Ringing and the ring screen | `cometchat_voip` | `cometchat_voip` rings; the ring screen is your Flutter screen | Your app |
-| Platforms | Android, iOS | Android (iOS behaves as Auto) | Android |
+| Platforms | Android, iOS | Android (iOS behaves as Auto) | Android, iOS (on iOS your app owns the `PKPushRegistry` and forwards pushes with `handlePushNotification`) |
 
 In every mode, when the user answers, your app joins the call (see [Answer a call](/calls/flutter/ringing#answer-a-call)).
 
@@ -267,12 +268,14 @@ Every way out is handled by `cometchat_voip` and needs no code in your app.
 | What happened | On the callee's phone | What the caller learns |
 |---------------|-----------------------|------------------------|
 | The user answers | The ring stops; `onCallAnswered` fires | `onParticipantJoined` |
-| The user declines | The ring stops; `rejected` is sent and retried until delivered | `onIncomingCallEnded(call, "rejected")` |
-| The user declines while in another call | The same, with `busy` | `"busy"` |
+| The user declines | The ring stops; `rejected` is sent and retried until delivered | `onIncomingCallEnded`, normalising to `declined` |
+| The user declines while in another call | The same, with `busy` | `onIncomingCallEnded`, also normalising to `declined` |
 | The caller cancels | The ring stops; missed call | Nothing; the caller ended it |
-| Nobody answers a 1:1 call | At the ring time (45 seconds by default) the ring stops, a missed call is shown and `unanswered` is sent | `"unanswered"` |
+| Nobody answers a 1:1 call | At the ring time (45 seconds by default) the ring stops, a missed call is shown and `unanswered` is sent | `onIncomingCallEnded`, normalising to `timedOut` |
 | Answered on another device | The ring stops, no missed call | `onParticipantJoined` |
-| Nobody answers a group call, or the user declines it | The ring stops here only; nothing is sent | Nothing |
+| Nobody answers a group call, or the user declines it | The ring stops here only; nothing is sent | Nothing; a group ring reports nothing back |
+
+The reason `onIncomingCallEnded` hands the caller is the native end reason, worded differently on each platform. Pass it through `CometChatCallEndReason.fromWire(reason)` and compare the result, as [Listen for calls ending](/calls/flutter/ringing#listen-for-calls-ending) describes; `busy` normalises to `declined`, so the caller can't tell a busy decline from a plain one.
 
 ## A call while in a call
 
@@ -324,5 +327,5 @@ Before logging the user out, call `CometChatVoip.unregisterPushToken()` while th
 ## Related
 
 - [Ringing](/calls/flutter/ringing): start, answer, decline, cancel and end calls with the Calls SDK.
-- [Migrating from legacy ringing](/calls/flutter/migrating-from-legacy-ringing).
+- [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing).
 - [Background Handling](/calls/flutter/background-handling): keep a joined call running when the app goes to the background.

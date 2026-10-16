@@ -13,10 +13,10 @@ Ringing lets one user call another and lets the callee answer or decline, whethe
 | **cometchat_voip** | Ringing the callee's phone: the call notification, the ring screen (CallKit on iOS), the ringtone, Answer and Decline, the ring timeout, missed calls and busy handling |
 
 <Note>
-**Coming from the earlier ringing flow?** The Chat SDK's calling methods (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `CallListener`) are superseded by the Calls SDK and no longer used; a coming Chat SDK release marks them deprecated. This page describes the replacement. See [Migrating from legacy ringing](/calls/flutter/migrating-from-legacy-ringing) for a method-by-method mapping.
+**Coming from the earlier ringing flow?** The Chat SDK's calling methods (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `CallListener`) are superseded by the Calls SDK and no longer used; a coming Chat SDK release marks them deprecated. This page describes the replacement. See [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing) for a method-by-method mapping.
 </Note>
 
-{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip 2.0.0-beta (release/2.0). Re-check the snippets against the released packages before publishing. */}
+{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip release/2.0. Re-check the snippets against the released packages before publishing. */}
 
 ## How ringing works
 
@@ -85,15 +85,15 @@ void startCall(String receiverUid, {bool isVideo = false}) {
 
 | Parameter | Description |
 |-----------|-------------|
-| `receiver` | UID of the user to call |
+| `receiver` | UID of the user to call, or the GUID of the group |
 | `options.type` | `CallType.audio` or `CallType.video` |
-| `options.receiverType` | `ReceiverType.user` |
+| `options.receiverType` | `ReceiverType.user` (the default) for a user UID, or `ReceiverType.group` for a group GUID |
 | `options.sessionSettings` | The settings the caller's session is prepared with. See the warning below. |
 
 `InitiatedCall` gives you `sessionId`, `messageId` (the id of the call message in the conversation), `sender`, `receiver`, `receiverType`, `type`, `status`, `initiatedAt`, `conversationId` and `isVideo`.
 
 <Warning>
-**Always set the call type.** `options.type` defaults to video, so an audio call started without it rings the callee as a video call. The session settings are fixed when the session is prepared, so build them the way the call should start, and include `setPeerCall(true)` so the call ends for both users when either one hangs up.
+**Always set the call type.** `options.type` defaults to video, so an audio call started without it rings the callee as a video call. The session settings are fixed when the session is prepared, so build them the way the call should start. For a 1:1 call include `setPeerCall(true)`, so the call ends for both users when either one hangs up; leave it off for a group call, which should carry on while members remain.
 </Warning>
 
 ## Show "Ringing…" and detect the answer
@@ -160,7 +160,10 @@ class CallEndedListener extends IncomingCallListener {
 
   @override
   void onIncomingCallEnded(InitiatedCall call, String reason) {
-    if (call.sessionId == sessionId) closeOutgoingScreen(reason);
+    if (call.sessionId != sessionId) return;
+    // `reason` is the native end reason and its wording differs per platform.
+    // Normalise it before comparing.
+    closeOutgoingScreen(CometChatCallEndReason.fromWire(reason));
   }
 }
 
@@ -172,9 +175,13 @@ CometChatVoip.onCallEnded.listen((CometChatCallEnded ended) {
 
 | Who | How the call ended |
 |-----|--------------------|
-| Caller | `onIncomingCallEnded` reason: `rejected` (the callee declined), `busy` (the callee was in another call), `unanswered` (nobody answered), `cancelled` (you cancelled from another device) |
+| Caller | `onIncomingCallEnded` hands you a native reason string. Normalised with `CometChatCallEndReason.fromWire(reason)`: `declined` (the callee declined, here or because they were in another call), `timedOut` (nobody answered), `cancelled` (you cancelled from another device), `answeredElsewhere`, `remoteEnded`, `failed`, `filtered` |
 | Callee, still ringing | `onCallEnded` reason: `cancelled` (the caller gave up), `answeredElsewhere` (answered on another device), `timedOut` (nobody answered), `declined` (declined here) |
 | Callee, answered | Nothing; the joined session reports the end through `onSessionLeft` / `onConnectionClosed` |
+
+<Note>
+**Normalise the caller's reason; don't compare the raw string.** The two platforms use different words for the same end: Android reports the call status (`cancelled`, `rejected`, `busy`, `ended`, `unanswered`, `ongoing`), iOS reports a CallKit reason (`cancelled`, `declined`, `timedOut`, `answeredElsewhere`, `remoteEnded`, `failed`, `filtered`), and an end that arrives as a push is already in the second vocabulary. So `reason == "rejected"` matches on Android only. `CometChatCallEndReason.fromWire(reason)`, from `cometchat_voip`, reads every vocabulary and returns one value — the same values the callee's `onCallEnded` reports. It folds a busy decline into `declined`, so on the caller you can't tell "declined" from "was in another call".
+</Note>
 
 ## Answer a call
 
@@ -213,7 +220,7 @@ On iOS, join within 20 seconds of the answer; a call that hasn't joined by then 
 
 ## Decline a call
 
-Declining is handled by `cometchat_voip`: the Decline action on the notification, the ring screen and CallKit sends `rejected`, or `busy` when the user is already in another call, and keeps retrying until it's delivered, even if the app is killed. The caller receives `onIncomingCallEnded` with that reason.
+Declining is handled by `cometchat_voip`: the Decline action on the notification, the ring screen and CallKit sends `rejected`, or `busy` when the user is already in another call, and keeps retrying until it's delivered, even if the app is killed. The caller receives `onIncomingCallEnded`, which normalises to `declined` either way — see [Listen for calls ending](#listen-for-calls-ending).
 
 You only write decline code when you draw your own ring screen:
 
@@ -292,7 +299,11 @@ Handled by `cometchat_voip`, the way a phone does it. A call that arrives while 
 
 ## Group calls
 
-`initiateCall` is for 1:1 calls. A group call is a session every member joins with `joinSession`, using a session id you share with them (for example in a custom message).
+`initiateCall` also rings a group: pass the group's GUID as `receiver` and set `options.receiverType` to `ReceiverType.group`. Every member of the group whose app is set up for ringing is rung, and the first member to answer joins the session; the others keep ringing until they answer, decline or the ring time runs out.
+
+A group ring ends on each member's phone on its own, and nothing is sent back to the caller: a member who declines or lets the call ring out sends no `rejected` and no `unanswered`, so the caller learns only that somebody joined, through `onParticipantJoined`. Decide yourself when to give up on a group call — a timer on the caller, or `endCall` with `EndCallStatus.cancelled`.
+
+A session every member joins without ringing is still an option: share a session id with them (for example in a custom message) and have each one call `joinSession`.
 
 ## Logout
 
@@ -314,5 +325,5 @@ Before logging the user out, unregister the push token with `CometChatVoip.unreg
 ## Related
 
 - [Push Ringing](/calls/flutter/voip-calling): packages and platform setup, initializing `cometchat_voip`, handing over pushes, the push token, ring readiness, the call modes and what happens when the app is killed.
-- [Migrating from legacy ringing](/calls/flutter/migrating-from-legacy-ringing).
+- [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing).
 - [Events](/calls/flutter/events), [Actions](/calls/flutter/actions), [Call Logs](/calls/flutter/call-logs).
