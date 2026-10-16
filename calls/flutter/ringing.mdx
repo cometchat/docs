@@ -2,314 +2,328 @@
 title: "Ringing"
 sidebarTitle: "Ringing"
 sdk_version: "5.x"
-description: "Configure CometChat Calls SDK v5 ringing on Flutter for incoming calls, outgoing calls, call alerts, and accept or reject flows."
+description: "Ring users on Flutter with the CometChat Calls SDK and cometchat_voip: start a call, show it ringing, answer, decline, cancel and end it, with the app in any state."
 ---
 
-Implement incoming and outgoing call notifications with accept/reject functionality. Ringing enables real-time call signaling between users, allowing them to initiate calls and respond to incoming call requests.
+Ringing lets one user call another and lets the callee answer or decline, whether the callee's app is in the foreground, in the background, killed, or the phone is locked.
+
+| Package | Owns |
+|---------|------|
+| **Calls SDK** (`cometchat_calls_sdk`) | Creating the call, the call session, cancelling and ending, and the call events your code listens to |
+| **cometchat_voip** | Ringing the callee's phone: the call notification, the ring screen (CallKit on iOS), the ringtone, Answer and Decline, the ring timeout, missed calls and busy handling |
 
 <Note>
-Ringing functionality requires the CometChat Chat SDK for Flutter to be integrated alongside the Calls SDK. The Chat SDK handles call signaling (initiating, accepting, rejecting calls), while the Calls SDK manages the actual call session.
+**Coming from the earlier ringing flow?** The Chat SDK's calling methods (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `CallListener`) are superseded by the Calls SDK and no longer used; a coming Chat SDK release marks them deprecated. This page describes the replacement. See [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing) for a method-by-method mapping.
 </Note>
 
-## How Ringing Works
+{/* TODO(RC): every API on this page is from cometchat_calls_sdk 5.1.0-team and cometchat_voip release/2.0. Re-check the snippets against the released packages before publishing. */}
 
-The ringing flow involves two SDKs working together:
+## How ringing works
 
-1. **Chat SDK** - Handles call signaling (initiate, accept, reject, cancel)
-2. **Calls SDK** - Manages the actual call session once accepted
+The caller creates the call with the Calls SDK. CometChat sends a push to the callee, `cometchat_voip` rings the callee's phone, and when the callee answers, both sides join the call session.
 
 ```mermaid
 sequenceDiagram
-    participant Caller
-    participant ChatSDK
-    participant Receiver
-    participant CallsSDK
-    
-    Caller->>ChatSDK: initiateCall()
-    ChatSDK->>Receiver: onIncomingCallReceived
-    Receiver->>ChatSDK: acceptCall()
-    ChatSDK-->>Caller: onOutgoingCallAccepted
-    Caller->>CallsSDK: joinSession()
-    Receiver->>CallsSDK: joinSession()
+    participant Caller as Caller app
+    participant Server as CometChat
+    participant Voip as cometchat_voip (callee)
+    participant Callee as Callee app
+
+    Caller->>Server: CometChatCalls.initiateCall()
+    Note over Caller: Shows "Calling…"
+    Server->>Voip: Call push (FCM or VoIP)
+    Voip->>Voip: Rings the phone in any app state
+    Voip-->>Caller: onParticipantConnected
+    Note over Caller: Shows "Ringing…"
+    alt Callee answers
+        Voip->>Callee: onCallAnswered
+        Callee->>Server: CometChatCalls.joinSession()
+        Server-->>Caller: onParticipantJoined
+        Caller->>Server: CometChatCalls.joinSession()
+    else Callee declines
+        Voip->>Server: endCall(rejected)
+        Server-->>Caller: Push, then onIncomingCallEnded(rejected)
+        Note over Caller: Closes the call screen
+    end
 ```
 
-<Warning>
-**Ringing imports BOTH SDKs, and both declare `User`.** `cometchat_calls_sdk` and `cometchat_sdk`
-each export a `User` class, so importing both barrels makes the name ambiguous and the file will
-not compile. Hide it from one import:
+## Prerequisites
+
+- The [Calls SDK set up](/calls/flutter/setup) and the user [logged in](/calls/flutter/authentication) on both devices.
+- `cometchat_voip` set up on **both** the caller's and the callee's app. The whole push side of ringing is on the [Push Ringing](/calls/flutter/voip-calling) page; this page assumes it is done. The caller needs it too: a decline reaches the caller as a push.
+
+## Start a call
+
+`CometChatCalls.initiateCall` creates the call, which rings the callee, and prepares the caller's call session. The caller does **not** join yet.
 
 ```dart
-import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart' hide User;
-import 'package:cometchat_sdk/cometchat_sdk.dart';
-```
-
-Pick whichever side your code actually uses; the Chat SDK's `User` is the one the signalling
-callbacks hand you.
-</Warning>
-
-## Initiate a Call
-
-Use the Chat SDK to initiate a call to a user or group:
-
-```dart
-String receiverID = "USER_ID";
-String receiverType = CometChatReceiverType.user;
-String callType = CometChatCallType.video;
-
-Call call = Call(
-  receiverUid: receiverID,
-  receiverType: receiverType,
-  type: callType,
-);
-
-CometChat.initiateCall(call,
-  onSuccess: (Call call) {
-    debugPrint("Call initiated: ${call.sessionId}");
-    // Show outgoing call UI
-  },
-  onError: (CometChatException e) {
-    debugPrint("Call initiation failed: ${e.message}");
-  },
-);
-```
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `receiverID` | String | UID of the user or GUID of the group to call |
-| `receiverType` | String | `CometChatReceiverType.user` or `CometChatReceiverType.group` |
-| `callType` | String | `CometChatCallType.video` or `CometChatCallType.audio` |
-
-## Call Timeout
-
-If the receiver does not answer, the call is eventually marked `unanswered` and the caller
-receives the `onOutgoingCallRejected` callback.
-
-<Warning>
-**The timeout is server-side and cannot be set from the client.** `CometChat.initiateCall` takes
-only the `Call` object plus `onSuccess` / `onError` — there is no `timeout` parameter in the
-Flutter SDK. To end an unanswered call earlier than the server does, cancel it yourself with
-`CometChat.rejectCall(sessionId, CometChatCallStatus.cancelled)` on a timer you own.
-</Warning>
-
-## Listen for Incoming Calls
-
-Register a call listener to receive incoming call notifications:
-
-```dart
-String listenerID = "UNIQUE_LISTENER_ID";
-
-class _AppCallListener with CallListener {
-  @override
-  void onIncomingCallReceived(Call call) {
-    debugPrint("Incoming call from: ${(call.callInitiator as User?)?.name}");
-    // Show incoming call UI with accept/reject options
-  }
-
-  @override
-  void onOutgoingCallAccepted(Call call) {
-    debugPrint("Call accepted, joining session...");
-    final sessionId = call.sessionId;
-    if (sessionId != null) joinCallSession(sessionId);
-  }
-
-  @override
-  void onOutgoingCallRejected(Call call) {
-    debugPrint("Call rejected");
-    // Dismiss outgoing call UI
-  }
-
-  @override
-  void onIncomingCallCancelled(Call call) {
-    debugPrint("Incoming call cancelled");
-    // Dismiss incoming call UI
-  }
-
-  @override
-  void onCallEndedMessageReceived(Call call) {
-    debugPrint("Call ended");
-  }
-}
-
-CometChat.addCallListener(listenerID, _AppCallListener());
-```
-
-| Callback | Description |
-|----------|-------------|
-| `onIncomingCallReceived` | A new incoming call is received |
-| `onOutgoingCallAccepted` | The receiver accepted your outgoing call |
-| `onOutgoingCallRejected` | The receiver rejected your outgoing call, or the call timed out as unanswered |
-| `onIncomingCallCancelled` | The caller cancelled the incoming call |
-| `onCallEndedMessageReceived` | The call has ended |
-
-<Warning>
-Remember to remove the call listener when it's no longer needed to prevent memory leaks. In Flutter, you must manually remove listeners in your widget's `dispose()` method:
-```dart
-CometChat.removeCallListener(listenerID);
-```
-</Warning>
-
-## Accept a Call
-
-When an incoming call is received, accept it using the Chat SDK:
-
-```dart
-void acceptIncomingCall(String sessionId) {
-  CometChat.acceptCall(sessionId,
-    onSuccess: (Call call) {
-      debugPrint("Call accepted");
-      final sessionId = call.sessionId;
-      if (sessionId != null) joinCallSession(sessionId);
-    },
-    onError: (CometChatException e) {
-      debugPrint("Accept call failed: ${e.message}");
-    },
-  );
-}
-```
-
-## Reject a Call
-
-Reject an incoming call:
-
-```dart
-void rejectIncomingCall(String sessionId) {
-  String status = CometChatCallStatus.rejected;
-
-  CometChat.rejectCall(sessionId, status,
-    onSuccess: (Call call) {
-      debugPrint("Call rejected");
-      // Dismiss incoming call UI
-    },
-    onError: (CometChatException e) {
-      debugPrint("Reject call failed: ${e.message}");
-    },
-  );
-}
-```
-
-## Cancel a Call
-
-Cancel an outgoing call before it's answered:
-
-```dart
-void cancelOutgoingCall(String sessionId) {
-  String status = CometChatCallStatus.cancelled;
-
-  CometChat.rejectCall(sessionId, status,
-    onSuccess: (Call call) {
-      debugPrint("Call cancelled");
-      // Dismiss outgoing call UI
-    },
-    onError: (CometChatException e) {
-      debugPrint("Cancel call failed: ${e.message}");
-    },
-  );
-}
-```
-
-## Join the Call Session
-
-After accepting a call (or when your outgoing call is accepted), join the call session using the Calls SDK:
-
-```dart
-void joinCallSession(String sessionId) {
-  SessionSettings sessionSettings = SessionSettingsBuilder()
-      .setType(SessionType.video)
+SessionSettings callSettings({required bool isVideo}) {
+  return (SessionSettingsBuilder()
+        ..setType(isVideo ? SessionType.video : SessionType.audio)
+        ..setPeerCall(true))
       .build();
+}
 
-  CometChatCalls.joinSession(
-    sessionId: sessionId,
-    sessionSettings: sessionSettings,
-    onSuccess: (Widget? callWidget) {
-      debugPrint("Joined call session");
-      // Place callWidget in your widget tree to render the call UI
+void startCall(String receiverUid, {bool isVideo = false}) {
+  CometChatCalls.initiateCall(
+    receiver: receiverUid,
+    options: InitiateCallOptions(
+      type: isVideo ? CallType.video : CallType.audio,
+      receiverType: ReceiverType.user,
+      sessionSettings: callSettings(isVideo: isVideo),
+    ),
+    onSuccess: (InitiatedCall call) {
+      showOutgoingScreen(call); // "Calling…"
+      listenForAnswer(call);
     },
     onError: (CometChatCallsException e) {
-      debugPrint("Failed to join: ${e.message}");
+      debugPrint("Could not start the call: ${e.message}");
     },
   );
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `receiver` | UID of the user to call, or the GUID of the group |
+| `options.type` | `CallType.audio` or `CallType.video` |
+| `options.receiverType` | `ReceiverType.user` (the default) for a user UID, or `ReceiverType.group` for a group GUID |
+| `options.sessionSettings` | The settings the caller's session is prepared with. See the warning below. |
+
+`InitiatedCall` gives you `sessionId`, `messageId` (the id of the call message in the conversation), `sender`, `receiver`, `receiverType`, `type`, `status`, `initiatedAt`, `conversationId` and `isVideo`.
+
+<Warning>
+**Always set the call type.** `options.type` defaults to video, so an audio call started without it rings the callee as a video call. The session settings are fixed when the session is prepared, so build them the way the call should start. For a 1:1 call include `setPeerCall(true)`, so the call ends for both users when either one hangs up; leave it off for a group call, which should carry on while members remain.
+</Warning>
+
+## Show "Ringing…" and detect the answer
+
+The caller stays on the session that `initiateCall` prepared and listens to it. Don't call `joinSession` yet: the caller joins only once the callee has joined.
+
+```dart
+void listenForAnswer(InitiatedCall call) {
+  final session = CallSession.getInstance();
+  session?.addParticipantEventListener(ReceiverEvents(call));
+  session?.addSessionStatusListener(PreparedSessionEvents());
+  CometChatCalls.addIncomingCallListener("outgoing-call", CallEndedListener(call.sessionId));
+}
+
+class ReceiverEvents extends ParticipantEventListeners {
+  final InitiatedCall call;
+  ReceiverEvents(this.call);
+
+  // The callee's phone received the push and is ringing.
+  @override
+  void onParticipantConnected(Participant participant) {
+    if (participant.uid == call.receiver) setStatus("Ringing…");
+  }
+
+  // The callee answered: now the caller joins.
+  @override
+  void onParticipantJoined(Participant participant) {
+    if (participant.uid == call.receiver) joinCall(call.sessionId, isVideo: call.isVideo);
+  }
+}
+
+class PreparedSessionEvents extends SessionStatusListeners {
+  // The prepared session closed before anyone joined: the call is over.
+  // The reason (rejected, busy, …) arrives through onIncomingCallEnded, usually first.
+  @override
+  void onConnectionClosed() => closeOutgoingScreen();
+
+  @override
+  void onSessionTimedOut() => closeOutgoingScreen();
+}
+```
+
+| Event | On the prepared session it means |
+|-------|----------------------------------|
+| `onParticipantConnected` (callee) | The callee's phone got the push and is ringing |
+| `onParticipantJoined` (callee) | The callee answered. Call `joinSession` now |
+| `onConnectionClosed` / `onSessionTimedOut` | The call ended before anyone joined |
+
+Remove the listeners when the outgoing call screen closes (`removeParticipantEventListener`, `removeSessionStatusListener`, `CometChatCalls.removeIncomingCallListener`).
+
+<Warning>
+Don't treat the call's server status `ongoing` as the answer. The callee's phone prepares the session while it rings, so the server can report `ongoing` before anyone answers. Only `onParticipantJoined` means the callee answered.
+</Warning>
+
+## Listen for calls ending
+
+The caller learns how a call ended from the Calls SDK's incoming call listener; the callee learns it from `cometchat_voip`.
+
+```dart
+// Caller
+class CallEndedListener extends IncomingCallListener {
+  final String sessionId;
+  CallEndedListener(this.sessionId);
+
+  @override
+  void onIncomingCallEnded(InitiatedCall call, String reason) {
+    if (call.sessionId != sessionId) return;
+    // `reason` is the native end reason and its wording differs per platform.
+    // Normalise it before comparing.
+    closeOutgoingScreen(CometChatCallEndReason.fromWire(reason));
+  }
+}
+
+// Callee
+CometChatVoip.onCallEnded.listen((CometChatCallEnded ended) {
+  closeRingUi(ended.call.sessionId); // ended.reason says why
+});
+```
+
+| Who | How the call ended |
+|-----|--------------------|
+| Caller | `onIncomingCallEnded` hands you a native reason string. Normalised with `CometChatCallEndReason.fromWire(reason)`: `declined` (the callee declined, here or because they were in another call), `timedOut` (nobody answered), `cancelled` (you cancelled from another device), `answeredElsewhere`, `remoteEnded`, `failed`, `filtered` |
+| Callee, still ringing | `onCallEnded` reason: `cancelled` (the caller gave up), `answeredElsewhere` (answered on another device), `timedOut` (nobody answered), `declined` (declined here) |
+| Callee, answered | Nothing; the joined session reports the end through `onSessionLeft` / `onConnectionClosed` |
+
+<Note>
+**Normalise the caller's reason; don't compare the raw string.** The two platforms use different words for the same end: Android reports the call status (`cancelled`, `rejected`, `busy`, `ended`, `unanswered`, `ongoing`), iOS reports a CallKit reason (`cancelled`, `declined`, `timedOut`, `answeredElsewhere`, `remoteEnded`, `failed`, `filtered`), and an end that arrives as a push is already in the second vocabulary. So `reason == "rejected"` matches on Android only. `CometChatCallEndReason.fromWire(reason)`, from `cometchat_voip`, reads every vocabulary and returns one value — the same values the callee's `onCallEnded` reports. It folds a busy decline into `declined`, so on the caller you can't tell "declined" from "was in another call".
+</Note>
+
+## Answer a call
+
+`cometchat_voip` rings and, on **Answer**, asks for the microphone (and the camera for a video call) and opens your app. Listen for the answer and join. There is no separate "accept" call to make.
+
+```dart
+CometChatVoip.onCallAnswered.listen((CometChatVoipCall call) {
+  showCallScreen();
+  joinCall(call.sessionId, isVideo: call.isVideo);
+});
+```
+
+Subscribe as early as possible after `CometChatVoip.init`. A call answered from the push that started the app is held until something listens. On iOS, `onCallAnswered` can fire while the phone is still locked; join right away, which connects the audio before the user unlocks.
+
+## Join the session
+
+Both sides join the same way: the callee from `onCallAnswered`, the caller from `onParticipantJoined`. `joinSession` takes over the session that was prepared earlier, so it connects almost at once.
+
+```dart
+void joinCall(String sessionId, {required bool isVideo}) {
+  CometChatCalls.joinSession(
+    sessionId: sessionId,
+    sessionSettings: callSettings(isVideo: isVideo),
+    onSuccess: (Widget? callWidget) {
+      showCallWidget(callWidget); // place it in your widget tree
+    },
+    onError: (CometChatCallsException e) {
+      debugPrint("Join failed: ${e.message}");
+      closeCallScreen();
+    },
+  );
+}
+```
+
+On iOS, join within 20 seconds of the answer; a call that hasn't joined by then is ended. See [Join Session](/calls/flutter/join-session) for rendering the call UI, [Session Settings](/calls/flutter/session-settings) for layouts and controls, and [Events](/calls/flutter/events) for everything the joined session reports.
+
+## Decline a call
+
+Declining is handled by `cometchat_voip`: the Decline action on the notification, the ring screen and CallKit sends `rejected`, or `busy` when the user is already in another call, and keeps retrying until it's delivered, even if the app is killed. The caller receives `onIncomingCallEnded`, which normalises to `declined` either way — see [Listen for calls ending](#listen-for-calls-ending).
+
+You only write decline code when you draw your own ring screen:
+
+```dart
+CometChatVoip.decline(sessionId);
+```
+
+## Cancel a call
+
+The caller ends a call that is still ringing with `endCall` and the `cancelled` status. The callee's ring stops and a missed call is shown there.
+
+```dart
+void cancelCall(String sessionId) {
+  CometChatCalls.endCall(
+    sessionId: sessionId,
+    status: EndCallStatus.cancelled,
+    onSuccess: () => closeOutgoingScreen(),
+    onError: (CometChatCallsException e) {
+      debugPrint("Cancel failed: ${e.message}");
+      closeOutgoingScreen(); // close locally either way
+    },
+  );
+}
+```
+
+Disable the End button after the first tap, and ignore an `onParticipantJoined` that arrives after you cancelled: the cancel wins.
+
+## Ring timeout
+
+The callee's `cometchat_voip` ends an unanswered 1:1 call as `unanswered` when its ring time is up (45 seconds unless the push carries its own). To close the caller's screen at the same moment even if that signal is late, run your own timer from `initiateCall` and end the call with the same status:
+
+```dart
+Timer(const Duration(seconds: 45), () {
+  if (!answered) {
+    CometChatCalls.endCall(
+      sessionId: sessionId,
+      status: EndCallStatus.unanswered,
+      onSuccess: () {},
+      onError: (CometChatCallsException e) {},
+    );
+    closeOutgoingScreen();
+  }
+});
+```
+
+## End a call
+
+Hang up by leaving the session. For a peer call (`setPeerCall(true)`), the other side's session ends too, and it receives `onSessionLeft` or `onConnectionClosed`. No status needs to be sent.
+
+```dart
+Future<void> hangUp() async {
+  await CallSession.getInstance()?.leave();
+  closeCallScreen();
+}
+```
+
+The other participant:
+
+```dart
+class CallScreenEvents extends SessionStatusListeners {
+  @override
+  void onSessionLeft() => closeCallScreen();
+
+  @override
+  void onConnectionClosed() => closeCallScreen();
 }
 ```
 
 <Note>
-In Flutter, `joinSession` returns a `Widget?` through the `onSuccess` callback. You must place this widget in your Flutter widget tree to render the call UI. See [Join Session](/calls/flutter/join-session) for more details.
+`leaveSession()` is deprecated; use `leave()`. Leave only the session your screen owns: after answering a second call over a live one, the first screen's clean-up must not leave the new session.
 </Note>
 
-## End a Call
+## Second call while in a call
 
-Properly ending a call requires coordination between both SDKs to ensure all participants are notified and call logs are recorded correctly.
+Handled by `cometchat_voip`, the way a phone does it. A call that arrives while the user is in another call rings over it with "Answering ends your current call" (CallKit's **End & Accept** on iOS). **Answer** ends the live call and `onCallAnswered` fires for the new one: close the old call screen and join the new call. **Decline** sends `busy` and keeps the live call. On Android, a call that arrives while another is already ringing, or while the user's own outgoing call is ringing, is declined as `busy` without ringing. See [A call while in a call](/calls/flutter/voip-calling#a-call-while-in-a-call).
 
-<Warning>
-Always call `CometChat.endCall()` when ending a call. This notifies the other participant and ensures the call is properly logged. Without this, the other user won't know the call has ended and call logs may be incomplete.
-</Warning>
+## Group calls
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant CallsSDK
-    participant ChatSDK
-    participant OtherParticipant
-    
-    User->>CallsSDK: leaveSession()
-    User->>ChatSDK: endCall(sessionId)
-    ChatSDK->>OtherParticipant: onCallEndedMessageReceived
-    OtherParticipant->>CallsSDK: leaveSession()
-```
+`initiateCall` also rings a group: pass the group's GUID as `receiver` and set `options.receiverType` to `ReceiverType.group`. Every member of the group whose app is set up for ringing is rung, and the first member to answer joins the session; the others keep ringing until they answer, decline or the ring time runs out.
 
-When using the default call UI, listen for the end call button click using `ButtonClickListeners` and call `endCall()`:
+A group ring ends on each member's phone on its own, and nothing is sent back to the caller: a member who declines or lets the call ring out sends no `rejected` and no `unanswered`, so the caller learns only that somebody joined, through `onParticipantJoined`. Decide yourself when to give up on a group call — a timer on the caller, or `endCall` with `EndCallStatus.cancelled`.
 
-```dart
-class _ButtonClickListener extends ButtonClickListeners {
-  @override
-  void onLeaveSessionButtonClicked() {
-    endCall(currentSessionId);
-  }
-}
+A session every member joins without ringing is still an option: share a session id with them (for example in a custom message) and have each one call `joinSession`.
 
-CallSession? callSession = CallSession.getInstance();
+## Logout
 
-// Listen for end call button click
-callSession?.addButtonClickListener(_ButtonClickListener());
+Before logging the user out, unregister the push token with `CometChatVoip.unregisterPushToken()`, then log out of the Calls SDK with `CometChatCalls.logout`. End or cancel any call of your own first; the Calls SDK can't send after the session is gone.
 
-void endCall(String sessionId) {
-  // 1. Leave the call session (Calls SDK)
-  CallSession.getInstance()?.leaveSession();
+## Call status values
 
-  // 2. Notify other participants (Chat SDK)
-  CometChat.endCall(sessionId,
-    onSuccess: (Call call) {
-      debugPrint("Call ended successfully");
-      Navigator.of(context).pop();
-    },
-    onError: (CometChatException e) {
-      debugPrint("End call failed: ${e.message}");
-      Navigator.of(context).pop();
-    },
-  );
-}
-```
+| Status | Meaning | Sent by |
+|--------|---------|---------|
+| `initiated` | Created, ringing | CometChat, on `initiateCall` |
+| `ongoing` | Answered | CometChat, when the callee answers |
+| `rejected` | The callee declined | The callee's `cometchat_voip` |
+| `busy` | The callee was in another call | The callee's `cometchat_voip` |
+| `cancelled` | The caller ended it before an answer | The caller, `endCall` |
+| `unanswered` | Nobody answered in the ring time | The callee's `cometchat_voip` (and optionally the caller's timer) |
+| `ended` | Hung up after being answered | CometChat, when the session ends |
+| `missed` | How an unanswered or cancelled incoming call appears in call logs | Call logs |
 
-The other participant receives `onCallEndedMessageReceived` callback and should leave the session:
+## Related
 
-```dart
-CometChat.addCallListener(listenerID, CallListener(
-  onCallEndedMessageReceived: (Call call) {
-    CallSession.getInstance()?.leaveSession();
-    Navigator.of(context).pop();
-  },
-  // Other callbacks...
-));
-```
-
-## Call Status Values
-
-| Status | Description |
-|--------|-------------|
-| `initiated` | Call has been initiated but not yet answered |
-| `ongoing` | Call is currently in progress |
-| `busy` | Receiver is busy on another call |
-| `rejected` | Receiver rejected the call |
-| `cancelled` | Caller cancelled before receiver answered |
-| `ended` | Call ended normally |
-| `missed` | Receiver didn't answer in time |
-| `unanswered` | Call was not answered within the timeout duration |
+- [Push Ringing](/calls/flutter/voip-calling): packages and platform setup, initializing `cometchat_voip`, handing over pushes, the push token, ring readiness, the call modes and what happens when the app is killed.
+- [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing).
+- [Events](/calls/flutter/events), [Actions](/calls/flutter/actions), [Call Logs](/calls/flutter/call-logs).
