@@ -8,12 +8,13 @@ description: "Let the CometChat React Native UI Kit show cached conversations an
 | Field | Value |
 | --- | --- |
 | Package | `@cometchat/chat-uikit-react-native` v5.x |
-| Extra deps | `@op-engineering/op-sqlite` (required) · `react-native-fs` (media caching) — native modules, so Expo needs a development build |
-| Enable | Add `offline: true` — or an options object / `CometChat.OfflineConfig` — to the `UIKitSettings` passed to `CometChatUIKit.init()`. Offline support is **off by default** |
+| Extra deps | `@react-native-community/netinfo` (required by the UI Kit) · `@op-engineering/op-sqlite` 9.0.0+ (required for offline) · `react-native-fs` (media caching) · `react-native-keychain` (encryption only) — native modules, so Expo needs a development build or EAS build; Expo Go is not supported |
+| Enable | Add `offline: { enabled: true, ... }` — or `offline: true`, or a `CometChat.OfflineConfig` — to the `UIKitSettings` passed to `CometChatUIKit.init()`. Offline support is **off by default**; always set `enabled: true` in an options object |
 | Config | The value is converted with the React Native SDK's `OfflineConfig` — options are listed in [React Native SDK Offline Support](/sdk/react-native/offline-support#configuration-options) |
 | Runtime check | `CometChat.isOfflineEnabled()` from `@cometchat/chat-sdk-react-native` |
 | Components that use the cache | `CometChatConversations` → [Conversations](/ui-kit/react-native/conversations), `CometChatMessageList` → [Message List](/ui-kit/react-native/message-list), `CometChatMessageComposer` → [Message Composer](/ui-kit/react-native/message-composer) |
 | Component props | None — offline support is turned on in UI Kit settings only |
+| Message states | A queued message shows a clock icon; a failed one shows an error icon — in the message list and on the conversation's row |
 | Not included | No offline banner and no "retry" action for a failed message |
 
 </Accordion>
@@ -22,16 +23,34 @@ With offline support turned on, the UI Kit keeps showing the user's chats when t
 
 The UI Kit builds on the [offline support in the React Native SDK](/sdk/react-native/offline-support). You turn it on in UI Kit settings; the components handle the rest.
 
+{/* TODO: replace v5.x.x and v4.x.x with the first UI Kit and React Native SDK releases that ship offline support (UI Kit PR #1434, RN SDK PR #440) before this page goes live. */}
+<Note>
+  Offline support is available from React Native UI Kit **v5.x.x** with React Native SDK **v4.x.x**.
+</Note>
+
 ## Install the Dependencies
 
-The SDK stores the cache with `@op-engineering/op-sqlite` and caches media files with `react-native-fs`. Install both in your app:
+| Package | Version | Needed for |
+| --- | --- | --- |
+| `@react-native-community/netinfo` | Any | **Required by the UI Kit**, even with offline support off — the Message List uses it to detect when the network returns, and the app bundle fails to build without it. |
+| `@op-engineering/op-sqlite` | 9.0.0 or later | **Required for offline support.** The SDK's local database. |
+| `react-native-fs` | Any | Caching media files on the device. |
+| `react-native-keychain` | Any | [Encrypting the cache](/sdk/react-native/offline-support#encrypt-the-cache) only. |
+
+Offline support needs **React Native 0.74 or later**, because current versions of `@op-engineering/op-sqlite` require it.
 
 ```bash
-npm install @op-engineering/op-sqlite react-native-fs
+npm install @react-native-community/netinfo @op-engineering/op-sqlite react-native-fs
 cd ios && pod install
 ```
 
-Both are native modules. In an Expo app, rebuild your [development build](https://docs.expo.dev/develop/development-builds/introduction/) after installing them — they don't run in Expo Go. Without `@op-engineering/op-sqlite`, offline support stays off and the UI Kit works online only.
+These are native modules, so rebuild the app after installing them. In an Expo app, install them with `npx expo install` and rebuild your [development build](https://docs.expo.dev/develop/development-builds/introduction/) or EAS build — they don't run in Expo Go, where offline support stays off.
+
+<Warning>
+  Without `@op-engineering/op-sqlite`, offline support stays off and the UI Kit
+  works online only. Nothing is logged, so check `CometChat.isOfflineEnabled()`
+  after login to confirm offline support is running.
+</Warning>
 
 ## Enable Offline Support
 
@@ -95,10 +114,20 @@ CometChatUIKit.init(uiKitSettings)
 | Value | Result |
 | --- | --- |
 | `true` | Offline support with the SDK's default options. |
-| An options object | Offline support **on**, unless the object sets `enabled: false`, with the options you set and defaults for the rest. Every option in the [SDK configuration table](/sdk/react-native/offline-support#configuration-options) is supported. |
-| A `CometChat.OfflineConfig` | Passed to the SDK as is. |
+| An options object | The options you set, with defaults for the rest. Include `enabled: true` — don't rely on the default value of `enabled`. Every option in the [SDK configuration table](/sdk/react-native/offline-support#configuration-options) is supported. |
+| A `CometChat.OfflineConfig` | Passed to the SDK as is. Create it with `enabled: true`. |
 
-If you leave `offline` out, offline support stays off and the UI Kit works exactly as before. A plain object turns offline support on unless it sets `enabled: false` — unlike `new CometChat.OfflineConfig({...})`, which stays off unless you set `enabled: true`.
+If you leave `offline` out, or set it to `false`, offline support stays off and the UI Kit works exactly as before.
+
+If you initialize with `CometChatUIKit.initFromSettings()`, put the same value under `chatSDK.offline` in the settings object instead:
+
+```json
+{
+  "chatSDK": {
+    "offline": { "enabled": true }
+  }
+}
+```
 
 <Warning>
   The UI Kit applies the `offline` setting only when the installed
@@ -121,7 +150,8 @@ If you leave `offline` out, offline support stays off and the UI Kit works exact
 | --- | --- | --- |
 | Cached conversations | [Conversations](/ui-kit/react-native/conversations) | The list renders from the cache immediately, then updates with the server's list. Offline, the cached list stays on screen. |
 | Cached messages | [Message List](/ui-kit/react-native/message-list) | A conversation opens with its cached messages, then updates with the server's page. |
-| Sending while offline | [Message Composer](/ui-kit/react-native/message-composer), [Message List](/ui-kit/react-native/message-list) | A message sent offline appears in the list straight away and is queued — even if the app is closed. It is sent automatically when the connection returns, and its receipt updates as usual. |
+| Sending while offline | [Message Composer](/ui-kit/react-native/message-composer), [Message List](/ui-kit/react-native/message-list) | A message sent offline appears in the list straight away with a clock icon and is queued — even if the app is closed. It is sent automatically when the connection returns, and its receipt updates as usual. |
+| Pending and failed messages | [Message List](/ui-kit/react-native/message-list), [Conversations](/ui-kit/react-native/conversations) | A queued message shows a clock icon in its bubble, and a message that failed to send shows an error icon. The conversation's row shows the same icon in place of the last message's receipt while it has a queued or failed message. The icons follow your receipt styles (`waitIcon`, `errorIcon`). |
 | Cached media | [Message List](/ui-kit/react-native/message-list) | Images, videos, audio and files that were downloaded while online are shown from the device when offline (with `mediaCaching` set to `AUTO`, the default). |
 | Attachment uploads | [Message Composer](/ui-kit/react-native/message-composer) | A file that failed to upload can be retried, and staged attachments are restored when the user reopens the conversation. |
 
@@ -134,7 +164,7 @@ The SDK deletes the cached data, cached media and any queued messages when the u
 - The cache only holds what the user has loaded while online, plus the changes picked up when the device reconnects. A user who has never logged in online has nothing to show offline.
 - Only sending messages works offline. Actions such as editing, deleting, reacting and pinning need a connection.
 - Search reads from the server only, so it doesn't work while offline.
-- There is no built-in offline banner and no "retry" action for a failed message. Use `CometChat.isOfflineEnabled()` and the SDK's [connection status](/sdk/react-native/connection-status) if you want to build your own.
+- There is no built-in offline banner and no "retry" action for a failed message. Use `CometChat.isOfflineEnabled()`, the SDK's [connection status](/sdk/react-native/connection-status) and its [retry methods](/sdk/react-native/offline-support#failed-messages-and-retry) if you want to build your own.
 
 ---
 

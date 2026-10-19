@@ -10,12 +10,13 @@ description: "Cache conversations and messages on the device, show them instantl
 | --- | --- |
 | Package | `@cometchat/chat-sdk-react-native` |
 | Import | `import { CometChat } from "@cometchat/chat-sdk-react-native";` |
-| Extra deps | `@op-engineering/op-sqlite` (required — offline stays off without it) · `react-native-fs` (media caching) · `react-native-keychain` (encryption only). Native modules — Expo needs a development build |
-| Enable | `new CometChat.AppSettingsBuilder().setOfflineConfig(new CometChat.OfflineConfig({ enabled: true, ... }))` before `CometChat.init()` — offline support is **off by default**, and an `OfflineConfig` created without `enabled: true` stays off |
-| Key methods | `CometChat.isOfflineEnabled()` · `CometChat.getPendingMessages()` · `CometChat.addSyncListener(id, listener)` / `CometChat.removeSyncListener(id)` · `CometChat.getOfflineEncryptionStatus()` |
+| Requirements | React Native 0.74+ · `@op-engineering/op-sqlite` 9.0.0+ (required — offline stays off without it) · `react-native-fs` (media caching) · `react-native-keychain` (encryption only). Native modules — Expo needs a development build or EAS build; Expo Go is not supported |
+| Enable | `new CometChat.AppSettingsBuilder().setOfflineConfig(new CometChat.OfflineConfig({ enabled: true, ... }))` before `CometChat.init()` — offline support is **off by default**; always set `enabled: true` explicitly |
+| Key methods | `CometChat.isOfflineEnabled()` · `CometChat.getPendingMessages()` · `CometChat.retryMessage(localMessageId)` / `CometChat.retryAllFailedMessages()` · `CometChat.addSyncListener(id, listener)` / `CometChat.removeSyncListener(id)` · `CometChat.forceSyncNow()` · `CometChat.clearOfflineCache()` · `CometChat.getOfflineEncryptionStatus()` |
 | Two-phase reads | Pass a plain-object listener to `fetchPrevious()` / `fetchNext()` — e.g. `{ onCachedMessages, onServerMessages, onError }`; `CometChat.getConversation(with, type, { onCachedConversation, onServerConversation, onError })` |
 | Queued sends | Pass `{ onMessagePending, onMessageSent, onError }` as the second argument of `sendMessage()` / `sendMediaMessage()` / `sendCustomMessage()` |
 | Offline send result | `onMessagePending` only; the Promise rejects with `ERROR_OFFLINE_MESSAGE_QUEUED` (`CometChat.OfflineErrorCode.MESSAGE_QUEUED`) while the message stays queued → `onMessageSent` after reconnect. A send **without** a listener is not queued |
+| Failed sends | A message that fails to send (for example, the server rejects it) becomes `FAILED` and stays in the outbox. The SDK never retries it on its own — call `retryMessage()` |
 | Storage | SQLite database per app ID and user, deleted on logout |
 | Constraints | Cached reads skip any request that uses a server-only filter such as `setSearchKeyword()`. Encryption is opt-in and covers the database only, not cached media |
 | Related | [Send Messages](/sdk/react-native/send-message) · [Receive Messages](/sdk/react-native/receive-messages) · [Retrieve Conversations](/sdk/react-native/retrieve-conversations) · [Connection Status](/sdk/react-native/connection-status) |
@@ -25,6 +26,11 @@ description: "Cache conversations and messages on the device, show them instantl
 Offline support keeps a local copy of the logged-in user's conversations and messages on the device. Your app can render that copy the moment a screen opens — with or without a network — and the SDK replaces it with fresh server data as soon as it arrives. Messages sent while the device is offline are saved in a queue (the outbox) and sent automatically when the connection returns.
 
 Offline support is **opt-in**. Until you enable it, the SDK behaves exactly as it does today: nothing is stored on the device and every read goes to the server.
+
+{/* TODO: replace v4.x.x with the first React Native SDK release that ships offline support (RN SDK PR #440) before this page goes live. */}
+<Note>
+  Offline support is available from React Native SDK **v4.x.x**.
+</Note>
 
 ## How It Works
 
@@ -36,18 +42,36 @@ Offline support is **opt-in**. Until you enable it, the SDK behaves exactly as i
 
 ## Install the Dependencies
 
-Offline support stores its data with [`@op-engineering/op-sqlite`](https://github.com/OP-Engineering/op-sqlite) and caches media files with [`react-native-fs`](https://github.com/itinance/react-native-fs). Both are optional peer dependencies of the SDK, so install them in your app:
+Offline support uses three native modules. They are optional peer dependencies of the SDK, so the SDK installs and runs without them — install the ones you need in your app:
+
+| Package | Version | Needed for |
+| --- | --- | --- |
+| [`@op-engineering/op-sqlite`](https://github.com/OP-Engineering/op-sqlite) | 9.0.0 or later | **Required.** The local database. |
+| [`react-native-fs`](https://github.com/itinance/react-native-fs) | Any | Caching media files on the device. |
+| [`react-native-keychain`](https://github.com/oblador/react-native-keychain) | Any | [Encrypting the cache](#encrypt-the-cache) only. |
+
+Offline support needs **React Native 0.74 or later**, because current versions of `@op-engineering/op-sqlite` require it.
 
 ```bash
 npm install @op-engineering/op-sqlite react-native-fs
 cd ios && pod install
 ```
 
-Without `@op-engineering/op-sqlite`, offline support stays off and the SDK works online only. Both are native modules, so an Expo app needs a [development build](https://docs.expo.dev/develop/development-builds/introduction/) — they don't run in Expo Go.
+Rebuild the app after installing — a JavaScript reload is not enough for native modules.
+
+<Warning>
+  Without `@op-engineering/op-sqlite`, offline support stays off and the SDK
+  works online only. Nothing is logged, so check `CometChat.isOfflineEnabled()`
+  after login to confirm offline support is running.
+</Warning>
+
+### Expo
+
+The modules are native code, so they don't run in Expo Go — in Expo Go, offline support stays off. Use a [development build](https://docs.expo.dev/develop/development-builds/introduction/) or an EAS build: install the packages with `npx expo install`, then rebuild. Expo prebuild links the modules automatically, so no config plugin is needed.
 
 ## Enable Offline Support
 
-Create a `CometChat.OfflineConfig` and pass it to `setOfflineConfig()` on the `AppSettingsBuilder`, then initialize the SDK as usual. Set `enabled: true` explicitly — a config created without it leaves offline support off.
+Create a `CometChat.OfflineConfig` with `enabled: true` and pass it to `setOfflineConfig()` on the `AppSettingsBuilder`, then initialize the SDK as usual. Always set `enabled: true` explicitly — the other options have no effect until offline support is enabled.
 
 <Tabs>
   <Tab title="TypeScript">
@@ -110,17 +134,26 @@ The offline store opens when a user logs in (or an existing session is restored)
 
 ### Configuration Options
 
-Every option is optional. Anything you leave out uses its default.
+Set `enabled: true`. Every other option is optional and uses its default when you leave it out. The options are read once at `init()` and stay fixed for the session.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `false` | Turns offline support on. Nothing is stored on the device unless this is `true`. |
-| `maxPendingMessages` | `number` | `50` | How many messages the outbox can hold. Accepted range is 1–100. |
+| `enabled` | `boolean` | `false` | Turns offline support on. Nothing is stored on the device unless this is `true`. Always set it explicitly. |
+| `maxConversations` | `number` | `100` | How many conversations the cache keeps. The least recently used are removed first. Range 1–1000. |
+| `maxMessagesPerConversation` | `number` | `500` | How many of the newest messages the cache keeps per conversation. Range 1–1000. |
+| `maxStorageSize` | `number` (bytes) | `262144000` (250 MB) | Space the cached data may use, not counting media. The oldest data is removed first. `0` means no limit. |
+| `cacheDurationDays` | `number` (days) | `0` | Removes a cached conversation that has had no new message and hasn't been opened for this many days. `0` means no time limit. |
+| `maxSnapshotQueries` | `number` | `100` | How many distinct cached lists — users, groups, members, banned members, reactions, notification feed — are kept. The least recently used are removed first. |
+| `snapshotTtlDays` | `number` (days) | `7` | How long a cached list stays available before it is removed. |
+| `maxPendingMessages` | `number` | `50` | How many unsent messages — pending and failed — the outbox can hold. Range 1–100. |
 | `pendingQueueOverflowPolicy` | `CometChat.PendingMessageOverflowPolicy` | `REJECT_NEWEST` | What happens when the outbox is full: `REJECT_NEWEST` rejects the new send, `DROP_OLDEST` removes the oldest queued message to make room. |
 | `autoSendPendingOnReconnect` | `boolean` | `true` | Sends queued messages automatically after a reconnect. It does not affect the catch-up sync. |
 | `mediaCaching` | `CometChat.MediaCachingMode` | `AUTO` | `AUTO` downloads attachments of fetched and received messages so they can be viewed offline. `OFF` caches the message and its attachment details but not the file itself. |
 | `maxMediaCacheSize` | `number` (bytes) | `524288000` (500 MB) | Space cached media may use. The least recently used files are removed first. `0` means no limit. |
 | `encryption` | `boolean` | `false` | Encrypts the local database. See [Encrypt the Cache](#encrypt-the-cache). |
+| `encryptionFailureBehavior` | `CometChat.EncryptionFailureBehavior` | `ONLINE_ONLY` | Used only when `encryption` is `true` and encryption can't run. `ONLINE_ONLY` keeps no cache and works online only; `PLAINTEXT_FALLBACK` opens an unencrypted cache instead. |
+
+For the options with a range, a value above the maximum — or `0` — is treated as the maximum. Unsent messages are never removed to free space.
 
 `OfflineConfig` is immutable — read values back with its getters, such as `isEnabled()` and `getMaxPendingMessages()`.
 
@@ -313,7 +346,7 @@ Pass a `MessageSentListener` as the second argument to `sendMessage()`, `sendMed
 | --- | --- |
 | `onMessagePending(message)` | The message is saved in the outbox. Show it in the UI as pending. |
 | `onMessageSent(message)` | The server accepted the message. Replace the pending copy with this one. |
-| `onError(error, reason)` | The send failed. `reason` is a `CometChat.MessageFailureReason` when the failure came from the outbox. |
+| `onError(error, reason)` | The send failed. `reason` is a `CometChat.MessageFailureReason` when the failure came from the outbox. A message that was sent and failed stays in the outbox as `FAILED` — see [Failed Messages and Retry](#failed-messages-and-retry). |
 
 <Tabs>
   <Tab title="TypeScript">
@@ -372,7 +405,7 @@ What happens depends on the connection:
 
 - **Online:** `onMessagePending`, then `onMessageSent`. The Promise resolves with the sent message.
 - **Offline:** `onMessagePending` only, and the Promise rejects with the code `ERROR_OFFLINE_MESSAGE_QUEUED` (`CometChat.OfflineErrorCode.MESSAGE_QUEUED`). This is not a failure — the message stays in the outbox and is sent after the connection returns, when `onMessageSent` fires. Do not resend it yourself, or the recipient receives it twice.
-- **Outbox full:** with the default `REJECT_NEWEST` policy, the new send fails with `onError` and the reason `QUEUE_FULL`.
+- **Outbox full:** with the default `REJECT_NEWEST` policy, the new send fails with `onError` and the reason `QUEUE_FULL`. With `DROP_OLDEST`, the oldest pending message is removed instead and its own `onError` fires with the reason `QUEUE_OVERFLOW`.
 
 <Warning>
   Only sends that pass a `MessageSentListener` are queued. A send without a
@@ -380,30 +413,108 @@ What happens depends on the connection:
   the message is not saved.
 </Warning>
 
-Every queued message carries an SDK-assigned ID, `message.getLocalMessageId()`, that you can use to match the pending message to the sent one. It is separate from any `muid` you set. `message.getMessageStatus()` returns its `CometChat.MessageStatus`: `PENDING`, `SENDING`, `SENT`, `DELIVERED`, `READ` or `FAILED`.
+Each listener belongs to one send, so use the listener itself to match the pending copy to the sent message — for example, keep a reference to the bubble you added in `onMessagePending` and replace it in `onMessageSent`. Treat the message as pending from the moment `onMessagePending` fires.
+
+The listener lives in memory only. If the app restarts while a message is queued, the message is still sent on reconnect, but the old listener is gone — call [`getPendingMessages()`](#get-pending-messages) on start-up to show queued messages again.
 
 ### Get Pending Messages
 
-`CometChat.getPendingMessages()` resolves with the messages that are still in the outbox. Use it to show queued messages again after the app restarts.
+`CometChat.getPendingMessages()` resolves with the messages that are still in the outbox — both pending and failed. Use it to show unsent messages again after the app restarts. `message.getMessageStatus()` tells them apart: `CometChat.MessageStatus.PENDING` or `SENDING` for a message waiting to be sent, `FAILED` for one that needs a retry.
 
 <Tabs>
   <Tab title="TypeScript">
     ```typescript
     CometChat.getPendingMessages().then((messages: CometChat.BaseMessage[]) => {
-      console.log("Messages waiting to be sent:", messages);
+      messages.forEach((message: CometChat.BaseMessage) => {
+        if (message.getMessageStatus() === CometChat.MessageStatus.FAILED) {
+          // Show the message with a failed indicator and a retry action
+        } else {
+          // Show the message with a pending indicator
+        }
+      });
     });
     ```
   </Tab>
   <Tab title="JavaScript">
     ```javascript
     CometChat.getPendingMessages().then((messages) => {
-      console.log("Messages waiting to be sent:", messages);
+      messages.forEach((message) => {
+        if (message.getMessageStatus() === CometChat.MessageStatus.FAILED) {
+          // Show the message with a failed indicator and a retry action
+        } else {
+          // Show the message with a pending indicator
+        }
+      });
     });
     ```
   </Tab>
 </Tabs>
 
 It resolves with an empty list while offline support is not running.
+
+## Failed Messages and Retry
+
+A queued message is `PENDING` until it is sent. While the device is offline it stays `PENDING` for as long as it takes — it does not fail. A message becomes `FAILED` when:
+
+- the server rejects it — for example, the receiver has blocked the user, the user lacks permission, or the request is rate-limited; or
+- the connection drops in the middle of sending it five times.
+
+The per-send `onError` fires when this happens, if the listener is still in memory. Other messages keep sending — one failed message doesn't hold up the rest of the outbox.
+
+**The SDK never retries a `FAILED` message on its own.** It stays in the outbox, and counts toward `maxPendingMessages`, until you retry it and it is sent, or the cache is cleared. Let the user decide, then call `CometChat.retryMessage()` with the message's local ID:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    // The SDK-assigned local ID of an outbox message
+    function getLocalId(message: CometChat.BaseMessage): string | undefined {
+      return message.getLocalMessageId() ?? (message.getData() as any)?.localMessageId;
+    }
+
+    let localId: string | undefined = getLocalId(failedMessage);
+
+    if (localId) {
+      // Show the message as pending again, then retry it
+      CometChat.retryMessage(localId, {
+        onMessageSent: (message: CometChat.BaseMessage) => {
+          // Sent — replace the failed copy
+        },
+        onError: (error: CometChat.CometChatException) => {
+          // Failed again
+        },
+      });
+    }
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    // The SDK-assigned local ID of an outbox message
+    function getLocalId(message) {
+      return message.getLocalMessageId() ?? message.getData()?.localMessageId;
+    }
+
+    let localId = getLocalId(failedMessage);
+
+    if (localId) {
+      // Show the message as pending again, then retry it
+      CometChat.retryMessage(localId, {
+        onMessageSent: (message) => {
+          // Sent — replace the failed copy
+        },
+        onError: (error) => {
+          // Failed again
+        },
+      });
+    }
+    ```
+  </Tab>
+</Tabs>
+
+The local ID is assigned by the SDK when the message enters the outbox and is stored in the message's `data` as `localMessageId`; read it from there if `getLocalMessageId()` returns `undefined`. It is separate from any `muid` you set.
+
+Without a listener, `retryMessage(localId)` returns a Promise that resolves with the sent message. If the device is offline, the message goes back to `PENDING` and is sent on reconnect.
+
+`CometChat.retryAllFailedMessages()` retries every failed message whose failure reason is `TRANSIENT` (a temporary server error). Messages the server rejected outright are skipped, because they would fail again — retry those one at a time with `retryMessage()` once the cause is fixed.
 
 ## Listen for Sync Events
 
@@ -454,11 +565,29 @@ After a reconnect, the SDK runs a catch-up sync in two phases: conversations, th
   </Tab>
 </Tabs>
 
+`onConversationSyncCompleted` receives the refreshed conversations, and `onMessageSyncCompleted` receives the new and updated messages. Each callback is optional.
+
+## Other Offline Methods
+
+All of these are static methods on `CometChat`. They are safe to call while offline support is not running, and return the empty value shown.
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| `forceSyncNow(callback?)` | `Promise<void>` | Runs the catch-up sync now instead of waiting for a reconnect. Pass `{ onSuccess, onError }` to learn why a sync didn't run: `ERROR_OFFLINE_DISABLED`, `ERROR_USER_NOT_LOGGED_IN`, `ERROR_OFFLINE_SYNC_IN_PROGRESS`, or `ERROR_OFFLINE_SYNC_COOLDOWN` within 5 seconds of the last sync (`error.details.retryAfterMs` says when to try again). Without a callback, these cases resolve without syncing. |
+| `getSyncState()` | `CometChat.SyncState` | `SYNCING` while a catch-up sync runs, otherwise `IDLE`. |
+| `getLastSyncTimestamp()` | `Promise<number>` | Time of the last completed sync in milliseconds since the epoch, or `0`. |
+| `getCacheSize()` | `Promise<number>` | Size of the local database file in bytes, or `0`. Cached media is not included. |
+| `clearOfflineCache()` | `Promise<void>` | Deletes all cached data and media, **including queued and failed messages** — they are not sent and no callback fires. Offline support keeps running with an empty cache. |
+| `downloadMedia(message, listener?)` | `Promise<string \| null>` | Downloads a media message's attachment to the cache, or returns it if it is already cached. Resolves with the local file path, or `null`. |
+| `getCachedMediaPath(message)` | `Promise<string \| null>` | The local file path of a cached attachment, or `null` if it isn't cached. Never downloads. |
+| `getMediaCaching()` | `CometChat.MediaCachingMode` | The `mediaCaching` mode for this session. No media is cached while offline support isn't running, so check `isOfflineEnabled()` too. |
+| `addOfflineMessageListener(id, listener)` / `removeOfflineMessageListener(id)` | `void` | An app-wide observer for every outbox message, including ones queued before a restart: `onOutboxMessagePending(message)`, `onOutboxMessageSent(message)`, `onOutboxMessageFailed(message, reason)`. |
+
 ## Encrypt the Cache
 
 Set `encryption: true` to encrypt the local database with SQLCipher. Encryption is off by default and needs two extra pieces in your app:
 
-1. Turn on SQLCipher for op-sqlite in your app's `package.json`, then reinstall pods:
+1. Turn on SQLCipher for op-sqlite in your app's `package.json`, then run `pod install` and rebuild the app for both iOS and Android:
 
    ```json
    {
@@ -467,6 +596,8 @@ Set `encryption: true` to encrypt the local database with SQLCipher. Encryption 
      }
    }
    ```
+
+   op-sqlite reads this flag when the native app is built. In Expo, add it before you run `npx expo prebuild` or an EAS build; Expo Go can't use it.
 
 2. Install [`react-native-keychain`](https://github.com/oblador/react-native-keychain), where the SDK keeps the encryption key:
 
@@ -493,19 +624,32 @@ Set `encryption: true` to encrypt the local database with SQLCipher. Encryption 
   </Tab>
 </Tabs>
 
-`CometChat.getOfflineEncryptionStatus()` reports what is actually in effect — `enabled` is what you asked for, and `atRest`, `keyStorage` and `cipherAvailable` describe what the SDK achieved. If encryption can't run (for example, SQLCipher isn't in the build), the SDK does not write an unencrypted cache; offline support stays off and the app works online only.
+`CometChat.getOfflineEncryptionStatus()` reports what is actually in effect — `enabled` is what you asked for, and `atRest`, `keyStorage` and `cipherAvailable` describe what the SDK achieved. Check it after login. With encryption working it looks like this:
+
+```json
+{
+  "enabled": true,
+  "atRest": "SQLCIPHER",
+  "keyStorage": "KEYSTORE",
+  "cipherAvailable": true,
+  "cipher": "AES-256-CBC/HMAC-SHA512"
+}
+```
+
+If encryption can't run, `atRest` is `"NONE"`: `cipherAvailable: false` means SQLCipher isn't in the build, and `keyStorage: "NONE"` means `react-native-keychain` is missing. By default (`encryptionFailureBehavior: ONLINE_ONLY`) the SDK then does not write an unencrypted cache — offline support stays off and the app works online only. Set `encryptionFailureBehavior` to `CometChat.EncryptionFailureBehavior.PLAINTEXT_FALLBACK` only if keeping offline support matters more than encrypting the cache; the SDK then opens an unencrypted cache.
 
 Cached media files are not encrypted. Set `mediaCaching: CometChat.MediaCachingMode.OFF` if attachments must not be stored on the device. This is not end-to-end encryption; it only affects the copy stored on the device.
 
 ## Logging Out and Switching Users
 
-The SDK deletes the local store — cached data, cached media and queued messages — when the user logs out. Queued messages are discarded without a callback. Logging in as a different user deletes the previous user's data before the new store opens. Do not clear the cache yourself on logout.
+The SDK deletes the local store — cached data, cached media and queued messages — when the user logs out. Queued messages are discarded without a callback. Logging in as a different user deletes the previous user's data before the new store opens. Do not clear the cache yourself on logout; use `clearOfflineCache()` only to empty the cache while the user stays logged in.
 
 ## Limitations
 
 - The cache holds what your app has loaded while online, plus the changes picked up by the catch-up sync. Older history that was never loaded is not available offline.
 - Only messages sent with a `MessageSentListener` are queued offline. Other actions — such as editing, deleting, reacting, pinning or marking as read — need a connection.
-- Queued messages are discarded on logout.
+- Queued and failed messages are discarded on logout and by `clearOfflineCache()`.
+- Failed messages are not retried automatically — your app decides when to call `retryMessage()`.
 
 ---
 
