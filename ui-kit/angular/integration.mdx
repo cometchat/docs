@@ -143,7 +143,7 @@ Angular 20+ names the root component `App` in `src/app/app.ts`, as below. A proj
 </Note>
 
 ```ts title="src/app/app.ts" expandable
-import { Component, OnInit } from "@angular/core";
+import { Component, OnInit, signal } from "@angular/core";
 import { CometChatUIKit } from "@cometchat/chat-uikit-angular";
 import { CometChat } from "@cometchat/chat-sdk-javascript";
 
@@ -152,7 +152,7 @@ import { CometChat } from "@cometchat/chat-sdk-javascript";
   standalone: true,
   imports: [],
   template: `
-    @if (isLoggedIn) {
+    @if (isLoggedIn()) {
       <div class="chat-container">
         <!-- Chat components go here (Step 6) -->
       </div>
@@ -162,7 +162,9 @@ import { CometChat } from "@cometchat/chat-sdk-javascript";
   `,
 })
 export class App implements OnInit {
-  isLoggedIn = false;
+  // A signal, not a plain boolean: Angular 21 apps are zoneless by default, so a
+  // plain field changed inside a promise callback never re-renders the view.
+  isLoggedIn = signal(false);
 
   ngOnInit(): void {
     const UID = "cometchat-uid-1"; // Replace with your actual UID
@@ -172,12 +174,12 @@ export class App implements OnInit {
         CometChatUIKit.login(UID)
           .then((user: CometChat.User) => {
             console.log("Login Successful:", { user });
-            this.isLoggedIn = true;
+            this.isLoggedIn.set(true);
           })
           .catch(console.log);
       } else {
         // Already logged in
-        this.isLoggedIn = true;
+        this.isLoggedIn.set(true);
       }
     });
   }
@@ -187,7 +189,8 @@ export class App implements OnInit {
 Key points:
 - `getLoggedinUser()` checks for an existing session so you don't re-login unnecessarily.
 - `login(uid)` skips the API call if a session already exists and returns the cached user.
-- Components must not render until login resolves — use a boolean flag to gate rendering with `@if`.
+- Components must not render until login resolves — gate rendering with `@if` on a signal.
+- Keep state that changes in a promise or subscription callback in a `signal()`. New Angular 21 projects are zoneless (no `zone.js`), so assigning a plain field there (`this.isLoggedIn = true`) doesn't refresh the view — the app stays on "Loading..." and dev mode can throw `NG0100: ExpressionChangedAfterItHasBeenChecked`. Signals work the same with and without `zone.js`, so this code also runs on Angular 17–19.
 
 <Note>
 For production, use `loginWithAuthToken()` instead of Auth Key. Generate tokens server-side via the REST API.
@@ -239,7 +242,7 @@ Without this import, components will render with broken or missing styles.
 
 ### Register UIKit Assets
 
-The UIKit ships icons, images, and audio files that Angular's build system won't serve automatically. Add the assets path to your `angular.json` so they are copied to the build output:
+The UIKit ships icons, images, and audio files that Angular's build system won't serve automatically. Append the UIKit entry to the existing `assets` array in your `angular.json` (under `architect.build.options`) so they are copied to the build output:
 
 ```json title="angular.json" expandable
 {
@@ -249,6 +252,10 @@ The UIKit ships icons, images, and audio files that Angular's build system won't
         "build": {
           "options": {
             "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
               {
                 "glob": "**/*",
                 "input": "node_modules/@cometchat/chat-uikit-angular/src/lib/assets",
@@ -263,13 +270,15 @@ The UIKit ships icons, images, and audio files that Angular's build system won't
 }
 ```
 
+Keep the entries the CLI generated (`public` on Angular 18+; `src/favicon.ico` and `src/assets` on Angular 17) — replacing the array instead of appending to it stops your own static files from being served.
+
 <Warning>
   Skipping this step will cause all UIKit icons, empty-state images, and notification sounds to fail with 404 errors.
 </Warning>
 
 ### Raise the Production Bundle Budget
 
-`ng build` uses the production configuration, whose default `initial` budget errors at 1 MB. The UI Kit and SDK put the initial bundle above that (about 2.3 MB), so the build fails with `bundle initial exceeded maximum budget`. Raise the limit in `angular.json`, and list the SDK under `allowedCommonJsDependencies` to silence its CommonJS warning:
+`ng build` uses the production configuration, whose default `initial` budget errors at 1 MB. The UI Kit and SDK put the initial bundle well above that — a production build of the app in this guide (UI Kit 5.2, the [conversation list + message view](/ui-kit/angular/angular-conversation) layout) is about 4.4 MB raw (about 630 kB gzipped), on Angular 19 and 21 alike — so the build fails with `bundle initial exceeded maximum budget`. Raise the limit in `angular.json`, and list the SDK under `allowedCommonJsDependencies` to silence its CommonJS warning:
 
 ```json title="angular.json" expandable
 {
@@ -285,8 +294,8 @@ The UIKit ships icons, images, and audio files that Angular's build system won't
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "3MB",
-                  "maximumError": "5MB"
+                  "maximumWarning": "5MB",
+                  "maximumError": "8MB"
                 }
               ]
             }
@@ -298,7 +307,7 @@ The UIKit ships icons, images, and audio files that Angular's build system won't
 }
 ```
 
-Edit the existing `initial` entry in place and keep the `anyComponentStyle` budget the CLI generated.
+Edit the existing `initial` entry in place and keep the `anyComponentStyle` budget the CLI generated. With these values a clean build of the sample app has no budget warning. The warning appears once the initial bundle passes 5 MB as you add your own code or optional packages such as the calling SDK; the 8 MB error leaves headroom before the build fails.
 
 ---
 
