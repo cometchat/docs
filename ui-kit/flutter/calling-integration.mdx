@@ -11,7 +11,7 @@ With calling enabled, the UI Kit places calls from the message header and call l
 Make sure you've completed the [Getting Started](/ui-kit/flutter/getting-started) guide before proceeding.
 </Info>
 
-{/* TODO(RC): every API on this page is from the ringing-v2-uikit branch (cometchat_calls_sdk 5.1.0-team + cometchat_voip release/2.0). The branch's pubspec still says version 6.2.0, which is the release already on pub.dev; it needs its own bump before this page can pin a real version. Re-check against the released packages before publishing. */}
+{/* TODO(RC): every API on this page is from the ringing-v2-uikit branch (cometchat_calls_sdk 5.1.0-team + cometchat_voip release/2.0). The branch's pubspec still says version 6.2.0, which is the release already on pub.dev; it needs its own bump before this page can pin a real version. Re-check against the released packages before publishing. The ring screen theme (CometChatIncomingCallTheme in the UI Kit; CometChatVoipIncomingCallTheme and setIncomingCallTheme in cometchat_voip) is from ringing-v2-uikit and feat/voip-incoming-call-theme and needs the same check. */}
 
 ```mermaid
 sequenceDiagram
@@ -90,7 +90,7 @@ Future<void> initPushRinger() async {
 }
 ```
 
-Every `cometchat_voip` option (ring timeout, missed call notifications, your own ring screen) is on the Calls SDK's [Push Ringing](/calls/flutter/voip-calling#step-2-initialize) page.
+Every `cometchat_voip` option (ring timeout, missed call notifications, your own ring screen) is on the Calls SDK's [Push Ringing](/calls/flutter/voip-calling#step-2-initialize) page. To colour the ring screen with your UI Kit theme, see [Styling the ring screen](#styling-the-ring-screen).
 
 ## Step 3: Connect cometchat_voip to the UI Kit
 
@@ -272,6 +272,85 @@ CometChatUIKit.logout(
 
 Unregister the push token first, while the user's session still works. `CometChatUIKit.logout` then declines a call still ringing, cancels an outgoing call still ringing, leaves a call in progress, and logs out of the Chat SDK and the Calls SDK. `CometChat.logout` alone does none of the calling clean-up.
 
+## Styling the ring screen
+
+On Android, the ring screen belongs to `cometchat_voip`, which draws it even when your app isn't running, so it can't read your `ThemeData` when a call arrives. Pass it your UI Kit colours once instead, light and dark. The ring screen and the call notifications then follow your theme. Without this, the ring screen keeps `cometchat_voip`'s own dark colours.
+
+The UI Kit reads your theme into a `CometChatIncomingCallTheme`:
+
+```dart
+// The same ThemeData you give MaterialApp's theme and darkTheme
+final uikitTheme = CometChatIncomingCallTheme.from(
+  light: lightTheme,
+  dark: darkTheme,
+);
+
+// Or, from a widget under your MaterialApp:
+final uikitTheme = CometChatIncomingCallTheme.of(context);
+```
+
+Each set is read from the `CometChatColorPalette` in that `ThemeData`, and the UI Kit's default colours fill anything the palette leaves out. The mode comes from `CometChatThemeMode.mode`, so a UI Kit forced to light or dark rings in that mode whatever the phone's setting.
+
+The UI Kit doesn't depend on `cometchat_voip`, so a small extension in your app copies the colours across. The field names match one to one:
+
+```dart lib/incoming_call_theme.dart
+import 'package:cometchat_chat_uikit/cometchat_calls_uikit.dart';
+import 'package:cometchat_voip/cometchat_voip.dart';
+import 'package:flutter/material.dart';
+
+extension IncomingCallThemeToVoip on CometChatIncomingCallTheme {
+  CometChatVoipIncomingCallTheme toVoip() => CometChatVoipIncomingCallTheme(
+        mode: switch (mode) {
+          ThemeMode.light => CometChatVoipIncomingCallThemeMode.light,
+          ThemeMode.dark => CometChatVoipIncomingCallThemeMode.dark,
+          ThemeMode.system => CometChatVoipIncomingCallThemeMode.system,
+        },
+        light: light._toVoip(),
+        dark: dark._toVoip(),
+      );
+}
+
+extension on CometChatIncomingCallColors {
+  CometChatVoipIncomingCallColors _toVoip() => CometChatVoipIncomingCallColors(
+        background: background,
+        callerName: callerName,
+        subtitle: subtitle,
+        avatarBackground: avatarBackground,
+        avatarText: avatarText,
+        acceptButton: acceptButton,
+        acceptIcon: acceptIcon,
+        acceptLabel: acceptLabel,
+        declineButton: declineButton,
+        declineIcon: declineIcon,
+        declineLabel: declineLabel,
+      );
+}
+```
+
+Then pass it once at app start, after [Step 2](#step-2-initialize-the-calls-sdk-and-cometchat_voip):
+
+```dart
+await CometChatVoip.setIncomingCallTheme(
+  CometChatIncomingCallTheme.from(light: lightTheme, dark: darkTheme).toVoip(),
+);
+```
+
+The theme is saved, so it also applies to a call that starts your app from killed, and your background message handler needs no change. If your app changes its UI Kit colours or `CometChatThemeMode.mode` while running, pass the new theme the same way.
+
+Each field comes from one `CometChatColorPalette` colour:
+
+| Ring screen field | `CometChatColorPalette` colour |
+|---|---|
+| `background` | `background1` |
+| `callerName` | `textPrimary` |
+| `subtitle`, `acceptLabel`, `declineLabel` | `textSecondary` |
+| `avatarBackground` | `primary` |
+| `avatarText`, `acceptIcon`, `declineIcon` | `white` |
+| `acceptButton` | `success` |
+| `declineButton` | `error` |
+
+To change a single colour, change it in your `CometChatColorPalette`, or replace that field in the extension above. The full list of colours is under [Theming the ring screen](/calls/flutter/voip-calling#theming-the-ring-screen). To show a different screen altogether, use [your own ring screen](/calls/flutter/voip-calling#your-own-ring-screen). On iOS, CallKit draws the call, and nothing here applies.
+
 ## What the UI Kit does from here
 
 Once calling is enabled, the voice and video call buttons appear in the [Message Header](/ui-kit/flutter/message-header).
@@ -285,7 +364,7 @@ Once calling is enabled, the voice and video call buttons appear in the [Message
 | Tap a call button | The call is placed, then the outgoing call screen opens | [Call Buttons](/ui-kit/flutter/call-buttons) |
 | Waiting | "Calling…", then "Ringing…" when the callee's phone is reached; End cancels the call; 45 seconds with no answer ends it as unanswered | [Outgoing Call](/ui-kit/flutter/outgoing-call) |
 | Callee declines, is busy or doesn't answer | The outgoing call screen closes | Outgoing Call |
-| Incoming call | `cometchat_voip` rings and draws the ring screen (CallKit on iOS) | `cometchat_voip` (no UI Kit component) |
+| Incoming call | `cometchat_voip` rings and draws the ring screen (CallKit on iOS), in your UI Kit colours once you [pass them](#styling-the-ring-screen) | `cometchat_voip` (no UI Kit component) |
 | Answer | The UI Kit's call screen opens and joins | Call screen |
 | A call during a 1:1 call | Rings over it; answering ends the current call and joins the new one | Call screen |
 | Hang-up | The session is left; the other side's screen closes | Call screen |

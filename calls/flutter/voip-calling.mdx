@@ -90,6 +90,7 @@ await CometChatVoip.init(
 | `autoRegisterPushToken` | `true` | Register the push token again on every Calls SDK login. On Android, hand over the FCM token once first (Step 4) |
 | `dropExpiredCalls` | `true` | Don't ring a push that arrives after its call stopped ringing |
 | `callKit` | `CometChatCallKitOptions()` | iOS CallKit options: icon, ringtone, whether calls appear in Recents |
+| `incomingCallTheme` | none | Colours of the ring screen and the call notifications on Android, light and dark. See [Theming the ring screen](#theming-the-ring-screen) |
 | `acceptOnAnswer` | `true` | Also mark the call answered with CometChat (status `ongoing`) when the user answers, the way the Chat SDK's `acceptCall` did. Keep it on while any caller is still on legacy ringing. See [Rolling out](/calls/flutter/migrating-from-legacy-ringing#rolling-out) |
 
 ## Step 3: Hand call pushes to cometchat_voip
@@ -257,6 +258,83 @@ Report what the user chose with `CometChatVoip.accept(sessionId)` (fires `onCall
 In Manual mode with nothing built, the call is silently lost: no notification, no ringtone, no screen, nothing sent to the caller, who rings out to `unanswered`. Use Manual only if you are building the whole ring yourself.
 </Warning>
 
+## Theming the ring screen
+
+On Android, the ring screen `cometchat_voip` draws in Auto mode, and its ring, connecting and missed call notifications, take each colour from, in order:
+
+1. a `CometChatVoipIncomingCallTheme` set in code;
+2. the `cometchat_voip_call_*` colour resources, which your app can override by name;
+3. `cometchat_voip`'s defaults.
+
+Each colour is looked up on its own, so a theme can set only the colours it needs. Without a theme or overrides, the screen is dark in both light and dark mode.
+
+If you use the CometChat UI Kit, it builds this theme from your UI Kit colours; see [Styling the ring screen](/ui-kit/flutter/calling-integration#styling-the-ring-screen).
+
+### In code
+
+```dart
+const theme = CometChatVoipIncomingCallTheme(
+  mode: CometChatVoipIncomingCallThemeMode.system, // system (default), light or dark
+  light: CometChatVoipIncomingCallColors(
+    background: Color(0xFFFFFFFF),
+    callerName: Color(0xFF141414),
+    acceptButton: Color(0xFF09C26F),
+    declineButton: Color(0xFFF44649),
+  ),
+  dark: CometChatVoipIncomingCallColors(
+    background: Color(0xFF141414),
+    callerName: Color(0xFFFFFFFF),
+  ),
+);
+
+await CometChatVoip.init(
+  CometChatVoipConfig.fromCallAppSettings(
+    callAppSettings,
+    providerId: "PROVIDER_ID",
+    incomingCallTheme: theme,
+  ),
+);
+
+// Later, when your app's colours change. Pass null to remove the theme.
+await CometChatVoip.setIncomingCallTheme(newTheme);
+```
+
+- **Mode.** `system` follows the phone's light or dark setting when the call rings. If your app has its own light and dark switch, pass `light` or `dark`, and set the theme again when the user switches.
+- **Saved.** The theme is saved when you pass it, so it also applies when a push starts your app from killed.
+- **Kept across `init`.** An `init` without a theme, such as the one in your background message handler, keeps the saved theme. Remove it with `CometChatVoip.setIncomingCallTheme(null)`.
+- **Last one wins.** Between `incomingCallTheme` and `setIncomingCallTheme`, the theme set last is used.
+- **Only what you set.** A colour you leave out comes from its resource. In a light set, it comes from built-in light colours instead, so a light page never gets the dark default's light text.
+- **Where it applies.** In Auto mode, the ring screen and the notifications. With [your own ring screen](#your-own-ring-screen), the screen is yours, so only the notifications. On iOS, CallKit draws the call and the theme does nothing.
+
+### As resources
+
+Override any of these by name in your app's `android/app/src/main/res/values/colors.xml`, and in `res/values-night/colors.xml` for dark mode. Your app's resource wins over `cometchat_voip`'s. Each one matches a field of `CometChatVoipIncomingCallColors`.
+
+| Colour resource | Field | Default | Used for |
+|-----------------|-------|---------|----------|
+| `cometchat_voip_call_background` | `background` | `#0E0E10` | Screen, status bar and navigation bar |
+| `cometchat_voip_call_text` | `callerName` | `#F2F2F2` | Caller name |
+| `cometchat_voip_call_text_secondary` | `subtitle` | `#9A9AA1` | "Incoming audio call" line |
+| `cometchat_voip_call_avatar` | `avatarBackground` | `#6852D6` | Initials circle, on the screen and in the notifications |
+| `cometchat_voip_call_avatar_text` | `avatarText` | `#FFFFFF` | Initials |
+| `cometchat_voip_call_accept` | `acceptButton` | `#1B8F3A` | Answer button, ring and connecting notification accent |
+| `cometchat_voip_call_accept_icon` | `acceptIcon` | `#FFFFFF` | Icon on the Answer button |
+| `cometchat_voip_call_accept_label` | `acceptLabel` | `text_secondary` | "Answer" label under the button |
+| `cometchat_voip_call_decline` | `declineButton` | `#C62828` | Decline button, missed call notification accent |
+| `cometchat_voip_call_decline_icon` | `declineIcon` | `#FFFFFF` | Icon on the Decline button |
+| `cometchat_voip_call_decline_label` | `declineLabel` | `text_secondary` | "Decline" label under the button |
+
+```xml android/app/src/main/res/values/colors.xml
+<resources>
+    <color name="cometchat_voip_call_background">#FFFFFF</color>
+    <color name="cometchat_voip_call_text">#141414</color>
+    <color name="cometchat_voip_call_accept">#09C26F</color>
+    <color name="cometchat_voip_call_decline">#F44649</color>
+</resources>
+```
+
+On Android 12 and later, the Answer and Decline buttons in the notification are drawn by the system, which treats your colours as a hint. To change more than the colours, show your own Flutter screen with [Your own ring screen](#your-own-ring-screen).
+
 ## Incoming call events
 
 Listen to `cometchat_voip`'s events: `onCallAnswered` to join, `onCallEnded` to close. The Calls SDK's `IncomingCallListener` (`CometChatCalls.addIncomingCallListener`) reports the same rings and ends if you prefer it, and the caller uses it to learn that a call was declined.
@@ -323,6 +401,8 @@ Before logging the user out, call `CometChatVoip.unregisterPushToken()` while th
 | An audio call rings as video | `InitiateCallOptions.type` isn't set; it defaults to video |
 | Two ringtones or two ring screens | Earlier ringing code is still in the app: your own CallKit or `flutter_callkit_incoming` handling, or a Chat SDK `CallListener` that shows an incoming call screen. Remove it |
 | Calls still ring after sign-out | `unregisterPushToken()` wasn't called before logout |
+| The ring screen is dark while the phone is in light mode (Android) | No theme is set, so the screen uses its dark default, or the theme's mode is `dark`. See [Theming the ring screen](#theming-the-ring-screen) |
+| The ring screen keeps its old colours after `incomingCallTheme` was removed (Android) | The theme is saved. Call `CometChatVoip.setIncomingCallTheme(null)` once |
 
 ## Related
 
