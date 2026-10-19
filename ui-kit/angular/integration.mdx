@@ -8,13 +8,14 @@ description: "Add CometChat to an Angular app in 6 steps: create project, instal
 
 | Field | Value |
 | --- | --- |
-| Package | `@cometchat/chat-uikit-angular` |
-| Peer deps | `@cometchat/chat-sdk-javascript`, `rxjs` ^7.8.1 |
+| Package | `@cometchat/chat-uikit-angular` v5 |
+| Angular | 17–21 (`@angular/core` / `@angular/common` `>=17.0.0 <22.0.0`). Angular 22 is not supported yet — scaffold with `npx @angular/cli@21 new` |
+| Peer deps | `@cometchat/chat-sdk-javascript` ^4.2.0, `@cometchat/cards-angular` ^1.0.0, `dompurify` ^3.0.0; optional `@cometchat/calls-sdk-javascript` ^5.0.3 (calling only) |
 | Init | `CometChatUIKit.init(UIKitSettings)` — must resolve before `login()` |
 | Login | `CometChatUIKit.login("UID")` — must resolve before rendering components |
 | Order | `init()` → `login()` → render. Breaking this order = blank screen |
 | Auth Key | Dev/testing only. Use Auth Token in production |
-| CSS | Add `css-variables.css` to `angular.json` styles array or import in global `styles.css` via `@cometchat/chat-uikit-angular/styles/css-variables.css` |
+| CSS | Add `node_modules/@cometchat/chat-uikit-angular/styles/css-variables.css` to the `angular.json` styles array, or `@import '../node_modules/@cometchat/chat-uikit-angular/styles/css-variables.css';` in `src/styles.css` (the package `exports` map has no `./styles` entry, so a bare package specifier does not resolve) |
 | Calling | Optional. Install `@cometchat/calls-sdk-javascript` and call `.setCallingEnabled(true)` on the builder to enable |
 
 </Accordion>
@@ -34,8 +35,8 @@ You need three things from the [CometChat Dashboard](https://app.cometchat.com/)
 | Region | Dashboard → Your App → Credentials (e.g. `us`, `eu`, `in`) |
 
 You also need:
-- Node.js (v18+) and npm installed
-- Angular CLI (`npm install -g @angular/cli`)
+- Node.js 20.19+, 22.12+ or 24+ (what Angular 21 requires) and npm installed
+- Angular 17–21. The UI Kit declares `@angular/core` `>=17.0.0 <22.0.0`, so Angular 22 — what an unversioned `ng new` / `@angular/cli@latest` now creates — fails `npm install` with `ERESOLVE`
 
 <Warning>
 Auth Key is for development only. In production, generate Auth Tokens server-side via the [REST API](/rest-api/chat-apis) and use `loginWithAuthToken()`. Never ship Auth Keys in client code.
@@ -46,11 +47,11 @@ Auth Key is for development only. In production, generate Auth Tokens server-sid
 ## Step 1 — Create an Angular Project
 
 ```bash
-ng new my-app --style css --ssr false
+npx @angular/cli@21 new my-app --style css --ssr false
 cd my-app
 ```
 
-This creates a new Angular project with CSS styling and no server-side rendering. CometChat UIKit components require a browser environment.
+This creates a new Angular 21 project with CSS styling and no server-side rendering. CometChat UIKit components require a browser environment. Pin the CLI major (`@21`) — the latest CLI scaffolds Angular 22, which the UI Kit does not support yet. For an existing app, check the major with `npx ng version`.
 
 ---
 
@@ -59,23 +60,17 @@ This creates a new Angular project with CSS styling and no server-side rendering
 <Tabs>
 <Tab title="npm">
 ```bash
-npm install @cometchat/chat-uikit-angular @cometchat/chat-sdk-javascript
+npm install @cometchat/chat-uikit-angular @cometchat/chat-sdk-javascript @cometchat/cards-angular dompurify
 ```
 </Tab>
 <Tab title="yarn">
 ```bash
-yarn add @cometchat/chat-uikit-angular @cometchat/chat-sdk-javascript
+yarn add @cometchat/chat-uikit-angular @cometchat/chat-sdk-javascript @cometchat/cards-angular dompurify
 ```
 </Tab>
 </Tabs>
 
-<Warning>
-`@cometchat/chat-sdk-javascript` and `dompurify` are required peer dependencies. npm may install them automatically alongside the UIKit, but this is not guaranteed — it depends on your npm version and whether there are version conflicts. If you see errors related to missing `CometChat` or `DOMPurify` at runtime, install them explicitly:
-
-```bash
-npm install @cometchat/chat-sdk-javascript dompurify
-```
-</Warning>
+`@cometchat/chat-sdk-javascript`, `@cometchat/cards-angular` and `dompurify` are required peer dependencies of the UI Kit. Install them explicitly as shown — yarn and older npm versions don't add peer dependencies for you. Don't use `--legacy-peer-deps`: an `ERESOLVE` here almost always means the Angular major is outside 17–21.
 
 If you want voice/video calling, also install:
 
@@ -102,7 +97,7 @@ export const environment = {
 
 ```ts title="src/main.ts" expandable
 import { bootstrapApplication } from "@angular/platform-browser";
-import { AppComponent } from "./app/app.component";
+import { App } from "./app/app";
 import { appConfig } from "./app/app.config";
 import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-angular";
 import { environment } from "./environments/environment";
@@ -115,10 +110,11 @@ const UIKitSettings = new UIKitSettingsBuilder()
   // .setCallingEnabled(true) // uncomment to enable voice/video calling
   .build();
 
+// init() is typed Promise | undefined (it returns undefined only for null settings), hence ?.
 CometChatUIKit.init(UIKitSettings)
-  .then(() => {
+  ?.then(() => {
     console.log("CometChat UI Kit initialized successfully.");
-    bootstrapApplication(AppComponent, appConfig).catch((err) =>
+    bootstrapApplication(App, appConfig).catch((err) =>
       console.error(err)
     );
   })
@@ -140,9 +136,13 @@ After init resolves, log the user in. For development, use one of the pre-create
 `cometchat-uid-1` · `cometchat-uid-2` · `cometchat-uid-3` · `cometchat-uid-4` · `cometchat-uid-5`
 
 
-Add the login logic to your root component. Use `CometChatUIKit.getLoggedinUser()` to check for an existing session before calling `login()`.
+Add the login logic to your root component — replace the contents of `src/app/app.ts`. Use `CometChatUIKit.getLoggedinUser()` to check for an existing session before calling `login()`.
 
-```ts title="src/app/app.component.ts" expandable
+<Note>
+Angular 20+ names the root component `App` in `src/app/app.ts`, as below. A project created with Angular 17–19 uses `AppComponent` in `src/app/app.component.ts` — use that file and class name here and in `main.ts` instead.
+</Note>
+
+```ts title="src/app/app.ts" expandable
 import { Component, OnInit } from "@angular/core";
 import { CometChatUIKit } from "@cometchat/chat-uikit-angular";
 import { CometChat } from "@cometchat/chat-sdk-javascript";
@@ -161,7 +161,7 @@ import { CometChat } from "@cometchat/chat-sdk-javascript";
     }
   `,
 })
-export class AppComponent implements OnInit {
+export class App implements OnInit {
   isLoggedIn = false;
 
   ngOnInit(): void {
@@ -226,15 +226,11 @@ Add the CSS file to the `styles` array in your `angular.json`:
 Import at the top of your global `styles.css`:
 
 ```css title="src/styles.css"
-@import '@cometchat/chat-uikit-angular/styles/css-variables.css';
+@import '../node_modules/@cometchat/chat-uikit-angular/styles/css-variables.css';
 ```
 
 <Tip>
-If the `@import` doesn't resolve, use the full `node_modules` path instead:
-
-```css title="src/styles.css"
-@import 'node_modules/@cometchat/chat-uikit-angular/styles/css-variables.css';
-```
+Use the relative `node_modules` path. The package's `exports` map doesn't expose `./styles`, so `@import '@cometchat/chat-uikit-angular/styles/css-variables.css'` fails with `Could not resolve`.
 </Tip>
 </Tab>
 </Tabs>
@@ -270,6 +266,39 @@ The UIKit ships icons, images, and audio files that Angular's build system won't
 <Warning>
   Skipping this step will cause all UIKit icons, empty-state images, and notification sounds to fail with 404 errors.
 </Warning>
+
+### Raise the Production Bundle Budget
+
+`ng build` uses the production configuration, whose default `initial` budget errors at 1 MB. The UI Kit and SDK put the initial bundle above that (about 2.3 MB), so the build fails with `bundle initial exceeded maximum budget`. Raise the limit in `angular.json`, and list the SDK under `allowedCommonJsDependencies` to silence its CommonJS warning:
+
+```json title="angular.json" expandable
+{
+  "projects": {
+    "my-app": {
+      "architect": {
+        "build": {
+          "options": {
+            "allowedCommonJsDependencies": ["@cometchat/chat-sdk-javascript"]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "3MB",
+                  "maximumError": "5MB"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Edit the existing `initial` entry in place and keep the `anyComponentStyle` budget the CLI generated.
 
 ---
 
