@@ -56,7 +56,7 @@ What each side sees:
 
 - [Calls SDK set up](/calls/android/setup) and the user [logged in](/calls/android/authentication).
 - Push notifications configured with the Push Notifications SDK 2.0 calls module. The whole push side of ringing is on the [Push ringing](/calls/android/voip-calling) page; this page assumes it is done.
-- `RECORD_AUDIO` and `CAMERA` declared in your manifest. The SDKs request them at runtime but do not declare them.
+- `RECORD_AUDIO` and `CAMERA` granted at runtime. The Calls SDK's manifest already declares them, so there is nothing to add to yours.
 - `minSdk 26`.
 
 ```kotlin build.gradle.kts
@@ -133,7 +133,7 @@ CometChatCalls.initiateCall(context, receiverUid, options,
 |-----------|-------------|
 | `receiverUid` | UID of the user to call |
 | `options.type` | `Constants.SESSION_TYPE_AUDIO` or `Constants.SESSION_TYPE_VIDEO` |
-| `options.receiverType` | `Constants.RECEIVER_TYPE_USER` |
+| `options.receiverType` | `Constants.RECEIVER_TYPE_USER`, or `Constants.RECEIVER_TYPE_GROUP` with the group's GUID as `receiverUid` (see [Group calls](#group-calls)) |
 | `options.sessionSettings` | The settings the caller's session is prepared with. See the warning below. |
 
 `InitiatedCall` gives you `sessionId`, `messageId` (the id of the call message in the conversation), `sender`, `senderName`, `senderAvatar`, `receiver`, `receiverType`, `type`, `status`, `initiatedAt` and `conversationId`.
@@ -143,7 +143,7 @@ CometChatCalls.initiateCall(context, receiverUid, options,
 </Warning>
 
 <Note>
-There is no client-side ring timeout. Both sides stop at the ring window the backend sends in the push (45 seconds by default). A caller that wants its own screen to time out can end the call as `unanswered` after the same window, as shown under [Ring timeout](#ring-timeout).
+There is no client-side ring timeout. The callee's device stops at the ring window the backend sends in the push (45 seconds by default) and ends the call as `unanswered`, which closes the caller's call too. If the callee's device is never reached, nothing ends the caller's ringing until its prepared session expires after 5 minutes, so run your own timer on the caller and end the call as `unanswered` after the same window, as shown under [Ring timeout](#ring-timeout).
 </Note>
 
 ## Show "Ringing…" and detect the answer
@@ -175,7 +175,6 @@ fun listenOnPreparedSession(call: InitiatedCall) {
         // The prepared session closed before anyone joined: the call is over.
         // The reason (rejected, busy, …) arrives through onIncomingCallEnded, usually first.
         override fun onConnectionClosed() = closeOutgoingScreen()
-        override fun onSessionTimedOut() = closeOutgoingScreen()
     })
 }
 ```
@@ -208,7 +207,6 @@ void listenOnPreparedSession(InitiatedCall call) {
         // The prepared session closed before anyone joined: the call is over.
         // The reason (rejected, busy, …) arrives through onIncomingCallEnded, usually first.
         @Override public void onConnectionClosed() { closeOutgoingScreen(); }
-        @Override public void onSessionTimedOut() { closeOutgoingScreen(); }
     });
 }
 ```
@@ -219,7 +217,7 @@ void listenOnPreparedSession(InitiatedCall call) {
 |-------|----------------------------------|
 | `onParticipantConnected(callee)` | The callee's phone got the push: it is ringing there |
 | `onParticipantJoined(callee)` | The callee answered. Call `joinSession` now |
-| `onConnectionClosed` / `onSessionTimedOut` | The call ended before anyone joined (declined, cancelled from another device, or the session died) |
+| `onConnectionClosed` | The call ended before anyone joined (declined, cancelled from another device, the session died, or the prepared session expired after 5 minutes). `onSessionTimedOut` is not part of this: it only reports an idle joined session |
 
 Both listeners are lifecycle-aware: pass your activity or fragment as the `LifecycleOwner` and the SDK removes them when it is destroyed.
 
@@ -273,7 +271,7 @@ CometChatCalls.removeIncomingCallListener("my-screen");
 | Who | `onIncomingCallEnded` reason |
 |-----|------------------------------|
 | Caller | `rejected` (callee declined), `busy` (callee was in another call), `unanswered` (nobody answered), `cancelled` (you cancelled from another device). Never `ongoing` or `ended`. |
-| Callee, still ringing | `cancelled` (caller gave up), `ongoing` (answered on another device), `rejected` / `busy` (declined here), `unanswered` (ring timed out) |
+| Callee, still ringing | `cancelled` (caller gave up), `ongoing` (answered on another device), `rejected` / `busy` (declined here), `unanswered` (ring timed out), `ended` (the prepared session closed before the answer; it fires once per call, so a later `cancelled` push is not reported). Treat any other reason as "the ring is over" |
 | Callee, answered | Nothing; the joined session reports the end through `onSessionLeft` / `onConnectionClosed` |
 
 <Warning>
@@ -282,7 +280,7 @@ Listener ids are keys. Registering the same id twice replaces the first listener
 
 ## Answer a call
 
-The Push SDK rings and, on **Answer**, asks for the microphone (and the camera for a video call), then starts the activity you registered with `PNConfiguration.setAnswerActivity`. That activity reads the call from its intent and joins. There is no separate "accept" call to make.
+The Push SDK rings and, on **Answer**, asks for the microphone (and the camera for a video call), then starts the activity you registered with `PNConfiguration.Builder.setAnswerActivity`. That activity reads the call from its intent and joins. There is no separate "accept" call to make.
 
 <Tabs>
 <Tab title="Kotlin">
@@ -323,7 +321,7 @@ public class CallScreenActivity extends AppCompatActivity {
 
 ## Join the session
 
-Both sides join the same way: the callee from the answer activity, the caller from `onParticipantJoined`. `joinSession` takes over the session that was prepared earlier, so it connects almost at once.
+Both sides join the same way: the callee from the answer activity, the caller from `onParticipantJoined`. `joinSession` takes over the session that was prepared earlier, so it connects almost at once. On a prepared session the settings passed to `joinSession` are ignored: the ones frozen when the session was prepared apply. That is the caller's `options.sessionSettings`; the callee's session is prepared by the Push SDK with its own settings (session type and peer call), so layout or hidden-button settings passed by the callee have no effect.
 
 <Tabs>
 <Tab title="Kotlin">
@@ -516,7 +514,7 @@ The other participant:
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-session.addSessionStatusListener(this, object : SessionStatusListener() {
+CometChatCalls.getActiveSession()?.addSessionStatusListener(this, object : SessionStatusListener() {
     override fun onSessionLeft() = finish()
     override fun onConnectionClosed() = finish()
 })
@@ -524,7 +522,8 @@ session.addSessionStatusListener(this, object : SessionStatusListener() {
 </Tab>
 <Tab title="Java">
 ```java
-session.addSessionStatusListener(this, new SessionStatusListener() {
+CallSession session = CometChatCalls.getActiveSession();
+if (session != null) session.addSessionStatusListener(this, new SessionStatusListener() {
     @Override public void onSessionLeft() { finish(); }
     @Override public void onConnectionClosed() { finish(); }
 });
@@ -538,11 +537,11 @@ session.addSessionStatusListener(this, new SessionStatusListener() {
 
 ## Second call while in a call
 
-Handled by the Push SDK, the same way a phone does it. A call that arrives while the user is in another call rings over it with "Answering ends your current call". **Answer** leaves the live call, prepares the new one and opens your answer activity again (with `FLAG_ACTIVITY_SINGLE_TOP`, so it arrives in `onNewIntent` if the activity is still up: open a fresh screen for the new session). **Decline** sends `busy` and keeps the live call. A call that arrives while another is already ringing, or while the user's own outgoing call is ringing, is declined as `busy` without ringing.
+Handled by the Push SDK, the same way a phone does it. A call that arrives while the user is in another call rings over it with "Answering ends your current call". **Answer** leaves the live call, prepares the new one and opens your answer activity again (with `FLAG_ACTIVITY_SINGLE_TOP`, so it arrives in `onNewIntent` if the activity is still up: open a fresh screen for the new session). **Decline** sends `busy` and keeps the live call. A 1:1 call that arrives while another is already ringing, or while the user's own outgoing call is ringing, is declined as `busy` without ringing; a group call in that situation is dropped on this device without a reply.
 
 ## Group calls
 
-`initiateCall` is for 1:1 calls. A group call is a session every member joins with `joinSession` using a session id you share with them (for example in a custom message). If a group call rings through the push, declining it or letting it ring out sends nothing: the call carries on for the other members, and the decline is local to that device.
+To ring a group, call `initiateCall` with the group's GUID as `receiverUid` and `Constants.RECEIVER_TYPE_GROUP`; every member's device rings through the push. You can also start a group call without ringing: share a session id (for example in a custom message) and have each member join it with `joinSession`. When a group call rings, declining it or letting it ring out sends nothing: the call carries on for the other members, and the decline is local to that device.
 
 ## Logout
 
