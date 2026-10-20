@@ -28,6 +28,8 @@ flowchart LR
 
 - [Calls SDK 5.1 set up](/calls/ios/setup) and the user logged in.
 - Push Notifications enabled in the CometChat dashboard with an **APNs provider that uses a `.p8` auth key**, and that provider's id. The SDK registers both the APNs device token and the VoIP token under this one provider; a `.p12` certificate provider can serve only one of them.
+  - The provider's **Bundle ID** must be your app's bundle ID. VoIP pushes go to the topic `<bundle id>.voip`.
+  - The provider's **APNs environment must match the build.** A build run from Xcode gets a sandbox token, so it needs a provider with **Enable Production Mode** off. TestFlight and App Store builds need it on. On a mismatch APNs rejects the push and nothing rings.
 - iOS 15.1 or later.
 - A physical device. PushKit and CallKit do not work in the Simulator.
 
@@ -499,7 +501,8 @@ When `handleIncomingVoIPPush` returns `false` the SDK did not report anything an
 
 | Symptom | Check |
 |---------|-------|
-| Nothing rings when the app is killed | `voip` background mode; `initialize` called in `didFinishLaunching` on every launch; `ensureRingReady` is `.ready` |
+| Nothing rings when the app is killed | `voip` background mode; `initialize` called in `didFinishLaunching` on every launch; `ensureRingReady` is `.ready`. Then check the push itself (below) |
+| A running app rings but a killed one does not | A running app can get the call over its live connection, so only a killed app proves the push works. Check the push itself (below) |
 | Tokens never register | Push Notifications capability present; `providerId` set; the user logged in to the Chat or Calls SDK. `onPushTokenRegistrationFailed` on the delegate says why |
 | Nothing happens in the Simulator | PushKit and CallKit need a physical device |
 | Answer, then the call ends with `.failed` at once | No delegate adopting `CometChatPushNotificationsCallsDelegate`, the delegate was released (it is held weakly), or `presentCall` returned `false` |
@@ -509,7 +512,17 @@ When `handleIncomingVoIPPush` returns `false` the SDK did not report anything an
 | Ring keeps playing after the user logged out | The app did not log out of the Calls SDK (or the Chat SDK with the Chat product linked) |
 | The device still rings for a user who logged out | `unregisterTokens` was not awaited before logout |
 | No missed call in Recents | `includesCallsInRecents` is `false` |
+| The push log shows APNs `400` for the VoIP token | The provider's APNs environment does not match the build (**Enable Production Mode** must be off for Xcode builds, on for TestFlight and App Store), or its Bundle ID is not the app's |
+| The push log shows APNs `403` | The provider's `.p8` key, Key ID or Team ID is wrong |
 | Two incoming-call screens, or a call that cannot be ended | Legacy app-side ringing (your own `PKPushRegistry`, `CXProvider` or `CallListener` ringing UI) is still in place; remove it |
+
+### Check the push itself
+
+When a killed app does not ring, look at what the server sent before debugging the app. In the dashboard, open **Notifications → Logs**, search for the call's message ID and find the row for the device's `APNS_IOS_VOIP` token.
+
+- **Success `True`, `200`**: APNs accepted the push. Check the app (the rows above).
+- **`400` or `403`**: APNs rejected the push, so the device was never woken. Fix the provider, not the app.
+- **No row for the token**: the token is not registered. See *Tokens never register* above.
 
 ## Related
 
