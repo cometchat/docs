@@ -44,9 +44,9 @@ dependencies {
 
 Adding the calls artifact turns ringing on. The Chat SDK is optional; a calls-only app works.
 
-## Step 2: Initialise once
+## Step 2: Initialise on every app start
 
-Run this once per install, for example in `Application.onCreate`. The configuration is saved to disk, so a push that wakes a cold process still finds it.
+Run this in `Application.onCreate`, on every app start, before the user logs in. Token registration on login and logout only runs in a process where `init` ran. The configuration is also saved to disk, so a push that wakes a killed app still rings before your code runs.
 
 <Tabs>
 <Tab title="Kotlin">
@@ -79,12 +79,12 @@ CometChatPushNotifications.init(
 
 | Setter | Default | What it does |
 |--------|---------|--------------|
-| `setProviderId(id)` | none | The dashboard FCM provider the token is registered under |
+| `setProviderId(id)` | none; **required** | The dashboard FCM provider the token is registered under. Without it no token is registered, so nothing rings |
 | `setAnswerActivity(Class)` | none, **required** | Started when the user answers, with the call in its extras |
 | `setIncomingCallActivity(Class?)` | the SDK's own screen | Your full-screen ring screen; see [Your own incoming-call screen](#your-own-incoming-call-screen) |
 | `setIncomingCallTheme(theme?)` | none | Colours of the SDK's incoming-call screen and call notifications, light and dark; see [Theming the SDK's incoming-call screen](#theming-the-sdks-incoming-call-screen) |
 | `setMissedCallActivity(Class?)` | none | Opened when a missed-call notification is tapped. Without it an individual missed-call notification has no tap action |
-| `setNotificationSmallIcon(res)` | none | Status-bar icon for every notification |
+| `setNotificationSmallIcon(res)` | a system mail icon | Status-bar icon for chat notifications. Call notifications use the drawables `cometchat_pn_ic_notification_call` and `cometchat_pn_ic_notification_call_missed`; override those by name |
 | `setDefaultRingTimeoutMs(ms)` | 45 000 | Ring window when the push carries no `ringTimeout`; 1 s to 10 min |
 | `setShowMissedCallNotification(bool)` | `true` | Post a missed-call notification |
 | `setRequestCallPermissions(bool)` | `true` | Ask for microphone (and camera) on Answer |
@@ -162,8 +162,10 @@ class CallScreenActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_call)
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { // the manifest attributes cover 27+
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
 
         val call = CallBundles.getCall(intent) ?: return finish()
         val settings = CometChatCalls.SessionSettingsBuilder()
@@ -176,12 +178,14 @@ class CallScreenActivity : AppCompatActivity() {
             })
     }
 
-    // A second call answered over this one arrives here (SINGLE_TOP): open a fresh screen for it.
+    // A second call answered over this one arrives here (the answer intent is SINGLE_TOP): open a
+    // fresh screen for it. setFlags replaces the copied SINGLE_TOP | CLEAR_TOP, which would route
+    // the launch back to this instance.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val next = CallBundles.getCall(intent) ?: return
         if (next.sessionId != CallBundles.getCall(getIntent())?.sessionId) {
-            startActivity(Intent(intent).setClass(this, CallScreenActivity::class.java))
+            startActivity(Intent(intent).setClass(this, CallScreenActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             finish()
         }
     }
@@ -196,8 +200,10 @@ public class CallScreenActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_call);
-        setShowWhenLocked(true);
-        setTurnScreenOn(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { // the manifest attributes cover 27+
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        }
 
         IncomingCall call = CallBundles.getCall(getIntent());
         if (call == null) { finish(); return; }
@@ -211,14 +217,16 @@ public class CallScreenActivity extends AppCompatActivity {
             });
     }
 
-    // A second call answered over this one arrives here (SINGLE_TOP): open a fresh screen for it.
+    // A second call answered over this one arrives here (the answer intent is SINGLE_TOP): open a
+    // fresh screen for it. setFlags replaces the copied SINGLE_TOP | CLEAR_TOP, which would route
+    // the launch back to this instance.
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         IncomingCall next = CallBundles.getCall(intent);
         IncomingCall current = CallBundles.getCall(getIntent());
         if (next != null && (current == null || !next.getSessionId().equals(current.getSessionId()))) {
-            startActivity(new Intent(intent).setClass(this, CallScreenActivity.class));
+            startActivity(new Intent(intent).setClass(this, CallScreenActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             finish();
         }
     }
@@ -229,32 +237,23 @@ public class CallScreenActivity extends AppCompatActivity {
 
 `IncomingCall` gives you `sessionId`, `callerUid`, `callerName`, `callerAvatarUrl`, `isVideo`, `receiverType` and `receiverUid`.
 
-Declare the activity so it can show over the lock screen:
+Declare the activity so it can show over the lock screen. Leave the launch mode at its default: the answer intent already carries `SINGLE_TOP`, and a `singleTop` launch mode would also stop `onNewIntent` from starting a fresh screen for a second call.
 
 ```xml AndroidManifest.xml
 <activity
     android:name=".CallScreenActivity"
     android:exported="false"
-    android:launchMode="singleTop"
     android:showWhenLocked="true"
     android:turnScreenOn="true" />
 ```
 
 <Note>
-The SDK posts no notification during the call. For a foreground service while the call runs, see [Background Handling](/calls/android/background-handling).
+After Answer, the ring becomes a quiet "Connecting call…" notification until the session reports joined; the SDK posts no notification once the call has joined. For a foreground service while the call runs, see [Background Handling](/calls/android/background-handling).
 </Note>
 
 ## Step 5: Permissions and ring readiness
 
-Declare in the manifest what the SDKs only request:
-
-```xml AndroidManifest.xml
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.CAMERA" />
-```
-
-Everything else comes from the calls module's own manifest.
+There is nothing to declare: `POST_NOTIFICATIONS`, `RECORD_AUDIO` and `CAMERA` merge into your manifest from the Calls SDK and the calls module, along with everything else ringing needs. You only request them at runtime.
 
 **Microphone and camera.** The SDK asks when the user answers. A denied microphone joins muted and does not fail the call. Ask earlier as well (at sign-in, for example) so the first call is not where the user meets the prompt, and give your call screen a way to the app's settings page for a permission denied for good. If your app prompts itself, turn the SDK prompt off with `setRequestCallPermissions(false)`.
 
@@ -299,7 +298,7 @@ Call `ensureRingReady` only after any other permission request of yours has retu
 
 ## How a ring ends
 
-The SDK handles every way a ring ends; you write no code for it. A decline sends `rejected` to the caller (`busy` if the user is in another call). A 1:1 call nobody answers stops after the ring window (45 s by default), posts a missed call and sends `unanswered`. A cancel by the caller, or an answer on another device, stops the ring here.
+The SDK handles every way a ring ends; you write no code for it. A decline sends `rejected` to the caller (`busy` if the user is in another call). A 1:1 call nobody answers stops after the ring window (45 s by default), posts a missed call and sends `unanswered`. For a group call, a decline or a busy only stops the ring on this device: nothing is sent and the call continues for the others; a group call nobody answers here still posts a missed call. A cancel by the caller, or an answer on another device, stops the ring here.
 
 A call that arrives during another call rings over it with "Answering ends your current call". Answering leaves the live call and joins the new one; declining sends `busy` and the live call continues.
 
@@ -313,7 +312,7 @@ The high-priority push starts the app process and the SDK rings from its saved c
 
 ## Tokens and logout
 
-You do not register the push token: the SDK registers it on login and unregisters it on logout. Log out of the Calls SDK when the user signs out (`CometChatCalls.logout`, or `CometChatUIKit.logout` with the UI Kit). That stops a ring still playing for the old user and unregisters the token; `CometChat.logout` alone does neither.
+You do not register the push token: the SDK registers it on login and unregisters it on logout. Log out of the Calls SDK when the user signs out (`CometChatCalls.logout`, or `CometChatUIKit.logout` with the UI Kit). That stops a ring still playing for the old user and unregisters the token. `CometChat.logout` alone unregisters the token but does not stop a ring or sign out of the Calls SDK.
 
 ## Your own incoming-call screen
 
@@ -327,7 +326,7 @@ class MyRingActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setShowWhenLocked(true); setTurnScreenOn(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { setShowWhenLocked(true); setTurnScreenOn(true) }
         val call = CallBundles.getCall(intent) ?: return finish()
         this.call = call
         setContentView(R.layout.activity_ring)
@@ -361,7 +360,7 @@ public class MyRingActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setShowWhenLocked(true); setTurnScreenOn(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { setShowWhenLocked(true); setTurnScreenOn(true); }
         call = CallBundles.getCall(getIntent());
         if (call == null) { finish(); return; }
         setContentView(R.layout.activity_ring);
@@ -391,6 +390,18 @@ public class MyRingActivity extends AppCompatActivity {
 </Tabs>
 
 Without `onIncomingCallScreenOpened`, a cancelled call leaves your screen on the lock screen showing an Answer button for a call that no longer exists.
+
+Declare the screen so it can show over the lock screen and turn the display on, as the SDK's own screen is declared:
+
+```xml AndroidManifest.xml
+<activity
+    android:name=".MyRingActivity"
+    android:exported="false"
+    android:launchMode="singleTop"
+    android:showWhenLocked="true"
+    android:turnScreenOn="true"
+    android:excludeFromRecents="true" />
+```
 
 ## Theming the SDK's incoming-call screen
 

@@ -45,7 +45,7 @@ From the same screen, click **Add Provider** to upload the Firebase service acco
   <img src="/images/c6447647-pushnotification-fcm-68092b02a5361d51ba14b09289da3a78.png" alt="Upload FCM service account JSON" />
 </Frame>
 
-3. **App constants**: note your CometChat App ID, Auth Key and Region, and the FCM **Provider ID** you chose. The Provider ID goes into `PNConfiguration.setProviderId`; the SDK registers the device token under it.
+3. **App constants**: note your CometChat App ID, Auth Key and Region, and the FCM **Provider ID** you chose. The Provider ID goes into `PNConfiguration.setProviderId`, and it is required: the SDK registers the device token under it, and without it no token is registered.
 
 
 ## 2. Add dependencies (Gradle)
@@ -99,19 +99,17 @@ dependencies {
 </Tab>
 </Tabs>
 
-- The UI Kit already depends on both push artifacts; declaring them yourself only pins the version.
+- The UI Kit does not include the push artifacts; add both, also in a UI Kit app.
 - Apply the `google-services` plugin and place `google-services.json` in the same module.
 - `minSdk 26`: the calls module inherits the Calls SDK's floor. The core artifact alone works from 24.
-- The Chat SDK is optional for the push SDK: a calls-only app ships without it. Chat notifications and inline reply need it.
+- The Chat SDK is optional for the push SDK: a calls-only app ships without it. Chat pushes are still shown without it; delivery receipts, inline reply and tap deep links need it.
 
 ## 3. Manifest permissions and services
 
 ```xml lines
-<uses-permission android:name="android.permission.INTERNET" />
+<!-- Chat-only apps. With the calls module, this and the microphone and camera
+     permissions already merge in from the Calls SDK and the calls module. -->
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-<!-- Calls -->
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.CAMERA" />
 
 <application ...>
     <service
@@ -128,7 +126,7 @@ Everything else the ringer needs is declared by the SDK and merges in.
 
 ## 4. Initialise the SDK
 
-Once per install, after the UI Kit (or the Chat and Calls SDKs) is initialised. The configuration is persisted, so a push that wakes a cold process still finds it.
+In `Application.onCreate`, on every app start, after the UI Kit (or the Chat and Calls SDKs) is initialised and before the user logs in. Token registration on login and logout only runs in a process where `init` ran. The configuration is also saved, so a push that wakes a killed app can still be shown before your code runs.
 
 ```kotlin lines
 import com.cometchat.pushnotification.CometChatPushNotifications
@@ -146,8 +144,8 @@ CometChatPushNotifications.init(this, config)
 
 | Setter | Default | What it does |
 | --- | --- | --- |
-| `setProviderId(id)` | none | Provider the device token is registered under |
-| `setNotificationSmallIcon(res)` | none | Status-bar icon for every notification the SDK posts |
+| `setProviderId(id)` | none; **required** | Provider the device token is registered under. Without it no token is registered |
+| `setNotificationSmallIcon(res)` | a system mail icon | Status-bar icon for chat notifications. Call notifications use the drawables `cometchat_pn_ic_notification_call` and `cometchat_pn_ic_notification_call_missed`; override those by name |
 | `setInlineReplyEnabled(bool)` | `true` | Reply action on chat notifications |
 | `setAnswerActivity(Class)` | none; required with the calls module | Opened when the user answers a call. UI Kit apps use a small activity that opens `CometChatOngoingCallActivity`; see [Calling Integration](/ui-kit/android/calling-integration#step-3-configure-push-ringing) |
 | `setIncomingCallActivity(Class?)` | the SDK's screen | Your own incoming-call screen |
@@ -155,7 +153,7 @@ CometChatPushNotifications.init(this, config)
 | `setMissedCallActivity(Class?)` | none | Opened when a missed-call notification is tapped |
 | `setDefaultRingTimeoutMs(ms)`, `setShowMissedCallNotification(bool)`, `setRequestCallPermissions(bool)` | 45 000, `true`, `true` | Ring behaviour; see [Push Ringing](/calls/android/voip-calling) |
 
-Deep links from chat notifications:
+Deep links from chat notifications. Set the listener in `Application.onCreate`: a tap that starts a killed app is dropped if no listener is set yet.
 
 ```kotlin lines
 CometChatPushNotifications.setOnNotificationTapListener(object : NotificationTapListener {
@@ -206,11 +204,11 @@ class AppFCMService : FirebaseMessagingService() {
 
 You do not register the device token. The SDK fetches it from Firebase and registers it when the user logs in, re-registers it when Firebase rotates it, and unregisters it on logout.
 
-Log out through the UI Kit (`CometChatUIKit.logout`) or, with the SDKs directly, log out of both the Chat SDK and the Calls SDK. That is what unregisters the token and stops a call still ringing for the old user; `CometChat.logout` alone does neither.
+Log out through the UI Kit (`CometChatUIKit.logout`) or, with the SDKs directly, log out of both the Chat SDK and the Calls SDK. Only a Calls SDK logout stops a call still ringing for the old user; a Chat SDK logout unregisters the token but leaves the ring and the Calls SDK session alone.
 
 ### Permissions and ring readiness
 
-Ask for `POST_NOTIFICATIONS` (Android 13+) after sign-in, then check what else could silence a notification or a ring:
+After sign-in, check what could silence a notification or a ring. `ensureRingReady` asks for `POST_NOTIFICATIONS` itself on Android 13+ when it is missing. It is for apps with the calls module: a chat-only app always gets `FSI_REVOKED` on Android 14+, because only the calls module declares the full-screen-intent permission. A chat-only app should check the notification permission only.
 
 ```kotlin lines
 CometChatPushNotifications.ensureRingReady(this) { result ->
