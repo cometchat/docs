@@ -103,7 +103,8 @@ CometChatCalls.addEventListener('onCameraFacingChanged', (facing) => {
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `onParticipantJoined` | Participant | A participant joined |
+| `onParticipantConnected` | Participant | A participant's device prepared the session without joining. On the caller's prepared session this is the callee ringing |
+| `onParticipantJoined` | Participant | A participant joined. On the caller's prepared session this is the callee answering: join now |
 | `onParticipantLeft` | Participant | A participant left |
 | `onParticipantAudioMuted` | Participant | A participant muted their audio |
 | `onParticipantAudioUnmuted` | Participant | A participant unmuted their audio |
@@ -252,8 +253,81 @@ function useCallEvents(onCallEnd: () => void) {
 export default useCallEvents;
 ```
 
+## Events on a prepared session
+
+`CometChatCalls.getActiveSession()` returns the session as soon as it is **prepared** — which is what `initiateCall` does on the caller and what the Push SDK's ring does on the callee — before anyone has joined. Listening on it is what lets a caller show "Ringing…" and detect the answer without joining first.
+
+```ts
+const session = CometChatCalls.getActiveSession();   // null when no session is prepared or joined
+const me = CometChatCalls.getLoggedInUser()?.uid;
+
+session?.addEventListener('onParticipantConnected', p => {
+  if (p.uid !== me) setStatus('Ringing…');   // the callee's device got the push
+});
+session?.addEventListener('onParticipantJoined', p => {
+  if (p.uid !== me) join();                  // the callee answered
+});
+```
+
+| Event | On a prepared session it means |
+|-------|-------------------------------|
+| `onParticipantConnected` | The other device prepared the session: it is ringing there |
+| `onParticipantJoined` | The other side answered |
+| `onSessionTimedOut` | Nobody joined in time |
+| `onConnectionClosed` | The call ended before anyone joined (declined, cancelled from another device, or the room went away) |
+
+<Warning>
+**A prepared session has no roster.** It receives `onParticipantLeft` but never `onParticipantJoined` for participants who were already there, because there are none. `onParticipantConnected` is the only caller-side signal that the callee's device has been reached.
+</Warning>
+
+---
+
+## Incoming call events
+
+On React Native these come from the Push Notifications SDK, not the Calls SDK. They report a call for the logged-in user starting and ending, whether it arrived by push while the app was killed or while it was running.
+
+```ts
+import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
+
+const offRinging = CometChatVoipNotifications.onCallRinging(call => { /* ringing */ });
+const offAccepted = CometChatVoipNotifications.onCallAccepted(call => { /* answered here */ });
+const offEnded = CometChatVoipNotifications.onCallEnded(e => { /* e.reason */ });
+const offRingEnded = CometChatVoipNotifications.onRingEnded(e => { /* the ring stopped */ });
+```
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `onCallRinging` | `PNCallInfo` | A call for the logged-in user is ringing |
+| `onCallAccepted` | `PNCallInfo` | The user answered; open your call screen |
+| `onCallEnded` | `PNCallEndEvent` | The call ended. Caller: `rejected`, `busy`, `unanswered`, `cancelled`. Callee still ringing: `cancelled`, `ongoing` (answered elsewhere), `rejected` / `busy` (declined here), `unanswered` |
+| `onRingEnded` | `PNRingEndEvent` | The ring stopped, whatever happened to the call |
+
+Each returns an unsubscribe function. Subscribing late is safe: a call answered before your component mounted is held and delivered to the first subscriber. See [Ringing](/calls/react-native/ringing).
+
+---
+
+## Login events
+
+`CometChatCalls.addLoginListener` reports the Calls SDK login state. The Push SDK uses it to keep the identity its ring gates read in step with the logged-in user; your app can use it to gate call UI.
+
+```ts
+CometChatCalls.addLoginListener('my-app', {
+  onLoginSuccess: user => console.log('logged in as', user.uid),
+  onLogoutSuccess: () => console.log('logged out'),
+});
+
+CometChatCalls.removeLoginListener('my-app');
+```
+
+<Note>
+Listener ids are keys: registering the same id twice replaces the earlier listener. Remove it when the screen goes away. The `User` the Calls SDK hands back is a plain object with a `uid` field, not a class with `getUid()`.
+</Note>
+
+---
+
 ## Related Documentation
 
+- [Ringing](/calls/react-native/ringing) - Start, answer and end calls
 - [Actions](/calls/react-native/actions) - Control the call programmatically
 - [Session Settings](/calls/react-native/session-settings) - Configure event listeners
 - [Participant Management](/calls/react-native/participant-management) - Manage participants
