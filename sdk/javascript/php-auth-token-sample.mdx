@@ -7,30 +7,8 @@ description: "Reference sample: a PHP endpoint creates a CometChat auth token wi
 A complete, minimal reference for production-style login: your PHP backend creates an auth token with the [Create Auth Token](/rest-api/auth-tokens/create) REST API using the REST API key, which never reaches the browser. The browser fetches that token from your own endpoint and calls `CometChat.login(authToken)`.
 
 1. The user logs into your app. Your login code stores their CometChat UID in the PHP session.
-2. The page calls `GET /api/me.php` to learn which UID the server session belongs to, and compares it with the user the SDK has cached from a previous visit. A cached user for a different UID, or no server session at all, means the SDK must not be reused.
-3. When a login is needed, the page calls `GET /api/token.php`. The script reads the UID from the session and `POST`s to `https://{appId}.api-{region}.cometchat.io/v3/users/{uid}/auth_tokens` with the `apikey` header.
-4. The page passes the returned token to `CometChat.login()`, then runs the post-login work.
-
-## `api/me.php`
-
-Returns the UID of the user who is logged into your app, or `401` when nobody is. It never calls CometChat, so the page can check it on every load.
-
-```php
-<?php
-declare(strict_types=1);
-
-session_start();
-header('Content-Type: application/json');
-
-$uid = $_SESSION['cometchat_uid'] ?? null;
-if ($uid === null) {
-    http_response_code(401);
-    echo json_encode(['error' => ['code' => 'ERR_NOT_LOGGED_IN', 'message' => 'Log in to the app first.']]);
-    exit;
-}
-
-echo json_encode(['uid' => $uid]);
-```
+2. The page calls `GET /api/token.php`. The script reads the UID from the session and `POST`s to `https://{appId}.api-{region}.cometchat.io/v3/users/{uid}/auth_tokens` with the `apikey` header.
+3. The page passes the returned token to `CometChat.login()`, then runs the post-login work.
 
 ## `api/token.php`
 
@@ -139,27 +117,14 @@ echo json_encode(['authToken' => $json['data']['authToken']]);
         show(`Logged in as ${user.getUid()}. Sent message ${message.getId()}.`);
       }
 
-      // Same origin as the PHP scripts, so the PHP session cookie is sent along.
-      async function callApi(path) {
-        const response = await fetch(path, { credentials: "same-origin" });
+      async function fetchAuthToken() {
+        // Same origin as token.php, so the PHP session cookie is sent along.
+        const response = await fetch("/api/token.php", { credentials: "same-origin" });
         const body = await response.json();
         if (!response.ok) {
-          const error = new Error(`${body.error.code}: ${body.error.message}`);
-          error.status = response.status;
-          throw error;
+          throw new Error(`${body.error.code}: ${body.error.message}`);
         }
-        return body;
-      }
-
-      // The UID of the user logged into your app, or null when nobody is.
-      async function fetchSessionUid() {
-        try {
-          const { uid } = await callApi("/api/me.php");
-          return uid;
-        } catch (error) {
-          if (error.status === 401) return null;
-          throw error;
-        }
+        return body.authToken;
       }
 
       async function start() {
@@ -170,26 +135,9 @@ echo json_encode(['authToken' => $json['data']['authToken']]);
           .build();
         await CometChat.init(appID, appSetting);
 
-        // The SDK caches the last logged-in user in the browser. That cache says nothing
-        // about who is logged into your app right now, so check the server session first.
-        const sessionUid = await fetchSessionUid();
         let user = await CometChat.getLoggedinUser();
-
-        if (!sessionUid) {
-          // Nobody is logged into your app: drop any cached SDK user and stop.
-          if (user) await CometChat.logout();
-          show("Log in to the app first.");
-          return;
-        }
-
-        if (user && user.getUid() !== sessionUid.toLowerCase()) {
-          // Someone else logged into your app on this browser. Never reuse the cached user.
-          await CometChat.logout();
-          user = null;
-        }
-
         if (!user) {
-          const { authToken } = await callApi("/api/token.php");
+          const authToken = await fetchAuthToken();
           user = await CometChat.login(authToken);
         }
         await onLoggedIn(user);
@@ -210,12 +158,12 @@ echo json_encode(['authToken' => $json['data']['authToken']]);
 </Note>
 
 <Note>
-The cached SDK user is only reused when it matches the UID in the server session. Call `CometChat.logout()` from your app's own logout and account-switch code as well, so the cache is cleared as soon as the user leaves. CometChat stores UIDs in lowercase, which is why the comparison lowercases the session UID.
+CometChat has no server-side session: the token is created statelessly and the SDK keeps the logged-in user in the browser until `CometChat.logout()` is called. Call `logout()` from your app's own logout and account-switch code so the cached user never outlives the host login. `token.php` returning `401` only matters at login time, because your app decides who gets a token.
 </Note>
 
 ## Running it
 
-- Serve `index.html`, `api/me.php` and `api/token.php` from the same origin (for example `php -S localhost:8080` in the folder that contains both), so the browser sends the PHP session cookie with the `fetch()` call.
+- Serve `index.html` and `api/token.php` from the same origin (for example `php -S localhost:8080` in the folder that contains both), so the browser sends the PHP session cookie with the `fetch()` call.
 - Set `COMETCHAT_APP_ID`, `COMETCHAT_REGION` and `COMETCHAT_REST_API_KEY` in the PHP process environment. Replace `APP_ID` and `APP_REGION` in `index.html` with the same App ID and region.
 - Log the user into your own app first so the session has a UID: your login code sets `$_SESSION['cometchat_uid']` to the UID of an existing CometChat user. The sample sends a message to `cometchat-uid-2`, one of the pre-created test users.
 
