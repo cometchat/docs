@@ -2,7 +2,7 @@
 title: "Ringing"
 sidebarTitle: "Ringing"
 sdk_version: "5.x"
-description: "Ring users from a web app with the CometChat Calls SDK: start a call, show it ringing, answer, decline, cancel and end it, and detect a decline the caller is not told about."
+description: "Ring users from a web app with the CometChat Calls SDK: start a call, show it ringing, answer, decline, cancel and end it, and tell the caller why the ring ended."
 ---
 
 Ringing lets one user call another and lets the callee answer or decline. On the web, an incoming call rings in every open tab of your app where the callee is logged in.
@@ -14,7 +14,11 @@ Two SDKs do the work:
 | **Calls SDK** (`@cometchat/calls-sdk-javascript` 5.1+) | Creating the call, preparing and joining the session, declining, cancelling, ending, and the call events your code listens to |
 | **Chat SDK** (`@cometchat/chat-sdk-javascript`) | Delivering an incoming call to an open tab: the call message arrives on the Chat SDK's real-time connection and is reported to `CometChat.addCallListener` |
 
-The web has no VoIP push. A tab that is closed does not ring, and your app plays the ringtone, shows the incoming-call screen and stops ringing when the ring is over. A callee on Android or iOS rings through the Push Notifications SDK as usual, so web and mobile users can call each other.
+The web has no VoIP push. A tab that is closed does not ring, and your app plays the ringtone, shows the incoming-call screen and stops ringing when the ring is over. A callee on Android or iOS rings through the Push Notifications SDK.
+
+<Note>
+Web and mobile users can call each other when the mobile app also rings with the Calls SDK 5.1 and the Push Notifications SDK 2.0. Calls between an app on legacy ringing (the Chat SDK's calling methods) and an app on this flow are not covered at launch: move the web and mobile apps that call each other to this flow together.
+</Note>
 
 <Note>
 **Coming from the earlier ringing flow?** The Chat SDK's calling methods (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `startCall`) are superseded by the Calls SDK and are no longer used. `CometChat.addCallListener` is the exception on the web: it is still how an incoming call reaches a tab. See [Migrating from legacy ringing](/calls/javascript/migrating-from-legacy-ringing) for a method-by-method mapping.
@@ -49,22 +53,22 @@ What each side sees:
 | Call created | `initiateCall` resolves; show "Calling…" | `onIncomingCallReceived` in each open tab; ring and call `connect` |
 | Callee's device reached | `onParticipantConnected` → show "Ringing…" | Ringing |
 | Callee answers | `onParticipantJoined` → `data.session.join(container)` | `session.join(container)` |
-| Callee declines / is busy / does not answer | Not reliably reported. [Read the call's status](#detect-a-decline-busy-or-no-answer) every few seconds while ringing, and keep your [ring timer](#ring-timeout) | `endCall(sessionId, "rejected")` or `"busy"`; your own ring timer |
+| Callee declines / is busy / does not answer | The Chat SDK's `onOutgoingCallRejected`, with `call.getStatus()` saying why; also `onConnectionClosed` when the callee had prepared a 1:1 session. [Poll the status](#detect-a-decline-busy-or-no-answer) and keep your [ring timer](#ring-timeout) as a backstop | `endCall(sessionId, "rejected")` or `"busy"`; your own ring timer |
 | Caller cancels | — (you ended it) | `onIncomingCallCancelled`, or (1:1) `onConnectionClosed` on the prepared session; [poll the status](#stop-ringing-on-the-callee) as a backstop |
 | Either side hangs up | `onParticipantLeft` / `onSessionLeft` | same |
 
 <Note>
-The caller is not reliably told when, or why, the callee ended the ring. A decline closes the caller's prepared session (`onConnectionClosed`) only when the callee's device had prepared it. A busy decline never does (the callee is in another call and never joins the room), and neither does a decline made before the callee's device connected. A `CallListener.onOutgoingCallRejected` call message may arrive on the Chat SDK, but not in every case. And if the caller's own prepare failed, the caller is not in the room at all and hears neither the ring nor the answer. So while the call rings, read its status from the server every few seconds and end the screen on `rejected`, `busy` or any other end, as the [ring timer](#ring-timeout) does when nothing arrives.
+The Calls SDK does not report why a ring ended. `endCall` records the status on the server, which sends it as a Chat SDK call message: a decline, busy or no answer reaches the caller as `CallListener.onOutgoingCallRejected` (`call.getStatus()` is `rejected`, `busy` or `unanswered`), and a cancel reaches the callee as `onIncomingCallCancelled`. A 1:1 decline from a callee whose device had prepared the session also closes the caller's prepared session (`onConnectionClosed`), which carries no reason. A tab can still miss a message (it was asleep in the background, or reconnecting), and if the caller's own prepare failed, the caller is not in the room and hears neither the ring nor the answer. So while the call rings, also read its status from the server every 3 seconds as a backstop, and keep the [ring timer](#ring-timeout).
 </Note>
 
 ## Prerequisites
 
 - [Calls SDK set up](/calls/javascript/setup) and the user [logged in](/calls/javascript/authentication) with `CometChatCalls.login` or `loginWithAuthToken`. `initiateCall`, `connect` and `endCall` need a logged-in Calls SDK user.
-- The Chat SDK initialized and logged in as the **same user**, so that incoming calls reach the tab. See [Chat SDK setup](/sdk/javascript/setup-sdk).
+- The Chat SDK (`@cometchat/chat-sdk-javascript` 4.2.1 or later) initialized and logged in as the **same user**, so that incoming calls, declines and cancels reach the tab. See [Chat SDK setup](/sdk/javascript/setup-sdk).
 - HTTPS in production, for camera and microphone access.
 
 ```bash
-npm install @cometchat/calls-sdk-javascript@5.1.0 @cometchat/chat-sdk-javascript
+npm install @cometchat/calls-sdk-javascript@5.1.0 @cometchat/chat-sdk-javascript@^4.2.1
 ```
 
 ## Start a call
@@ -181,9 +185,10 @@ function watchOutgoingCall(call, container, isGroup) {
 async function joinOutgoing(call, container) {
   const { error } = await call.session.join(container);
   if (error?.name === "VALIDATION_ERROR") {
-    // No call token came with the call: generate one and join directly.
+    // No call token came with the call: generate one and join directly,
+    // with the settings the call was started with.
     const { token } = await CometChatCalls.generateToken(call.sessionId);
-    await CometChatCalls.joinSession(token, sessionSettings, container);
+    await CometChatCalls.joinSession(token, call.session.settings, container);
   } else if (error) {
     console.error("Join failed:", error);
   }
@@ -203,7 +208,7 @@ These events come from the room, so they only arrive while the caller's session 
 
 ## Detect a decline, busy or no answer
 
-Because the caller is not reliably told when the callee declines, read the call's status from the server every 3 seconds from the moment `initiateCall` resolves until the call is answered, cancelled or times out (`watchOutgoingCall` above starts and stops the poll). Start at once, not only after "Ringing…": a callee who declines before their device prepared the session never sends `onParticipantConnected`.
+A decline, busy or no answer reaches the caller as `onOutgoingCallRejected` on the Chat SDK's `CallListener`, with the reason in `call.getStatus()` (see [Receive a call](#receive-a-call)). As a backstop for a message the tab missed, and for an answer the caller cannot hear because its own prepare failed, also read the call's status from the server every 3 seconds from the moment `initiateCall` resolves until the call is answered, cancelled or times out (`watchOutgoingCall` above starts and stops the poll). Start at once, not only after "Ringing…": a callee who declines before their device prepared the session never sends `onParticipantConnected`.
 
 The status is the call's entry in [Call Logs](/calls/javascript/call-logs), read with the logged-in user's auth token:
 
@@ -261,7 +266,11 @@ async function checkOutgoingStatus(call, container, finish) {
 }
 ```
 
-Never end a call because the status could not be read: `null` means "keep ringing". The Chat SDK's `CallListener.onOutgoingCallRejected` can arrive as well, carrying the status (`rejected`, `busy`, or `unanswered`), but not in every case, so keep the poll (see [Receive a call](#receive-a-call) for filtering it).
+<Warning>
+`fetchCallStatus` calls a CometChat REST endpoint directly: the Calls SDK has no public method that returns a call's status, so this endpoint is not part of the SDK's API. The sample builds the URL for the default host, `{appId}.call-{region}.cometchat.io`; if your app initializes the Calls SDK with a custom host, build the URL from that host instead.
+</Warning>
+
+Never end a call because the status could not be read: `null` means "keep ringing". The Chat SDK's `CallListener.onOutgoingCallRejected` carries the same outcome (`rejected`, `busy` or `unanswered`); end the screen on whichever arrives first (see [Receive a call](#receive-a-call) for filtering it).
 
 ## Receive a call
 
@@ -372,7 +381,7 @@ Stop ringing when any of these happens for the ringing call:
 - `onConnectionClosed` fires while the call is still ringing and this tab had prepared it (in a 1:1 call: the caller cancelled, or the call ended).
 - Your own ring timer runs out.
 - Another of your tabs tells you it answered or declined the call (see [Several tabs and devices](#several-tabs-and-devices)).
-- The call's status is no longer `initiated`. Poll it every 3 seconds while ringing, with the `fetchCallStatus` function above, as a backstop: a cancel does not always reach a ringing tab as a message, and `onConnectionClosed` only fires when the room is destroyed.
+- The call's status is no longer `initiated`. Poll it every 3 seconds while ringing, with the `fetchCallStatus` function above, as a backstop for a message this tab missed (it was asleep in the background, or reconnecting): `onConnectionClosed` only fires when the room is destroyed.
 
 ```javascript
 // "over": the ring ended without an answer. "elsewhere": answered on another tab or device.
@@ -553,7 +562,7 @@ Every open tab where the callee is logged in receives the call and rings. Answer
 - Tell your other tabs, for example with a [`BroadcastChannel`](https://developer.mozilla.org/en-US/docs/Web/API/BroadcastChannel) (`tellOtherTabs` in the samples above). A tab that hears another tab answered calls `stopRinging(sessionId, "elsewhere")`, which does not call `leave()` on its prepared session, because releasing a prepared 1:1 session ends the room. The session still expires after 5 minutes, with the same effect (see the warning under [Prepare the ringing call](#prepare-the-ringing-call)). A tab that hears another tab declined calls `stopRinging(sessionId, "over")`.
 - A 1:1 decline also reaches your other tabs as `onOutgoingCallRejected`, as shown in [Receive a call](#receive-a-call).
 - The status poll is the backstop: a call answered on another of the user's devices reads `ongoing`, which stops a 1:1 ring as `"elsewhere"`.
-- While one tab is in a call, the Connect web app keeps the other tabs from ringing; the tab in the call declines a 1:1 call with `busy`.
+- While one tab is in a call, keep your other tabs from ringing (tell them over the same channel), and have the tab in the call decline a 1:1 call with `busy`, as `isBusy()` in [Receive a call](#receive-a-call) does.
 
 A tab that is already joined to a call cannot prepare another one: `connect` rejects with `SESSION_ALREADY_ACTIVE` and `initiateCall` returns `SESSION_ALREADY_ACTIVE`.
 

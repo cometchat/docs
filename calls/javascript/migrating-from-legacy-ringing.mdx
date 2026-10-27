@@ -11,20 +11,22 @@ This page is the diff. For the full description of the current flow see [Ringing
 
 ## Before you start
 
-Enable the **ringing migration** setting for your app in the CometChat dashboard, then follow the
-steps below. This page is for apps that use the SDKs directly. If you use the CometChat UI Kit, its
+Ringing with the Calls SDK is opt-in on the client: update your app to the APIs below. No dashboard setting is needed.
+This page is for apps that use the SDKs directly. If you use the CometChat UI Kit, its
 support for this flow comes with a coming UI Kit release; keep legacy ringing until then.
 
-{/* TODO(RC): add the setting's exact name and dashboard path and a screenshot once the toggle ships. */}
+<Warning>
+Web and mobile apps ring each other on this flow when the mobile app also rings with the Calls SDK 5.1 and the Push Notifications SDK 2.0. Calls between an app on legacy ringing and an app on this flow are not covered at launch, so move the web and mobile apps that call each other together.
+</Warning>
 
 ## Why it changed
 
 | Legacy | Now |
 |--------|-----|
 | The Chat SDK created the call, and `acceptCall` / `rejectCall` / `endCall` were HTTP calls your app had to sequence with `generateToken` and `joinSession` | The Calls SDK creates the call and prepares its session. Answer = join; decline, busy, cancel and no answer are one `endCall(sessionId, status)` |
-| The caller only knew "accepted" or "rejected" | The caller sees "Ringing…" (the callee's device was reached) and "answered" from the Calls SDK. A decline, busy or no answer is read from the call's status while ringing |
+| The caller only knew "accepted" or "rejected" | The caller sees "Ringing…" (the callee's device was reached) and "answered" from the Calls SDK. A decline, busy or no answer still arrives as the Chat SDK's `onOutgoingCallRejected`, with the reason in its status |
 | Joining took a token request and a full connect after the answer | The session is prepared while it rings, so the join is near-instant |
-| Web and mobile rang through different paths | One call, rung in the callee's open tabs (Chat SDK) and on the callee's phones (Push Notifications SDK) |
+| Web and mobile rang through different paths | One call, rung in the callee's open tabs (Chat SDK) and on the callee's phones (Push Notifications SDK 2.0, in a mobile app on the Calls SDK 5.1) |
 
 ## Before and after
 
@@ -70,10 +72,12 @@ sequenceDiagram
 
 ```bash
 npm install @cometchat/calls-sdk-javascript@5.1.0
-# @cometchat/chat-sdk-javascript stays: chat, and incoming calls on the web
+# @cometchat/chat-sdk-javascript (4.2.1 or later) stays: chat, and incoming calls on the web
 ```
 
 Keep both SDKs initialized and logged in as the same user: the Calls SDK for `initiateCall`, `connect` and `endCall`, the Chat SDK for the incoming call message.
+
+For TypeScript: in 5.1 the error type of `joinSession()` and `session.join(container)` is `JoinSessionException` (it was `VerifyTokenException` in 5.0), which adds `SESSION_SETTINGS_REQUIRED`, `SESSION_ALREADY_PREPARED` and `SESSION_CANCELLED`. See "5.0 to 5.1" in the [v5 migration guide](/calls/javascript/migration-guide-v5).
 
 ## Step 2: Rewrite the caller
 
@@ -82,7 +86,7 @@ Keep both SDKs initialized and logged in as the same user: the Calls SDK for `in
 | `CometChat.initiateCall(new CometChat.Call(receiverId, callType, receiverType))` | `CometChatCalls.initiateCall(receiver, { type, receiverType, sessionSettings })` → `{ data, error }` | `data.session` is the caller's session, already preparing. Set `sessionType` in `sessionSettings`, and `isPeerCall: true` for a 1:1 call |
 | `CometChat.initiateCall(call, timeout)` | No timeout parameter | Run your own timer on the caller and end the call with `endCall(sessionId, "unanswered")` after 45 s, before a phone's 60-second ring runs out |
 | `onOutgoingCallAccepted(call)` | `CometChatCalls.addEventListener("onParticipantJoined", ...)` on the prepared session, then `data.session.join(container)` | New in-between event: `onParticipantConnected` = the callee's device is ringing |
-| `onOutgoingCallRejected(call)` | Read the call's status every 3 s while ringing; `onConnectionClosed` when the prepared session closes | Not reliably reported: a busy decline, or a decline before the callee's device connected, closes nothing. `onOutgoingCallRejected` may still arrive; keep it as an extra signal, and check `getCallInitiator()`: a 1:1 decline reaches the callee's other tabs too |
+| `onOutgoingCallRejected(call)` | Unchanged: a decline, busy or no answer still arrives on the Chat SDK's `CallListener`, with the reason in `call.getStatus()`. Also `onConnectionClosed` when a callee that had prepared a 1:1 session declines | The Calls SDK reports no reason itself. Check `getCallInitiator()`: a 1:1 decline reaches the callee's other tabs too. Keep a 3 s status poll as a backstop for a message a tab missed (asleep, reconnecting) |
 | `CometChat.rejectCall(sessionId, CometChat.CALL_STATUS.CANCELLED)` | `CometChatCalls.endCall(sessionId, "cancelled")` | Tears the caller's prepared session down first |
 | `generateToken` + `joinSession` after the answer | `data.session.join(container)` | Takes no settings: the ones passed to `initiateCall` apply |
 
@@ -120,7 +124,8 @@ const offJoined = CometChatCalls.addEventListener("onParticipantJoined", () => {
 });
 const offClosed = CometChatCalls.addEventListener("onConnectionClosed", () => closeOutgoingScreen());
 const stopWatching = () => { offConnected(); offJoined(); offClosed(); };
-// Plus: poll the call's status every 3 s and a 45 s ring timer (see Ringing).
+// Keep onOutgoingCallRejected on your CallListener for a decline, busy or no answer.
+// Plus: poll the call's status every 3 s as a backstop and a 45 s ring timer (see Ringing).
 
 function cancel() {
   stopWatching();
@@ -137,7 +142,7 @@ function cancel() {
 | `CallListener.onIncomingCallReceived(call)` | Unchanged: the call still arrives on the Chat SDK's `CallListener`. Then prepare it with `CometChatCalls.connect(call.getSessionId(), settings)` | The caller's own tabs receive their 1:1 call as "incoming" too: skip calls whose `getCallInitiator()` is the logged-in user |
 | `CometChat.acceptCall(sessionId)` then `generateToken` + `joinSession` | `session.join(container)` on the session `connect` prepared. Nothing else to send | If the prepare failed, `generateToken` + `joinSession` as before |
 | `CometChat.rejectCall(sessionId, CometChat.CALL_STATUS.REJECTED)` | `CometChatCalls.endCall(sessionId, "rejected")` | `"busy"` when the user is in another call. A group call's decline is local: `session.leave()` |
-| `onIncomingCallCancelled(call)` | Still fires (also when the caller gives up as `unanswered`); also `onConnectionClosed` on a prepared 1:1 session, and the call's status read while ringing | The status is the backstop: a cancel does not always reach a ringing tab as a message |
+| `onIncomingCallCancelled(call)` | Still fires (also when the caller gives up as `unanswered`); also `onConnectionClosed` on a prepared 1:1 session | Keep a 3 s status poll while ringing as a backstop for a message the tab missed (asleep, reconnecting) |
 | — | Your own ring timer on the callee | Stop ringing after 60 s, a little after the caller gives up at 45 s |
 
 <Tabs>
@@ -207,18 +212,18 @@ function decline(call) {
 
 ## What users will notice
 
-- The caller sees "Ringing…" once the callee's tab or phone is reached, and the call screen closes when the call is declined, busy or missed (from the call's status, or the ring timer).
+- The caller sees "Ringing…" once the callee's tab or phone is reached, and the call screen closes when the call is declined, busy or missed (from `onOutgoingCallRejected`, the status poll, or the ring timer).
 - Answering joins almost at once, because the session was prepared while it rang.
-- Calls ring between web and mobile users in both directions.
+- Calls ring between web and mobile users in both directions, when the mobile app also rings with the Calls SDK 5.1 and the Push Notifications SDK 2.0. Calls between an app on legacy ringing and an app on this flow are not covered at launch.
 - The browser asks for the camera and microphone when the call is joined, not while it rings.
 
 ## Checklist
 
-- [ ] `@cometchat/calls-sdk-javascript` 5.1; the Chat SDK stays, initialized and logged in as the same user
-- [ ] **Ringing migration** enabled for the app in the dashboard
+- [ ] `@cometchat/calls-sdk-javascript` 5.1; the Chat SDK (4.2.1 or later) stays, initialized and logged in as the same user
+- [ ] The mobile apps your web app calls also ring with the Calls SDK 5.1 and the Push Notifications SDK 2.0
 - [ ] `initiateCall` passes `sessionSettings` with `sessionType`, and `isPeerCall: true` for a 1:1 call
 - [ ] Caller listens for `onParticipantConnected` / `onParticipantJoined` / `onConnectionClosed` and joins only on `onParticipantJoined` with `data.session.join(container)`
-- [ ] Caller polls the call's status every 3 s while ringing and runs a ring timer that ends the call as `unanswered`
+- [ ] Caller ends the screen on `onOutgoingCallRejected`, polls the call's status every 3 s while ringing as a backstop, and runs a ring timer that ends the call as `unanswered`
 - [ ] Callee skips its own outgoing calls, prepares with `connect`, and answers with `session.join(container)`
 - [ ] Callee stops ringing on `onIncomingCallCancelled`, `onConnectionClosed`, its ring timer and the status poll
 - [ ] Decline, busy and cancel use `CometChatCalls.endCall`; no `CometChat.acceptCall`, `rejectCall` or `endCall` left
