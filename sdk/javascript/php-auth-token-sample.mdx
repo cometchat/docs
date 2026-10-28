@@ -1,247 +1,94 @@
 ---
 title: "PHP Backend + JS SDK: Auth Token Login"
 sidebarTitle: "PHP Auth Token Sample"
-description: "Reference sample: a PHP endpoint creates a CometChat auth token with the REST API and a browser page logs in with the JavaScript SDK."
+description: "Return a CometChat auth token from your PHP login response and log the JavaScript SDK in with it. No extra endpoints or pages."
 ---
 
-A complete, minimal reference for production-style login: your PHP backend creates an auth token with the [Create Auth Token](/rest-api/auth-tokens/create) REST API using the REST API key, which never reaches the browser. The browser fetches that token from your own endpoint and passes it straight to `CometChat.login(authToken)`. The endpoint works with a stateful backend (PHP session) and with a stateless one (a bearer token your app issues).
+Your backend already verifies the user when they log into your app. Add one step to that handler: create a CometChat auth token for the verified user with the [Create Auth Token](/rest-api/auth-tokens/create) REST API and return it in the same login response, next to the user's other attributes. Your frontend then calls `CometChat.login(authToken)` with the value from the response.
 
-1. The user logs into your app. Your backend knows who they are, either from a PHP session or from the bearer token your app issued.
-2. The page calls `GET /api/token.php`. It resolves the current user's CometChat UID from that session or bearer token, then `POST`s to `https://{appId}.api-{region}.cometchat.io/v3/users/{uid}/auth_tokens` with the `apikey` header.
-3. The page passes the returned token straight to `CometChat.login()`, then runs the post-login work.
+Nothing else changes. The REST API key stays on the server, the browser never builds or stores a token itself, and there is no separate token endpoint to secure.
 
-## `api/token.php`
+## Backend: add the token to your login response
+
+Inside your existing PHP login handler, after your own credential check has succeeded:
 
 ```php
 <?php
-declare(strict_types=1);
-
-header('Content-Type: application/json');
-
-// Server-side configuration. The REST API key must never be sent to the browser.
-$appId      = getenv('COMETCHAT_APP_ID');
-$region     = getenv('COMETCHAT_REGION'); // us, eu or in
-$restApiKey = getenv('COMETCHAT_REST_API_KEY');
-
-if ($appId === false || $region === false || $restApiKey === false) {
-    http_response_code(500);
-    echo json_encode(['error' => ['code' => 'ERR_CONFIG', 'message' => 'CometChat environment variables are not set.']]);
-    exit;
-}
-
-// Two ways to know who is calling, checked in order. Never read the UID from $_GET or $_POST:
-// otherwise any visitor could mint a token for any user.
-//   Stateless: "Authorization: Bearer <JWT>", an HS256 JWT your app signed with APP_JWT_SECRET; `sub` is the UID.
-//   Stateful:  your login code stored the UID in $_SESSION['cometchat_uid'].
-function current_user_uid(): ?string
+// Runs after your app has verified the user. $uid is the user's CometChat UID,
+// taken from your own user record, never from the request.
+function cometchatAuthToken(string $uid): string
 {
-    $uid = null;
-    if (preg_match('/^Bearer\s+(\S+)$/i', $_SERVER['HTTP_AUTHORIZATION'] ?? '', $m) === 1) {
-        $uid = jwt_subject($m[1], (string) getenv('APP_JWT_SECRET'));
-    }
-    if ($uid === null) {
-        session_status() === PHP_SESSION_ACTIVE || session_start();
-        $uid = $_SESSION['cometchat_uid'] ?? null;
-    }
-    return is_string($uid) && $uid !== '' ? $uid : null;
-}
+    $appId     = getenv('COMETCHAT_APP_ID');
+    $region    = getenv('COMETCHAT_REGION');       // us, eu or in
+    $restApiKey = getenv('COMETCHAT_REST_API_KEY'); // server-side only
 
-function jwt_subject(string $jwt, string $secret): ?string
-{
-    $parts = explode('.', $jwt);
-    if ($secret === '' || count($parts) !== 3) {
-        return null;
-    }
-    [$header64, $claims64, $signature64] = $parts;
-    $b64 = static fn (string $v): string => (string) base64_decode(strtr($v, '-_', '+/'), true);
-    $header = json_decode($b64($header64), true);
-    $claims = json_decode($b64($claims64), true);
-    $valid  = ($header['alg'] ?? null) === 'HS256'
-        && hash_equals(hash_hmac('sha256', "$header64.$claims64", $secret, true), $b64($signature64))
-        && is_array($claims) && ($claims['exp'] ?? 0) > time() && is_string($claims['sub'] ?? null);
-    return $valid ? $claims['sub'] : null;
-}
-
-$uid = current_user_uid();
-if ($uid === null) {
-    http_response_code(401);
-    echo json_encode(['error' => ['code' => 'ERR_NOT_LOGGED_IN', 'message' => 'Log in to the app first.']]);
-    exit;
-}
-
-$url = sprintf('https://%s.api-%s.cometchat.io/v3/users/%s/auth_tokens', $appId, $region, rawurlencode($uid));
-
-$ch = curl_init($url);
-curl_setopt_array($ch, [
-    CURLOPT_POST           => true,
-    CURLOPT_POSTFIELDS     => '{}',
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT        => 10,
-    CURLOPT_HTTPHEADER     => ['apikey: ' . $restApiKey, 'Content-Type: application/json', 'Accept: application/json'],
-]);
-
-$body = curl_exec($ch);
-
-if (curl_errno($ch) !== 0) {
-    http_response_code(502);
-    echo json_encode(['error' => ['code' => 'ERR_UPSTREAM', 'message' => curl_error($ch)]]);
-    exit;
-}
-
-$status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-// No curl_close(): deprecated as of PHP 8.5, and its notice would corrupt the JSON output. The handle is released at script end.
-
-$json = json_decode((string) $body, true);
-
-if ($status < 200 || $status >= 300) {
-    // Forward CometChat's error (for example ERR_UID_NOT_FOUND) with the same status.
-    http_response_code($status);
-    echo json_encode([
-        'error' => $json['error'] ?? ['code' => 'ERR_UNEXPECTED_RESPONSE', 'message' => 'Unexpected response from CometChat.'],
+    $ch = curl_init(sprintf('https://%s.api-%s.cometchat.io/v3/users/%s/auth_tokens', $appId, $region, rawurlencode($uid)));
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_HTTPHEADER     => ['apikey: ' . $restApiKey, 'Content-Type: application/json', 'Accept: application/json'],
     ]);
-    exit;
+    $body   = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    // No curl_close(): deprecated as of PHP 8.5. The handle is released when the script ends.
+
+    $json = json_decode((string) $body, true);
+    if ($status < 200 || $status >= 300) {
+        // Surface CometChat's error, for example ERR_UID_NOT_FOUND, instead of returning null.
+        throw new RuntimeException($json['error']['code'] ?? 'ERR_UNEXPECTED_RESPONSE');
+    }
+    return $json['data']['authToken'];
 }
 
-echo json_encode(['authToken' => $json['data']['authToken']]);
+// ... your login handler, after verification:
+header('Content-Type: application/json');
+echo json_encode([
+    'user' => ['id' => $user->id, 'name' => $user->name, 'email' => $user->email],
+    'cometchat' => ['authToken' => cometchatAuthToken($user->cometchatUid)],
+]);
 ```
 
-## `index.html`
+## Frontend: log in with the token from the response
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>CometChat auth token login</title>
-    <script src="https://unpkg.com/@cometchat/chat-sdk-javascript/CometChat.js"></script>
-  </head>
-  <body>
-    <pre id="status">Connecting...</pre>
-    <button id="logout" type="button">Log out</button>
+In the code that already submits your login form and handles the response:
 
-    <!-- type="module": nothing in this script is attached to window. -->
-    <script type="module">
-      const appID = "APP_ID";
-      const region = "APP_REGION"; // us, eu or in
-      const receiverUID = "cometchat-uid-2"; // receives the sample message
+```javascript
+// After CometChat.init() has run once at app start.
+async function loginToApp(credentials) {
+  const response = await fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(credentials),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error ?? "Login failed");
+  }
 
-      const statusEl = document.getElementById("status");
-      const show = (text) => {
-        statusEl.textContent = text;
-      };
+  // Your app's own post-login work with data.user goes here.
 
-      // Where your app keeps its own session token, if it issues one. This sample reads an
-      // `app_token` cookie; return null when the app relies on the PHP session cookie instead.
-      function getAppSessionToken() {
-        const match = document.cookie.match(/(?:^|;\s*)app_token=([^;]+)/);
-        return match ? decodeURIComponent(match[1]) : null;
-      }
+  const user = await CometChat.login(data.cometchat.authToken);
+  await onLoggedIn(user);
+}
 
-      async function fetchAuthToken() {
-        const headers = {};
-        const appToken = getAppSessionToken();
-        if (appToken) {
-          headers.Authorization = `Bearer ${appToken}`; // stateless backend
-        }
-        // Same origin as token.php. Without a bearer token the PHP session cookie identifies the user.
-        const response = await fetch("/api/token.php", { headers, credentials: "same-origin" });
-        const body = await response.json();
-        if (!response.ok) {
-          throw new Error(`${body.error.code}: ${body.error.message}`);
-        }
-        return body.authToken;
-      }
+// Runs after a fresh login AND when the SDK restores the session on reload.
+async function onLoggedIn(user) {
+  console.log("CometChat ready for", user.getUid());
+}
 
-      async function loginWithServerToken() {
-        // The token lives only in this block and goes straight into login(): never logged or stored.
-        const authToken = await fetchAuthToken();
-        return CometChat.login(authToken);
-      }
-
-      // The real login and logout, captured before locking, so the app and the SDK keep using them.
-      const sdkLogin = CometChat.login.bind(CometChat);
-      const sdkLogout = CometChat.logout.bind(CometChat);
-
-      // Pin login() to the token the server issued for this user and make both methods non-writable
-      // and non-configurable for the rest of the page's life. From the console, login() with any other
-      // token is rejected, and neither method can be replaced. The SDK's own re-login after a settings
-      // change uses the same token, so it still passes.
-      function lockAuthMethods(user) {
-        const issuedToken = user.getAuthToken();
-        const pinnedLogin = (token) =>
-          token === issuedToken ? sdkLogin(token) : Promise.reject(new Error("Login is managed by the app."));
-        Object.defineProperty(CometChat, "login", { value: pinnedLogin, writable: false, configurable: false });
-        Object.defineProperty(CometChat, "logout", { value: sdkLogout, writable: false, configurable: false });
-      }
-
-      // Call this from your app's logout and account-switch code.
-      async function appLogout() {
-        await sdkLogout();
-        show("Logged out.");
-        // Then end your app's own session: clear $_SESSION['cometchat_uid'] or drop the bearer token.
-      }
-
-      // Everything that needs a logged-in user lives here. It runs after a fresh
-      // login AND when getLoggedinUser() restores the session on reload.
-      async function onLoggedIn(user) {
-        show(`Logged in as ${user.getUid()}`);
-
-        const textMessage = new CometChat.TextMessage(
-          receiverUID,
-          "Hello from the PHP + JS sample!",
-          CometChat.RECEIVER_TYPE.USER
-        );
-        const message = await CometChat.sendMessage(textMessage);
-        show(`Logged in as ${user.getUid()}. Sent message ${message.getId()}.`);
-      }
-
-      async function start() {
-        const appSetting = new CometChat.AppSettingsBuilder()
-          .subscribePresenceForAllUsers()
-          .setRegion(region)
-          .autoEstablishSocketConnection(true)
-          .build();
-        await CometChat.init(appID, appSetting);
-
-        let user = await CometChat.getLoggedinUser();
-        if (!user) {
-          user = await loginWithServerToken();
-        }
-        lockAuthMethods(user);
-        await onLoggedIn(user);
-      }
-
-      document.getElementById("logout").addEventListener("click", () => {
-        appLogout().catch((error) => show(`Error: ${error.message}`));
-      });
-
-      start().catch((error) => {
-        // Catches fetch/network failures, token.php error bodies and SDK CometChatException rejections.
-        show(`Error: ${error.message}`);
-        console.error(error);
-      });
-    </script>
-  </body>
-</html>
+// On page load: reuse the SDK's cached session if there is one.
+CometChat.getLoggedinUser().then((user) => {
+  if (user) return onLoggedIn(user);
+});
 ```
 
 <Note>
-`onLoggedIn()` runs in both paths, so the page keeps working after a reload: `getLoggedinUser()` returns the cached user and `token.php` is not called again. Code placed only inside `if (!user)` would run once and never again.
+`onLoggedIn()` runs in both paths, so chat keeps working after a reload: `getLoggedinUser()` returns the cached user and no new token is needed. Code placed only in the login path would run once and never again.
 </Note>
 
 <Note>
-CometChat has no server-side session: the token is created statelessly and the SDK keeps the logged-in user in the browser until `CometChat.logout()` is called. Call `appLogout()` from your app's own logout and account-switch code so the cached user never outlives the host login. `token.php` returning `401` only matters at login time, because your app decides who gets a token.
+Call `CometChat.logout()` from your app's own logout and account-switch code, so the cached SDK user never outlives your app's login. To cut off a user's CometChat access from the server, for example after a password reset, revoke their tokens with [Delete Auth Token](/rest-api/auth-tokens/delete) or [Flush Auth Tokens](/rest-api/auth-tokens/flush).
 </Note>
 
-<Note>
-Pinning `login()` to the issued token is defence in depth, not a security boundary: the real control is that `token.php` only mints a token for the user your backend has authenticated, so a visitor can never obtain another user's token. The pin stops a console call to `login()` with any other token on the current page; a reload starts the page fresh and `login()` runs only through `token.php` again.
-</Note>
-
-## Running it
-
-- Serve `index.html` and `api/token.php` from the same origin (for example `php -S localhost:8080` in the folder that contains both), so the `fetch()` call carries the PHP session cookie or your app's bearer token.
-- Set `COMETCHAT_APP_ID`, `COMETCHAT_REGION` and `COMETCHAT_REST_API_KEY` in the PHP process environment. For the stateless mode also set `APP_JWT_SECRET` to the secret your app signs its JWTs with. Replace `APP_ID` and `APP_REGION` in `index.html` with the same App ID and region.
-- Log the user into your own app first, so `token.php` can resolve a UID. Stateful: your login code sets `$_SESSION['cometchat_uid']`. Stateless: your login code issues an HS256 JWT whose `sub` is the UID and whose `exp` is in the future, and the page sends it as `Authorization: Bearer` (this sample reads it from an `app_token` cookie). Either way the UID must belong to an existing CometChat user; the sample sends a message to `cometchat-uid-2`, one of the pre-created test users.
-- To cut off a user's CometChat access from the server, for example after a password reset, revoke one token with [Delete Auth Token](/rest-api/auth-tokens/delete) or all of the user's tokens with [Flush Auth Tokens](/rest-api/auth-tokens/flush).
-
-For the login patterns themselves, see [Authentication](/sdk/javascript/authentication-overview); for the token endpoint and headers, see [Create Auth Token](/rest-api/auth-tokens/create) and [REST API Authentication](/rest-api/authentication).
+For the login patterns themselves, see [Authentication](/sdk/javascript/authentication-overview); for the endpoint and headers, see [Create Auth Token](/rest-api/auth-tokens/create) and [REST API Authentication](/rest-api/authentication).
