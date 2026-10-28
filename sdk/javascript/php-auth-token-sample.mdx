@@ -1,0 +1,99 @@
+---
+title: "PHP Backend + JS SDK: Auth Token Login"
+sidebarTitle: "PHP Auth Token Sample"
+description: "Return a CometChat auth token from your PHP login response and log the JavaScript SDK in with it. No extra endpoints or pages."
+---
+
+Your backend already verifies the user when they log into your app. Add one step to that handler: create a CometChat auth token for the verified user with the [Create Auth Token](/rest-api/auth-tokens/create) REST API and return it in the same login response, next to the user's other attributes. Your frontend then calls `CometChat.login(authToken)` with the value from the response.
+
+Nothing else changes. The REST API key stays on the server, the browser never builds or stores a token itself, and there is no separate token endpoint to secure.
+
+## Backend: add the token to your login response
+
+Inside your existing PHP login handler, after your own credential check has succeeded:
+
+```php
+<?php
+// Runs after your app has verified the user. $uid is the user's CometChat UID,
+// taken from your own user record, never from the request.
+function cometchatAuthToken(string $uid): string
+{
+    $appId     = getenv('COMETCHAT_APP_ID');
+    $region    = getenv('COMETCHAT_REGION');       // us, eu or in
+    $restApiKey = getenv('COMETCHAT_REST_API_KEY'); // server-side only
+
+    $ch = curl_init(sprintf('https://%s.api-%s.cometchat.io/v3/users/%s/auth_tokens', $appId, $region, rawurlencode($uid)));
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => '{}', // the only body field, force, is optional
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_HTTPHEADER     => ['apikey: ' . $restApiKey, 'Content-Type: application/json', 'Accept: application/json'],
+    ]);
+    $body   = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    // No curl_close(): deprecated as of PHP 8.5. The handle is released when the script ends.
+
+    $json = json_decode((string) $body, true);
+    if ($status < 200 || $status >= 300) {
+        // Surface CometChat's error, for example ERR_UID_NOT_FOUND, instead of returning null.
+        throw new RuntimeException($json['error']['code'] ?? 'ERR_UNEXPECTED_RESPONSE');
+    }
+    return $json['data']['authToken'];
+}
+
+// ... your login handler, after verification:
+header('Content-Type: application/json');
+echo json_encode([
+    'user' => [
+        'id'            => $user->id,
+        'name'          => $user->name,
+        'email'         => $user->email,
+        'chatAuthToken' => cometchatAuthToken($user->cometchatUid),
+    ],
+]);
+```
+
+## Frontend: log in with the token from the response
+
+In the code that already submits your login form and handles the response:
+
+```javascript
+// After CometChat.init() has run once at app start.
+async function loginToApp(credentials) {
+  const response = await fetch("/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(credentials),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error ?? "Login failed");
+  }
+
+  // Your app's own post-login work with data.user goes here.
+
+  const user = await CometChat.login(data.user.chatAuthToken);
+  await onLoggedIn(user);
+}
+
+// Runs after a fresh login AND when the SDK restores the session on reload.
+async function onLoggedIn(user) {
+  console.log("CometChat ready for", user.getUid());
+}
+
+// On page load: reuse the SDK's cached session if there is one.
+CometChat.getLoggedinUser().then((user) => {
+  if (user) return onLoggedIn(user);
+});
+```
+
+<Note>
+`onLoggedIn()` runs in both paths, so chat keeps working after a reload: `getLoggedinUser()` returns the cached user and no new token is needed. Code placed only in the login path would run once and never again.
+</Note>
+
+<Note>
+Call `CometChat.logout()` from your app's own logout and account-switch code, so the cached SDK user never outlives your app's login. To cut off a user's CometChat access from the server, for example after a password reset, revoke their tokens with [Delete Auth Token](/rest-api/auth-tokens/delete) or [Flush Auth Tokens](/rest-api/auth-tokens/flush).
+</Note>
+
+For the login patterns themselves, see [Authentication](/sdk/javascript/authentication-overview); for the endpoint and headers, see [Create Auth Token](/rest-api/auth-tokens/create) and [REST API Authentication](/rest-api/authentication).
