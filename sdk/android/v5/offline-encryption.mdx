@@ -1,0 +1,176 @@
+---
+title: "Encrypt the Cache"
+sidebarTitle: "Encrypt the Cache"
+description: "Encrypt the offline message cache at rest with SQLCipher, choose what happens when encryption cannot run, and inspect the live encryption status with the CometChat Android SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// 1. Add the cipher engine to your app's build.gradle (the SDK does NOT bundle it):
+//    implementation 'net.zetetic:sqlcipher-android:4.13.0'
+
+// 2. Turn encryption on in OfflineConfig (off by default)
+val offlineConfig = OfflineConfig.Builder()
+    .enabled(true)
+    .encryption(true)                                              // encrypt the cache database at rest
+    .encryptionFailureBehavior(EncryptionFailureBehavior.ONLINE_ONLY) // default; never writes plaintext
+    .build()
+
+// 3. Inspect what encryption is actually doing
+val status = CometChat.getOfflineEncryptionStatus()
+status.isEnabled           // what was configured
+status.atRest              // "SQLCIPHER" or "NONE"
+status.keyStorage          // "KEYSTORE" or "NONE"
+status.isCipherAvailable   // is the SQLCipher engine present in this build?
+status.cipher              // engine cipher_version once proven, else null
+status.leakage             // what is never covered (media files on disk)
+```
+
+</Accordion>
+
+Offline support keeps the logged-in user's messages in a local database on the device. Turn encryption on to store that database **encrypted at rest** using [SQLCipher](https://www.zetetic.net/sqlcipher/). Encryption is **opt-in** and off by default; nothing changes until you call `encryption(true)`. The minimum SDK version is **5.1.0**.
+
+<Note>
+Encryption covers the **message database only**. Downloaded media files (photos, voice notes, documents) stay as ordinary unencrypted files on disk, because their local paths are handed to native image and video loaders. See [What is and isn't encrypted](#what-is-and-isn-t-encrypted).
+</Note>
+
+## Add the SQLCipher dependency
+
+The SDK does **not** bundle the cipher engine, so apps that do not use encryption pay none of its size (roughly 3 MB per ABI) and the SDK `minSdk` stays 21. If you enable encryption you must add the engine yourself:
+
+```groovy
+// app/build.gradle
+dependencies {
+    implementation 'net.zetetic:sqlcipher-android:4.13.0'
+}
+```
+
+<Warning>
+Without this dependency on the classpath the cache **cannot run encrypted**. What happens then is decided by [`EncryptionFailureBehavior`](#choose-what-happens-when-encryption-cannot-run) — by default the session runs server-only (no local cache). The SDK never creates a database that is labelled encrypted but is not.
+</Warning>
+
+## Turn on encryption
+
+Set `encryption(true)` on the `OfflineConfig` you pass to the SDK during initialization (see [Enable Offline Support](/sdk/android/v5/offline-enable)).
+
+<Tabs>
+<Tab title="Java">
+```java
+OfflineConfig offlineConfig = new OfflineConfig.Builder()
+    .enabled(true)
+    .encryption(true)
+    .encryptionFailureBehavior(EncryptionFailureBehavior.ONLINE_ONLY)
+    .build();
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val offlineConfig = OfflineConfig.Builder()
+    .enabled(true)
+    .encryption(true)
+    .encryptionFailureBehavior(EncryptionFailureBehavior.ONLINE_ONLY)
+    .build()
+```
+</Tab>
+</Tabs>
+
+## Choose what happens when encryption cannot run
+
+`encryptionFailureBehavior` decides what the cache does when encryption **cannot be applied at all** on this build or device — for example the SQLCipher dependency is missing, the native library will not load, or there is no supported ABI. It governs only that case: a transient failure still retries, and a lost or wrong key self-heals by wiping and rebuilding the cache **encrypted**.
+
+| Value | Behavior | Writes plaintext? |
+|---|---|---|
+| `ONLINE_ONLY` *(default)* | Do not open a local cache at all — the session runs server-only. Makes a setup mistake visible: offline simply does not work until the dependency is added. | No |
+| `PLAINTEXT_FALLBACK` | Open an **unencrypted** cache so offline keeps working, and log the downgrade at error level. | Yes |
+
+<Warning>
+`PLAINTEXT_FALLBACK` means cached message content may be stored **unencrypted** on disk whenever encryption cannot run. This availability-over-guarantee trade is wrong for compliance use — keep the default `ONLINE_ONLY` if cached content must never be written in the clear.
+</Warning>
+
+## Key storage
+
+You do not supply or manage the encryption key. The SDK derives a per-user key (scoped to the app ID and the logged-in user's UID), wraps it with a non-exportable **Android Keystore** key, and stores the wrapped blob in the app's no-backup files directory. The key never leaves the device and is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+
+## Check encryption status
+
+`CometChat.getOfflineEncryptionStatus()` returns an `OfflineEncryptionStatus` describing what encryption is **actually** doing — never what was merely requested. It is safe to call at any time and never returns the key or any part of it.
+
+<Tabs>
+<Tab title="Java">
+```java
+OfflineEncryptionStatus status = CometChat.getOfflineEncryptionStatus();
+Log.d(TAG, "enabled="        + status.isEnabled()
+        + " atRest="         + status.getAtRest()
+        + " keyStorage="     + status.getKeyStorage()
+        + " cipherAvailable=" + status.isCipherAvailable()
+        + " cipher="         + status.getCipher());
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val status = CometChat.getOfflineEncryptionStatus()
+Log.d(TAG, "enabled=${status.isEnabled}" +
+        " atRest=${status.atRest}" +
+        " keyStorage=${status.keyStorage}" +
+        " cipherAvailable=${status.isCipherAvailable}" +
+        " cipher=${status.cipher}")
+```
+</Tab>
+</Tabs>
+
+| Field | Type | Meaning |
+|---|---|---|
+| `isEnabled()` | `boolean` | What was **configured** (`OfflineConfig.encryption`), not what was achieved. |
+| `getAtRest()` | `String` | Coverage actually achieved: `"SQLCIPHER"` once an encrypted open is proven, otherwise `"NONE"`. |
+| `getKeyStorage()` | `String` | `"KEYSTORE"` when a key was resolved from the Android Keystore; `"NONE"` when this session holds no key. Read `NONE` as "no key in use", not "no key exists". |
+| `isCipherAvailable()` | `boolean` | Whether the SQLCipher engine is present and linked in this process. `false` when encryption is off or the optional dependency is missing / won't load. |
+| `getCipher()` | `String` | The engine's `cipher_version` once an encrypted open is proven, else `null`. |
+| `getLeakage()` | `String` | What encryption at rest never covers — on Android, the media files stored outside the database. |
+
+<Tip>
+The single most useful support signal is `isEnabled() == true` with `isCipherAvailable() == false`: encryption was switched on but could not run. On Android that almost always means the `net.zetetic:sqlcipher-android` dependency was never added to the app.
+</Tip>
+
+## What is and isn't encrypted
+
+| Data | Encrypted at rest? |
+|---|---|
+| Message database (messages, conversations, metadata, the pending-send outbox) | Yes, when `atRest` is `SQLCIPHER` |
+| Downloaded media files on disk (images, video, audio, documents) | **No** — stored as ordinary files outside the database |
+
+Media bytes live outside the database because `Attachment.getLocalPath()` is public API and those paths are passed straight to native media loaders. "Encrypted at rest" here always means the message database, never the media cache.
+
+## Cache resets on key loss
+
+If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost and each is failed through its send listener.
+
+Register an `OfflineCacheResetListener` to be told when this happens:
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.addOfflineCacheResetListener("LISTENER_ID", new OfflineCacheResetListener() {
+    @Override
+    public void onOfflineCacheReset(OfflineCacheResetReason reason, int pendingMessagesLost) {
+        Log.w(TAG, "Cache reset: " + reason + ", pending lost=" + pendingMessagesLost);
+    }
+});
+```
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.addOfflineCacheResetListener("LISTENER_ID", object : OfflineCacheResetListener() {
+    override fun onOfflineCacheReset(reason: OfflineCacheResetReason, pendingMessagesLost: Int) {
+        Log.w(TAG, "Cache reset: $reason, pending lost=$pendingMessagesLost")
+    }
+})
+```
+</Tab>
+</Tabs>
+
+The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches). See [Stay in Sync](/sdk/android/v5/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/android/v5/offline-reference) for every field and enum.

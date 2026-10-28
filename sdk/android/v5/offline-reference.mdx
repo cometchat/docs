@@ -1,0 +1,186 @@
+---
+title: "Offline Configuration & API Reference"
+sidebarTitle: "Configuration & API Reference"
+description: "A complete reference for the offline configuration options, public methods, listeners, enums, model fields, and error codes with the CometChat Android SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Build the config (every field has a default; set only what you change)
+val offlineConfig = OfflineConfig.Builder()
+    .enabled(true)
+    .maxConversations(100)
+    .maxMessagesPerConversation(500)
+    .maxPendingMessages(50)
+    .mediaCaching(MediaCachingMode.AUTO)
+    .encryption(false)
+    .build()
+
+// Introspection / control
+CometChat.isOfflineEnabled()            // Boolean
+CometChat.getMediaCachingMode()         // MediaCachingMode
+CometChat.getOfflineEncryptionStatus()  // OfflineEncryptionStatus
+CometChat.getSyncState()                // SyncState
+CometChat.getLastSyncTimestamp()        // Long (server epoch seconds)
+CometChat.getCacheSize()                // Long (bytes)
+CometChat.getPendingMessages(listener)  // List<BaseMessage>
+CometChat.forceSyncNow()                // or forceSyncNow(callback)
+CometChat.clearOfflineCache()
+```
+
+</Accordion>
+
+This page is the full surface of CometChat's offline support on Android: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **5.1.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/android/v5/offline-enable), [Show Cached Data](/sdk/android/v5/offline-cached-data), [Send While Offline](/sdk/android/v5/offline-send), [Stay in Sync](/sdk/android/v5/offline-sync), [Media Caching](/sdk/android/v5/offline-media-caching), and [Encrypt the Cache](/sdk/android/v5/offline-encryption).
+
+## OfflineConfig options
+
+Build with `OfflineConfig.Builder`. Every field is pre-set to its default, so call only the setters you want to change; the resulting `OfflineConfig` is immutable. Byte caps and the TTL treat `0` as **unlimited** (that dimension's eviction is disabled); the count caps are clamped and have no "unlimited".
+
+| Builder setter | Type | Default | Range / clamp | Effect |
+|---|---|---|---|---|
+| `enabled(boolean)` | `boolean` | `false` | — | Master gate for the whole offline engine. With it off the SDK behaves exactly as before. |
+| `cacheDurationDays(int)` | `int` | `0` (unlimited) | `>= 0`; negative treated as `0` | Message retention TTL in days. `0` = no age-based prune; eviction is by the byte/count caps instead. |
+| `maxStorageSize(long)` | `long` bytes | `262144000` (250 MB) | `0` = unlimited | Byte ceiling for the message/metadata database. |
+| `maxMessagesPerConversation(int)` | `int` | `500` | clamped `[1, 1000]`; `0`/over → `1000` | Per-conversation cached-message window. |
+| `maxConversations(int)` | `int` | `100` | clamped `[1, 1000]`; `0`/over → `1000` | Cached-conversation cap. |
+| `maxPendingMessages(int)` | `int` | `50` | clamped `[1, 100]`; `0`/over → `100` | Pending-send outbox capacity. |
+| `autoSendPendingOnReconnect(boolean)` | `boolean` | `true` | — | Auto-flush queued `PENDING` sends on reconnect. Gates only the outbox flush; the reconnect sync sweep runs regardless. |
+| `pendingQueueOverflowPolicy(PendingMessageOverflowPolicy)` | enum | `REJECT_NEWEST` | — | What the outbox does when it is full. |
+| `maxMediaCacheSize(long)` | `long` bytes | `524288000` (500 MB) | `0` = unlimited | Media-only byte budget (LRU). |
+| `mediaCaching(MediaCachingMode)` | enum | `AUTO` | `null` → `AUTO` | Receive-side media mode. Fixed at init. |
+| `encryption(boolean)` | `boolean` | `false` | — | Encrypt the cache database at rest. See [Encrypt the Cache](/sdk/android/v5/offline-encryption). |
+| `encryptionFailureBehavior(EncryptionFailureBehavior)` | enum | `ONLINE_ONLY` | `null` → `ONLINE_ONLY` | What happens when encryption cannot run at all. |
+| `maxSnapshotQueries(int)` | `int` | `100` | `>= 1`; `0`/negative → `100` | Most entity-list snapshots (users, groups, group members) kept for offline replay; LRU. |
+| `snapshotTtlDays(int)` | `int` | `7` | `>= 1`; `0`/negative → `7` | Days an entity-list snapshot is kept after it was first recorded. |
+| `debugTracing(boolean)` | `boolean` | `false` | — | Dev-only file trace of offline operations. Leave off in production. |
+
+Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(OfflineConfig)`, or enable with defaults via the `offline(boolean)` shorthand — see [Enable Offline Support](/sdk/android/v5/offline-enable).
+
+## Public methods on CometChat
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `isOfflineEnabled()` | `boolean` | Whether offline support is active for the current session. |
+| `getMediaCachingMode()` | `MediaCachingMode` | The effective media caching mode (`OFF` whenever offline is not active). |
+| `getOfflineEncryptionStatus()` | `OfflineEncryptionStatus` | What encryption at rest is actually doing. |
+| `getPendingMessages(CallbackListener<List<BaseMessage>>)` | `void` | All queued/failed messages in the outbox. |
+| `retryMessage(String localMessageId, MessageSentListener)` | `void` | Retry one failed message by its local id. |
+| `retryAllFailedMessages(MessageSentListener)` | `void` | Retry every failed message in the outbox. |
+| `discardLocalMessage(String localMessageId, CallbackListener<String>)` | `void` | Remove one unsent message from the outbox. |
+| `forceSyncNow()` | `void` | Trigger a catch-up sync immediately. No-op when offline is not active. |
+| `forceSyncNow(CallbackListener<String>)` | `void` | Same, with a callback that reports why a manual sync did not start. |
+| `getSyncState()` | `SyncState` | Whether a catch-up sweep is currently running. |
+| `getLastSyncTimestamp()` | `long` | Server time of the last successful sync, in epoch seconds. |
+| `clearOfflineCache()` | `void` | Wipe the local cache (and fail any unsent messages). |
+| `getCacheSize()` | `long` | Current on-disk cache size in bytes. |
+| `downloadMedia(Attachment, MediaCallbackListener)` | `void` | Download and cache an attachment's bytes. |
+| `getCachedMediaPath(Attachment)` | `String` | Local path to already-cached bytes, or `null`. |
+| `getExistingUploadFileRequest(String receiverId, String receiverType)` | `UploadFileRequest` | Re-attach to an in-progress offline upload. |
+| `getExistingUploadFileRequest(String receiverId, String receiverType, long parentMessageId)` | `UploadFileRequest` | Same, for a thread parent. |
+
+### Listener registration
+
+| Method | Listener |
+|---|---|
+| `addMessageListener(String, MessageListener)` / `removeMessageListener(String)` | `MessageListener` (adds `onMessagesSynced`) |
+| `addOfflineMessageListener(String, OfflineMessageListener)` / `removeOfflineMessageListener(String)` | `OfflineMessageListener` |
+| `addSyncListener(String, SyncListener)` / `removeSyncListener(String)` | `SyncListener` |
+| `addOfflineCacheResetListener(String, OfflineCacheResetListener)` / `removeOfflineCacheResetListener(String)` | `OfflineCacheResetListener` |
+| `addMediaDownloadListener(String, MediaDownloadListener)` / `removeMediaDownloadListener(String)` | `MediaDownloadListener` |
+
+## Listeners and callbacks
+
+### Two-phase fetch listeners
+
+Each delivers the cached page first (when offline is active and a user is logged in), then the server result, then errors. With offline off the cached callback never fires.
+
+| Listener | Callbacks |
+|---|---|
+| `MessageFetchListener` | `onCachedMessages(List<BaseMessage>)`, `onServerMessages(List<BaseMessage>)`, `onError(CometChatException)` |
+| `ThreadsFetchListener` | `onCachedThreads(List<MessageThread>)`, `onServerThreads(List<MessageThread>)`, `onError(CometChatException)` |
+| `MessageDetailsListener` | `onCachedMessage(BaseMessage)`, `onServerMessage(BaseMessage)`, `onError(CometChatException)` |
+| `ConversationFetchListener` | `onCachedConversations(List<Conversation>)`, `onServerConversations(List<Conversation>)`, `onError(CometChatException)` |
+| `ConversationDetailsListener` | `onCachedConversation(Conversation)`, `onServerConversation(Conversation)`, `onError(CometChatException)` |
+| `UserFetchListener` | `onCachedUsers(List<User>)`, `onServerUsers(List<User>)`, `onError(CometChatException)` |
+| `GroupFetchListener` | `onCachedGroups(List<Group>)`, `onServerGroups(List<Group>)`, `onError(CometChatException)` |
+| `GroupMemberFetchListener` | `onCachedGroupMembers(List<GroupMember>)`, `onServerGroupMembers(List<GroupMember>)`, `onError(CometChatException)` |
+| `BannedGroupMemberFetchListener` | `onCachedBannedGroupMembers(List<GroupMember>)`, `onServerBannedGroupMembers(List<GroupMember>)`, `onError(CometChatException)` |
+| `ReactionFetchListener` | `onCachedReactions(List<Reaction>)`, `onServerReactions(List<Reaction>)`, `onError(CometChatException)` |
+| `NotificationFeedFetchListener` | `onCachedNotificationFeedItems(List<NotificationFeedItem>)`, `onServerNotificationFeedItems(List<NotificationFeedItem>)`, `onError(CometChatException)` |
+
+### Send, sync, cache, and media listeners
+
+| Listener | Callbacks |
+|---|---|
+| `MessageSentListener` | `onMessagePending(BaseMessage)`, `onMessageSent(BaseMessage)`, `onError(CometChatException)` |
+| `OfflineMessageListener` | `onOutboxMessagePending(BaseMessage)`, `onOutboxMessageSent(BaseMessage)`, `onOutboxMessageFailed(BaseMessage, MessageFailureReason)` |
+| `SyncListener` | `onConversationSyncStarted()`, `onConversationSyncCompleted(List<Conversation>)`, `onConversationSyncError(CometChatException)`, `onMessageSyncStarted()`, `onMessageSyncCompleted(List<BaseMessage>, SyncOutcome)`, `onMessageSyncError(CometChatException)` |
+| `OfflineCacheResetListener` | `onOfflineCacheReset(OfflineCacheResetReason, int pendingMessagesLost)` |
+| `MediaCallbackListener` | `onSuccess(String localPath)`, `onProgress(int percent)`, `onError(CometChatException)` |
+| `MediaDownloadListener` | `onMediaDownloaded(String messageLocalId, String attachmentId, String localPath)`, `onMediaDownloadFailed(String messageLocalId, String attachmentId, CometChatException)` |
+| `MessageListener` | `onMessagesSynced(List<BaseMessage>)` (offline addition to the existing listener) |
+
+## Enums
+
+| Enum | Values |
+|---|---|
+| `MediaCachingMode` | `AUTO` (auto-download + retain received media), `OFF` (skip auto-download; metadata still cached) |
+| `PendingMessageOverflowPolicy` | `DROP_OLDEST` (evict the oldest pending to admit a newer send), `REJECT_NEWEST` (reject the new send) |
+| `EncryptionFailureBehavior` | `ONLINE_ONLY` (server-only; never plaintext), `PLAINTEXT_FALLBACK` (open an unencrypted cache) |
+| `MessageStatus` | `PENDING`, `SENDING`, `SENT`, `DELIVERED`, `READ`, `FAILED` |
+| `MessageFailureReason` | `TRANSIENT` (retry likely helps), `PERMANENT` (retry won't help), `QUEUE_OVERFLOW` (evicted to admit a newer send), `QUEUE_FULL` (new send rejected, queue full), `BYTE_OVERFLOW` (media exceeded the byte cap), `DISCARDED` (removed before it could send) |
+| `SyncOutcome` | `CAUGHT_UP` (gap replayed exactly), `PARTIAL` (a page was ingested but more remains) |
+| `SyncState` | `IDLE`, `SYNCING` |
+| `OfflineCacheResetReason` | `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, `ESCALATED` (unclassified failure recurred and was escalated), `ENCRYPTION_CHANGED` (the `encryption` setting changed between launches) |
+| `UploadFileItemStatus.State` | `QUEUED`, `UPLOADING`, `UPLOADED`, `FAILED`, `REJECTED` |
+
+## Model fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `BaseMessage.getLocalMessageId()` | `String` | SDK-generated local handle for an optimistic/offline send; the stable key to reconcile the row when the server ack arrives. `null` for messages that never went through the outbox. |
+| `BaseMessage.getStatus()` | `MessageStatus` | Lifecycle status of the message. |
+| `Attachment.getLocalPath()` | `String` | Absolute device path to cached media bytes, or `null` when not cached. Never sent to the server. |
+
+## Error codes
+
+Compare `CometChatException.getCode()` against these codes. All are constants in `CometChatConstants.Errors` except `ERROR_PENDING_QUEUE_LIMIT` and `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED`, which you compare as string values.
+
+| Code | Raised when |
+|---|---|
+| `ERROR_INTERNET_UNAVAILABLE` | A read reached the server phase with no connection (fires after the cached page on a two-phase fetch). |
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | `forceSyncNow(callback)` was called while a sync is already running. |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | `forceSyncNow(callback)` was called within the throttle cooldown. |
+| `ERROR_OFFLINE_DISABLED` | An offline-only operation was called while offline support is not active. |
+| `ERROR_OFFLINE_MESSAGE_DISCARDED` | A queued message was removed before it could send. |
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | `retryMessage` / `discardLocalMessage` targeted a message that is still being sent. |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | `retryMessage` / `discardLocalMessage` found no unsent message with the given local id. |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local cache was briefly unavailable, so `getPendingMessages`, `retryMessage`, `retryAllFailedMessages` or `discardLocalMessage` changed nothing. Try again. |
+| `ERROR_PENDING_QUEUE_LIMIT` | A send was refused because the outbox is full or the media is too large; the reason is `QUEUE_FULL` or `BYTE_OVERFLOW`. |
+
+## Deprecated overloads and replacements
+
+Starting in **5.1.0** the legacy single-callback (`CallbackListener`) fetch, single-item, and send overloads are deprecated in favor of the two-phase listeners below, which also deliver the cached result when offline support is on. The old overloads keep working: with offline off they behave exactly as before (the server result arrives in the `onServer…` / `onMessageSent` callback instead of `onSuccess`).
+
+| Deprecated overload | Replacement |
+|---|---|
+| `MessagesRequest.fetchNext(CallbackListener<List<BaseMessage>>)` | `MessagesRequest.fetchNext(MessageFetchListener)` |
+| `MessagesRequest.fetchPrevious(CallbackListener<List<BaseMessage>>)` | `MessagesRequest.fetchPrevious(MessageFetchListener)` |
+| `ThreadsRequest.fetchNext(CallbackListener<List<MessageThread>>)` | `ThreadsRequest.fetchNext(ThreadsFetchListener)` |
+| `CometChat.getMessageDetails(long, CallbackListener<BaseMessage>)` | `CometChat.getMessageDetails(long, MessageDetailsListener)` |
+| `ConversationsRequest.fetchNext(CallbackListener<List<Conversation>>)` | `ConversationsRequest.fetchNext(ConversationFetchListener)` |
+| `CometChat.getConversation(..., CallbackListener<Conversation>)` | `CometChat.getConversation(..., ConversationDetailsListener)` |
+| `UsersRequest.fetchNext(CallbackListener<List<User>>)` | `UsersRequest.fetchNext(UserFetchListener)` |
+| `BlockedUsersRequest.fetchNext(CallbackListener<List<User>>)` | `BlockedUsersRequest.fetchNext(UserFetchListener)` |
+| `GroupsRequest.fetchNext(CallbackListener<List<Group>>)` | `GroupsRequest.fetchNext(GroupFetchListener)` |
+| `GroupMembersRequest.fetchNext(CallbackListener<List<GroupMember>>)` | `GroupMembersRequest.fetchNext(GroupMemberFetchListener)` |
+| `BannedGroupMembersRequest.fetchNext(CallbackListener<List<GroupMember>>)` | `BannedGroupMembersRequest.fetchNext(BannedGroupMemberFetchListener)` |
+| `ReactionsRequest.fetchNext(CallbackListener<List<Reaction>>)` | `ReactionsRequest.fetchNext(ReactionFetchListener)` |
+| `ReactionsRequest.fetchPrevious(CallbackListener<List<Reaction>>)` | `ReactionsRequest.fetchPrevious(ReactionFetchListener)` |
+| `NotificationFeedRequest.fetchNext(CallbackListener<List<NotificationFeedItem>>)` | `NotificationFeedRequest.fetchNext(NotificationFeedFetchListener)` |
+| `CometChat.sendMessage(TextMessage, CallbackListener<TextMessage>)` | `CometChat.sendMessage(TextMessage, MessageSentListener)` |
+| `CometChat.sendMediaMessage(MediaMessage, CallbackListener<MediaMessage>)` | `CometChat.sendMediaMessage(MediaMessage, MessageSentListener)` |
+| `CometChat.sendCustomMessage(CustomMessage, CallbackListener<CustomMessage>)` | `CometChat.sendCustomMessage(CustomMessage, MessageSentListener)` |
+| `CometChat.sendInteractiveMessage(InteractiveMessage, CallbackListener<InteractiveMessage>)` | `CometChat.sendInteractiveMessage(InteractiveMessage, MessageSentListener)` |
