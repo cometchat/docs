@@ -158,15 +158,20 @@ echo json_encode(['authToken' => $json['data']['authToken']]);
         return CometChat.login(authToken);
       }
 
-      // The real logout, captured before locking, so the app's own logout keeps working.
+      // The real login and logout, captured before locking, so the app and the SDK keep using them.
+      const sdkLogin = CometChat.login.bind(CometChat);
       const sdkLogout = CometChat.logout.bind(CometChat);
 
-      // Make login() and logout() non-writable and non-configurable for the rest of the page's life,
-      // so they cannot be replaced from the browser console. The SDK keeps using the originals.
-      function lockAuthMethods() {
-        for (const name of ["login", "logout"]) {
-          Object.defineProperty(CometChat, name, { value: CometChat[name], writable: false, configurable: false });
-        }
+      // Pin login() to the token the server issued for this user and make both methods non-writable
+      // and non-configurable for the rest of the page's life. From the console, login() with any other
+      // token is rejected, and neither method can be replaced. The SDK's own re-login after a settings
+      // change uses the same token, so it still passes.
+      function lockAuthMethods(user) {
+        const issuedToken = user.getAuthToken();
+        const pinnedLogin = (token) =>
+          token === issuedToken ? sdkLogin(token) : Promise.reject(new Error("Login is managed by the app."));
+        Object.defineProperty(CometChat, "login", { value: pinnedLogin, writable: false, configurable: false });
+        Object.defineProperty(CometChat, "logout", { value: sdkLogout, writable: false, configurable: false });
       }
 
       // Call this from your app's logout and account-switch code.
@@ -202,7 +207,7 @@ echo json_encode(['authToken' => $json['data']['authToken']]);
         if (!user) {
           user = await loginWithServerToken();
         }
-        lockAuthMethods();
+        lockAuthMethods(user);
         await onLoggedIn(user);
       }
 
@@ -229,7 +234,7 @@ CometChat has no server-side session: the token is created statelessly and the S
 </Note>
 
 <Note>
-Locking `login()` and `logout()` is defence in depth, not a security boundary: the real control is that `token.php` only mints a token for the user your backend has authenticated, so a visitor can never obtain another user's token. The lock just stops casual console tampering on the current page.
+Pinning `login()` to the issued token is defence in depth, not a security boundary: the real control is that `token.php` only mints a token for the user your backend has authenticated, so a visitor can never obtain another user's token. The pin stops a console call to `login()` with any other token on the current page; a reload starts the page fresh and `login()` runs only through `token.php` again.
 </Note>
 
 ## Running it
