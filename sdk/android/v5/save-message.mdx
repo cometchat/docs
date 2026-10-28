@@ -4,6 +4,8 @@ sidebarTitle: "Save A Message"
 description: "Save and unsave messages privately, fetch the cross-conversation saved list, and listen for save events with the CometChat Android SDK."
 ---
 
+import OfflineDeprecatedListener from '/snippets/sdk/offline-deprecated-listener.mdx';
+
 {/* TL;DR for Agents and Quick Reference */}
 <Accordion title="AI Integration Quick Reference">
 
@@ -17,7 +19,7 @@ val request = MessagesRequest.MessagesRequestBuilder()
     .setSaved(true)
     .setLimit(50)
     .build()
-request.fetchNext(callbackListener)                    // List<BaseMessage>
+request.fetchNext(messageFetchListener)                // onCachedMessages + onServerMessages
 
 // Read save state off a message
 val isSaved = message.isSaved                          // savedAt > 0
@@ -143,6 +145,8 @@ CometChat.unsaveMessage(messageId, object : CometChat.CallbackListener<BaseMessa
 
 To fetch all messages the logged-in user has saved, create a `MessagesRequest` with the `setSaved(true)` filter of the `MessagesRequestBuilder`. Because saved messages are user-level and span conversations, you must **not** set a `UID` or `GUID`. The returned list is sorted by the time of saving, most recently saved first.
 
+<OfflineDeprecatedListener method="`fetchNext()`" replacement="`MessageFetchListener`" />
+
 <Tabs>
 <Tab title="Java">
 ```java
@@ -151,10 +155,15 @@ MessagesRequest messagesRequest = new MessagesRequest.MessagesRequestBuilder()
   .setLimit(50)
   .build();
 
-messagesRequest.fetchNext(new CometChat.CallbackListener<List<BaseMessage>>() {
+messagesRequest.fetchNext(new CometChat.MessageFetchListener() {
   @Override
-  public void onSuccess(List<BaseMessage> messages) {
-      Log.d(TAG, "Saved messages: " + messages.size());
+  public void onCachedMessages(List<BaseMessage> messages) {
+      // Render the cached saved list immediately.
+  }
+
+  @Override
+  public void onServerMessages(List<BaseMessage> messages) {
+      // Reconcile, keyed by message id.
   }
 
   @Override
@@ -173,13 +182,17 @@ val messagesRequest = MessagesRequest.MessagesRequestBuilder()
   .setLimit(50)
   .build()
 
-messagesRequest.fetchNext(object : CometChat.CallbackListener<List<BaseMessage>>() {
-  override fun onSuccess(messages: List<BaseMessage>?) {
-      Log.d(TAG, "Saved messages: ${messages?.size}")
+messagesRequest.fetchNext(object : CometChat.MessageFetchListener() {
+  override fun onCachedMessages(messages: List<BaseMessage>) {
+      // Render the cached saved list immediately.
   }
 
-  override fun onError(e: CometChatException?) {
-      Log.e(TAG, "Saved messages fetch failed: ${e?.message}")
+  override fun onServerMessages(messages: List<BaseMessage>) {
+      // Reconcile, keyed by message id.
+  }
+
+  override fun onError(e: CometChatException) {
+      Log.e(TAG, "Saved messages fetch failed: ${e.message}")
   }
 })
 ```
@@ -230,7 +243,7 @@ if (message.isSaved) {
 
 Because saving is private, save events are never delivered to other participants. Register a `MessageListener` and override the save callbacks; each event delivers the full updated `BaseMessage`.
 
-Today these callbacks fire on the **acting device** when a save or unsave succeeds. Delivery to the user's other devices activates once server-side real-time delivery for save events is rolled out — until then, other sessions pick up save changes on their next fetch.
+Your own save or unsave is reported through the `saveMessage()` / `unsaveMessage()` success callback only — it does **not** fire `onMessageSaved` / `onMessageUnsaved` on the device that performed it. These callbacks fire on the user's **other** devices when a save frame arrives there.
 
 <Tabs>
 <Tab title="Java">
@@ -367,6 +380,14 @@ if (CometChat.isSaveMessageEnabled()) {
 </Tabs>
 
 ---
+
+## Offline Behaviour
+
+With [offline support](/sdk/android/v5/offline-cached-data) enabled, `fetchNext()` on a `setSaved(true)` request delivers a cached page first (`onCachedMessages`, even when empty) and then the server list (`onServerMessages`); offline, it ends with `onError(ERROR_INTERNET_UNAVAILABLE)` after the cached page. `onCachedMessages` holds the user's cached saved messages across all conversations. The saved list is answered from its own store, so other `MessagesRequestBuilder` filters are ignored, as on the server.
+
+| Builder method | Offline |
+|---|---|
+| `setSaved` | Cached |
 
 ## Next Steps
 
