@@ -1,18 +1,18 @@
 ---
 title: "Users"
-description: "Fetch user profiles and track user presence in real time."
+description: "Fetch, search, update, and block users, track presence, and manage accounts in your Unreal Engine game."
+---
+
+The CometChat Unreal SDK exposes async nodes for every user operation: fetching a single profile, searching the full user list, updating the logged-in user's own profile, blocking and unblocking, counting who's online, and — from a trusted context — creating and updating accounts with your REST API key. Presence updates arrive in real time through the subsystem.
+
 ---
 
 ## Get User
 
-Retrieve a user's profile by their UID.
+Retrieve a single user's profile by their UID.
 
 <Tabs>
 <Tab title="Blueprint">
-<Frame>
-  <img src="/images/unreal-blueprints/FetchUsersAsync.png" />
-</Frame>
-
 Call the **Get User Async** node.
 
 | Parameter | Type | Description |
@@ -41,9 +41,37 @@ void AMyActor::OnUserFetched(const FCometChatUser& User)
     UE_LOG(LogTemp, Log, TEXT("User: %s (%s)"), *User.Name, *User.Status);
 }
 
-void AMyActor::OnUserFetchFailed(const FString& Error)
+void AMyActor::OnUserFetchFailed(const FCometChatError& Error)
 {
-    UE_LOG(LogTemp, Error, TEXT("Fetch user failed: %s"), *Error);
+    UE_LOG(LogTemp, Error, TEXT("Fetch user failed: %s"), *Error.Message);
+}
+```
+</Tab>
+</Tabs>
+
+**Handle lookup failures.** A missing or deactivated UID comes back on **On Failure** as `ERR_UID_NOT_FOUND`. Branch on `Error.Code` so a stale friend entry shows a clear message instead of a generic error.
+
+<Tabs>
+<Tab title="Blueprint">
+Wire **Get User Async → On Failure** into a **Switch on String** on `Error.Code`:
+
+1. `ERR_UID_NOT_FOUND` → the account doesn't exist or is deactivated; remove the stale entry from your friends list.
+2. **Default** → show `Error.Message`; transient network failures land here and are safe to retry.
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::OnUserFetchFailed(const FCometChatError& Error)
+{
+    if (Error.Code == TEXT("ERR_UID_NOT_FOUND"))
+    {
+        // Account removed or deactivated — drop the stale friend entry.
+        RemoveFriendEntry();
+    }
+    else
+    {
+        // Network or unexpected error — safe to retry.
+        UE_LOG(LogTemp, Error, TEXT("Fetch user failed [%s]: %s"), *Error.Code, *Error.Message);
+    }
 }
 ```
 </Tab>
@@ -56,13 +84,292 @@ void AMyActor::OnUserFetchFailed(const FString& Error)
 | `Uid` | `FString` | Unique user identifier |
 | `Name` | `FString` | Display name |
 | `AvatarUrl` | `FString` | URL to the user's avatar image |
-| `Status` | `FString` | Current status text |
+| `Status` | `FString` | Presence status text (`online` or `offline`) |
+| `Role` | `FString` | Role assigned to the user |
+| `Metadata` | `FString` | Custom JSON metadata attached to the user |
+| `Link` | `FString` | Deep link / profile URL |
+| `StatusMessage` | `FString` | Custom status or bio text |
+| `LastActiveAt` | `int64` | Unix timestamp of the user's last activity |
+| `bHasBlockedMe` | `bool` | `true` if this user has blocked the logged-in user |
+| `bBlockedByMe` | `bool` | `true` if the logged-in user has blocked this user |
+| `Tags` | `TArray<FString>` | Tags associated with the user |
+| `DeactivatedAt` | `int64` | Unix timestamp when the account was deactivated (`0` if active) |
+
+---
+
+## Fetch Users
+
+Retrieve a paginated, filterable list of users — the basis for a friends list, a "start new chat" search, or a lobby roster.
+
+<Tabs>
+<Tab title="Blueprint">
+<Frame>
+  <img src="/images/unreal-blueprints/FetchUsersAsync.png" />
+</Frame>
+
+Call the **Fetch Users Async** node with an `FCometChatUsersRequest` struct. Set `SearchKeyword` to filter by name/UID, `bFriendsOnly = true` to list only the user's friends, or `bHideBlockedUsers = true` to omit users you've blocked.
+
+**On Success** returns a `TArray<FCometChatUser>`.
+
+**Use case — friend search.** As the player types in a "Find friends" box, search the directory and show matching profiles with their online status.
+
+**Blueprint flow**
+
+1. **Make FCometChatUsersRequest** — set `SearchKeyword` from the text box and `bHideBlockedUsers` = `true`.
+2. **Fetch Users Async** — pass the struct.
+3. **On Success** (returns `Users`) → build result rows; read each `Status` (or the presence events below) for the online dot.
+4. **On Failure** (returns `Error`) → show `Error.Message` and keep the last results on screen so the search box stays usable.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatFetchUsersAction.h"
+
+void AMyActor::SearchUsers(const FString& Keyword)
+{
+    FCometChatUsersRequest Request;
+    Request.Limit = 30;
+    Request.SearchKeyword = Keyword;
+    Request.bFriendsOnly = false;      // set true to only list the user's friends
+    Request.bHideBlockedUsers = true;  // omit users you've blocked
+
+    auto* Action = UCometChatFetchUsersAction::FetchUsersAsync(this, Request);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnUsersFetched);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnUsersFetched(const TArray<FCometChatUser>& Users)
+{
+    for (const FCometChatUser& User : Users)
+    {
+        UE_LOG(LogTemp, Log, TEXT("%s — %s"), *User.Name, *User.Status);
+    }
+}
+
+void AMyActor::OnError(const FCometChatError& Error)
+{
+    UE_LOG(LogTemp, Error, TEXT("Request failed: %s"), *Error.Message);
+}
+```
+</Tab>
+</Tabs>
+
+### FCometChatUsersRequest
+
+| Property | Type | Default | Description |
+| -------- | ---- | ------- | ----------- |
+| `Limit` | `int32` | `30` | Max users to return per page |
+| `SearchKeyword` | `FString` | — | Filter users by name/UID substring |
+| `SearchIn` | `TArray<FString>` | — | Fields to search within (e.g. `name`, `uid`) |
+| `UserStatus` | `FString` | — | Filter by status: `online` or `offline` |
+| `bHideBlockedUsers` | `bool` | `false` | Exclude users the logged-in user has blocked |
+| `bFriendsOnly` | `bool` | `false` | Only return the logged-in user's friends |
+| `Roles` | `TArray<FString>` | — | Filter by one or more roles |
+| `Tags` | `TArray<FString>` | — | Filter by user tags |
+| `bWithTags` | `bool` | `false` | Include each user's tags in the response |
+| `UIDs` | `TArray<FString>` | — | Fetch only these specific UIDs |
+| `SortBy` | `FString` | — | Field to sort by (e.g. `name`) |
+| `SortOrder` | `FString` | — | `asc` or `desc` |
+| `Page` | `int32` | `0` | Page number for pagination |
+
+<Tip>
+**Pagination**: increment `Page` to fetch subsequent pages. If the returned array count is less than `Limit`, you've reached the end of the list.
+</Tip>
+
+---
+
+## Update Current User
+
+Update the **logged-in user's own profile** — display name, avatar, status message, metadata, and tags. This runs in the user's own authenticated session and needs **no API key**.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Update Current User Async** node with an `FCometChatUser` struct describing the changes. The `Uid` must be the logged-in user's own UID.
+
+**On Success** returns the updated `FCometChatUser`.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatUpdateCurrentUserAction.h"
+
+void AMyActor::UpdateMyProfile()
+{
+    FCometChatUser Me;
+    Me.Uid = TEXT("cometchat-uid-1");   // must be the logged-in user's UID
+    Me.Name = TEXT("Sir Lancelot");
+    Me.AvatarUrl = TEXT("https://example.com/avatars/lancelot.png");
+    Me.StatusMessage = TEXT("Questing for the Grail");
+    Me.Tags.Add(TEXT("knight"));
+
+    auto* Action = UCometChatUpdateCurrentUserAction::UpdateCurrentUserAsync(this, Me);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnProfileUpdated);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnProfileUpdated(const FCometChatUser& Result)
+{
+    UE_LOG(LogTemp, Log, TEXT("Profile updated: %s"), *Result.Name);
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+Only fields you set are changed. To edit another user's profile — or create accounts — you need admin privileges and your REST API key; see [User Management (Admin)](#user-management-admin) below.
+</Info>
+
+<Tip>
+**Best practice — short-lived Auth Tokens.** Log players in with short-lived [Auth Tokens](/sdk/unreal/authentication#login-using-auth-token) minted by your server, and let them edit their own profile through **Update Current User** (no API key). Reserve the API-key **Create User** / **Update User** calls for trusted, server-side contexts.
+</Tip>
+
+---
+
+## Blocking Users
+
+Block one or more users to stop receiving their messages, unblock them later, and list who is currently blocked. All three take effect for the logged-in user only.
+
+### Block / Unblock
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Block Users Async** or **Unblock Users Async** node with a `TArray<FString>` of UIDs.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| UIDs | `TArray<FString>` | The UIDs to block or unblock |
+
+**On Success** returns an `FString` result summary.
+
+**Use case — block from a profile.** A player opens another user's profile and taps *Block*; their messages stop arriving and their content can be hidden.
+
+**Blueprint flow**
+
+1. **Block Users Async** — pass a one-element array with the target `Uid`.
+2. **On Success** → set the user's `bBlockedByMe` locally, hide their content, and swap the button to *Unblock*.
+3. **On Failure** (returns `Error`) → show `Error.Message` and leave the button unchanged so the player can retry.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatBlockUsersAction.h"
+#include "AsyncActions/CometChatUnblockUsersAction.h"
+
+void AMyActor::BlockUser(const FString& Uid)
+{
+    auto* Action = UCometChatBlockUsersAction::BlockUsersAsync(this, { Uid });
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnUsersBlocked);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::UnblockUser(const FString& Uid)
+{
+    auto* Action = UCometChatUnblockUsersAction::UnblockUsersAsync(this, { Uid });
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnUsersBlocked);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnUsersBlocked(const FString& Result)
+{
+    UE_LOG(LogTemp, Log, TEXT("Block/unblock result: %s"), *Result);
+}
+```
+</Tab>
+</Tabs>
+
+### Fetch Blocked Users
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Fetch Blocked Users Async** node with an `FCometChatBlockedUsersRequest` struct. Set `Direction` to `blockedByMe` (users you blocked) or `hasBlockedMe` (users who blocked you).
+
+**On Success** returns a `TArray<FCometChatUser>`.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatFetchBlockedUsersAction.h"
+
+void AMyActor::FetchBlocked()
+{
+    FCometChatBlockedUsersRequest Request;
+    Request.Limit = 30;
+    Request.Direction = TEXT("blockedByMe"); // or "hasBlockedMe"
+
+    auto* Action = UCometChatFetchBlockedUsersAction::FetchBlockedUsersAsync(this, Request);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnBlockedFetched);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnBlockedFetched(const TArray<FCometChatUser>& Users)
+{
+    for (const FCometChatUser& User : Users)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Blocked: %s"), *User.Name);
+    }
+}
+```
+</Tab>
+</Tabs>
+
+### FCometChatBlockedUsersRequest
+
+| Property | Type | Default | Description |
+| -------- | ---- | ------- | ----------- |
+| `Limit` | `int32` | `30` | Max users to return per page |
+| `SearchKeyword` | `FString` | — | Filter blocked users by name/UID |
+| `Direction` | `FString` | — | `blockedByMe` or `hasBlockedMe` |
+| `Page` | `int32` | `0` | Page number for pagination |
+
+<Tip>
+You don't always need a fetch to know block state: every `FCometChatUser` already carries `bBlockedByMe` (you blocked them) and `bHasBlockedMe` (they blocked you). Read those flags on any user you already have to drive block/unblock buttons and to hide their content.
+</Tip>
+
+---
+
+## Get Online User Count
+
+Fetch the number of users currently online in your app — handy for a lobby header or presence badge.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Get Online User Count Async** node. It takes no parameters.
+
+**On Success** returns an `int32` count.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatGetOnlineUserCountAction.h"
+
+void AMyActor::RefreshOnlineCount()
+{
+    auto* Action = UCometChatGetOnlineUserCountAction::GetOnlineUserCountAsync(this);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnOnlineCount);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnOnlineCount(int32 Count)
+{
+    UE_LOG(LogTemp, Log, TEXT("%d users online"), Count);
+}
+```
+</Tab>
+</Tabs>
 
 ---
 
 ## User Presence
 
 Track when users come online, go offline, or go away by binding to the `OnPresenceChanged` delegate on the Subsystem.
+
+**Use case — live status dots.** Keep the green/gray dots next to player names in a friends list or lobby roster updating in real time, without re-fetching users.
+
+You have two listener styles — bind whichever fits your UI:
+
+- **On Presence Changed** (`OnPresenceChanged`) delivers a compact `FCometChatPresence` (`Uid`, `Status`, `LastActiveAt`) — ideal for flipping a status dot.
+- **On User Online** / **On User Offline** (`OnUserOnline` / `OnUserOffline`) each deliver the full `FCometChatUser`, handy when you also want the latest name or avatar. See [Real-Time Events](/sdk/unreal/real-time-events#userlistener-events).
 
 <Tabs>
 <Tab title="Blueprint">
@@ -122,6 +429,62 @@ Use presence data to show green/gray status dots next to player names in your fr
 
 ---
 
+## User Management (Admin)
+
+Create new accounts and update **any** user's profile from a trusted context. Unlike Update Current User, these operate with admin authority and require your CometChat REST **API Key**.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Create User Async** or **Update User Async** node with an `FCometChatUser` struct and your REST `Api Key`.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| User | `FCometChatUser` | The account to create or the profile changes to apply |
+| Api Key | `FString` | Your CometChat REST API key (admin credential) |
+
+**On Success** returns the resulting `FCometChatUser`.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatCreateUserAction.h"
+#include "AsyncActions/CometChatUpdateUserAction.h"
+
+void AMyActor::CreatePlayerAccount()
+{
+    FCometChatUser NewUser;
+    NewUser.Uid = TEXT("player-9001");
+    NewUser.Name = TEXT("New Challenger");
+
+    auto* Action = UCometChatCreateUserAction::CreateUserAsync(
+        this,
+        NewUser,
+        TEXT("YOUR_REST_API_KEY")   // keep this on a trusted/server build only
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnUserCreated);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnUserCreated(const FCometChatUser& Result)
+{
+    UE_LOG(LogTemp, Log, TEXT("Created user %s"), *Result.Uid);
+}
+```
+
+**Update User** has the identical shape — call `UCometChatUpdateUserAction::UpdateUserAsync(this, User, TEXT("YOUR_REST_API_KEY"))` with the fields you want to change.
+</Tab>
+</Tabs>
+
+<Warning>
+**Your API key is a secret.** Create User and Update User require your CometChat REST **API Key**, which grants full admin access to your entire app. Only call these from a trusted or server-side context — **never ship the API key inside a distributed game client**, where it can be extracted from the packaged build and abused. For a player editing their own profile, use [Update Current User](#update-current-user) above, which needs no API key.
+</Warning>
+
+<Warning>
+**Bad practice — admin calls from the client.** Never hard-code your REST **API Key** in Blueprints, `.ini` files, or C++ that ships in the packaged game — anything in the client can be extracted and abused. Run **Create User** / **Update User** (and any other API-key call) from your own backend, and have the game reach them through your server instead of embedding the key.
+</Warning>
+
+---
+
 ## Next Steps
 
 <CardGroup cols={2}>
@@ -129,6 +492,6 @@ Use presence data to show green/gray status dots next to player names in your fr
     Create, join, and manage groups.
   </Card>
   <Card title="Real-Time Events" icon="bolt" href="/sdk/unreal/real-time-events">
-    All five real-time delegates in one place.
+    All the real-time delegates, including presence, in one place.
   </Card>
 </CardGroup>
