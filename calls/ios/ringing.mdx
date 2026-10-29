@@ -79,8 +79,6 @@ Call `CometChatPushNotifications.shared.initialize(config:)` from `application(_
 
 `CometChatCalls.initiateCall` creates the call on the backend, which rings the callee, and prepares the caller's media session. The caller does **not** join yet.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 let options = InitiateCallOptions()
 options.type = CallSessionType.audio            // or CallSessionType.video (the default)
@@ -100,31 +98,6 @@ CometChatCalls.initiateCall(receiver: receiverUid, options: options, onSuccess: 
     print("Could not start the call: \(error?.errorDescription ?? "")")
 })
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-InitiateCallOptions *options = [[InitiateCallOptions alloc] init];
-options.type = CallSessionType.audio;            // or CallSessionType.video (the default)
-options.receiverType = CallReceiverType.user;
-options.sessionSettings = [[[[[SessionSettingsBuilder alloc] init]
-    setSessionType:SessionTypeVoice]             // SessionTypeVideo for a video call
-    setPeerCall:YES]                             // 1:1: the call ends for both when either leaves
-    build];
-
-[CometChatCalls initiateCallWithReceiver:receiverUid
-                                 options:options
-                               onSuccess:^(InitiatedCall * call) {
-    NSLog(@"Calling %@, session %@", call.receiver, call.sessionId);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self showOutgoingScreen:call];
-        [self listenOnPreparedSession:call];
-    });
-} onError:^(CometChatCallException * error) {
-    NSLog(@"Could not start the call: %@", error.errorDescription);
-}];
-```
-</Tab>
-</Tabs>
 
 | Parameter | Description |
 |-----------|-------------|
@@ -153,8 +126,6 @@ The caller stays on the session that `initiateCall` prepared and listens to it. 
 
 Register on `CallSession.shared`. It is the session `initiateCall` is preparing (the same object `call.session` and `CometChatCalls.getActiveSession()` return), and registering on it works before the prepare has finished.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 class OutgoingCallViewController: UIViewController, SessionStatusListener, ParticipantEventListener {
 
@@ -193,52 +164,6 @@ class OutgoingCallViewController: UIViewController, SessionStatusListener, Parti
     deinit { removeListeners() }
 }
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-@interface OutgoingCallViewController () <SessionStatusListener, ParticipantEventListener>
-@property (nonatomic, strong) InitiatedCall *call;
-@property (nonatomic, assign) BOOL answered;
-@end
-
-@implementation OutgoingCallViewController
-
-- (void)listenOnPreparedSession:(InitiatedCall *)call {
-    self.call = call;
-    [[CallSession shared] addSessionStatusListener:self];
-    [[CallSession shared] addParticipantEventListener:self];
-}
-
-// The callee's device received the push and is ringing.
-- (void)onParticipantConnectedWithParticipant:(Participant *)participant {
-    [self setStatus:@"Ringing…"];
-}
-
-// The callee answered: now the caller joins.
-- (void)onParticipantJoinedWithParticipant:(Participant *)participant {
-    if (self.answered) return;
-    self.answered = YES;
-    [self removeListeners];   // the call screen registers its own
-    [self joinCallSessionWithSessionId:self.call.sessionId
-                               isVideo:[self.call.type isEqualToString:CallSessionType.video]];
-}
-
-// The prepared session closed before anyone joined: the call is over.
-- (void)onConnectionClosed {
-    [self closeOutgoingScreen];
-}
-
-- (void)removeListeners {
-    [[CallSession shared] removeSessionStatusListener:self];
-    [[CallSession shared] removeParticipantEventListener:self];
-}
-
-- (void)dealloc { [self removeListeners]; }
-
-@end
-```
-</Tab>
-</Tabs>
 
 | Event | On the prepared session it means |
 |-------|----------------------------------|
@@ -253,8 +178,6 @@ The SDK holds these listeners weakly and does not remove them for you: remove th
 
 `CometChatCalls.addIncomingCallListener` reports calls ringing on this device and their end. The Push SDK feeds it from the VoIP push, including in a launch the push started, provided you register the listener in `application(_:didFinishLaunchingWithOptions:)`: events are delivered only to listeners registered at that moment and are not replayed. On iOS it reports **incoming** calls only; your own outgoing call ends through the prepared session, as described above.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 final class CallEvents: NSObject, CometChatIncomingCallListener {
 
@@ -275,33 +198,6 @@ CometChatCalls.addIncomingCallListener("my-screen", callEvents)
 // When the screen goes away:
 CometChatCalls.removeIncomingCallListener("my-screen")
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-@interface CallEvents : NSObject <CometChatIncomingCallListener>
-@end
-
-@implementation CallEvents
-
-- (void)onIncomingCallReceivedWithCall:(CometChatIncomingCall *)call {
-    // A call for this user is ringing. CallKit already shows the ring.
-}
-
-- (void)onIncomingCallEndedWithCall:(CometChatIncomingCall *)call reason:(NSString *)reason {
-    // The ring ended before it was answered here.
-}
-
-@end
-
-// Keep a strong reference: the SDK holds listeners weakly.
-self.callEvents = [[CallEvents alloc] init];
-[CometChatCalls addIncomingCallListener:@"my-screen" :self.callEvents];
-
-// When the screen goes away:
-[CometChatCalls removeIncomingCallListener:@"my-screen"];
-```
-</Tab>
-</Tabs>
 
 | Reason | Meaning |
 |--------|---------|
@@ -425,8 +321,6 @@ After `presentCall`, the Push SDK asks for the microphone (and the camera for a 
 
 Both sides join the same way: the callee from the screen `presentCall` opened, the caller from `onParticipantJoined`. `joinSession` takes over the session that was prepared earlier, so it connects almost at once. On a prepared session the settings passed to `joinSession` are ignored: the ones frozen when the session was prepared apply. That is the caller's `options.sessionSettings` (if the prepare failed, `joinSession` joins directly with the settings it is given, so build those the same way, `setPeerCall(true)` included for a 1:1 call); the callee's session is prepared by the Push SDK with its own settings (the session type, the camera off for an audio call, the speaker, and peer call for a 1:1 call), so layout or hidden-button settings passed by the callee have no effect.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 func joinCallSession(sessionId: String, isVideo: Bool) {
     let settings = SessionSettingsBuilder()
@@ -447,29 +341,6 @@ func joinCallSession(sessionId: String, isVideo: Bool) {
     )
 }
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)joinCallSessionWithSessionId:(NSString *)sessionId isVideo:(BOOL)isVideo {
-    SessionSettings *settings = [[[[SessionSettingsBuilder alloc] init]
-        setSessionType:(isVideo ? SessionTypeVideo : SessionTypeVoice)]
-        build];
-
-    [CometChatCalls joinSessionWithSessionID:sessionId
-                                 callSetting:settings
-                                   container:self.callViewContainer
-                                   onSuccess:^(NSString * message) {
-        NSLog(@"Joined %@", sessionId);
-    } onError:^(CometChatCallException * error) {
-        NSLog(@"Join failed: %@", error.errorDescription);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self dismissViewControllerAnimated:YES completion:nil];
-        });
-    }];
-}
-```
-</Tab>
-</Tabs>
 
 See [Join Session](/calls/ios/join-session) for the container, [Session Settings](/calls/ios/session-settings) for layouts and controls, and [Events](/calls/ios/events) for everything the joined session reports.
 
@@ -489,8 +360,6 @@ Without the Push SDK, decline through the Calls SDK directly: `CometChatCalls.en
 
 The caller ends a call that is still ringing with `endCall` and the `cancelled` status. The SDK tears the caller's prepared session down first (your `onConnectionClosed` fires), then tells the server. The callee's ring stops and a missed call is left in Recents.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 func cancelOutgoingCall(sessionId: String) {
     CometChatCalls.endCall(sessionID: sessionId, status: EndCallStatus.cancelled, onSuccess: {
@@ -501,22 +370,6 @@ func cancelOutgoingCall(sessionId: String) {
     closeOutgoingScreen()   // close locally either way
 }
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-- (void)cancelOutgoingCall:(NSString *)sessionId {
-    [CometChatCalls endCallWithSessionID:sessionId
-                                  status:EndCallStatus.cancelled
-                               onSuccess:^{
-        NSLog(@"Cancelled %@", sessionId);
-    } onError:^(CometChatCallException * error) {
-        NSLog(@"Cancel failed: %@", error.errorDescription);
-    }];
-    [self closeOutgoingScreen];   // close locally either way
-}
-```
-</Tab>
-</Tabs>
 
 Disable the End button after the first tap, and ignore an `onParticipantJoined` that arrives after you cancelled: the cancel wins. If the screen goes away before `initiateCall` has returned, cancel the call from its `onSuccess`, or the callee rings for a call nobody is waiting on.
 
@@ -524,8 +377,6 @@ Disable the End button after the first tap, and ignore an `onParticipantJoined` 
 
 The callee's Push SDK ends an unanswered 1:1 call as `unanswered` when its ring window closes (45 seconds unless the push carries a `ringTimeout`), which closes the caller's prepared session. To close the caller's screen at the same moment even when the callee's device was never reached, run your own timer from `initiateCall` and end the call with the same status. The Push SDK's default window is `RingConstants.defaultRingTimeoutMs` (45 000 ms), public in `CometChatPushNotificationsCalls`, so the caller's timer can use the same value:
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 let ringTimeout = DispatchWorkItem { [weak self] in
     guard let self = self, !self.answered else { return }
@@ -537,27 +388,11 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: ringTimeout)
 
 // On answer, cancel or close: ringTimeout.cancel()
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 45 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-    if (self.answered || self.closed) return;
-    [CometChatCalls endCallWithSessionID:sessionId
-                                  status:EndCallStatus.unanswered
-                               onSuccess:^{}
-                                 onError:^(CometChatCallException * error) {}];
-    [self closeOutgoingScreen];
-});
-```
-</Tab>
-</Tabs>
 
 ## End a call
 
 Hang up by leaving the session. The room tells the other side, which receives `onParticipantLeft` and then `onSessionLeft` or `onConnectionClosed`. No status needs to be sent and the call is logged by the backend. In a peer call (`setPeerCall(true)`), the session ends for both as soon as either leaves.
 
-<Tabs>
-<Tab title="Swift">
 ```swift
 // The default call UI's End button leaves the session itself; only clean up here.
 func onLeaveSessionButtonClicked() {
@@ -574,26 +409,6 @@ func hangUp() {
 func onSessionLeft() { dismiss(animated: true) }
 func onConnectionClosed() { dismiss(animated: true) }
 ```
-</Tab>
-<Tab title="Objective-C">
-```objectivec
-// The default call UI's End button leaves the session itself; only clean up here.
-- (void)onLeaveSessionButtonClicked {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-// Your own hang-up control:
-- (void)hangUp {
-    [[CallSession shared] leave];
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-// The other participant (SessionStatusListener):
-- (void)onSessionLeft { [self dismissViewControllerAnimated:YES completion:nil]; }
-- (void)onConnectionClosed { [self dismissViewControllerAnimated:YES completion:nil]; }
-```
-</Tab>
-</Tabs>
 
 Ending the call from the lock screen or CallKit's own UI makes the SDK leave the session, which reaches your screen as `onSessionLeft`.
 
