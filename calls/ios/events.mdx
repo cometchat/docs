@@ -5,7 +5,7 @@ sdk_version: "5.x"
 description: "Handle CometChat Calls SDK v5 events on iOS for call lifecycle, participants, media state, errors, and real-time updates."
 ---
 
-Handle call session events to build responsive UIs. The SDK provides five event listener protocols to monitor session status, participant activities, media changes, button clicks, and layout changes.
+Handle call session events to build responsive UIs. The SDK provides five session listener protocols to monitor session status, participant activities, media changes, button clicks, and layout changes, plus two global listeners for incoming calls and login state. The SDK holds every listener weakly and removes none of them for you, so keep a strong reference to each listener object and remove it when your screen goes away.
 
 ## Get CallSession Instance
 
@@ -24,8 +24,28 @@ CallSession *callSession = [CallSession shared];
 </Tab>
 </Tabs>
 
+`CallSession.shared` always exists, so listeners registered on it work before any session does. To ask whether there is a session right now, use `CometChatCalls.getActiveSession()`:
+
+<Tabs>
+<Tab title="Swift">
+```swift
+// nil when no session is prepared or joined
+if let session = CometChatCalls.getActiveSession() {
+    print("Live session \(session.sessionId ?? "")")
+}
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+CallSession *session = [CometChatCalls getActiveSession];   // nil when no session is prepared or joined
+```
+</Tab>
+</Tabs>
+
+`getActiveSession()` returns `CallSession.shared` as soon as a session is **prepared**, which is what `CometChatCalls.initiateCall` does on the caller and what the Push SDK's ring does on the callee, before anyone joins. That is what lets a caller listen for "ringing" and "answered" without joining (see [Ringing](/calls/ios/ringing)). Before a session is prepared or joined it returns nil, so code that registers through it (`getActiveSession()?.addSessionStatusListener(self)`) registers nothing; register on `CallSession.shared` instead.
+
 <Note>
-Remember to remove listeners when your view controller is deallocated to prevent memory leaks. Use `removeSessionStatusListener`, `removeParticipantEventListener`, etc.
+`CallSession` holds listeners **weakly**. It does not keep your listener alive, so the object you register must be owned elsewhere, such as the view controller itself (as in the examples below) or a stored property. A listener created inline, like `addSessionStatusListener(MyListener())`, is deallocated right away and never receives an event. A deallocated listener is dropped automatically. Call `removeSessionStatusListener`, `removeParticipantEventListener`, etc. when you want events to stop before the listener goes away.
 </Note>
 
 ---
@@ -48,6 +68,10 @@ class CallViewController: UIViewController, SessionStatusListener {
         CallSession.shared.removeSessionStatusListener(self)
     }
     
+    func onConnected() {
+        // A prepared session is connected (signalling only): the join will be near-instant
+    }
+
     func onSessionJoined() {
         // Successfully connected to the session
     }
@@ -71,7 +95,8 @@ class CallViewController: UIViewController, SessionStatusListener {
     }
 
     func onConnectionClosed() {
-        // Connection permanently closed
+        // Connection permanently closed. On a session that was only prepared
+        // (an outgoing call still ringing), this means the call ended before anyone joined.
         navigationController?.popViewController(animated: true)
     }
 }
@@ -91,6 +116,10 @@ class CallViewController: UIViewController, SessionStatusListener {
 
 - (void)dealloc {
     [[CallSession shared] removeSessionStatusListener:self];
+}
+
+- (void)onConnected {
+    // A prepared session is connected (signalling only): the join will be near-instant
 }
 
 - (void)onSessionJoined {
@@ -116,7 +145,8 @@ class CallViewController: UIViewController, SessionStatusListener {
 }
 
 - (void)onConnectionClosed {
-    // Connection permanently closed
+    // Connection permanently closed. On a session that was only prepared
+    // (an outgoing call still ringing), this means the call ended before anyone joined.
     [self.navigationController popViewControllerAnimated:YES];
 }
 
@@ -127,12 +157,13 @@ class CallViewController: UIViewController, SessionStatusListener {
 
 | Event | Description |
 |-------|-------------|
+| `onConnected()` | A prepared session connected: signalling only, no media, and other participants do not see you yet. Fires once per prepare (`initiateCall` on the caller, the Push SDK's ring on the callee); the media join is `onSessionJoined()` |
 | `onSessionJoined()` | Successfully connected and joined the session |
-| `onSessionLeft()` | Left the session via `leaveSession()` or was removed |
-| `onSessionTimedOut()` | Session ended due to inactivity timeout |
+| `onSessionLeft()` | Left the session via `leave()` or was removed |
+| `onSessionTimedOut()` | Session ended due to inactivity timeout. Not used on a prepared session: one nobody joins within 5 minutes reports `onConnectionClosed()` |
 | `onConnectionLost()` | Network interrupted, SDK attempting reconnection |
 | `onConnectionRestored()` | Connection restored after being lost |
-| `onConnectionClosed()` | Connection permanently closed, cannot reconnect |
+| `onConnectionClosed()` | Connection permanently closed, cannot reconnect. On a prepared session: the call ended before anyone joined (declined, busy, rung out, cancelled, the room went away, or nobody joined within 5 minutes) |
 
 ---
 
@@ -154,8 +185,13 @@ class CallViewController: UIViewController, ParticipantEventListener {
         CallSession.shared.removeParticipantEventListener(self)
     }
     
+    func onParticipantConnected(participant: Participant) {
+        // A participant's device prepared the session but has not joined yet.
+        // On an outgoing call: the callee's phone is ringing.
+    }
+
     func onParticipantJoined(participant: Participant) {
-        // A participant joined the call
+        // A participant joined the call. On an outgoing call: the callee answered.
     }
 
     func onParticipantLeft(participant: Participant) {
@@ -196,8 +232,13 @@ class CallViewController: UIViewController, ParticipantEventListener {
     [[CallSession shared] removeParticipantEventListener:self];
 }
 
+- (void)onParticipantConnectedWithParticipant:(Participant *)participant {
+    // A participant's device prepared the session but has not joined yet.
+    // On an outgoing call: the callee's phone is ringing.
+}
+
 - (void)onParticipantJoinedWithParticipant:(Participant *)participant {
-    // A participant joined the call
+    // A participant joined the call. On an outgoing call: the callee answered.
 }
 
 - (void)onParticipantLeftWithParticipant:(Participant *)participant {
@@ -217,7 +258,8 @@ class CallViewController: UIViewController, ParticipantEventListener {
 
 | Event | Parameter | Description |
 |-------|-----------|-------------|
-| `onParticipantJoined` | `Participant` | A participant connected to the call |
+| `onParticipantConnected` | `Participant` | A remote participant's device prepared the session without joining. On the caller's prepared session this is the callee ringing |
+| `onParticipantJoined` | `Participant` | A participant joined the call. On the caller's prepared session this is the callee answering: join now |
 | `onParticipantLeft` | `Participant` | A participant disconnected from the call |
 | `onParticipantListChanged` | `[Participant]` | Participant list updated |
 | `onParticipantAudioMuted` | `Participant` | A participant muted their microphone |
@@ -354,9 +396,9 @@ class CallViewController: UIViewController, MediaEventsListener {
 
 <Note>
   `MediaEventsListener` has **no** screen-share callback. Screen sharing is observed on
-  [`ParticipantEventListener`](#participanteventlistener) via `onParticipantStartedScreenShare` /
+  [`ParticipantEventListener`](#participant-events) via `onParticipantStartedScreenShare` /
   `onParticipantStoppedScreenShare` — and on iOS those are **receive-only**: the SDK reports a share
-  started from another client, but cannot start one locally (that needs a Broadcast Upload Extension).
+  started from another client, but has no API to start one locally.
 </Note>
 
 <AccordionGroup>
@@ -373,7 +415,7 @@ class CallViewController: UIViewController, MediaEventsListener {
 | Value | Description |
 |-------|-------------|
 | `.FRONT` | Front-facing (selfie) camera is active |
-| `.BACK` | Rear-facing (main) camera is active |
+| `.REAR` | Rear-facing (main) camera is active |
 </Accordion>
 </AccordionGroup>
 
@@ -468,7 +510,7 @@ class CallViewController: UIViewController, ButtonClickListener {
 | `onRecordingToggleButtonClicked` | Recording toggle button was tapped |
 
 <Note>
-Button click events fire before the SDK's default action executes. Use these to add custom logic alongside default behavior.
+Button click events fire before the SDK's default action executes. Use these to add custom logic alongside default behavior. The Leave button is the exception: the SDK leaves the session itself when it is tapped, so only clean up in `onLeaveSessionButtonClicked`.
 </Note>
 
 ---
@@ -587,3 +629,112 @@ CallSession.shared.clearAllListeners()
 ```
 </Tab>
 </Tabs>
+
+---
+
+## Incoming Call Events
+
+`CometChatCalls.addIncomingCallListener` is a global listener, not tied to a session. It reports a call ringing on this device and the end of that ring, whether the call arrived by VoIP push while the app was killed or while it was running. The Push Notifications SDK feeds it; it reports incoming calls only, not the end of your own outgoing call.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+final class CallEvents: NSObject, CometChatIncomingCallListener {
+    func onIncomingCallReceived(call: CometChatIncomingCall) {
+        // A call for this user is ringing (CallKit already shows it)
+    }
+
+    func onIncomingCallEnded(call: CometChatIncomingCall, reason: String) {
+        // The ring ended: "cancelled", "ongoing", "unanswered", "rejected", "busy", "ended"
+    }
+}
+
+let callEvents = CallEvents()   // held weakly by the SDK: keep this reference
+CometChatCalls.addIncomingCallListener("my-screen", callEvents)
+
+CometChatCalls.removeIncomingCallListener("my-screen")
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+@interface CallEvents : NSObject <CometChatIncomingCallListener>
+@end
+
+@implementation CallEvents
+- (void)onIncomingCallReceivedWithCall:(CometChatIncomingCall *)call {
+    // A call for this user is ringing (CallKit already shows it)
+}
+- (void)onIncomingCallEndedWithCall:(CometChatIncomingCall *)call reason:(NSString *)reason {
+    // The ring ended
+}
+@end
+
+self.callEvents = [[CallEvents alloc] init];   // held weakly by the SDK: keep this reference
+[CometChatCalls addIncomingCallListener:@"my-screen" :self.callEvents];
+
+[CometChatCalls removeIncomingCallListener:@"my-screen"];
+```
+</Tab>
+</Tabs>
+
+| Event | Parameters | Description |
+|-------|------------|-------------|
+| `onIncomingCallReceived` | `CometChatIncomingCall` | A call for the logged-in user is ringing on this device |
+| `onIncomingCallEnded` | `CometChatIncomingCall`, `reason` | The call ended before it was answered here, once per call: `cancelled` (the caller gave up), `ongoing` (answered on another device), `unanswered`, `rejected` / `busy`, or `ended` (the session prepared for it closed before the answer). Treat any other reason as "the ring is over". A decline or ring-out on this device is reported to the Push SDK delegate's `callDidEnd(_:reason:)` instead |
+
+`CometChatIncomingCall` carries `sessionId`, `callerUid`, `callerName`, `callerAvatarUrl`, `callType`, `receiverType`, `receiverUid`, `conversationId`, `initiatedAt` (milliseconds), `isVideo` and `isPeerCall`.
+
+<Note>
+Listener ids are keys: registering the same id twice replaces the earlier listener. Do not use the id `cometchat-push-notifications`, which the Push SDK registers under.
+</Note>
+
+---
+
+## Login Events
+
+`CometChatCalls.addLoginListener` reports the Calls SDK login state. The Push SDK uses it to register and unregister the push tokens and to stop a ring when the user logs out; your app can use it to gate call UI.
+
+<Tabs>
+<Tab title="Swift">
+```swift
+import CometChatCallsSDK
+
+// Qualify the protocol if your app also imports the Chat SDK, which has its own CometChatLoginDelegate.
+final class CallsLoginEvents: NSObject, CometChatCallsSDK.CometChatLoginDelegate {
+    func onLoginSuccess(user: CallsUser) {}
+    func onLoginFailed(error: CometChatCallException?) {}
+    func onLogoutSuccess() {}
+    func onLogoutFailed(error: CometChatCallException?) {}
+}
+
+let loginEvents = CallsLoginEvents()   // held weakly by the SDK: keep this reference
+CometChatCalls.addLoginListener("my-app", loginEvents)
+
+CometChatCalls.removeLoginListener("my-app")
+```
+</Tab>
+<Tab title="Objective-C">
+```objectivec
+// self adopts the Calls SDK's CometChatLoginDelegate
+- (void)onLoginSuccessWithUser:(CallsSDKUser *)user {}
+- (void)onLoginFailedWithError:(CometChatCallException *)error {}
+- (void)onLogoutSuccess {}
+- (void)onLogoutFailedWithError:(CometChatCallException *)error {}
+
+[CometChatCalls addLoginListener:@"my-app" :self];
+
+[CometChatCalls removeLoginListener:@"my-app"];
+```
+</Tab>
+</Tabs>
+
+| Event | Description |
+|-------|-------------|
+| `onLoginSuccess(user:)` | A user logged in to the Calls SDK |
+| `onLoginFailed(error:)` | A login failed |
+| `onLogoutSuccess()` | The user logged out |
+| `onLogoutFailed(error:)` | A logout failed |
+
+<Note>
+Login listener ids are keys too: registering the same id twice replaces the earlier listener. Do not use the id `cometchat-push-notifications-calls`, which the Push SDK registers under.
+</Note>
