@@ -1,267 +1,58 @@
 ---
 title: "Calling Integration"
-description: "Add voice and video calling to your Android UI Kit application using chatuikit-kotlin or chatuikit-compose: Calls SDK, push ringing, permissions and logout."
+description: "Add voice and video calling to your Android UI Kit application using chatuikit-kotlin or chatuikit-compose."
 ---
 
 ## Overview
 
-With calling enabled, the UI Kit places calls from the message header and call logs, shows the outgoing call screen, and hosts the in-call screen. Incoming calls ring through the CometChat Push Notifications SDK: it shows the call notification and the full-screen incoming-call screen, plays the ringtone, and opens your answer activity when the user answers, which hands the call to the UI Kit's call screen, with the app in the foreground, in the background or not running at all.
+This guide walks you through adding voice and video calling capabilities to your Android application using the CometChat UI Kit.
 
 <Info>
 Make sure you've completed the [Getting Started](/ui-kit/android/getting-started) guide before proceeding.
 </Info>
 
-```mermaid
-sequenceDiagram
-    participant A as Caller · UI Kit
-    participant BE as CometChat backend
-    participant P as Callee · Push SDK
-    participant U as Callee · UI Kit
-
-    A->>BE: Call button → CometChatCalls.initiateCall
-    Note over A: Outgoing call screen: "calling…"
-    BE-->>P: Push (initiated)
-    P->>P: Rings: notification, full-screen screen, ringtone
-    P-->>A: Callee's device reached → "ringing…"
-    P->>U: Answer → mic/camera prompt → your answer activity → CometChatOngoingCallActivity
-    U->>U: joinSession
-    U-->>A: Callee joined → caller joins
-    Note over A,U: In call. Hang-up leaves the session on both sides.
-```
-
-What you write: the UI Kit settings with calling enabled, the Push SDK configuration, a small answer activity, a three-line Firebase service, and the manifest permissions. There is no call listener to register and no incoming-call UI to show.
-
-## Step 1: Dependencies
-
-The UI Kit brings the Calls SDK. Add the UI Kit module, the two Push Notifications SDK artifacts and Firebase Messaging. List the UI Kit before the Push SDK artifacts, so the UI Kit's incoming-call colours take effect (see [Styling the incoming-call screen](#styling-the-incoming-call-screen)):
-
-<Tabs>
-<Tab title="Kotlin (XML Views)">
-```kotlin build.gradle.kts
-dependencies {
-    implementation("com.cometchat:chatuikit-kotlin-android:6.2.0")
-    implementation("com.cometchat:push-notifications-android:2.0.0")
-    implementation("com.cometchat:push-notifications-calls-android:2.0.0")
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-messaging")
-}
-```
-</Tab>
-
-<Tab title="Jetpack Compose">
-```kotlin build.gradle.kts
-dependencies {
-    implementation("com.cometchat:chatuikit-compose-android:6.2.0")
-    implementation("com.cometchat:push-notifications-android:2.0.0")
-    implementation("com.cometchat:push-notifications-calls-android:2.0.0")
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-messaging")
-}
-```
-</Tab>
-</Tabs>
-
-Apply the `google-services` plugin and put `google-services.json` in the app module. `minSdk` must be 28 or higher, the UI Kit's minimum.
-
-<Note>
-To pin the SDK versions yourself, declare them explicitly; the UI Kit requires `calls-sdk-android` 5.1 or newer and `push-notifications-android` / `push-notifications-calls-android` 2.0 or newer.
-</Note>
-
-## Step 2: Enable calling in the UI Kit
-
-Set `setEnableCalling(true)` in `UIKitSettings`. `CometChatUIKit.init` then initialises the Calls SDK with the same app id, region and hosts, and `CometChatUIKit.login` logs the user into it. Do not call `CometChatCalls.init` yourself: the Calls SDK keeps the hosts of its first initialisation.
-
-<Tabs>
-<Tab title="Kotlin (XML Views)">
-```kotlin
-val settings = UIKitSettings.UIKitSettingsBuilder()
-    .setAppId(APP_ID)
-    .setRegion(REGION)
-    .setAuthKey(AUTH_KEY)
-    .subscribePresenceForAllUsers()
-    .setEnableCalling(true)
-    .build()
-
-CometChatUIKit.init(this, settings, object : CometChat.CallbackListener<String>() {
-    override fun onSuccess(result: String) { initPushNotifications() }
-    override fun onError(e: CometChatException) { Log.e(TAG, "init failed: ${e.message}") }
-})
-```
-</Tab>
-<Tab title="Jetpack Compose">
-```kotlin
-val settings = UIKitSettings.UIKitSettingsBuilder()
-    .setAppId(APP_ID)
-    .setRegion(REGION)
-    .setAuthKey(AUTH_KEY)
-    .subscribePresenceForAllUsers()
-    .setEnableCalling(true)
-    .build()
-
-CometChatUIKit.init(this, settings, object : CometChat.CallbackListener<String>() {
-    override fun onSuccess(result: String) { initPushNotifications() }
-    override fun onError(e: CometChatException) { Log.e(TAG, "init failed: ${e.message}") }
-})
-```
-</Tab>
-</Tabs>
-
-Run this in `Application.onCreate` from stored credentials, not only after a screen opens. A push can start the app process to ring a call, and the answer must find a ready SDK.
 
 <Warning>
-**Enabling calling in an app that already has logged-in users requires a re-login.** `CometChatUIKit.login()` short-circuits when the same uid already has a persisted session, so the Calls SDK never logs in: the Calls SDK has no auth token and `CometChatCallLogs` shows a silent error state (logcat: `User auth token cannot be null`). After calling is first enabled, log out and log in again (`CometChatUIKit.logout(...)` then `CometChatUIKit.login(...)`), and wire `onError` on `CometChatCallLogs` during development so this failure is visible.
-</Warning>
+**`enableCalling: true` makes the Calls SDK dependency mandatory — otherwise the app crashes at
+launch.** With the flag set, `CometChatUIKit.initFromSettings()` calls `initCometChatCalls()`, which
+throws if `com.cometchat:calls-sdk-android` is absent:
 
-## Step 3: Configure push ringing
-
-Initialise the Push Notifications SDK once, after the UI Kit. It needs the FCM provider id and an answer activity: the screen the Push SDK opens when the user taps **Answer**.
-
-```kotlin
-private fun initPushNotifications() {
-    val config = PNConfiguration.Builder(APP_ID, REGION)
-        .setProviderId(PROVIDER_ID)                         // FCM provider id from the dashboard
-        .setAnswerActivity(CallAnswerActivity::class.java)  // opened on Answer, call in its intent
-        .setNotificationSmallIcon(R.drawable.ic_notification)
-        .build()
-    CometChatPushNotifications.init(this, config)
-}
+```
+java.lang.NoClassDefFoundError: Failed resolution of:
+  Lcom/cometchat/calls/core/CometChatCalls$SessionSettingsBuilder;
+    at com.cometchat.uikit.core.CometChatUIKit.initCometChatCalls(CometChatUIKit.kt:229)
 ```
 
-The UI Kit does not depend on the Push SDK, so the answer activity is a small class in your app. It reads the answered call from its intent, opens the UI Kit's call screen with it, and finishes:
+The crash happens in `onCreate`, **before any UI renders** — the flag name gives no hint that a
+dependency is implied. Change the flag and the dependency together, or leave `enableCalling` as
+`false` in an app that does not use calling.
+</Warning>
+
+## Add the Calls SDK
+
+Add the CometChat Calls SDK dependency alongside your chosen UI Kit module:
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
-```kotlin
-import com.cometchat.chat.constants.CometChatConstants
-import com.cometchat.pushnotification.calls.CallBundles
-import com.cometchat.uikit.core.utils.CallRingingUtils
-import com.cometchat.uikit.kotlin.presentation.ongoingcall.ui.CometChatOngoingCallActivity
-
-class CallAnswerActivity : Activity() {
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
-
-        val incoming = CallBundles.getCall(intent) ?: return finish()
-        val call = CallRingingUtils.buildIncomingCall(
-            sessionId = incoming.sessionId,
-            callType = if (incoming.isVideo) CometChatConstants.CALL_TYPE_VIDEO else CometChatConstants.CALL_TYPE_AUDIO,
-            receiverType = incoming.receiverType,
-            receiverUid = incoming.receiverUid,
-            callerUid = incoming.callerUid,
-            callerName = incoming.callerName,
-            callerAvatarUrl = incoming.callerAvatarUrl,
-            initiatedAtMs = incoming.initiatedAtMs,
-            conversationId = incoming.conversationId
-        )
-        CometChatOngoingCallActivity.launchOngoingCallActivity(this, call)
-        finish()
-    }
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.cometchat:chatuikit-kotlin-android:6.1.0")
+    implementation("com.cometchat:calls-sdk-android:5.0.1")
 }
 ```
 </Tab>
+
 <Tab title="Jetpack Compose">
-```kotlin
-import com.cometchat.chat.constants.CometChatConstants
-import com.cometchat.pushnotification.calls.CallBundles
-import com.cometchat.uikit.core.utils.CallRingingUtils
-import com.cometchat.uikit.compose.presentation.ongoingcall.ui.CometChatOngoingCallActivity
-
-class CallAnswerActivity : Activity() {
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setShowWhenLocked(true)
-        setTurnScreenOn(true)
-
-        val incoming = CallBundles.getCall(intent) ?: return finish()
-        val call = CallRingingUtils.buildIncomingCall(
-            sessionId = incoming.sessionId,
-            callType = if (incoming.isVideo) CometChatConstants.CALL_TYPE_VIDEO else CometChatConstants.CALL_TYPE_AUDIO,
-            receiverType = incoming.receiverType,
-            receiverUid = incoming.receiverUid,
-            callerUid = incoming.callerUid,
-            callerName = incoming.callerName,
-            callerAvatarUrl = incoming.callerAvatarUrl,
-            initiatedAtMs = incoming.initiatedAtMs,
-            conversationId = incoming.conversationId
-        )
-        CometChatOngoingCallActivity.launchOngoingCallActivity(this, call)
-        finish()
-    }
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.cometchat:chatuikit-compose-android:6.1.0")
+    implementation("com.cometchat:calls-sdk-android:5.0.1")
 }
 ```
 </Tab>
 </Tabs>
 
-```xml AndroidManifest.xml
-<activity
-    android:name=".CallAnswerActivity"
-    android:exported="false"
-    android:excludeFromRecents="true"
-    android:noHistory="true"
-    android:showWhenLocked="true"
-    android:turnScreenOn="true"
-    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-```
-
-Then hand every push to the SDK from your Firebase service:
-
-```kotlin
-class AppFCMService : FirebaseMessagingService() {
-    override fun onMessageReceived(message: RemoteMessage) {
-        CometChatPushNotifications.handlePushNotification(this, message.data, message.sentTime)
-    }
-    override fun onNewToken(token: String) {
-        CometChatPushNotifications.handleTokenRefresh(token)
-    }
-}
-```
-
-```xml AndroidManifest.xml
-<service android:name=".AppFCMService" android:exported="false">
-    <intent-filter>
-        <action android:name="com.google.firebase.MESSAGING_EVENT" />
-    </intent-filter>
-</service>
-```
-
-The push token is registered on login and unregistered on logout by the SDK. Do not skip call pushes when the app is in the foreground: the push is the only incoming-call signal, in every app state. Call pushes must be sent at high FCM priority.
-
-To colour the incoming-call screen with your UI Kit theme, see [Styling the incoming-call screen](#styling-the-incoming-call-screen). The other `PNConfiguration` options (ring timeout, missed-call notifications, your own ring screen) are on the Calls SDK's [Push Ringing](/calls/android/voip-calling) page.
-
-## Step 4: Permissions
-
-There is nothing to declare. `RECORD_AUDIO`, `CAMERA` and `POST_NOTIFICATIONS` merge into your manifest from the UI Kit, the Calls SDK and the Push SDK's calls module, along with the permissions ringing needs. You only request them at runtime:
-
-- **Notifications**: after sign-in, call `CometChatPushNotifications.ensureRingReady(activity) { result -> … }` (snippet below) and show the user any `RingReadiness` other than `READY`. On Android 13+ it asks for `POST_NOTIFICATIONS` itself when it is missing, and reports `NOTIFICATIONS_OFF` while that prompt is still on screen. Notifications off, a muted call channel, a revoked full-screen intent and Do Not Disturb all silence calls with no error.
-- **Microphone and camera**: the Push SDK asks when the user answers, and the UI Kit's call screen asks once more when it opens; a denied microphone joins muted. Ask at sign-in as well if you do not want the first call to be where the user meets the prompt.
-
-```kotlin
-CometChatPushNotifications.ensureRingReady(this) { result ->
-    val readiness = result.valueOrNull() ?: return@ensureRingReady
-    if (readiness != RingReadiness.READY) {
-        Toast.makeText(this, "Incoming calls may not ring: $readiness", Toast.LENGTH_LONG).show()
-    }
-}
-```
-
-If your app asks for other permissions at sign-in, call `ensureRingReady` after those requests have returned; Android drops a permission request made while another dialog is open.
-
-## Step 5: Log out through the UI Kit
-
-```kotlin
-CometChatUIKit.logout(object : CometChat.CallbackListener<String>() {
-    override fun onSuccess(s: String) { /* go to login */ }
-    override fun onError(e: CometChatException) { }
-})
-```
-
-`CometChatUIKit.logout` ends a call in progress, cancels an outgoing call still ringing, then logs out of the Chat SDK and the Calls SDK; the Push SDK stops a ring still playing for the old user and unregisters the token. `CometChat.logout` alone does none of the calling clean-up.
-
-## What the UI Kit does from here
+After adding this dependency, the Android UI Kit will automatically detect it and activate the calling features.
 
 Once calling is active, the voice and video call buttons render in the [MessageHeader](/ui-kit/android/message-header):
 
@@ -283,108 +74,91 @@ CometChatMessageHeader(
 </Tab>
 </Tabs>
 
+<Warning>
+**Enabling calling in an app that already has logged-in users requires a re-login.** `CometChatUIKit.login()` short-circuits when the same uid already has a persisted session — it returns `onSuccess` without logging the Calls SDK in, so the Calls SDK has no auth token and `CometChatCallLogs` shows a silent error state (logcat: `User auth token cannot be null`). After calling is first enabled, log out and log in again (`CometChatUIKit.logout(...)` then `CometChatUIKit.login(...)`), and wire `onError` on `CometChatCallLogs` during development so this failure is visible.
+</Warning>
+
 <Frame>
   <img src="/images/81959c4b-Calling-ee689247c8cdd512c520b85f30683ad8.png" />
 </Frame>
 
-| Moment | What happens | Component |
-|--------|--------------|-----------|
-| Tap a call button | `CometChatCalls.initiateCall`, then the outgoing screen opens | [Call Buttons](/ui-kit/android/call-buttons) |
-| Waiting | "calling…", then "ringing…" when the callee's device is reached; End cancels the call; 45 s with no answer ends it as unanswered | [Outgoing Call](/ui-kit/android/outgoing-call) |
-| Callee declines / is busy / does not answer | The outgoing screen closes with the reason | Outgoing Call |
-| Incoming call | The Push SDK rings and draws the incoming-call screen | Push SDK (no UI Kit component) |
-| Answer | Your answer activity opens `CometChatOngoingCallActivity`, which joins the session | [Ongoing Call](/ui-kit/android/ongoing-call) |
-| Hang-up | The session is left; the other side's screen closes | Ongoing Call |
-| Call history | Call logs list from the Calls SDK; the call icon calls back | [Call Logs](/ui-kit/android/call-logs) |
-| Group call | The group call button sends a meeting message; tapping it joins the conference | Call Buttons, Ongoing Call |
+## Set Up Call Listener
 
-To react to calls in your own code (a badge, analytics, refreshing a screen), listen on the Calls SDK with `CometChatCalls.addIncomingCallListener`, the same callback the UI Kit uses internally. Do not use the Chat SDK's `CallListener`; it is superseded and fires nothing in this flow.
-
-## Placing a call from your own screen
-
-```kotlin
-lifecycleScope.launch {
-    CallInitiationUtils.initiateUserCall(user.uid, CometChatConstants.CALL_TYPE_AUDIO, user)
-        .onSuccess { call -> CometChatCallActivity.launchOutgoingCallScreen(context, call, null) }
-        .onFailure { e -> Log.e(TAG, "Could not start the call: ${e.message}") }
-}
-```
-
-`CometChatCallActivity` is `com.cometchat.uikit.kotlin.calls.CometChatCallActivity` for XML Views and `com.cometchat.uikit.compose.calls.CometChatCallActivity` for Compose. `initiateUserCall` fails with `CALL_IN_PROGRESS` while another start is in flight; it does not check for a call already in progress, so do that yourself, or use [Call Buttons](/ui-kit/android/call-buttons), which refuse with `ACTIVE_CALL` while another session is active.
-
-## Styling the incoming-call screen
-
-The incoming-call screen belongs to the Push SDK, which draws it even when your app is not running, so it cannot read the UI Kit theme at that moment. Instead you pass it your UI Kit theme once, as a `CometChatPNIncomingCallTheme`, when you initialise push. Light and dark are both included, and the screen and the call notifications then follow your theme.
-
-The UI Kit reads its own theme into a `CometChatIncomingCallTheme`:
+To receive incoming calls globally in your app, add a `CallListener` before initializing the CometChat UI Kit. We recommend creating a custom Application class:
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
 ```kotlin
-// Reads your app's manifest theme (based on CometChatTheme.DayNight), light and dark
-val uikitTheme = CometChatTheme.getIncomingCallTheme(this)
+class BaseApplication : Application() {
+    companion object {
+        private val LISTENER_ID = "${BaseApplication::class.java.simpleName}${System.currentTimeMillis()}"
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        CometChat.addCallListener(LISTENER_ID, object : CometChat.CallListener {
+            override fun onIncomingCallReceived(call: Call) {
+                // Get the current activity context
+                val currentActivity = getCurrentActivity() // Implement this method
+
+                currentActivity?.let {
+                    val incomingCallView = CometChatIncomingCall(it)
+                    incomingCallView.call = call
+                    incomingCallView.fitsSystemWindows = true
+                    incomingCallView.onError = OnError { exception ->
+                        // Handle errors
+                    }
+
+                    // Display the component (e.g., as dialog or full-screen overlay)
+                }
+            }
+
+            override fun onOutgoingCallAccepted(call: Call) {
+                // Handle accepted outgoing call
+            }
+
+            override fun onOutgoingCallRejected(call: Call) {
+                // Handle rejected outgoing call
+            }
+
+            override fun onIncomingCallCancelled(call: Call) {
+                // Handle cancelled incoming call
+            }
+        })
+    }
+}
 ```
 </Tab>
+
 <Tab title="Jetpack Compose">
 ```kotlin
-// The same colour schemes you give CometChatTheme { }
-val uikitTheme = incomingCallTheme(light = lightScheme, dark = darkScheme)
+class BaseApplication : Application() {
+    companion object {
+        private val LISTENER_ID = "${BaseApplication::class.java.simpleName}${System.currentTimeMillis()}"
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        CometChat.addCallListener(LISTENER_ID, object : CometChat.CallListener {
+            override fun onIncomingCallReceived(call: Call) {
+                CometChatCallActivity.launchIncomingCallScreen(this@BaseApplication, call, null)
+                // Pass null or IncomingCallConfiguration if need to configure CometChatIncomingCall component
+            }
+
+            override fun onOutgoingCallAccepted(call: Call) {
+                // Handle accepted outgoing call
+            }
+
+            override fun onOutgoingCallRejected(call: Call) {
+                // Handle rejected outgoing call
+            }
+
+            override fun onIncomingCallCancelled(call: Call) {
+                // Handle cancelled incoming call
+            }
+        })
+    }
+}
 ```
 </Tab>
 </Tabs>
-
-The UI Kit has no dependency on the Push SDK, so a small function in your app copies the colours across. The field names match one to one:
-
-```kotlin calls/IncomingCallTheme.kt
-fun CometChatIncomingCallTheme.toCometChatPNIncomingCallTheme(): CometChatPNIncomingCallTheme =
-    CometChatPNIncomingCallTheme.Builder()
-        .setLightColors(light.toPNColors())
-        .setDarkColors(dark.toPNColors())
-        .build()
-
-private fun CometChatIncomingCallTheme.Colors.toPNColors(): CometChatPNIncomingCallTheme.Colors =
-    CometChatPNIncomingCallTheme.Colors.Builder()
-        .setBackground(background)
-        .setCallerName(callerName)
-        .setSubtitle(subtitle)
-        .setAvatarBackground(avatarBackground)
-        .setAvatarText(avatarText)
-        .setAcceptButton(acceptButton)
-        .setAcceptIcon(acceptIcon)
-        .setAcceptLabel(acceptLabel)
-        .setDeclineButton(declineButton)
-        .setDeclineIcon(declineIcon)
-        .setDeclineLabel(declineLabel)
-        .build()
-```
-
-Then add one line to the configuration from [Step 3](#step-3-configure-push-ringing):
-
-```kotlin
-val config = PNConfiguration.Builder(APP_ID, REGION)
-    // ...
-    .setIncomingCallTheme(uikitTheme.toCometChatPNIncomingCallTheme())
-    .build()
-```
-
-If your app changes its UI Kit colours while running, pass the new theme with `CometChatPushNotifications.setIncomingCallTheme(context, theme)`.
-
-Each field comes from one UI Kit colour:
-
-| Incoming-call field | UI Kit colour |
-|---|---|
-| `background` | `backgroundColor1` |
-| `callerName` | `textColorPrimary` |
-| `subtitle`, `acceptLabel`, `declineLabel` | `textColorSecondary` |
-| `avatarBackground` | `primaryColor` |
-| `avatarText`, `acceptIcon`, `declineIcon` | `colorWhite` |
-| `acceptButton` | `successColor` |
-| `declineButton` | `errorColor` |
-
-Without this line, the screen still uses the UI Kit's default colours. The UI Kit overrides the `cometchat_pn_call_*` colour resources with its light and dark palette at build time. Those overrides win over the Push SDK's defaults only when your app lists the UI Kit dependency before the Push SDK artifacts. Your app's own overrides always win.
-
-To change a single colour, override its resource, or chain any `CometChatPNIncomingCallTheme.Colors.Builder` setter after mapping. The full list of colours, strings, drawables and the layout is under [Theming the SDK's incoming-call screen](/calls/android/voip-calling#theming-the-sdks-incoming-call-screen). To draw the screen yourself, register your own activity with `setIncomingCallActivity`, for example one that hosts the deprecated [Incoming Call](/ui-kit/android/incoming-call) component. The UI Kit's `CometChatCallActivity` does not work there: it does not read the call the Push SDK passes in its intent, so it would open empty.
-
-## Upgrading from an app that used `CometChat.addCallListener`
-
-Remove the Application-level `CallListener`, the incoming-call overlay or `launchIncomingCallScreen` call, any ringtone you played, the busy check, and the Push SDK 1.0 `setVoIPEnabled` / `setOnCallAnsweredHandler` wiring, and follow the steps above. The method-by-method mapping is on [Migrating from Legacy Ringing](/calls/android/migrating-from-legacy-ringing).
