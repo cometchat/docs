@@ -1,0 +1,295 @@
+---
+title: "Stay in Sync"
+sidebarTitle: "Stay in Sync"
+description: "Catch up on everything that changed while offline, observe sync progress, trigger a manual sync, and manage the local cache with the CometChat JavaScript SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```javascript
+// Observe the reconnect catch-up sync (conversation phase, then message phase)
+CometChat.addSyncListener("SYNC_LISTENER", new CometChat.SyncListener({
+  onConversationSyncCompleted: (conversations) => { /* blind-replace list */ },
+  onMessageSyncCompleted: (messages, outcome) => { /* merge by id */ },
+  onMessageSyncError: (error) => {},
+}));
+CometChat.removeSyncListener("SYNC_LISTENER");
+
+// Poll sync state
+const state = CometChat.getSyncState();                // "IDLE" | "SYNCING"
+const lastSync = await CometChat.getLastSyncTimestamp(); // server epoch seconds, 0 if never
+
+// Trigger a manual catch-up (callback is told whether it was accepted)
+CometChat.forceSyncNow((error) => { /* IN_PROGRESS / COOLDOWN / DISABLED / USER_NOT_LOGED_IN */ });
+
+// Observe cache rebuilds
+CometChat.addOfflineCacheResetListener("RESET_LISTENER", new CometChat.OfflineCacheResetListener({
+  onOfflineCacheReset: (reason, pendingMessagesLost) => {},
+}));
+
+// Inspect / clear the cache
+const bytes = await CometChat.getCacheSize();
+await CometChat.clearOfflineCache();                   // destructive; drops the un-sent outbox
+```
+
+</Accordion>
+
+When the connection comes back, the SDK runs a **catch-up sync**: it refreshes the conversation list, then replays everything that changed in your messages since the last sync, and merges the results into the local cache. This page covers how to observe that sync, trigger one on demand, and manage the cache it maintains.
+
+<Note>
+Everything on this page is a no-op unless offline support is active for the logged-in user (`CometChat.isOfflineEnabled()` is `true`). See [Enable Offline Support](/sdk/javascript/offline-enable).
+</Note>
+
+## How catch-up works
+
+A sync runs automatically when the connection settles after a reconnect. It never runs on a brief connect-then-drop flap, and overlapping triggers coalesce into a single sweep. It proceeds in two phases, in order:
+
+1. **Conversation phase** — the conversation list is fetched as one fresh page (up to `maxConversations`). A conversation-list UI can blind-replace its list with the result.
+2. **Message phase** — the SDK replays the message changelog from the last sync point. New messages and updates to already-cached messages are merged into the cache.
+
+The sync is incremental and safe to repeat: it only moves forward from the last successful point, and a failed or interrupted phase simply resumes on the next reconnect. A first-ever sync (cold start) seeds its starting point from the newest conversation and fetches no message history — older history is reached by scrolling online.
+
+## Listen for sync progress
+
+Register a `CometChat.SyncListener` to observe the lifecycle of every automatic and manual sync. Each phase fires `started`, then exactly one of `completed` / `error`.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addSyncListener(
+  "SYNC_LISTENER",
+  new CometChat.SyncListener({
+    onConversationSyncStarted: () => {},
+    onConversationSyncCompleted: (conversations: CometChat.Conversation[]) => {
+      // The full, fresh conversation page. Blind-replace your list.
+    },
+    onConversationSyncError: (error: CometChat.CometChatException) => {},
+    onMessageSyncStarted: () => {},
+    onMessageSyncCompleted: (messages: CometChat.BaseMessage[], outcome: string) => {
+      // New + changed messages reconciled this sync. Merge by message id.
+    },
+    onMessageSyncError: (error: CometChat.CometChatException) => {},
+  })
+);
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.addSyncListener(
+  "SYNC_LISTENER",
+  new CometChat.SyncListener({
+    onConversationSyncStarted: () => {},
+    onConversationSyncCompleted: (conversations) => {
+      // The full, fresh conversation page. Blind-replace your list.
+    },
+    onConversationSyncError: (error) => {},
+    onMessageSyncStarted: () => {},
+    onMessageSyncCompleted: (messages, outcome) => {
+      // New + changed messages reconciled this sync. Merge by message id.
+    },
+    onMessageSyncError: (error) => {},
+  })
+);
+```
+</Tab>
+</Tabs>
+
+| Callback | When it fires |
+|---|---|
+| `onConversationSyncStarted()` | The conversation refresh began. |
+| `onConversationSyncCompleted(conversations)` | The refresh succeeded; `conversations` is the full conversation page. |
+| `onConversationSyncError(error)` | A transport or parse failure; the cache is left untouched and the refresh retries on the next reconnect. |
+| `onMessageSyncStarted()` | The message changelog sweep began. |
+| `onMessageSyncCompleted(messages, outcome)` | The sweep finished; `messages` carries the new and changed messages. |
+| `onMessageSyncError(error)` | The sweep failed; it resumes on the next reconnect. |
+
+The two phases are independent — a conversation-phase error does not stop the message phase. A phase error is informational: the cache is never left in a wrong state and the sweep resumes automatically. The error always carries a `code`: `FAILED_TO_FETCH` when the request got no answer, `ERROR_JSON_EXCEPTION` when the server answered 2xx with an unreadable body (`details.httpStatus` holds the status), otherwise the server's own code.
+
+`onMessageSyncCompleted` reports the outcome:
+
+| `SyncOutcome` | Meaning |
+|---|---|
+| `CAUGHT_UP` | The changelog was fully replayed; the cache reflects every server change up to the sync point. |
+| `PARTIAL` | A page was ingested and the sync point advanced, but a backlog remains; it drains one page per reconnect. |
+
+Remove the listener with `CometChat.removeSyncListener("SYNC_LISTENER")`. Registrations are kept across login, logout and restarts, so register once.
+
+## Receiving synced messages
+
+If you already use a `CometChat.MessageListener`, synced messages still arrive there, so you usually do not need a `SyncListener` to keep your chat up to date:
+
+- **Genuinely new** messages arrive one-by-one on `onTextMessageReceived` (and the other typed variants), with `message.getSource()` set to `SYNC`.
+- **Updates** to already-cached messages arrive together on `onMessagesSynced(messages)`.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addMessageListener(
+  "MSG_LISTENER",
+  new CometChat.MessageListener({
+    onTextMessageReceived: (message: CometChat.TextMessage) => {
+      if (message.getSource() === CometChat.MessageSource.SYNC) {
+        // Delivered by a catch-up sync. Suppress notification spam if you wish.
+      }
+    },
+    onMessagesSynced: (messages: CometChat.BaseMessage[]) => {
+      // Updates to already-cached messages. Merge by id.
+    },
+  })
+);
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.addMessageListener(
+  "MSG_LISTENER",
+  new CometChat.MessageListener({
+    onTextMessageReceived: (message) => {
+      if (message.getSource() === CometChat.MessageSource.SYNC) {
+        // Delivered by a catch-up sync. Suppress notification spam if you wish.
+      }
+    },
+    onMessagesSynced: (messages) => {
+      // Updates to already-cached messages. Merge by id.
+    },
+  })
+);
+```
+</Tab>
+</Tabs>
+
+## Check sync state
+
+Poll the current sync state and the time of the last completed sync at any time.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const state: string = CometChat.getSyncState();                  // "IDLE" or "SYNCING"
+const lastSync: number = await CometChat.getLastSyncTimestamp(); // server epoch seconds; 0 if never synced
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const state = CometChat.getSyncState();                  // "IDLE" or "SYNCING"
+const lastSync = await CometChat.getLastSyncTimestamp(); // server epoch seconds; 0 if never synced
+```
+</Tab>
+</Tabs>
+
+`getSyncState()` returns `SYNCING` while a sweep is in flight, otherwise `IDLE` (also when offline support is disabled). `getLastSyncTimestamp()` returns a **server-provided** epoch value in seconds, never the device clock, and `0` if the cache has never synced.
+
+## Trigger a manual sync
+
+Call `forceSyncNow` to run a catch-up immediately — for example behind a pull-to-refresh. It routes through the same throttle as the automatic sync, so it will not start a second overlapping sweep or hammer the backend, and it enforces a 10-second cooldown between forced syncs.
+
+Pass a callback to learn whether the request was accepted; it receives no error (`null`) as soon as the catch-up starts. The sync's actual progress and outcome still arrive on your registered `SyncListener`.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.forceSyncNow((error?: CometChat.CometChatException) => {
+  if (error) {
+    // Rejected — see the code.
+  } else {
+    // Accepted and started.
+  }
+});
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.forceSyncNow((error) => {
+  if (error) {
+    // Rejected — see the code.
+  } else {
+    // Accepted and started.
+  }
+});
+```
+</Tab>
+</Tabs>
+
+If you do not need the acceptance result, call `CometChat.forceSyncNow()` with no argument; a rejected request is silently dropped.
+
+| Rejection code | Meaning |
+|---|---|
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | A sync (automatic or manual) is already running. |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | A sync ran too recently; `details.retryAfterMs` carries the remaining cooldown. |
+| `ERROR_OFFLINE_DISABLED` | A user is logged in but offline support is not active. |
+| `USER_NOT_LOGED_IN` | Nobody is logged in (spelling as the SDK returns it). |
+
+## When the cache resets
+
+In rare cases the SDK cannot keep the existing cache — for example the encryption key became unrecoverable, or the database is corrupt. When this happens it rebuilds the cache from scratch and notifies an `OfflineCacheResetListener`. Any un-sent messages that were queued are lost in the rebuild; `pendingMessagesLost` reports how many, or `-1` (`CometChat.OFFLINE_PENDING_COUNT_UNKNOWN`) when the count is unknown. Each lost message that could still be read fails with `DISCARDED` on `onOutboxMessageFailed`. A logout never fires it.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addOfflineCacheResetListener(
+  "RESET_LISTENER",
+  new CometChat.OfflineCacheResetListener({
+    onOfflineCacheReset: (reason: string, pendingMessagesLost: number) => {
+      // The cache was rebuilt. Re-fetch anything you need; it will re-sync from the server.
+    },
+  })
+);
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.addOfflineCacheResetListener(
+  "RESET_LISTENER",
+  new CometChat.OfflineCacheResetListener({
+    onOfflineCacheReset: (reason, pendingMessagesLost) => {
+      // The cache was rebuilt. Re-fetch anything you need; it will re-sync from the server.
+    },
+  })
+);
+```
+</Tab>
+</Tabs>
+
+| `OfflineCacheResetReason` | Cause |
+|---|---|
+| `KEY_LOST` | The encryption key could not be recovered (for example browser site data was partly cleared); a fresh key was minted. |
+| `WRONG_KEY` | The stored key does not open the cache. |
+| `CORRUPTED` | The cache is damaged. |
+| `ESCALATED` | An unclassified open failure recurred on three consecutive launches and was escalated to a permanent rebuild. |
+| `ENCRYPTION_CHANGED` | The `encryption` setting changed, so the cache was rebuilt in the configured format. |
+
+Remove the listener with `CometChat.removeOfflineCacheResetListener("RESET_LISTENER")`. See [Encrypt the Cache](/sdk/javascript/offline-encryption) for the encryption-related reasons.
+
+<Note>
+A cache that another tab (or process) holds locked or busy is never rebuilt; offline stays off for that session instead.
+</Note>
+
+## Manage the cache
+
+Read the current cache size, or clear the cache entirely.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const bytes: number = await CometChat.getCacheSize(); // cached content + media bytes
+await CometChat.clearOfflineCache();                  // wipe the entire per-user cache
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const bytes = await CometChat.getCacheSize(); // cached content + media bytes
+await CometChat.clearOfflineCache();          // wipe the entire per-user cache
+```
+</Tab>
+</Tabs>
+
+`getCacheSize()` returns the size in bytes using the same measure as `maxStorageSize` — cached content before encryption, plus cached media bytes. It is not the size on disk and not everything your origin stores. It returns `0` when offline support is disabled.
+
+<Warning>
+`clearOfflineCache()` is destructive and irreversible. It empties the entire per-user cache — cached messages, conversations, lists, media bytes **and the un-sent outbox**. Each still-queued `PENDING` / `SENDING` message fails with reason `DISCARDED` (`ERROR_OFFLINE_MESSAGE_DISCARDED` on its per-send listener); one already `FAILED` is removed silently. It is a no-op unless offline support is active, and the encryption key is kept.
+</Warning>
+
+<Note>
+You never need to clear the cache on logout — the SDK does it for you. The cache is stored **per app and user**: a reload with a still-valid session reuses it, and it is deleted on logout, token expiry, an app id change, or when a different user logs in. With offline off in your config, any offline data an earlier build left on the device is deleted when the session ends, and `logout()` resolves after the deletion (in a browser this can take up to about 5 seconds per database while another tab still has it open). See [Offline Support](/sdk/javascript/offline-overview).
+</Note>
