@@ -1,0 +1,180 @@
+---
+title: "Offline Configuration & API Reference"
+sidebarTitle: "Configuration & API Reference"
+description: "A complete reference for the offline configuration options, public methods, listeners, enums, model fields, and error codes with the CometChat React Native Chat SDK."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Config | `new CometChat.OfflineConfig({ enabled: true, ... })` → `AppSettingsBuilder.setOfflineConfig()` (or `.offline(true)`) |
+| Introspection | `isOfflineEnabled()` · `getMediaCachingMode()` · `getOfflineEncryptionStatus()` · `getSyncState()` · `await getLastSyncTimestamp()` · `await getCacheSize()` |
+| Outbox | `await getPendingMessages()` · `retryMessage(localId)` · `retryAllFailedMessages()` · `discardLocalMessage(localId)` |
+| Control | `forceSyncNow()` · `clearOfflineCache()` |
+| Minimum SDK | 4.2.0 |
+
+```typescript
+const offlineConfig = new CometChat.OfflineConfig({
+  enabled: true,
+  maxConversations: 100,
+  maxMessagesPerConversation: 500,
+  maxPendingMessages: 50,
+  mediaCaching: CometChat.MediaCachingMode.AUTO,
+  encryption: false,
+});
+```
+
+</Accordion>
+
+This page is the full surface of CometChat's offline support in the React Native Chat SDK: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **4.2.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/react-native/offline-enable), [Show Cached Data](/sdk/react-native/offline-cached-data), [Send While Offline](/sdk/react-native/offline-send), [Stay in Sync](/sdk/react-native/offline-sync), [Media Caching](/sdk/react-native/offline-media-caching), and [Encrypt the Cache](/sdk/react-native/offline-encryption).
+
+## OfflineConfig options
+
+Construct with `new CometChat.OfflineConfig(options)`; every key is optional and pre-set to its default, so pass only the options you want to change. The resulting `OfflineConfig` is immutable. Invalid values are normalised, never rejected: a wrong type or unknown enum value falls back to the default, and a negative duration becomes `0`. Byte caps and the TTL treat `0` as **unlimited** (that dimension's eviction is disabled); the count caps are clamped and have no "unlimited".
+
+| Option | Type | Default | Range / clamp | Effect |
+|---|---|---|---|---|
+| `enabled` | `boolean` | `false` | — | Master gate for the whole offline engine. With it off the SDK behaves exactly as before. |
+| `cacheDurationDays` | `number` (int) | `0` (unlimited) | `>= 0`; negative treated as `0` | Message retention TTL in days. `0` = no age-based prune; eviction is by the byte/count caps instead. |
+| `maxStorageSize` | `number` bytes | `262144000` (250 MB) | `0` = unlimited | Byte ceiling for the message/metadata database. |
+| `maxMessagesPerConversation` | `number` | `500` | clamped `[1, 1000]`; `0`/over → `1000` | Per-conversation cached-message window. |
+| `maxConversations` | `number` | `100` | clamped `[1, 1000]`; `0`/over → `1000` | Cached-conversation cap. |
+| `maxPendingMessages` | `number` | `50` | clamped `[1, 100]`; `0`/over → `100` | Pending-send outbox capacity. |
+| `autoSendPendingOnReconnect` | `boolean` | `true` | — | Auto-flush queued `PENDING` sends on reconnect. Gates only the outbox flush; the reconnect sync sweep runs regardless. |
+| `pendingQueueOverflowPolicy` | `PendingMessageOverflowPolicy` | `REJECT_NEWEST` | — | What the outbox does when it is full. |
+| `maxMediaCacheSize` | `number` bytes | `524288000` (500 MB) | `0` = unlimited | Media-only byte budget (LRU). |
+| `mediaCaching` | `MediaCachingMode` | `AUTO` | unknown → `AUTO` | Receive-side media mode. Fixed at init. |
+| `encryption` | `boolean` | `false` | — | Encrypt the cache database at rest. See [Encrypt the Cache](/sdk/react-native/offline-encryption). |
+| `encryptionFailureBehavior` | `EncryptionFailureBehavior` | `ONLINE_ONLY` | unknown → `ONLINE_ONLY` | What happens when encryption cannot run at all. |
+| `maxSnapshotQueries` | `number` | `100` | `>= 1`; `0`/negative → `100` | Most entity-list snapshots (users, groups, group members) kept for offline replay; LRU. |
+| `snapshotTtlDays` | `number` | `7` | `>= 1`; `0`/negative → `7` | Days an entity-list snapshot is kept after it was first recorded. |
+
+Attach the config at init via `AppSettingsBuilder.setOfflineConfig(OfflineConfig)`, or enable with defaults via the `offline(boolean)` shorthand — see [Enable Offline Support](/sdk/react-native/offline-enable). With `initFromSettings`, use `chatSDK.offline` (a boolean or an options object; `enabled` must be set to turn it on).
+
+The config object also exposes read-only getters: `isEnabled()`, `isEncryptionEnabled()`, `getEncryptionFailureBehavior()`, `getCacheDurationDays()`, `getMaxStorageSize()`, `getMaxMessagesPerConversation()`, `getMaxConversations()`, `getMaxSnapshotQueries()`, `getSnapshotTtlDays()`, `getMaxPendingMessages()`, `isAutoSendPendingOnReconnect()`, `getPendingQueueOverflowPolicy()`, `getMediaCaching()` and `getMaxMediaCacheSize()`.
+
+## Public methods on CometChat
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `isOfflineEnabled()` | `boolean` | Whether offline support is active for the current session. |
+| `getMediaCachingMode()` | `MediaCachingMode` | The effective media caching mode (`OFF` whenever offline is not active). |
+| `getOfflineEncryptionStatus()` | `{ enabled, atRest, keyStorage, cipherAvailable, cipher, leakage }` | What encryption at rest is actually doing. |
+| `setOfflineKeyVault(vault \| null)` | `void` | Supply your own encryption-key store. Call before `init`. |
+| `getPendingMessages()` | `Promise<BaseMessage[]>` | All queued/failed messages in the outbox. |
+| `retryMessage(localMessageId, listener?)` | `Promise<BaseMessage>` (or `void` with a listener) | Retry one failed or pending message by its local id. |
+| `retryAllFailedMessages(listener?)` | `Promise<void>` (or `void` with a listener) | Retry every `TRANSIENT` failed message in the outbox. |
+| `discardLocalMessage(localMessageId, listener?)` | `Promise<void>` (or `void` with a listener) | Remove one unsent message from the outbox. |
+| `forceSyncNow(callback?)` | `Promise<void>` | Trigger a catch-up sync immediately. Resolves when accepted; rejects with the reason it could not start. |
+| `getSyncState()` | `SyncState` | Whether a catch-up sweep is currently running. |
+| `getLastSyncTimestamp()` | `Promise<number>` | Server time of the last successful sync, in epoch seconds. |
+| `clearOfflineCache()` | `Promise<void>` | Empty the local cache in place (and fail any unsent messages as `DISCARDED`). |
+| `getCacheSize()` | `Promise<number>` | Current on-disk cache size in bytes (database plus media). |
+| `downloadMedia(messageOrAttachment, listener?)` | `Promise<string \| null>` | Download and cache an attachment's bytes. |
+| `getCachedMediaPath(messageOrAttachment)` | `Promise<string \| null>` | Local path to already-cached bytes, or `null`. |
+| `getExistingUploadFileRequest(receiverId, receiverType, parentMessageId?)` | `Promise<UploadFileRequest \| null>` | Re-attach to an in-progress offline upload. |
+
+### Listener registration
+
+| Method | Listener |
+|---|---|
+| `addMessageListener(id, MessageListener)` / `removeMessageListener(id)` | `MessageListener` (adds `onMessagesSynced`) |
+| `addOfflineMessageListener(id, OfflineMessageListener)` / `removeOfflineMessageListener(id)` | `OfflineMessageListener` |
+| `addSyncListener(id, SyncListener)` / `removeSyncListener(id)` | `SyncListener` |
+| `addOfflineCacheResetListener(id, OfflineCacheResetListener)` / `removeOfflineCacheResetListener(id)` | `OfflineCacheResetListener` |
+| `addMediaDownloadListener(id, MediaDownloadListener)` / `removeMediaDownloadListener(id)` | `MediaDownloadListener` |
+
+## Listeners and callbacks
+
+### Two-phase fetch listeners
+
+Pass one as the optional argument of a request's `fetchNext()` / `fetchPrevious()` (or of `getConversation()` / `getMessageDetails()`). Each delivers the cached page first (when offline is active and a user is logged in), then the server result, then errors. With offline off the cached callback never fires. The cached callback is optional on every listener; the server and error callbacks are required.
+
+| Listener | Callbacks |
+|---|---|
+| `MessageFetchListener` | `onCachedMessages(messages)`, `onServerMessages(messages)`, `onError(error)` |
+| `ThreadFetchListener` (alias `ThreadsFetchListener`) | `onCachedThreads(threads)`, `onServerThreads(threads)`, `onError(error)` |
+| `MessageDetailFetchListener` (alias `MessageDetailsListener`) | `onCachedMessage(message)`, `onServerMessage(message)`, `onError(error)` |
+| `ConversationFetchListener` | `onCachedConversations(conversations)`, `onServerConversations(conversations)`, `onError(error)` |
+| `ConversationDetailsListener` (alias `ConversationDetailFetchListener`) | `onCachedConversation(conversation)`, `onServerConversation(conversation)`, `onError(error)` |
+| `UserFetchListener` | `onCachedUsers(users)`, `onServerUsers(users)`, `onError(error)` |
+| `GroupFetchListener` | `onCachedGroups(groups)`, `onServerGroups(groups)`, `onError(error)` |
+| `GroupMemberFetchListener` | `onCachedGroupMembers(members)`, `onServerGroupMembers(members)`, `onError(error)` |
+| `BannedGroupMemberFetchListener` | `onCachedBannedGroupMembers(members)`, `onServerBannedGroupMembers(members)`, `onError(error)` |
+| `ReactionFetchListener` | `onCachedReactions(reactions)`, `onServerReactions(reactions)`, `onError(error)` |
+| `FeedItemFetchListener` (alias `NotificationFeedFetchListener`) | `onCachedNotificationFeedItems(items)`, `onServerNotificationFeedItems(items)`, `onError(error)` |
+
+### Send, sync, cache, and media listeners
+
+| Listener | Callbacks |
+|---|---|
+| `MessageSentListener` | `onMessagePending(message)`, `onMessageSent(message)`, `onError(error, reason?)` |
+| `OfflineMessageListener` | `onOutboxMessagePending(message)`, `onOutboxMessageSent(message)`, `onOutboxMessageFailed(message, reason)` |
+| `DiscardMessageListener` | `onSuccess(localMessageId)`, `onError(error)` |
+| `SyncListener` | `onConversationSyncStarted()`, `onConversationSyncCompleted(conversations)`, `onConversationSyncError(error)`, `onMessageSyncStarted()`, `onMessageSyncCompleted(messages, outcome)`, `onMessageSyncError(error)` |
+| `OfflineCacheResetListener` | `onOfflineCacheReset(reason, pendingMessagesLost)` |
+| `DownloadMediaListener` (per call) | `onMediaDownloaded(messageId, attachmentKey, localPath)`, `onMediaProgress(messageId, attachmentKey, percent)`, `onMediaDownloadFailed(messageId, attachmentKey, error)`; also `onSuccess(localPath)`, `onProgress(percent)`, `onError(error)` |
+| `MediaDownloadListener` (global) | `onMediaDownloaded(messageId, attachmentKey, localPath)`, `onMediaDownloadFailed(messageId, attachmentKey, error)` |
+| `MessageListener` | `onMessagesSynced(messages)` (offline addition to the existing listener) |
+
+## Enums
+
+| Enum | Values |
+|---|---|
+| `MediaCachingMode` | `AUTO` (auto-download + retain received media), `OFF` (skip auto-download; metadata still cached) |
+| `PendingMessageOverflowPolicy` | `DROP_OLDEST` (evict the oldest pending to admit a newer send), `REJECT_NEWEST` (reject the new send) |
+| `EncryptionFailureBehavior` | `ONLINE_ONLY` (online-only; never plaintext), `PLAINTEXT_FALLBACK` (open an unencrypted cache) |
+| `MessageStatus` | `PENDING`, `SENDING`, `SENT`, `DELIVERED`, `READ`, `FAILED` |
+| `MessageFailureReason` | `TRANSIENT` (retry likely helps), `PERMANENT` (retry won't help), `QUEUE_OVERFLOW` (evicted to admit a newer send), `QUEUE_FULL` (new send rejected, queue full), `BYTE_OVERFLOW` (media exceeded the byte cap), `DISCARDED` (removed before it could send) |
+| `MessageSource` | `REALTIME`, `SYNC` |
+| `SyncOutcome` | `CAUGHT_UP` (gap replayed exactly), `PARTIAL` (a page was ingested but more remains) |
+| `SyncState` | `IDLE`, `SYNCING` |
+| `OfflineCacheResetReason` | `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, `ESCALATED` (unclassified failure recurred and was escalated), `ENCRYPTION_CHANGED` (the `encryption` setting changed between launches) |
+| Upload item `state` | `QUEUED`, `UPLOADING`, `UPLOADED`, `FAILED`, `REJECTED` |
+
+All enums are available on `CometChat` (for example `CometChat.MessageStatus.PENDING`). `CometChat.OFFLINE_PENDING_COUNT_UNKNOWN` is `-1`.
+
+## Model fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `BaseMessage.getLocalMessageId()` | `string \| undefined` | SDK-generated local handle for an optimistic/offline send; the stable key to reconcile the row when the server ack arrives. `undefined` for messages that never went through the outbox. |
+| `BaseMessage.getMessageStatus()` | `MessageStatus` | Derived lifecycle status of the message. Not the same as `getStatus()`. |
+| `BaseMessage.getFailureReason()` | `MessageFailureReason \| undefined` | Why a queued send is `FAILED`; otherwise `undefined`. |
+| `BaseMessage.getSource()` | `MessageSource` | `SYNC` for a message delivered by a catch-up sync, otherwise `REALTIME`. |
+| `Attachment.getLocalPath()` | `string \| undefined` | Absolute device path to cached media bytes, or `undefined` when not cached. Never sent to the server. |
+
+## Error codes
+
+Compare `CometChatException.code` against these values. The offline codes are available on `CometChat.OfflineErrorCode` (`MESSAGE_DISCARDED`, `MESSAGE_IN_FLIGHT`, `MESSAGE_NOT_FOUND`, `AUTO_FLUSH_CAP_REACHED`, `PENDING_QUEUE_LIMIT`, `DISABLED`, `SYNC_IN_PROGRESS`, `SYNC_COOLDOWN`, `MESSAGE_PERSIST_FAILED`); compare the others as string values.
+
+| Code | Raised when |
+|---|---|
+| `FAILED_TO_FETCH` | A read reached the server phase with no connection (fires after the cached page on a two-phase fetch, and rejects the Promise). On a send, the same code with `errorParams.queued === true` is the "queued, not failed" notice. |
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | `forceSyncNow()` was called while a sync is already running. |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | `forceSyncNow()` was called within the 10-second throttle cooldown; `details.retryAfterMs` says when to retry. |
+| `ERROR_OFFLINE_DISABLED` | An offline-only operation was called while offline support is not active. |
+| `USER_NOT_LOGED_IN` | `forceSyncNow()` was called with no logged-in user. |
+| `ERROR_OFFLINE_MESSAGE_DISCARDED` | A queued message was removed before it could send (for example `clearOfflineCache()`, a cache rebuild, or logout). |
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | `retryMessage` / `discardLocalMessage` targeted a message that is still being sent. |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | `retryMessage` / `discardLocalMessage` found no unsent message with the given local id. |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local cache was briefly unavailable, so `getPendingMessages`, `retryMessage`, `retryAllFailedMessages` or `discardLocalMessage` changed nothing. Try again. |
+| `ERROR_OFFLINE_MESSAGE_UNSENDABLE` | A queued message could not be restored for sending (corrupt data or missing media); it fails `PERMANENT`. |
+| `ERROR_OUTBOX_AUTO_FLUSH_CAP_REACHED` | A queued message got no answer on 5 reconnects in a row; it is now `FAILED` with reason `TRANSIENT`. |
+| `ERROR_PENDING_QUEUE_LIMIT` | A send was refused or evicted because the outbox is full or the media is too large; the reason is `QUEUE_FULL`, `QUEUE_OVERFLOW` or `BYTE_OVERFLOW`. |
+| `MEDIA_OFFLINE_NOT_CACHED` / `MEDIA_DOWNLOAD_FAILED` | The `error.code` passed to a media download failure callback. |
+
+## Which filters the cache can answer
+
+A cached phase is served only when every filter on the request is locally computable; otherwise the cached phase is empty and only the server phase answers.
+
+| Request | Filters that blank the cached phase |
+|---|---|
+| `MessagesRequest` | `searchKeyword`, `hasLinks`, `updatesOnly`, `interactionGoalCompletedOnly`, `UID` and `GUID` together (outside a thread), pinned-only, saved-only |
+| `ConversationsRequest` | `searchKeyword` |
+| `UsersRequest` | `searchKeyword`, user `status` |
+| `GroupMembersRequest` | `searchKeyword`, member `status` |
+| `GroupsRequest`, `BannedMembersRequest` | `searchKeyword` |
+
+All other filters — including message `tags`, mentions, attachment and reaction filters, `hideReplies`, `hideDeletedMessages`, and conversation `tags` and `unread` — are answered from the cache.
