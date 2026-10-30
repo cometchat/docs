@@ -1,0 +1,191 @@
+---
+title: "Encrypt the Cache"
+sidebarTitle: "Encrypt the Cache"
+description: "Encrypt the offline message cache at rest, choose what happens when encryption cannot run, and inspect the live encryption status with the CometChat JavaScript SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```javascript
+// 1. Turn encryption on in the offline config (off by default). No extra dependency in a browser.
+const appSetting = new CometChat.AppSettingsBuilder()
+  .setRegion("REGION")
+  .setOfflineConfig({
+    enabled: true,
+    encryption: true,                                                       // encrypt the cache at rest
+    encryptionFailureBehavior: CometChat.EncryptionFailureBehavior.ONLINE_ONLY, // default; never writes plaintext
+  })
+  .build();
+
+// 2. Inspect what encryption is actually doing
+const status = CometChat.getOfflineEncryptionStatus();
+status.enabled;          // what was configured
+status.atRest;           // "FIELD_AES_GCM" (browser), "SQLCIPHER" (Electron) or "NONE"
+status.keyStorage;       // "SOFTWARE" (browser), "KEYSTORE" (Electron) or "NONE"
+status.cipherAvailable;  // can this runtime encrypt?
+status.cipher;           // cipher description once proven, else null
+status.leakage;          // what is never covered
+```
+
+</Accordion>
+
+Offline support keeps the logged-in user's messages in a local store on the device. Turn encryption on to store that content **encrypted at rest**. Encryption is **opt-in** and off by default; nothing changes until you set `encryption: true`.
+
+<Note>
+This is not end-to-end encryption — the server still sees plaintext. It protects the on-device cache only. Cached **media files** are never encrypted, and in a browser some metadata stays readable so the cache can be queried. See [What is and isn't encrypted](#what-is-and-isn-t-encrypted). Requires SDK **4.3.0** or later.
+</Note>
+
+## Requirements
+
+| Runtime | Cipher | What you need |
+|---|---|---|
+| Browser | AES-256-GCM over stored message and list content | A **secure context** (HTTPS or `localhost`) so `crypto.subtle` exists. Nothing to install. |
+| Electron | SQLCipher for the whole database | `better-sqlite3-multiple-ciphers` (9 or later) installed in the main process, and an OS keyring where `safeStorage` needs one (for example Linux). |
+
+<Warning>
+Without a working cipher the cache **cannot run encrypted**. What happens then is decided by [`encryptionFailureBehavior`](#choose-what-happens-when-encryption-cannot-run) — by default the session runs server-only (no local cache). The SDK never creates a cache that is labelled encrypted but is not.
+</Warning>
+
+## Turn on encryption
+
+Set `encryption: true` in the offline config you pass to `setOfflineConfig` (see [Enable Offline Support](/sdk/javascript/offline-enable)).
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const appSetting: CometChat.AppSettings = new CometChat.AppSettingsBuilder()
+  .setRegion("REGION")
+  .setOfflineConfig({
+    enabled: true,
+    encryption: true,
+    encryptionFailureBehavior: CometChat.EncryptionFailureBehavior.ONLINE_ONLY,
+  })
+  .build();
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const appSetting = new CometChat.AppSettingsBuilder()
+  .setRegion("REGION")
+  .setOfflineConfig({
+    enabled: true,
+    encryption: true,
+    encryptionFailureBehavior: CometChat.EncryptionFailureBehavior.ONLINE_ONLY,
+  })
+  .build();
+```
+</Tab>
+</Tabs>
+
+Switching `encryption` on or off between launches rebuilds the cache in the new format and reports `ENCRYPTION_CHANGED` to the [cache-reset listener](/sdk/javascript/offline-sync#when-the-cache-resets); unsent messages are lost in that rebuild.
+
+## Choose what happens when encryption cannot run
+
+`encryptionFailureBehavior` decides what the cache does when encryption **cannot be applied at all** on this runtime — for example an insecure origin in a browser (no `crypto.subtle`), or a plain `better-sqlite3` instead of the cipher build in Electron. It governs only that case: a transient failure still retries, and a lost or wrong key self-heals by wiping and rebuilding the cache **encrypted**.
+
+| Value | Behavior | Writes plaintext? |
+|---|---|---|
+| `ONLINE_ONLY` *(default)* | Do not open a local cache at all — the session runs server-only. Makes a setup mistake visible: offline simply does not work until it is fixed. | No |
+| `PLAINTEXT_FALLBACK` | Open an **unencrypted** cache so offline keeps working, and log the downgrade at error level. `getOfflineEncryptionStatus()` reports `atRest: "NONE"`. | Yes |
+
+<Warning>
+`PLAINTEXT_FALLBACK` means cached message content may be stored **unencrypted** whenever encryption cannot run. This availability-over-guarantee trade is wrong for compliance use — keep the default `ONLINE_ONLY` if cached content must never be written in the clear. Any value other than `PLAINTEXT_FALLBACK` is treated as `ONLINE_ONLY`.
+</Warning>
+
+## Key storage
+
+You do not supply or manage the encryption key. In a browser, the SDK generates a per-user data key, wraps it with a **non-extractable** WebCrypto key, and keeps the wrapped key in the same IndexedDB as the data — so a browser clearing site data can never leave ciphertext without its key. In Electron the key is sealed by the OS through `safeStorage`. The key is never returned by any API. If it is lost or no longer opens the cache, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+
+<Note>
+In a browser the key lives in software next to the data (`keyStorage: "SOFTWARE"`). That protects against casual disk inspection and partial data copies, but not against code running in your page's origin.
+</Note>
+
+## Check encryption status
+
+`CometChat.getOfflineEncryptionStatus()` returns an object describing what encryption is **actually** doing — never what was merely requested. It is synchronous, safe to call at any time (even before login or with offline disabled), and never returns the key or any part of it.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const status = CometChat.getOfflineEncryptionStatus();
+console.log(
+  "enabled=" + status.enabled,
+  "atRest=" + status.atRest,
+  "keyStorage=" + status.keyStorage,
+  "cipherAvailable=" + status.cipherAvailable,
+  "cipher=" + status.cipher
+);
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const status = CometChat.getOfflineEncryptionStatus();
+console.log(
+  "enabled=" + status.enabled,
+  "atRest=" + status.atRest,
+  "keyStorage=" + status.keyStorage,
+  "cipherAvailable=" + status.cipherAvailable,
+  "cipher=" + status.cipher
+);
+```
+</Tab>
+</Tabs>
+
+| Field | Type | Meaning |
+|---|---|---|
+| `enabled` | `boolean` | What was **configured** (`encryption`), not what was achieved. |
+| `atRest` | `string` | Coverage achieved: `"FIELD_AES_GCM"` (browser), `"SQLCIPHER"` (Electron), otherwise `"NONE"`. |
+| `keyStorage` | `string` | `"SOFTWARE"` (browser), `"KEYSTORE"` (Electron, OS-sealed), or `"NONE"` when this session holds no key. Read `NONE` as "no key in use", not "no key exists". |
+| `cipherAvailable` | `boolean` | Whether the cipher engine is present in this runtime. |
+| `cipher` | `string \| null` | A description of the cipher once proven, else `null`. |
+| `leakage` | `string` | What encryption at rest never covers. |
+
+<Tip>
+The most useful support signal is `enabled === true` with `cipherAvailable === false`: encryption was switched on but could not run. In a browser that almost always means an insecure origin; in Electron, a missing `better-sqlite3-multiple-ciphers` cipher build. Check `atRest` to see whether a cache was opened at all.
+</Tip>
+
+## What is and isn't encrypted
+
+| Data | Encrypted at rest? |
+|---|---|
+| Message and list content, conversations, the pending-send outbox | Yes |
+| Browser only: message ids, timestamps, send state, message type and category, parent and quoted message ids, source, unread counts, conversation type, sync watermarks, row counts, pending-upload file sizes, MIME types and states | **No** — kept readable so the cache can be queried. `leakage` lists them exactly. |
+| Cached media files (images, video, audio, documents) | **No** — stored as ordinary files outside the database |
+
+On Electron the whole database is encrypted with SQLCipher; only the media files stay outside it.
+
+## Cache resets on key loss
+
+If the key can no longer decrypt the stored cache, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost and each is failed with `DISCARDED`.
+
+Register an `OfflineCacheResetListener` to be told when this happens:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addOfflineCacheResetListener(
+  "LISTENER_ID",
+  new CometChat.OfflineCacheResetListener({
+    onOfflineCacheReset: (reason: string, pendingMessagesLost: number) => {
+      console.warn("Cache reset:", reason, "pending lost =", pendingMessagesLost);
+    },
+  })
+);
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.addOfflineCacheResetListener(
+  "LISTENER_ID",
+  new CometChat.OfflineCacheResetListener({
+    onOfflineCacheReset: (reason, pendingMessagesLost) => {
+      console.warn("Cache reset:", reason, "pending lost =", pendingMessagesLost);
+    },
+  })
+);
+```
+</Tab>
+</Tabs>
+
+The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches). See [Stay in Sync](/sdk/javascript/offline-sync#when-the-cache-resets) for the full cache-reset flow, and the [API Reference](/sdk/javascript/offline-reference) for every field and enum.
