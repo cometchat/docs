@@ -1,0 +1,303 @@
+---
+title: "Show Cached Data"
+sidebarTitle: "Show Cached Data"
+description: "Render cached messages, conversations, and lists instantly and reconcile them against the server with the CometChat JavaScript SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```javascript
+// Pass a fetch listener to get up to two phases: cached first (instant), then server.
+const request = new CometChat.MessagesRequestBuilder().setUID("UID").setLimit(30).build();
+
+request
+  .fetchPrevious(
+    new CometChat.MessageFetchListener({
+      onCachedMessages: (messages) => { /* Phase 1: local cache. Render immediately. */ },
+      onServerMessages: (messages) => { /* Phase 2: server. Reconcile, don't append. Never fires offline. */ },
+      onError: (error) => { /* Offline ends here, after the cached page, with FAILED_TO_FETCH. */ },
+    })
+  )
+  .catch(() => {}); // the returned Promise also rejects offline — handle it
+
+// Single items (additive two-phase overloads)
+CometChat.getConversation("UID", "user", new CometChat.ConversationDetailsListener({ /* … */ }));
+CometChat.getMessageDetails(messageId, new CometChat.SingleMessageFetchListener({ /* … */ }));
+```
+
+</Accordion>
+
+With offline support enabled, every list and lookup the SDK already offers can answer from the on-device cache first and then from the server. Your UI paints instantly from the cache, then reconciles when the server replies. This page describes that contract, the reads it applies to, and how to merge the two phases.
+
+## The two-phase contract
+
+Pass a fetch listener as the optional argument and each read fires **up to two** callbacks, always in this order:
+
+<Steps>
+<Step title="Cached phase">
+The SDK delivers a page from the local cache **first**. It fires **even when the page is empty** — an empty cached page is indistinguishable from a cache miss, by design. Render it right away.
+</Step>
+<Step title="Server phase">
+After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it.
+</Step>
+</Steps>
+
+Three rules follow from this:
+
+- **Offline, the read ends with an error.** After the cached page, a read whose request gets no answer settles with `onError` carrying code `FAILED_TO_FETCH`. The call always settles — it never hangs.
+- **The server phase never fires offline.** It fires only on a genuine server response. Never treat a cached page as "end of history"; an empty cached page only means the end of the *cached* window.
+- **The Promise still settles too.** Passing a listener does not replace the returned Promise: it settles on the server outcome, so it also **rejects** offline. If you use only the listener, add a `.catch()` to avoid an unhandled rejection. Consume the result from one channel, not both.
+
+<Note>
+With offline support **off**, these listeners behave like the classic Promise: the cached phase never fires, and the server result arrives in `onServer…`. Nothing changes until you enable offline (see [Enable Offline Support](/sdk/javascript/offline-enable)). Requires SDK **4.3.0** or later.
+</Note>
+
+## Read messages
+
+`MessagesRequest` supports both directions. `fetchPrevious` pages toward older messages; `fetchNext` pages toward newer ones. Both take a `MessageFetchListener`.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const request: CometChat.MessagesRequest = new CometChat.MessagesRequestBuilder()
+  .setUID("UID")
+  .setLimit(30)
+  .build();
+
+request
+  .fetchPrevious(
+    new CometChat.MessageFetchListener({
+      onCachedMessages: (messages: CometChat.BaseMessage[]) => {
+        // Render the cached page immediately.
+      },
+      onServerMessages: (messages: CometChat.BaseMessage[]) => {
+        // Reconcile this slice against the cached page, keyed by message id.
+      },
+      onError: (error: CometChat.CometChatException) => {
+        console.log("Fetch failed:", error.code);
+      },
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const request = new CometChat.MessagesRequestBuilder()
+  .setUID("UID")
+  .setLimit(30)
+  .build();
+
+request
+  .fetchPrevious(
+    new CometChat.MessageFetchListener({
+      onCachedMessages: (messages) => {
+        // Render the cached page immediately.
+      },
+      onServerMessages: (messages) => {
+        // Reconcile this slice against the cached page, keyed by message id.
+      },
+      onError: (error) => {
+        console.log("Fetch failed:", error.code);
+      },
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+</Tabs>
+
+## Read conversations
+
+`ConversationsRequest` pages with `fetchNext`, taking a `ConversationFetchListener`.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const request: CometChat.ConversationsRequest = new CometChat.ConversationsRequestBuilder()
+  .setLimit(30)
+  .build();
+
+request
+  .fetchNext(
+    new CometChat.ConversationFetchListener({
+      onCachedConversations: (conversations: CometChat.Conversation[]) => {
+        // Render the cached list immediately.
+      },
+      onServerConversations: (conversations: CometChat.Conversation[]) => {
+        // Reconcile, keyed by conversation id.
+      },
+      onError: (error: CometChat.CometChatException) => {
+        console.log("Fetch failed:", error.code);
+      },
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const request = new CometChat.ConversationsRequestBuilder()
+  .setLimit(30)
+  .build();
+
+request
+  .fetchNext(
+    new CometChat.ConversationFetchListener({
+      onCachedConversations: (conversations) => {
+        // Render the cached list immediately.
+      },
+      onServerConversations: (conversations) => {
+        // Reconcile, keyed by conversation id.
+      },
+      onError: (error) => {
+        console.log("Fetch failed:", error.code);
+      },
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+</Tabs>
+
+## Read the other lists
+
+Every remaining list read accepts the same two-phase listener. Each listener is constructed from an object with cached/server callbacks of the matching type plus `onError`.
+
+| Request | Fetch method(s) | Listener | Cached / server callback |
+|---|---|---|---|
+| `MessagesRequest` | `fetchPrevious`, `fetchNext` | `MessageFetchListener` | `onCachedMessages` / `onServerMessages` |
+| `ConversationsRequest` | `fetchNext` | `ConversationFetchListener` | `onCachedConversations` / `onServerConversations` |
+| `ThreadsRequest` | `fetchNext` | `ThreadFetchListener` | `onCachedThreads` / `onServerThreads` |
+| `UsersRequest` | `fetchNext` | `UserFetchListener` | `onCachedUsers` / `onServerUsers` |
+| `BlockedUsersRequest` | `fetchNext` | `UserFetchListener` | `onCachedUsers` / `onServerUsers` |
+| `GroupsRequest` | `fetchNext` | `GroupFetchListener` | `onCachedGroups` / `onServerGroups` |
+| `GroupMembersRequest` | `fetchNext` | `GroupMemberFetchListener` | `onCachedGroupMembers` / `onServerGroupMembers` |
+| `BannedMembersRequest` | `fetchNext` | `BannedMemberFetchListener` | `onCachedBannedGroupMembers` / `onServerBannedGroupMembers` |
+| `ReactionsRequest` | `fetchPrevious`, `fetchNext` | `ReactionFetchListener` | `onCachedReactions` / `onServerReactions` |
+| `NotificationFeedRequest` | `fetchNext` | `NotificationFeedFetchListener` | `onCachedNotificationFeedItems` / `onServerNotificationFeedItems` |
+
+The call shape is identical to the conversations example above — swap the request, the listener, and the callback names.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+const request: CometChat.UsersRequest = new CometChat.UsersRequestBuilder()
+  .setLimit(30)
+  .build();
+
+request
+  .fetchNext(
+    new CometChat.UserFetchListener({
+      onCachedUsers: (users: CometChat.User[]) => { /* render */ },
+      onServerUsers: (users: CometChat.User[]) => { /* reconcile, keyed by uid */ },
+      onError: (error: CometChat.CometChatException) => console.log(error.code),
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+const request = new CometChat.UsersRequestBuilder()
+  .setLimit(30)
+  .build();
+
+request
+  .fetchNext(
+    new CometChat.UserFetchListener({
+      onCachedUsers: (users) => { /* render */ },
+      onServerUsers: (users) => { /* reconcile, keyed by uid */ },
+      onError: (error) => console.log(error.code),
+    })
+  )
+  .catch(() => {});
+```
+</Tab>
+</Tabs>
+
+<Note>
+For `ReactionsRequest`, `fetchPrevious` and `fetchNext` are cached independently — each direction keeps its own cached pages. Users, groups, members, banned members, reactions, and the notification feed are served from a recorded copy of each request (up to `maxSnapshotQueries` distinct requests, each kept for `snapshotTtlDays`), so a list you never opened online is empty offline. See the [Configuration & API Reference](/sdk/javascript/offline-reference).
+</Note>
+
+## Read a single item
+
+`getConversation` and `getMessageDetails` each accept a two-phase listener as a final argument. Unlike the list reads, the cached callback fires **only when the item is cached** — never with an empty or null object. A cache miss goes straight to the server phase online, or straight to `onError` offline.
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.getConversation(
+  "UID",
+  CometChat.RECEIVER_TYPE.USER,
+  new CometChat.ConversationDetailsListener({
+    onCachedConversation: (conversation: CometChat.Conversation) => {
+      // Fires only on a cache hit.
+    },
+    onServerConversation: (conversation: CometChat.Conversation) => {
+      // Server copy, written through before delivery.
+    },
+    onError: (error: CometChat.CometChatException) => console.log("Lookup failed:", error.code),
+  })
+).catch(() => {});
+
+CometChat.getMessageDetails(
+  messageId,
+  new CometChat.SingleMessageFetchListener({
+    onCachedMessage: (message: CometChat.BaseMessage) => { /* cache hit only */ },
+    onServerMessage: (message: CometChat.BaseMessage) => { /* server copy */ },
+    onError: (error: CometChat.CometChatException) => console.log(error.code),
+  })
+).catch(() => {});
+```
+</Tab>
+<Tab title="JavaScript">
+```javascript
+CometChat.getConversation(
+  "UID",
+  CometChat.RECEIVER_TYPE.USER,
+  new CometChat.ConversationDetailsListener({
+    onCachedConversation: (conversation) => {
+      // Fires only on a cache hit.
+    },
+    onServerConversation: (conversation) => {
+      // Server copy, written through before delivery.
+    },
+    onError: (error) => console.log("Lookup failed:", error.code),
+  })
+).catch(() => {});
+
+CometChat.getMessageDetails(
+  messageId,
+  new CometChat.SingleMessageFetchListener({
+    onCachedMessage: (message) => { /* cache hit only */ },
+    onServerMessage: (message) => { /* server copy */ },
+    onError: (error) => console.log(error.code),
+  })
+).catch(() => {});
+```
+</Tab>
+</Tabs>
+
+<Note>
+`CometChat.SingleConversationFetchListener` is a deprecated alias of `ConversationDetailsListener`.
+</Note>
+
+## Merge the two phases
+
+The server phase **replaces the same slice** — it is a reconcile, not a second batch. Render the cached page straight away, then on the server phase diff it into your displayed list keyed by the item's stable id (message id, conversation id, uid, guid). Do not append the server page to the cached one.
+
+<Tip>
+Key your list by id so the two phases merge cleanly: update items that changed, add new ones, and drop cached items the server slice omits. To page further back, issue the next `fetchPrevious()` / `fetchNext()` rather than treating the server phase as more pages.
+</Tip>
+
+## When the cached page is empty
+
+The cache answers a read **only if every filter on it can be computed locally**. A single server-only filter makes the whole cached phase come back empty (or not fire at all), with no error and no warning, while the server phase still answers in full. The guiding rule is *better empty than wrong*.
+
+The most common server-only filter is `setSearchKeyword`, which blanks the cached phase on both messages and conversations. On `MessagesRequest`, `hasLinks`, `updatesOnly` and `interactionGoalCompletedOnly` are server-only too.
+
+<Warning>
+An offline-critical screen must use only cache-supported filters — one innocuous builder flag can silently disable the cached phase for a whole screen. The full per-builder matrix is in the [Configuration & API Reference](/sdk/javascript/offline-reference#cache-supported-filters).
+</Warning>
