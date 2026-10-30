@@ -1,9 +1,11 @@
 ---
 title: "Outgoing Call"
-description: "Full-screen outgoing call UI with recipient avatar, name, call status, and end-call button."
+description: "Full-screen outgoing call UI with recipient avatar, name, calling and ringing status, end-call button, and the reason when a call is declined, busy or unanswered."
 ---
 
-`CometChatOutgoingCall` renders the outgoing call screen and transitions to the ongoing call screen when the receiver accepts. It displays the recipient's avatar, name, call status, and an end-call button.
+`CometChatOutgoingCall` renders the outgoing call screen from the moment a call is placed until the callee joins, declines, is busy or does not answer. It displays the recipient's avatar, name, the call status ("calling…", then "ringing…" once the callee's device is reached) and an end-call button, and transitions to the ongoing call screen when the callee joins.
+
+The screen listens on the Calls SDK session that `initiateCall` prepared, without joining it. The caller joins only when the callee has joined, so no media runs until there is someone to talk to. The Chat SDK is not involved.
 
 <Frame>
   <img src="/images/703120eb-outgoing_call-c24eb1936c04bb40ea873ac19b973b56.png" />
@@ -13,7 +15,7 @@ description: "Full-screen outgoing call UI with recipient avatar, name, call sta
 
 ## Where It Fits
 
-`CometChatOutgoingCall` is a call-initiation component. Wire it to `CometChatCallEvents` to handle call-accepted and call-rejected transitions.
+`CometChatOutgoingCall` is a call-initiation component. [Call Buttons](/ui-kit/android/call-buttons), [Call Logs](/ui-kit/android/call-logs) and `CometChatCallActivity.launchOutgoingCallScreen` open it for you with the `Call` returned by `CallInitiationUtils.initiateUserCall`; you only place it yourself when you host the outgoing screen in your own activity.
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
@@ -85,7 +87,22 @@ fun OutgoingCallScreen() {
 </Tab>
 </Tabs>
 
-Prerequisites: CometChat SDK initialized with `CometChatUIKit.init()`, a user logged in, and the UI Kit dependency added.
+Prerequisites: `CometChatUIKit.init()` with `setEnableCalling(true)`, a user logged in, and a `Call` obtained from `CallInitiationUtils.initiateUserCall` (the session must already be prepared when the screen opens).
+
+When you host the component yourself, give it a lifecycle owner so it can attach to the prepared session; the XML view uses its hosting activity, and the composable uses `LocalLifecycleOwner`.
+
+---
+
+## Call states
+
+| State | Subtitle | What happened |
+| --- | --- | --- |
+| Calling | "calling …" | `initiateCall` succeeded; the backend is pushing the callee |
+| Ringing | "ringing …" | The callee's device received the push (`onParticipantConnected`) |
+| Accepted | — | The callee joined (`onParticipantJoined`). The End button is disabled and the ongoing call screen opens |
+| Ended | — | The call ended without an answer. `endReason` on the ViewModel says why: `rejected`, `busy`, `unanswered`, `cancelled` or `ended` |
+
+A call nobody answers ends after 45 seconds on both sides: the callee's Push SDK sends `unanswered`, and this screen's own timer ends the call with the same status in case that push is late. Tapping End sends `cancelled` to the callee, whose ring stops.
 
 ---
 
@@ -95,7 +112,7 @@ Prerequisites: CometChat SDK initialized with `CometChatUIKit.init()`, a user lo
 
 #### `onEndCallClick`
 
-Fires when the end-call button is tapped. Default: cancels the outgoing call via the SDK.
+Fires when the end-call button is tapped. Default: cancels the call with `CometChatCalls.endCall(sessionId, "cancelled")`, closes the screen and emits `CometChatCallEvent.CallRejected`. The button is disabled after the first tap, and a callee answer that arrives after End is not joined.
 
 <Tabs>
 <Tab title="Kotlin (XML Views)">
@@ -127,7 +144,7 @@ Fires on internal errors (network failure, auth issue, SDK exception).
 <Tab title="Kotlin (XML Views)">
 
 ```kotlin lines
-outgoingCall.setOnError { context, exception ->
+outgoingCall.setOnError { exception ->
     Log.e("OutgoingCall", "Error: ${exception.message}")
 }
 ```
@@ -138,7 +155,7 @@ outgoingCall.setOnError { context, exception ->
 ```kotlin lines
 CometChatOutgoingCall(
     call = call,
-    onError = { context, exception ->
+    onError = { exception ->
         Log.e("OutgoingCall", "Error: ${exception.message}")
     }
 )
@@ -147,19 +164,33 @@ CometChatOutgoingCall(
 </Tab>
 </Tabs>
 
-### Global UI Events (CometChatCallEvents)
+#### `onCallAccepted` (Compose)
+
+Fires when the callee joins. Default: launches `CometChatOngoingCallActivity` and finishes the hosting activity. Provide the callback to host the call screen yourself.
+
+```kotlin lines
+CometChatOutgoingCall(
+    call = call,
+    onCallAccepted = { accepted -> /* open your own call screen for accepted.sessionId */ }
+)
+```
+
+### Global UI Events (`CometChatEvents.callEvents`)
 
 | Event | Fires when | Payload |
 | --- | --- | --- |
-| `ccCallAccepted` | Outgoing call accepted by receiver | `Call` |
-| `ccCallRejected` | Outgoing call rejected by receiver | `Call` |
+| `CometChatCallEvent.CallRejected` | End tapped, or this screen's ring timer (45 s) expired. A decline, busy, unanswered or a close from the other side emits no global event; observe the ViewModel's `rejectedCall` / `endReason` for those | `Call` |
 
 ### SDK Events (Real-Time, Automatic)
 
-| SDK Listener | Internal behavior |
+| Calls SDK listener | Internal behavior |
 | --- | --- |
-| `onOutgoingCallAccepted` | Transitions to the ongoing call screen |
-| `onOutgoingCallRejected` | Finishes the activity or invokes back-press handler |
+| `ParticipantEventListener.onParticipantConnected` (prepared session) | Subtitle changes to "ringing …" |
+| `ParticipantEventListener.onParticipantJoined` (prepared session) | Accepted: End disabled, ongoing call screen opens and joins |
+| `SessionStatusListener.onConnectionClosed` / `onSessionTimedOut` (prepared session) | Waits 1.5 s for the reason from the terminal push, then closes as `ended` |
+| `IncomingCallListener.onIncomingCallEnded(call, reason)` | Closes with `rejected`, `busy`, `unanswered` or `cancelled` |
+
+The Chat SDK's `CallListener` is superseded and not used.
 
 ---
 
@@ -169,9 +200,37 @@ CometChatOutgoingCall(
 | --- | --- | --- |
 | `setCall(call)` | `call = call` | Set the Call object (required) |
 | `setOnEndCallClickListener { }` | `onEndCallClick = { }` | Override end-call button behavior |
+| — | `onCallAccepted = { }` | Override what happens when the callee joins |
 | `setOnError { }` | `onError = { }` | Error callback |
-| `setDisableSoundForCalls(true)` | `disableSoundForCalls = true` | Disable outgoing call ringtone |
-| `setCustomSoundForCalls(R.raw.tone)` | `customSoundForCalls = R.raw.tone` | Custom ringtone |
+| `setOnBackPressListener { }` | `onBackPress = { }` | Back press handling |
+| `setCallSettingsBuilder(builder)` | `callSettingsBuilder` | `SessionSettingsBuilder` handed to the ongoing call screen on accept |
+| `setDisableSoundForCalls(true)` | `disableSoundForCalls = true` | Disable the outgoing ringback tone |
+| `setCustomSoundForCalls(R.raw.tone)` | `customSoundForCalls = R.raw.tone` | Custom ringback tone |
+| `getViewModel()` | `viewModel` | Access to the state flows below |
+
+### ViewModel (`CometChatOutgoingCallViewModel`)
+
+| Member | Description |
+| --- | --- |
+| `call`, `acceptedCall`, `rejectedCall` | `StateFlow<Call?>`: the current call, the call once the callee joined, the call once it ended without an answer |
+| `endReason` | `StateFlow<String?>`: why `rejectedCall` was emitted (`UIKitConstants.CallStatusConstants.REJECTED`, `BUSY`, `UNANSWERED`, `CANCELLED`, `ENDED`); null while ringing or accepted |
+| `calleeRinging` | `StateFlow<Boolean>`: true once the callee's device is reached |
+| `endCallButtonEnabled` | `StateFlow<Boolean>`: false after End is tapped or the call is accepted |
+| `errorEvent` | `SharedFlow<CometChatException>` |
+| `ringTimeoutMs` | How long to ring before this side ends the call as unanswered. Default `DEFAULT_RING_TIMEOUT_MS` (45 000); 0 or less disables the timer |
+| `closeGraceMs` | How long to wait after the prepared session closes for the terminal push that carries the reason. Default `DEFAULT_CLOSE_GRACE_MS` (1 500) |
+| `cancelCall()` | Ends the call as `cancelled` |
+| `attachPreparedSession(owner)` | Listens on the prepared session; the component calls it for you |
+
+Showing the reason, for example a "Busy" label before the screen closes:
+
+```kotlin lines
+lifecycleScope.launch {
+    outgoingCall.getViewModel()?.endReason?.collect { reason ->
+        if (reason == UIKitConstants.CallStatusConstants.BUSY) showBusy()
+    }
+}
+```
 
 ---
 
