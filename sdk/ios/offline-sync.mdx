@@ -1,0 +1,220 @@
+---
+title: "Stay in Sync"
+sidebarTitle: "Stay in Sync"
+description: "Catch up on everything that changed while offline, observe sync progress, trigger a manual sync, and manage the local cache with the CometChat iOS SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// Observe the reconnect catch-up sync (conversation phase, then message phase)
+final class SyncObserver: NSObject, SyncListener {
+    func onConversationSyncCompleted(_ conversations: [Conversation]) { /* blind-replace list */ }
+    func onMessageSyncCompleted(_ messages: [BaseMessage], _ outcome: CometChat.SyncOutcome) { }
+    func onMessageSyncError(_ error: CometChatException) { }
+}
+let syncObserver = SyncObserver()                            // keep a strong reference
+CometChat.addSyncListener("SYNC_LISTENER", syncObserver)
+CometChat.removeSyncListener("SYNC_LISTENER")
+
+// Poll sync state
+let state = CometChat.getSyncState()                         // .idle | .syncing
+let lastSync = CometChat.getLastSyncTimestamp()              // Int, server epoch seconds, 0 if never
+
+// Trigger a manual catch-up (with an acceptance callback)
+CometChat.forceSyncNow(onSuccess: { /* accepted, started */ },
+                       onError: { error in /* IN_PROGRESS / COOLDOWN / DISABLED / NOT_LOGGED_IN */ })
+
+// Observe cache rebuilds
+CometChat.addOfflineCacheResetListener("RESET_LISTENER", resetObserver)   // OfflineCacheResetListener
+
+// Inspect / clear the cache
+let bytes = CometChat.getCacheSize()                         // Int64, call off the main thread
+CometChat.clearOfflineCache()                                // destructive; fails the un-sent outbox
+```
+
+</Accordion>
+
+When the device comes back online, the SDK runs a **catch-up sync**: it refreshes the conversation list, then replays everything that changed in your messages since the last sync, and merges the results into the local cache. This page covers how to observe that sync, trigger one on demand, and manage the cache it maintains.
+
+<Note>
+Everything on this page is a no-op unless offline support is active for the logged-in user (`CometChat.isOfflineEnabled()` is `true`). See [Enable Offline Support](/sdk/ios/offline-enable).
+</Note>
+
+## How catch-up works
+
+A sync runs automatically when the connection settles after a reconnect. It never runs on a brief connect-then-drop flap, and overlapping triggers coalesce into a single sweep. It proceeds in two phases, in order:
+
+1. **Conversation phase** — the conversation list is fetched as one fresh page. A conversation-list UI can blind-replace its list with the result.
+2. **Message phase** — the SDK replays the message changelog from the last sync point. New messages and updates to already-cached messages are merged into the cache.
+
+The sync is incremental and safe to repeat: it only moves forward from the last successful point, it never deletes cached messages, and a failed or interrupted phase simply resumes on the next reconnect. A first-ever sync (cold start) seeds its starting point from the newest conversation and fetches no message history — older history is reached by scrolling online. A cold start fires the conversation-phase callbacks only.
+
+## Listen for sync progress
+
+Register a `SyncListener` to observe the lifecycle of every automatic and manual sync. Each phase fires `started`, then exactly one of `completed` / `error`, all on the main thread. Every method is optional — implement only the ones you need.
+
+```swift
+final class SyncObserver: NSObject, SyncListener {
+
+    func onConversationSyncStarted() { }
+
+    func onConversationSyncCompleted(_ conversations: [Conversation]) {
+        // The full, fresh conversation page. Blind-replace your list.
+    }
+
+    func onConversationSyncError(_ error: CometChatException) { }
+
+    func onMessageSyncStarted() { }
+
+    func onMessageSyncCompleted(_ messages: [BaseMessage], _ outcome: CometChat.SyncOutcome) {
+        // New + changed messages reconciled this sync. Merge by message id.
+    }
+
+    func onMessageSyncError(_ error: CometChatException) { }
+}
+
+// Keep a strong reference — the SDK holds listeners weakly.
+let syncObserver = SyncObserver()
+CometChat.addSyncListener("SYNC_LISTENER", syncObserver)
+```
+
+| Callback | When it fires |
+|---|---|
+| `onConversationSyncStarted()` | The conversation refresh began. |
+| `onConversationSyncCompleted(_ conversations:)` | The refresh succeeded; `conversations` is the full conversation page. |
+| `onConversationSyncError(_ error:)` | A transport or parse failure; the cache is left untouched and the refresh retries on the next reconnect. |
+| `onMessageSyncStarted()` | The message changelog sweep began. Never fires on a cold start. |
+| `onMessageSyncCompleted(_ messages:, _ outcome:)` | The sweep finished; `messages` carries the new and changed messages. |
+| `onMessageSyncError(_ error:)` | The sweep failed; it resumes on the next reconnect. |
+
+The two phases are independent — a conversation-phase error does not stop the message phase. A phase error is informational: the cache is never left in a wrong state and the sweep resumes automatically.
+
+The `SyncListener` is self-sufficient: `onMessageSyncCompleted` carries the swept messages, including `action` and `call` messages that the message delegate does not deliver, so you can use it without a `CometChatMessageDelegate`.
+
+`onMessageSyncCompleted` reports the outcome:
+
+| `CometChat.SyncOutcome` | Meaning |
+|---|---|
+| `.caughtUp` | The changelog was fully replayed; the cache reflects every server change up to the sync point. |
+| `.partial` | A page was ingested and the sync point advanced, but a backlog remains; it drains one page per reconnect. |
+
+Remove the listener with `CometChat.removeSyncListener("SYNC_LISTENER")`.
+
+<Warning>
+Registering a listener under an ID that is already in use replaces the previous listener, and removing an ID removes whatever is registered under it. Use a distinct ID for each listener.
+</Warning>
+
+## Receiving synced messages
+
+If you already use a `CometChatMessageDelegate`, synced messages still arrive there, so you usually do not need a `SyncListener` to keep your chat up to date:
+
+- **Genuinely new** messages arrive one-by-one on the normal received callbacks (`onTextMessageReceived`, `onMediaMessageReceived`, and so on), tagged with `source == .sync`.
+- **Updates** to already-cached messages arrive together on `onMessagesSynced(_:)`.
+
+```swift
+extension ViewController: CometChatMessageDelegate {
+
+    func onTextMessageReceived(textMessage: TextMessage) {
+        if textMessage.source == .sync {
+            // Delivered by a catch-up sync. Suppress notification spam if you wish.
+        }
+    }
+
+    func onMessagesSynced(_ messages: [BaseMessage]) {
+        // Updates to already-cached messages. Merge by id.
+    }
+}
+```
+
+Register the delegate as usual, with `CometChat.messagedelegate = self` or `CometChat.addMessageListener("MSG_LISTENER", self)`. The per-message callbacks fire before the bulk `onMessagesSynced`.
+
+## Check sync state
+
+Poll the current sync state and the time of the last completed sync at any time.
+
+```swift
+let state = CometChat.getSyncState()           // .idle or .syncing
+let lastSync = CometChat.getLastSyncTimestamp() // Int, server epoch seconds; 0 if never synced
+```
+
+`getSyncState()` returns `.syncing` while a sweep is in flight, otherwise `.idle` (also when offline support is disabled). `getLastSyncTimestamp()` returns a **server-provided** epoch value in seconds, never the device clock, and `0` if the cache has never synced.
+
+## Trigger a manual sync
+
+Call `forceSyncNow` to run a catch-up immediately — for example behind a pull-to-refresh. It routes through the same throttle as the automatic sync, so it will not start a second overlapping sweep or hammer the backend. A manual sync refreshes the cache only; it does not flush the outbox.
+
+Use the callback overload to learn whether the request was accepted. `onSuccess` fires as soon as the sync is accepted and starts — not when it finishes; the sync's actual progress and outcome still arrive on your registered `SyncListener`.
+
+```swift
+CometChat.forceSyncNow(onSuccess: {
+    // Accepted and started.
+}, onError: { error in
+    // Rejected — see the code.
+    print("Sync not started: \(error.errorCode)")
+})
+```
+
+If you do not need the acceptance result, call the no-argument `CometChat.forceSyncNow()`; a rejected request is silently dropped.
+
+| Rejection code (`CometChatConstants.Errors`) | Meaning |
+|---|---|
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | A sync (automatic or manual) is already running. |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | A sync ran too recently; the error description carries the remaining cooldown in milliseconds. |
+| `ERROR_OFFLINE_DISABLED` | A user is logged in but offline support is not active. |
+| `ERROR_USER_NOT_LOGGED_IN` | Nobody is logged in. |
+
+## When the cache resets
+
+In rare cases the SDK cannot keep the existing cache — for example the encryption key became unrecoverable, or the database file is damaged. When this happens it rebuilds the cache from scratch and notifies an `OfflineCacheResetListener`. Any un-sent messages that were queued are lost in the rebuild; `pendingMessagesLost` reports how many, or `CometChat.offlinePendingCountUnknown` (`-1`) when they could not be counted. A logout never fires this listener.
+
+```swift
+final class CacheResetObserver: NSObject, OfflineCacheResetListener {
+
+    func onOfflineCacheReset(_ reason: CometChat.OfflineCacheResetReason, _ pendingMessagesLost: Int) {
+        // The cache was rebuilt. Re-fetch anything you need; it will re-sync from the server.
+        if pendingMessagesLost == CometChat.offlinePendingCountUnknown {
+            print("Cache reset (\(reason)); lost an unknown number of pending messages")
+        } else {
+            print("Cache reset (\(reason)); lost \(pendingMessagesLost) pending messages")
+        }
+    }
+}
+
+let resetObserver = CacheResetObserver()   // keep a strong reference
+CometChat.addOfflineCacheResetListener("RESET_LISTENER", resetObserver)
+```
+
+| `CometChat.OfflineCacheResetReason` | Cause |
+|---|---|
+| `.keyLost` | The cache's key was gone from the Keychain; a fresh key was minted. |
+| `.wrongKey` | The stored key did not open the cache. |
+| `.corrupted` | The cache file is damaged. |
+| `.escalated` | The cache failed to open on three launches in a row for a reason the SDK could not classify. |
+| `.encryptionChanged` | The `encryption` setting changed, so the on-disk cache was rebuilt in the configured format. |
+
+Remove the listener with `CometChat.removeOfflineCacheResetListener("RESET_LISTENER")`. See [Encrypt the Cache](/sdk/ios/offline-encryption) for the encryption-related reasons.
+
+## Manage the cache
+
+Read the current cache size, or clear the cache entirely.
+
+```swift
+DispatchQueue.global().async {
+    let bytes = CometChat.getCacheSize()   // database + media, in bytes
+    print("Offline cache: \(bytes) bytes")
+}
+
+CometChat.clearOfflineCache()              // empty the entire per-user cache
+```
+
+`getCacheSize()` returns the total on-disk size of the user's cache (the local database files plus the media files) as an `Int64`, or `0` when offline support is disabled or nobody is logged in. It is a **physical** size, so it can read higher than the logical `maxStorageSize` budget. It walks the files on the calling thread, so call it off the main thread.
+
+<Warning>
+`clearOfflineCache()` is destructive and irreversible. It empties the entire per-user cache — cached messages, conversations, media bytes **and the un-sent outbox**. Each still-queued pending or sending message fails with reason `.discarded` (`ERROR_OFFLINE_MESSAGE_DISCARDED`). A send already on the wire that the server accepts is still reported sent. The next sync is a cold start. It is a no-op unless offline support is active.
+</Warning>
+
+<Note>
+You never need to clear the cache on logout — the SDK does it for you. The cache is stored **per user**: it is kept across re-login as the same user, and wiped automatically on logout, token expiry, or when a different user logs in. See [Offline Support](/sdk/ios/offline-overview).
+</Note>

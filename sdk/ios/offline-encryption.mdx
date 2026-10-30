@@ -1,0 +1,145 @@
+---
+title: "Encrypt the Cache"
+sidebarTitle: "Encrypt the Cache"
+description: "Encrypt the offline message cache at rest with SQLCipher, choose what happens when encryption cannot run, and inspect the live encryption status with the CometChat iOS SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// 1. Nothing to add: the SDK bundles SQLCipher (no extra dependency).
+
+// 2. Turn encryption on in OfflineConfig (off by default)
+let offlineConfig = OfflineConfig.Builder()
+    .setEnabled(true)
+    .setEncryption(true)                              // encrypt the cache database at rest
+    .setEncryptionFailureBehavior(.onlineOnly)        // default; never writes plaintext
+    .build()
+
+// 3. Inspect what encryption is actually doing (a [String: Any] dictionary)
+let status = CometChat.getOfflineEncryptionStatus()
+status["enabled"]          // Bool   - what was configured (false while offline is off for the app)
+status["atRest"]           // String - "SQLCIPHER" or "NONE"
+status["keyStorage"]       // String - "KEYSTORE" (the iOS Keychain) or "NONE"
+status["cipherAvailable"]  // Bool   - is the SQLCipher engine present in this build?
+status["cipher"]           // String - engine cipher_version once proven, else NSNull
+status["leakage"]          // String - what is never covered (media files on disk)
+```
+
+</Accordion>
+
+Offline support keeps the logged-in user's messages in a local database on the device. Turn encryption on to store that database **encrypted at rest** using [SQLCipher](https://www.zetetic.net/sqlcipher/). Encryption is **opt-in** and off by default; nothing changes until you call `setEncryption(true)`. The minimum SDK version is **4.2.0**.
+
+<Note>
+Encryption covers the **message database only**. Downloaded and outgoing media files (photos, voice notes, documents) stay as ordinary unencrypted files on disk, because their local paths are handed to native image and video loaders. See [What is and isn't encrypted](#what-is-and-isn-t-encrypted).
+</Note>
+
+## No extra dependency
+
+Unlike some platforms, iOS needs no separate cipher dependency. The SDK ships its own SQLCipher build and keeps it isolated from your app, so it does not clash with an app's own SQLite, SQLCipher, GRDB or FMDB. There is nothing to add to your `Podfile` or Swift package.
+
+## Turn on encryption
+
+Set `setEncryption(true)` on the `OfflineConfig` you pass to the SDK during initialization (see [Enable Offline Support](/sdk/ios/offline-enable)).
+
+<Tabs>
+<Tab title="Builder">
+```swift
+let offlineConfig = OfflineConfig.Builder()
+    .setEnabled(true)
+    .setEncryption(true)
+    .setEncryptionFailureBehavior(.onlineOnly)
+    .build()
+```
+</Tab>
+<Tab title="Initializer">
+```swift
+let offlineConfig = OfflineConfig(
+    enabled: true,
+    encryption: true,
+    encryptionFailureBehavior: .onlineOnly
+)
+```
+</Tab>
+</Tabs>
+
+## Choose what happens when encryption cannot run
+
+`encryptionFailureBehavior` decides what the cache does when encryption **cannot be applied at all** on this build or device — the cipher engine is not linked into the build, for example. Because the engine ships inside the SDK this should not happen in a normal app, but the setting is there so you decide the outcome rather than the SDK. It governs only that case: a transient failure (such as a locked Keychain) still retries, and a lost or wrong key self-heals by wiping and rebuilding the cache **encrypted**.
+
+| `CometChat.EncryptionFailureBehavior` | Behavior | Writes plaintext? |
+|---|---|---|
+| `.onlineOnly` *(default)* | Do not open a local cache at all — the session runs server-only. Makes a setup mistake visible: offline simply does not work until it is fixed. | No |
+| `.plaintextFallback` | Open an **unencrypted** cache so offline keeps working, and log the downgrade at error level. | Yes |
+
+<Warning>
+`.plaintextFallback` means cached message content may be stored **unencrypted** on disk whenever encryption cannot run. This availability-over-guarantee trade is wrong for compliance use — keep the default `.onlineOnly` if cached content must never be written in the clear.
+</Warning>
+
+While the cache is dormant for this reason, `CometChat.isOfflineEnabled()` returns `false`.
+
+## Key storage
+
+You do not supply or manage the encryption key. The SDK generates a random 256-bit key per user (scoped to the app ID and the logged-in user's UID) and keeps it in the **iOS Keychain**, with the `AfterFirstUnlockThisDeviceOnly` accessibility class — available after the first unlock, and never synced or restored to another device. The key is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+
+## Check encryption status
+
+`CometChat.getOfflineEncryptionStatus()` returns a `[String: Any]` dictionary describing what encryption is **actually** doing — never what was merely requested. It is safe to call at any time and never returns the key or any part of it.
+
+```swift
+let status = CometChat.getOfflineEncryptionStatus()
+print("enabled=\(status["enabled"] ?? "")",
+      "atRest=\(status["atRest"] ?? "")",
+      "keyStorage=\(status["keyStorage"] ?? "")",
+      "cipherAvailable=\(status["cipherAvailable"] ?? "")",
+      "cipher=\(status["cipher"] ?? "")")
+```
+
+| Key | Value type | Meaning |
+|---|---|---|
+| `enabled` | `Bool` | What was **configured** (`OfflineConfig.encryption`), not what was achieved. `false` whenever offline is switched off for the app. |
+| `atRest` | `String` | Coverage actually achieved: `"SQLCIPHER"` once an encrypted open is proven, otherwise `"NONE"`. |
+| `keyStorage` | `String` | `"KEYSTORE"` when the key was resolved from the iOS Keychain; `"NONE"` when this session holds no key. Read `NONE` as "no key in use", not "no key exists". |
+| `cipherAvailable` | `Bool` | Whether the SQLCipher engine is present and linked in this process. `false` when encryption is off. |
+| `cipher` | `String` / `NSNull` | The engine's `cipher_version` once an encrypted open is proven, else `NSNull`. |
+| `leakage` | `String` | What encryption at rest never covers — the downloaded media files stored outside the database. |
+
+The string values are also available as constants on `CometChat.OfflineEncryptionTier` (for example `OfflineEncryptionTier.atRestSqlcipher`).
+
+<Tip>
+The single most useful support signal is `enabled == true` with `atRest == "NONE"`: encryption was switched on but is not in effect — the cache is dormant, still opening, or was opened unencrypted under `.plaintextFallback`.
+</Tip>
+
+## What is and isn't encrypted
+
+| Data | Encrypted at rest? |
+|---|---|
+| Message database (messages, conversations, metadata, the pending-send outbox) | Yes, when `atRest` is `"SQLCIPHER"` |
+| Downloaded media files on disk (images, video, audio, documents) | **No** — stored as ordinary files outside the database |
+
+Media bytes live outside the database because `Attachment.localPath` is public API and those paths are passed straight to native media loaders. "Encrypted at rest" here always means the message database, never the media cache. Encryption is not end-to-end: the server still sees message content.
+
+## Cache resets on key loss
+
+If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost.
+
+Register an `OfflineCacheResetListener` to be told when this happens:
+
+```swift
+final class CacheResetObserver: NSObject, OfflineCacheResetListener {
+
+    func onOfflineCacheReset(_ reason: CometChat.OfflineCacheResetReason, _ pendingMessagesLost: Int) {
+        print("Cache reset: \(reason), pending lost=\(pendingMessagesLost)")
+    }
+}
+
+let resetObserver = CacheResetObserver()   // keep a strong reference
+CometChat.addOfflineCacheResetListener("LISTENER_ID", resetObserver)
+```
+
+The encryption-related reasons are `.keyLost`, `.wrongKey`, `.corrupted`, and `.encryptionChanged` (you turned encryption on or off between launches). `pendingMessagesLost` is `CometChat.offlinePendingCountUnknown` (`-1`) when the unsent messages could not be counted. See [Stay in Sync](/sdk/ios/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/ios/offline-reference) for every field and enum.
+
+<Note>
+Switching `encryption` on or off between launches rebuilds the cache in the new format. If the old cache file cannot be deleted at that moment, offline support is unavailable for the rest of that app session.
+</Note>

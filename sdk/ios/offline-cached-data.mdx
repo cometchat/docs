@@ -1,0 +1,200 @@
+---
+title: "Show Cached Data"
+sidebarTitle: "Show Cached Data"
+description: "Render cached messages, conversations, and lists instantly and reconcile them against the server with the CometChat iOS SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// Every read fires up to two phases: cached first (instant), then server.
+let request = MessagesRequest.MessageRequestBuilder()
+    .set(uid: "UID")
+    .set(limit: 30)
+    .build()
+
+request.fetchPrevious(onCachedMessages: { messages in
+    // Phase 1: local cache. Fires first, even when empty. Render immediately.
+}, onServerMessages: { messages in
+    // Phase 2: server. Replaces the same slice — reconcile, don't append. Never fires offline.
+}, onError: { error in
+    // Offline ends here, after the cached page, with ERROR_INTERNET_UNAVAILABLE.
+})
+
+// Single items (additive two-phase overloads)
+CometChat.getConversation(conversationWith: "UID", conversationType: .user, listener: conversationDetailsListener)
+CometChat.getMessageDetails(messageId, onCachedMessage: { _ in }, onServerMessage: { _ in }, onError: { _ in })
+```
+
+</Accordion>
+
+With offline support enabled, every list and lookup the SDK already offers answers from the on-device cache first and then from the server. Your UI paints instantly from the cache, then reconciles when the server replies. This page describes that contract, the reads it applies to, and how to merge the two phases.
+
+## The two-phase contract
+
+Each read fires **up to two** callbacks, always in this order:
+
+<Steps>
+<Step title="Cached phase">
+The SDK delivers a page from the local cache **first**. It fires **even when the page is empty** — an empty cached page is indistinguishable from a cache miss, by design. Render it right away.
+</Step>
+<Step title="Server phase">
+After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it.
+</Step>
+</Steps>
+
+Two rules follow from this:
+
+- **Offline, the read ends with an error.** After the cached page, a read whose server phase cannot be produced because the device is offline settles with `onError` carrying `CometChatConstants.Errors.ERROR_INTERNET_UNAVAILABLE`. The call always settles — it never hangs.
+- **The server phase never fires offline.** It fires only on a genuine server response. Never treat a cached page as "end of history"; an empty cached page only means the end of the *cached* window.
+
+All callbacks are delivered on the main thread.
+
+<Note>
+With offline support **off**, these overloads behave like the classic call: the cached phase never fires, and the server result arrives in `onServer…` instead of `onSuccess`. Nothing changes until you enable offline (see [Enable Offline Support](/sdk/ios/offline-enable)). Requires SDK **4.2.0** or later.
+</Note>
+
+<Note>
+A second fetch on the **same request object** while its previous fetch is still in flight settles immediately with `ERROR_REQUEST_IN_PROGRESS` and fires no cached phase. Wait for the first fetch to finish, or create a new request.
+</Note>
+
+## Read messages
+
+`MessagesRequest` supports both directions. `fetchPrevious` pages toward older messages; `fetchNext` pages toward newer ones. Both have a two-phase overload.
+
+```swift
+let request = MessagesRequest.MessageRequestBuilder()
+    .set(uid: "UID")
+    .set(limit: 30)
+    .build()
+
+request.fetchPrevious(onCachedMessages: { messages in
+    // Render the cached page immediately.
+}, onServerMessages: { messages in
+    // Reconcile this slice against the cached page, keyed by message id.
+}, onError: { error in
+    print("Fetch failed: \(error?.errorCode ?? "")")
+})
+```
+
+The classic `fetchPrevious(onSuccess:onError:)` and `fetchNext(onSuccess:onError:)` are unchanged and never deliver a cached result.
+
+## Read conversations
+
+`ConversationRequest` pages in one direction with `fetchNext`.
+
+```swift
+let request = ConversationRequest.ConversationRequestBuilder(limit: 30).build()
+
+request.fetchNext(onCachedConversations: { conversations in
+    // Render the cached list immediately.
+}, onServerConversations: { conversations in
+    // Reconcile, keyed by conversation id.
+}, onError: { error in
+    print("Fetch failed: \(error?.errorCode ?? "")")
+})
+```
+
+<Tip>
+Conversations deleted on the server are removed from the cache only by this two-phase overload. The classic `fetchNext(onSuccess:onError:)` updates the cache but does not remove them.
+</Tip>
+
+## Read the other lists
+
+Every remaining list read gains the same two-phase overload, with `onCached…` / `onServer…` closures of the matching type plus `onError`.
+
+| Request | Fetch method(s) | Cached / server closure labels |
+|---|---|---|
+| `MessagesRequest` | `fetchPrevious`, `fetchNext` | `onCachedMessages` / `onServerMessages` |
+| `ConversationRequest` | `fetchNext` | `onCachedConversations` / `onServerConversations` |
+| `ThreadsRequest` | `fetchNext` | `onCachedThreads` / `onServerThreads` |
+| `UsersRequest` | `fetchNext` | `onCachedUsers` / `onServerUsers` |
+| `BlockedUserRequest` | `fetchNext` | `onCachedUsers` / `onServerUsers` |
+| `GroupsRequest` | `fetchNext` | `onCachedGroups` / `onServerGroups` |
+| `GroupMembersRequest` | `fetchNext` | `onCachedGroupMembers` / `onServerGroupMembers` |
+| `BannedGroupMembersRequest` | `fetchNext` | `onCachedBannedGroupMembers` / `onServerBannedGroupMembers` |
+| `ReactionsRequest` | `fetchPrevious`, `fetchNext` | `onCachedReactions` / `onServerReactions` |
+| `NotificationFeedRequest` | `fetchNext` | `onCachedNotificationFeedItems` / `onServerNotificationFeedItems` |
+
+The call shape is identical to the conversations example above — swap the request and the closure labels.
+
+```swift
+let request = UsersRequest.UsersRequestBuilder()
+    .set(limit: 30)
+    .build()
+
+request.fetchNext(onCachedUsers: { users in
+    // render
+}, onServerUsers: { users in
+    // reconcile, keyed by uid
+}, onError: { error in
+    print("Fetch failed: \(error?.errorCode ?? "")")
+})
+```
+
+<Note>
+For `ReactionsRequest`, `fetchPrevious` and `fetchNext` are recorded and replayed independently — each direction keeps its own cached pages. Users, groups, members, banned members, reactions, and the notification feed are served from a per-request snapshot rather than a shared store: the cached phase replays what the server returned online for the **same builder settings**, so a list you never fetched online has an empty cached page. Per-builder details are in the [Configuration & API Reference](/sdk/ios/offline-reference).
+</Note>
+
+## Read a single item
+
+`getConversation` and `getMessageDetails` each add a two-phase overload. Unlike the list reads, the cached callback fires **only when the item is cached** — never with an empty or nil object. A cache miss goes straight to the server phase online, or straight to `onError` offline.
+
+`getConversation` takes a `ConversationDetailsListener`; `getMessageDetails` takes closures.
+
+```swift
+final class ConversationLoader: NSObject, ConversationDetailsListener {
+
+    func onCachedConversation(_ conversation: Conversation) {
+        // Fires only on a cache hit.
+    }
+
+    func onServerConversation(_ conversation: Conversation?) {
+        // Server copy, written through before delivery.
+    }
+
+    func onError(_ error: CometChatException?) {
+        print("Lookup failed: \(error?.errorCode ?? "")")
+    }
+}
+
+let loader = ConversationLoader()
+CometChat.getConversation(conversationWith: "UID", conversationType: .user, listener: loader)
+
+CometChat.getMessageDetails(messageId, onCachedMessage: { message in
+    // cache hit only
+}, onServerMessage: { message in
+    // server copy
+}, onError: { error in
+    print("Lookup failed: \(error?.errorCode ?? "")")
+})
+```
+
+<Note>
+The SDK holds the `ConversationDetailsListener` until the read ends, so you do not need to keep your own reference for a single lookup. The older `getConversation(conversationWith:conversationType:onCachedConversation:onServerConversation:onError:)` closure overload still works but is deprecated in favour of the listener form.
+</Note>
+
+## Merge the two phases
+
+The server phase **replaces the same slice** — it is a reconcile, not a second batch. Render the cached page straight away, then on the server phase diff it into your displayed list keyed by the item's stable id (message id, conversation id, uid, guid). Do not append the server page to the cached one.
+
+<Tip>
+Key your list by id so the two phases merge cleanly: update items that changed, add new ones, and drop cached items the server slice omits. To page further back, issue the next `fetchPrevious` / `fetchNext` rather than treating the server phase as more pages.
+</Tip>
+
+## When the cached page is empty
+
+The cache answers a read **only if every filter on it is locally computable**. A single server-only predicate makes the entire cached phase return an empty list — with no error and no warning — while the server phase still answers in full. The guiding rule is *better empty than wrong*.
+
+The most common server-only predicate is `set(searchKeyword:)`, which blanks the cached phase on every request. Other examples on `MessagesRequest` are `hasLinks`, `updatesOnly(onlyUpdates:)` and `setInteractionGoalCompletedOnly(_:)`. On the entity lists, a keyword search or a presence filter (`UsersRequest.set(status:)`, `GroupMembersRequest.set(status:)`) is never snapshotted, so it has no cached phase either.
+
+<Warning>
+An offline-critical screen must use only cache-supported filters — one innocuous builder flag can silently disable the cached phase for a whole screen. The full per-builder matrix of what the cache answers lives in the [Configuration & API Reference](/sdk/ios/offline-reference).
+</Warning>
+
+## Known limitations
+
+- A `MessagesRequest` with no user or group set is not fully served from the cache while offline, and its filters may not be applied to cached results.
+- With offline on, `NotificationFeedRequest.fetchNext` past the last page returns an empty list without asking the server; create a new request to pick up items that arrive later.
+- `ReactionsRequest` past its last page asks the server again and can return reactions it already returned — remove duplicates by id.
