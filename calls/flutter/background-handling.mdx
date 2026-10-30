@@ -42,8 +42,12 @@ flowchart LR
 | Receiving calls when app is killed | [VoIP Calling](/calls/flutter/voip-calling) handles this |
 
 <Note>
-Background Handling is different from [VoIP Calling](/calls/flutter/voip-calling). VoIP handles **receiving** calls when the app is not running. Background Handling keeps an **active** call alive when the user leaves the app.
+Background Handling is different from [VoIP Calling](/calls/flutter/voip-calling). VoIP handles **receiving** calls when the app is not running. Background Handling keeps a **joined** call alive when the user leaves the app, for every kind of call: ringing calls, direct calls, group calls and meetings.
 </Note>
+
+<Tip>
+**Using the CometChat UI Kit?** Its call screen starts `CometChatOngoingCallService` when the call joins and stops it when the call ends. You only need to declare the service, as in [Step 1](#step-1-declare-the-service-and-permissions-android).
+</Tip>
 
 <Warning>
 `CometChatOngoingCallService` starts an Android foreground service with a persistent notification showing mute/unmute and hang up actions. On iOS, this is a no-op since iOS uses CallKit for ongoing call notifications.
@@ -53,137 +57,62 @@ Background Handling is different from [VoIP Calling](/calls/flutter/voip-calling
 
 ## Implementation
 
-### Step 1: Add Manifest Permissions (Android)
+### Step 1: Declare the service and permissions (Android)
 
-Add the required permissions to your `android/app/src/main/AndroidManifest.xml`:
+Add the ongoing call service and the notification permission to `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required for foreground service -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- REQUIRED. The SDK ships the service class but does not declare it for you. -->
+        <service
+            android:name="com.cometchatcalls.cometchatcalls_plugin.services.OngoingCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
+    </application>
 
 </manifest>
 ```
 
-### Step 2: Start Service on Session Join
+The Calls SDK declares the foreground service permissions the service needs (`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE` and `FOREGROUND_SERVICE_CAMERA`). On Android 13 and later, request `POST_NOTIFICATIONS` at runtime as well.
 
-Start the ongoing call service when the user successfully joins a call session:
+<Warning>
+The `<service>` element is not optional. `OngoingCallService` lives in the SDK, but an Android app must declare every service it starts in its own manifest. Without it the call keeps running while your app is open, but no ongoing notification appears and the call can be stopped as soon as the user leaves the app. The SDK logs a warning when the service is not declared.
+</Warning>
 
-```dart
-class _SessionStatusListener extends SessionStatusListeners {
-  @override
-  void onSessionJoined() {
-          // Start the foreground service to keep call alive in background
-          CometChatOngoingCallService.launch();
-        }
+#### Optional: keep the notification when the microphone is denied
 
-  @override
-  void onSessionLeft() {
-          // Stop the service when call ends
-          CometChatOngoingCallService.abort();
-          if (mounted) Navigator.of(context).pop();
-        }
+If a user joins a call without granting the microphone, the call continues listen-only. To keep the ongoing notification and the background protection in that case, add the `mediaPlayback` type and its permission:
 
-  @override
-  void onConnectionClosed() {
-          CometChatOngoingCallService.abort();
-        }
-}
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
-
-class _CallScreenState extends State<CallScreen> {
-  Widget? callWidget;
-
-  late final SessionStatusListeners _sessionListener;
-
-  @override
-  void initState() {
-    super.initState();
-    _setupSessionListener();
-    _joinCall();
-  }
-
-  void _setupSessionListener() {
-    _sessionListener = _SessionStatusListener();
-    CallSession.getInstance()?.addSessionStatusListener(_sessionListener);
-  }
-
-  void _joinCall() {
-    final sessionSettings = (SessionSettingsBuilder()
-        ..setTitle("My Call"))
-        .build();
-
-    CometChatCalls.joinSession(
-      sessionId: widget.sessionId,
-      sessionSettings: sessionSettings,
-      onSuccess: (Widget? widget) {
-        setState(() => callWidget = widget);
-      },
-      onError: (CometChatCallsException e) {
-        debugPrint("Failed to join: ${e.message}");
-        Navigator.of(context).pop();
-      },
-    );
-  }
-
-  @override
-  void dispose() {
-    // Always stop the service when screen is disposed
-    CometChatOngoingCallService.abort();
-    CallSession.getInstance()?.removeSessionStatusListener(_sessionListener);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: callWidget ?? const Center(child: CircularProgressIndicator()),
-    );
-  }
-}
+<service
+    android:name="com.cometchatcalls.cometchatcalls_plugin.services.OngoingCallService"
+    android:exported="false"
+    android:foregroundServiceType="mediaPlayback|microphone|camera" />
 ```
 
 <Note>
-Flutter listeners are not lifecycle-aware. You must manually remove listeners in `dispose()` and call `CometChatOngoingCallService.abort()` to clean up.
+Google Play asks you to justify each foreground service type your app declares. Declare `mediaPlayback` only if you can justify it for your app.
 </Note>
 
----
+### Step 2: Start the service on join, stop it on leave
 
-## Complete Example
+Start the ongoing call service when the user joins the call session, and stop it when the call ends. Pass `isVideo: false` for an audio call, so the service doesn't use the camera.
 
 ```dart
-class _SessionStatusListener2 extends SessionStatusListeners {
-  @override
-  void onSessionJoined() {
-          // Start foreground service (Android only, no-op on iOS)
-          CometChatOngoingCallService.launch();
-        }
-
-  @override
-  void onSessionLeft() {
-          CometChatOngoingCallService.abort();
-          if (mounted) Navigator.of(context).pop();
-        }
-
-  @override
-  void onConnectionClosed() {
-          CometChatOngoingCallService.abort();
-        }
-}
-
 import 'package:cometchat_calls_sdk/cometchat_calls_sdk.dart';
 import 'package:flutter/material.dart';
 
 class CallScreen extends StatefulWidget {
   final String sessionId;
+  final bool isVideo;
 
-  const CallScreen({super.key, required this.sessionId});
+  const CallScreen({super.key, required this.sessionId, required this.isVideo});
 
   @override
   State<CallScreen> createState() => _CallScreenState();
@@ -191,22 +120,24 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> {
   Widget? callWidget;
+  late final CallScreenSessionListener _sessionListener;
 
   @override
   void initState() {
     super.initState();
-    _setupSessionListener();
-    _joinCall();
-  }
-
-  void _setupSessionListener() {
-    _sessionListener = _SessionStatusListener2();
+    _sessionListener = CallScreenSessionListener(
+      isVideo: widget.isVideo,
+      onCallEnded: () {
+        if (mounted) Navigator.of(context).pop();
+      },
+    );
     CallSession.getInstance()?.addSessionStatusListener(_sessionListener);
+    _joinCall();
   }
 
   void _joinCall() {
     final sessionSettings = (SessionSettingsBuilder()
-        ..setTitle("My Call"))
+          ..setType(widget.isVideo ? SessionType.video : SessionType.audio))
         .build();
 
     CometChatCalls.joinSession(
@@ -224,6 +155,7 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
+    // Always stop the service when the call screen goes away
     CometChatOngoingCallService.abort();
     CallSession.getInstance()?.removeSessionStatusListener(_sessionListener);
     super.dispose();
@@ -236,7 +168,38 @@ class _CallScreenState extends State<CallScreen> {
     );
   }
 }
+
+class CallScreenSessionListener extends SessionStatusListeners {
+  final bool isVideo;
+  final VoidCallback onCallEnded;
+
+  CallScreenSessionListener({required this.isVideo, required this.onCallEnded});
+
+  @override
+  void onSessionJoined() {
+    // Start the foreground service (Android only, no-op on iOS)
+    CometChatOngoingCallService.launch(isVideo: isVideo);
+  }
+
+  @override
+  void onSessionLeft() {
+    CometChatOngoingCallService.abort();
+    onCallEnded();
+  }
+
+  @override
+  void onConnectionClosed() {
+    CometChatOngoingCallService.abort();
+    onCallEnded();
+  }
+}
 ```
+
+The service and its notification stay for the whole call, whether your app is in the foreground or not, until you call `abort()`.
+
+<Note>
+Flutter listeners are not lifecycle-aware. You must manually remove listeners in `dispose()` and call `CometChatOngoingCallService.abort()` to clean up.
+</Note>
 
 ---
 
@@ -246,7 +209,7 @@ class _CallScreenState extends State<CallScreen> {
 
 | Method | Description |
 |--------|-------------|
-| `launch()` | Starts the Android foreground service with an ongoing notification. No-op on iOS. |
+| `launch({bool? isVideo})` | Starts the Android foreground service with an ongoing notification. Pass `isVideo: false` for an audio call; when omitted, the service reads the type from the session. No-op on iOS. |
 | `abort()` | Stops the foreground service and removes the notification. No-op on iOS. |
 
 <Note>
@@ -259,4 +222,4 @@ On iOS, ongoing call state is managed by CallKit automatically. `CometChatOngoin
 
 - [Picture-in-Picture](/calls/flutter/picture-in-picture) - Keep call visible while using other apps
 - [VoIP Calling](/calls/flutter/voip-calling) - Receive calls when app is killed
-- [Session Status Listener](/calls/flutter/session-status-listener) - Listen for session events
+- [Events](/calls/flutter/events) - Listen for session events

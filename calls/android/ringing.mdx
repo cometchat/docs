@@ -2,388 +2,351 @@
 title: "Ringing"
 sidebarTitle: "Ringing"
 sdk_version: "5.x"
-description: "Configure CometChat Calls SDK v5 ringing on Android for incoming calls, outgoing calls, call alerts, and accept or reject flows."
+description: "Ring users on Android with the CometChat Calls SDK and the Push Notifications SDK: start a call, show it ringing, answer, decline, cancel and end it, with the app in any state."
 ---
 
-Implement incoming and outgoing call notifications with accept/reject functionality. Ringing enables real-time call signaling between users, allowing them to initiate calls and respond to incoming call requests.
+Ringing lets one user call another and lets the callee answer or decline, whether the callee's app is in the foreground, in the background or not running at all.
+
+Two SDKs do the work:
+
+| SDK | Owns |
+|-----|------|
+| **Calls SDK** (`calls-sdk-android` 5.1+) | Creating the call, the media session, answering, declining, cancelling, ending, and the call events your code listens to |
+| **Push Notifications SDK, calls module** (`push-notifications-calls-android` 2.0+) | Ringing the callee's device: the call notification, the full-screen incoming-call screen, the ringtone, the ring timeout, missed calls and busy handling |
 
 <Note>
-Ringing functionality requires the CometChat Chat SDK to be integrated alongside the Calls SDK. The Chat SDK handles call signaling (initiating, accepting, rejecting calls), while the Calls SDK manages the actual call session.
+**Coming from the earlier ringing flow?** The Chat SDK's calling methods (`CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `CallListener`) are superseded by the Calls SDK and no longer used; a coming Chat SDK release marks them deprecated. This page describes the replacement. See [Migrating from legacy ringing](/calls/android/migrating-from-legacy-ringing) for a method-by-method mapping.
 </Note>
 
-## How Ringing Works
+## How ringing works
 
-The ringing flow involves two SDKs working together:
-
-1. **Chat SDK** - Handles call signaling (initiate, accept, reject, cancel)
-2. **Calls SDK** - Manages the actual call session once accepted
+The caller creates the call with the Calls SDK. The CometChat backend sends a push to the callee. The Push SDK rings the callee's device, and when the callee answers, your call screen joins the session. The caller's app learns that the callee is ringing and has answered from the Calls SDK, without joining the session first.
 
 ```mermaid
 sequenceDiagram
-    participant Caller
-    participant ChatSDK
-    participant Receiver
-    participant CallsSDK
-    
-    Caller->>ChatSDK: initiateCall()
-    ChatSDK->>Receiver: onIncomingCallReceived
-    Receiver->>ChatSDK: acceptCall()
-    ChatSDK-->>Caller: onOutgoingCallAccepted
-    Caller->>CallsSDK: joinSession()
-    Receiver->>CallsSDK: joinSession()
+    participant A as Caller app
+    participant BE as CometChat backend
+    participant P as Callee · Push SDK
+    participant C as Callee · Calls SDK
+
+    A->>BE: CometChatCalls.initiateCall(receiverId, options)
+    Note over A: Session prepared, not joined ("Calling…")
+    BE-->>P: Push (callAction = initiated)
+    P->>P: Ring: notification, full-screen screen, ringtone
+    P->>C: connect(sessionId) — pre-warms the session
+    C-->>A: onParticipantConnected → "Ringing…"
+    P->>P: Answer → microphone/camera prompt → your answer activity
+    C->>C: joinSession(sessionId)
+    C-->>A: onParticipantJoined → caller joins too
+    Note over A,C: In call. Hang up with CallSession.leave()
+```
+
+What each side sees:
+
+| Stage | Caller | Callee |
+|-------|--------|--------|
+| Call created | `initiateCall` succeeds; show "Calling…" | Push arrives; the Push SDK rings |
+| Callee's device reached | `onParticipantConnected` → show "Ringing…" | Ringing |
+| Callee answers | `onParticipantJoined` → `joinSession` | Answer activity opens → `joinSession` |
+| Callee declines / is busy / does not answer | `onIncomingCallEnded(call, "rejected" / "busy" / "unanswered")` | Ring stops; missed call if unanswered |
+| Caller cancels | — (you ended it) | Ring stops; missed call |
+| Either side hangs up | `onParticipantLeft` / `onSessionLeft` | same |
+
+## Prerequisites
+
+- [Calls SDK set up](/calls/android/setup) and the user [logged in](/calls/android/authentication).
+- Push notifications configured with the Push Notifications SDK 2.0 calls module. The whole push side of ringing is on the [Push ringing](/calls/android/voip-calling) page; this page assumes it is done.
+- `RECORD_AUDIO` and `CAMERA` granted at runtime. The Calls SDK's manifest already declares them, so there is nothing to add to yours.
+- `minSdk 26`, `compileSdk 36` and Android Gradle Plugin 8.9.1 or later: the Push Notifications SDK 2.0 depends on `androidx.core` 1.18, which requires them.
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.cometchat:calls-sdk-android:5.1.0")
+    implementation("com.cometchat:push-notifications-android:2.0.0")
+    implementation("com.cometchat:push-notifications-calls-android:2.0.0")
+}
 ```
 
 <Warning>
-**Ringing events require a foreground app in the default socket mode**
-
-Call signaling events (`onIncomingCallReceived`, `onOutgoingCallAccepted`, and the other `CallListener` callbacks) are delivered over the Chat SDK's WebSocket. In the default automatic socket mode, that connection is **disconnected when the app goes to the background** (see [Connection Behaviour](/sdk/android/connection-behaviour)), and events that fire while it is down are not redelivered on reconnect. In practice:
-
-- **Receiving calls:** an app in the background will not receive `onIncomingCallReceived`. To ring reliably when the app is backgrounded or killed, integrate [push notifications](/notifications/android-push-notifications) for incoming calls.
-- **Placing calls:** in the default automatic mode the socket disconnects immediately when the app goes to the background, so an accept or reject can be missed as soon as the caller backgrounds the app. In manual mode the connection stays alive for up to 30 seconds in the background (until the ping timeout — see [Connection Behaviour](/sdk/android/connection-behaviour)), leaving a brief window. Either way, the caller UI should reconcile the call state when the app returns to the foreground.
+Send call pushes at **high** FCM priority. At normal priority the call still rings, but Android refuses the Push SDK's foreground service, so the process can be killed between the ring and the answer.
 </Warning>
 
-## Initiate a Call
+## Start a call
 
-Use the Chat SDK to initiate a call to a user or group:
-
-<Tabs>
-<Tab title="Kotlin">
-```kotlin
-val receiverID = "USER_ID"
-val receiverType = CometChatConstants.RECEIVER_TYPE_USER
-val callType = CometChatConstants.CALL_TYPE_VIDEO
-
-val call = Call(receiverID, receiverType, callType)
-
-CometChat.initiateCall(call, object : CometChat.CallbackListener<Call>() {
-    override fun onSuccess(call: Call) {
-        Log.d(TAG, "Call initiated: ${call.sessionId}")
-        // Show outgoing call UI
-    }
-
-    override fun onError(e: CometChatException) {
-        Log.e(TAG, "Call initiation failed: ${e.message}")
-    }
-})
-```
-</Tab>
-<Tab title="Kotlin (with Timeout)">
-```kotlin
-val receiverID = "USER_ID"
-val receiverType = CometChatConstants.RECEIVER_TYPE_USER
-val callType = CometChatConstants.CALL_TYPE_VIDEO
-
-val call = Call(receiverID, receiverType, callType)
-
-// Set a custom timeout of 30 seconds (default is 45 seconds)
-CometChat.initiateCall(call, 30, object : CometChat.CallbackListener<Call>() {
-    override fun onSuccess(call: Call) {
-        Log.d(TAG, "Call initiated: ${call.sessionId}")
-        // Show outgoing call UI
-    }
-
-    override fun onError(e: CometChatException) {
-        Log.e(TAG, "Call initiation failed: ${e.message}")
-    }
-})
-```
-</Tab>
-<Tab title="Java">
-```java
-String receiverID = "USER_ID";
-String receiverType = CometChatConstants.RECEIVER_TYPE_USER;
-String callType = CometChatConstants.CALL_TYPE_VIDEO;
-
-Call call = new Call(receiverID, receiverType, callType);
-
-CometChat.initiateCall(call, new CometChat.CallbackListener<Call>() {
-    @Override
-    public void onSuccess(Call call) {
-        Log.d(TAG, "Call initiated: " + call.getSessionId());
-        // Show outgoing call UI
-    }
-
-    @Override
-    public void onError(CometChatException e) {
-        Log.e(TAG, "Call initiation failed: " + e.getMessage());
-    }
-});
-```
-</Tab>
-<Tab title="Java (with Timeout)">
-```java
-String receiverID = "USER_ID";
-String receiverType = CometChatConstants.RECEIVER_TYPE_USER;
-String callType = CometChatConstants.CALL_TYPE_VIDEO;
-
-Call call = new Call(receiverID, receiverType, callType);
-
-// Set a custom timeout of 30 seconds (default is 45 seconds)
-CometChat.initiateCall(call, 30, new CometChat.CallbackListener<Call>() {
-    @Override
-    public void onSuccess(Call call) {
-        Log.d(TAG, "Call initiated: " + call.getSessionId());
-        // Show outgoing call UI
-    }
-
-    @Override
-    public void onError(CometChatException e) {
-        Log.e(TAG, "Call initiation failed: " + e.getMessage());
-    }
-});
-```
-</Tab>
-</Tabs>
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `receiverID` | String | UID of the user or GUID of the group to call |
-| `receiverType` | String | `CometChatConstants.RECEIVER_TYPE_USER` or `RECEIVER_TYPE_GROUP` |
-| `callType` | String | `CometChatConstants.CALL_TYPE_VIDEO` or `CALL_TYPE_AUDIO` |
-| `timeout` | int | Optional. The timeout duration in seconds for the call to be answered before it's automatically cancelled. Defaults to 45 seconds. |
-
-## Listen for Incoming Calls
-
-Register a call listener to receive incoming call notifications:
+`CometChatCalls.initiateCall` creates the call on the backend, which rings the callee, and prepares the caller's media session. The caller does **not** join yet.
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-val listenerID = "UNIQUE_LISTENER_ID"
+val options = InitiateCallOptions().apply {
+    type = Constants.SESSION_TYPE_AUDIO            // or SESSION_TYPE_VIDEO
+    receiverType = Constants.RECEIVER_TYPE_USER
+    sessionSettings = CometChatCalls.SessionSettingsBuilder()
+        .setSessionType(SessionType.VOICE)          // VIDEO for a video call
+        .build()
+}
 
-CometChat.addCallListener(listenerID, object : CometChat.CallListener() {
-    override fun onIncomingCallReceived(call: Call) {
-        Log.d(TAG, "Incoming call from: ${call.callInitiator.name}")
-        // Show incoming call UI with accept/reject options
-    }
+CometChatCalls.initiateCall(context, receiverUid, options,
+    object : CometChatCalls.CallbackListener<InitiatedCall>() {
+        override fun onSuccess(call: InitiatedCall) {
+            Log.d(TAG, "Calling ${call.receiver}, session ${call.sessionId}")
+            showOutgoingScreen(call)
+            listenOnPreparedSession(call)
+        }
 
-    override fun onOutgoingCallAccepted(call: Call) {
-        Log.d(TAG, "Call accepted, joining session...")
-        joinCallSession(call.sessionId)
+        override fun onError(e: CometChatException) {
+            Log.e(TAG, "Could not start the call: ${e.message}")
+        }
     }
-
-    override fun onOutgoingCallRejected(call: Call) {
-        Log.d(TAG, "Call rejected")
-        // Dismiss outgoing call UI
-    }
-
-    override fun onIncomingCallCancelled(call: Call) {
-        Log.d(TAG, "Incoming call cancelled")
-        // Dismiss incoming call UI
-    }
-
-    override fun onCallEndedMessageReceived(call: Call) {
-        Log.d(TAG, "Call ended")
-    }
-})
+)
 ```
 </Tab>
 <Tab title="Java">
 ```java
-String listenerID = "UNIQUE_LISTENER_ID";
+InitiateCallOptions options = new InitiateCallOptions();
+options.setType(Constants.SESSION_TYPE_AUDIO);            // or SESSION_TYPE_VIDEO
+options.setReceiverType(Constants.RECEIVER_TYPE_USER);
+options.setSessionSettings(new CometChatCalls.SessionSettingsBuilder()
+        .setSessionType(SessionType.VOICE)                // VIDEO for a video call
+        .build());
 
-CometChat.addCallListener(listenerID, new CometChat.CallListener() {
-    @Override
-    public void onIncomingCallReceived(Call call) {
-        Log.d(TAG, "Incoming call from: " + call.getCallInitiator().getName());
-        // Show incoming call UI with accept/reject options
-    }
+CometChatCalls.initiateCall(context, receiverUid, options,
+    new CometChatCalls.CallbackListener<InitiatedCall>() {
+        @Override
+        public void onSuccess(InitiatedCall call) {
+            Log.d(TAG, "Calling " + call.getReceiver() + ", session " + call.getSessionId());
+            showOutgoingScreen(call);
+            listenOnPreparedSession(call);
+        }
 
-    @Override
-    public void onOutgoingCallAccepted(Call call) {
-        Log.d(TAG, "Call accepted, joining session...");
-        joinCallSession(call.getSessionId());
+        @Override
+        public void onError(CometChatException e) {
+            Log.e(TAG, "Could not start the call: " + e.getMessage());
+        }
     }
-
-    @Override
-    public void onOutgoingCallRejected(Call call) {
-        Log.d(TAG, "Call rejected");
-        // Dismiss outgoing call UI
-    }
-
-    @Override
-    public void onIncomingCallCancelled(Call call) {
-        Log.d(TAG, "Incoming call cancelled");
-        // Dismiss incoming call UI
-    }
-
-    @Override
-    public void onCallEndedMessageReceived(Call call) {
-        Log.d(TAG, "Call ended");
-    }
-});
+);
 ```
 </Tab>
 </Tabs>
 
-| Callback | Description |
-|----------|-------------|
-| `onIncomingCallReceived` | A new incoming call is received |
-| `onOutgoingCallAccepted` | The receiver accepted your outgoing call |
-| `onOutgoingCallRejected` | The receiver rejected your outgoing call |
-| `onIncomingCallCancelled` | The caller cancelled the incoming call |
-| `onCallEndedMessageReceived` | The call has ended |
+| Parameter | Description |
+|-----------|-------------|
+| `receiverUid` | UID of the user to call |
+| `options.type` | `Constants.SESSION_TYPE_AUDIO` or `Constants.SESSION_TYPE_VIDEO` |
+| `options.receiverType` | `Constants.RECEIVER_TYPE_USER`, or `Constants.RECEIVER_TYPE_GROUP` with the group's GUID as `receiverUid` (see [Group calls](#group-calls)) |
+| `options.sessionSettings` | The settings the caller's session is prepared with. See the warning below. |
+
+`InitiatedCall` gives you `sessionId`, `messageId` (the id of the call message in the conversation), `sender`, `senderName`, `senderAvatar`, `receiver`, `receiverType`, `type`, `status`, `initiatedAt` and `conversationId`.
 
 <Warning>
-Remember to remove the call listener when it's no longer needed to prevent memory leaks:
-```kotlin
-CometChat.removeCallListener(listenerID)
-```
+**Always set the session type in `sessionSettings`.** The Calls SDK freezes the session settings when it prepares the session and its default is video, so an audio call started without `setSessionType(SessionType.VOICE)` opens the caller's camera. The settings you pass here are the ones the caller later joins with, so pass the same builder to `joinSession`.
 </Warning>
 
-## Accept a Call
+<Note>
+There is no client-side ring timeout. The callee's device stops at the ring window the backend sends in the push (45 seconds by default) and ends the call as `unanswered`, which closes the caller's call too. If the callee's device is never reached, nothing ends the caller's ringing until its prepared session expires after 5 minutes, so run your own timer on the caller and end the call as `unanswered` after the same window, as shown under [Ring timeout](#ring-timeout).
+</Note>
 
-When an incoming call is received, accept it using the Chat SDK:
+## Show "Ringing…" and detect the answer
+
+The caller stays on the session that `initiateCall` prepared and listens to it. Do not call `joinSession` yet: joining only when the callee has joined keeps the caller's media off until there is someone to talk to, and it is what makes the two events below arrive.
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-fun acceptIncomingCall(sessionId: String) {
-    CometChat.acceptCall(sessionId, object : CometChat.CallbackListener<Call>() {
-        override fun onSuccess(call: Call) {
-            Log.d(TAG, "Call accepted")
-            joinCallSession(call.sessionId)
+fun listenOnPreparedSession(call: InitiatedCall) {
+    val session = CometChatCalls.getActiveSession() ?: return
+    val me = CometChatCalls.getLoggedInUser()?.uid
+
+    session.addParticipantEventListener(this /* LifecycleOwner */, object : ParticipantEventListener() {
+        // The callee's device received the push and is ringing.
+        override fun onParticipantConnected(participant: Participant) {
+            if (participant.uid == me) return
+            setStatus("Ringing…")
         }
 
-        override fun onError(e: CometChatException) {
-            Log.e(TAG, "Accept call failed: ${e.message}")
+        // The callee answered: now the caller joins.
+        override fun onParticipantJoined(participant: Participant) {
+            if (participant.uid == me) return
+            joinCallSession(call.sessionId, call.type)
         }
+    })
+
+    session.addSessionStatusListener(this, object : SessionStatusListener() {
+        // The prepared session closed before anyone joined: the call is over.
+        // The reason (rejected, busy, …) arrives through onIncomingCallEnded, usually first.
+        override fun onConnectionClosed() = closeOutgoingScreen()
     })
 }
 ```
 </Tab>
 <Tab title="Java">
 ```java
-void acceptIncomingCall(String sessionId) {
-    CometChat.acceptCall(sessionId, new CometChat.CallbackListener<Call>() {
+void listenOnPreparedSession(InitiatedCall call) {
+    CallSession session = CometChatCalls.getActiveSession();
+    if (session == null) return;
+    CallUser loggedIn = CometChatCalls.getLoggedInUser();
+    String me = loggedIn != null ? loggedIn.getUid() : null;
+
+    session.addParticipantEventListener(this /* LifecycleOwner */, new ParticipantEventListener() {
+        // The callee's device received the push and is ringing.
         @Override
-        public void onSuccess(Call call) {
-            Log.d(TAG, "Call accepted");
-            joinCallSession(call.getSessionId());
+        public void onParticipantConnected(Participant participant) {
+            if (participant.getUid().equals(me)) return;
+            setStatus("Ringing…");
         }
 
+        // The callee answered: now the caller joins.
         @Override
-        public void onError(CometChatException e) {
-            Log.e(TAG, "Accept call failed: " + e.getMessage());
+        public void onParticipantJoined(Participant participant) {
+            if (participant.getUid().equals(me)) return;
+            joinCallSession(call.getSessionId(), call.getType());
         }
+    });
+
+    session.addSessionStatusListener(this, new SessionStatusListener() {
+        // The prepared session closed before anyone joined: the call is over.
+        // The reason (rejected, busy, …) arrives through onIncomingCallEnded, usually first.
+        @Override public void onConnectionClosed() { closeOutgoingScreen(); }
     });
 }
 ```
 </Tab>
 </Tabs>
 
-## Reject a Call
+| Event | On the prepared session it means |
+|-------|----------------------------------|
+| `onParticipantConnected(callee)` | The callee's phone got the push: it is ringing there |
+| `onParticipantJoined(callee)` | The callee answered. Call `joinSession` now |
+| `onConnectionClosed` | The call ended before anyone joined (declined, cancelled from another device, the session died, or the prepared session expired after 5 minutes). `onSessionTimedOut` is not part of this: it only reports an idle joined session |
 
-Reject an incoming call:
+Both listeners are lifecycle-aware: pass your activity or fragment as the `LifecycleOwner` and the SDK removes them when it is destroyed.
+
+## Listen for calls starting and ending
+
+`CometChatCalls.addIncomingCallListener` is the one place a call announces itself and its end, on both sides. The Push SDK feeds it from the push, so it fires even when nothing of yours was running when the push arrived.
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-fun rejectIncomingCall(sessionId: String) {
-    val status = CometChatConstants.CALL_STATUS_REJECTED
+CometChatCalls.addIncomingCallListener("my-screen", object : CometChatCalls.IncomingCallListener() {
+    override fun onIncomingCallReceived(call: InitiatedCall) {
+        // A call for this user is ringing. The Push SDK already shows the ring;
+        // use this for your own state (badge, analytics, refreshing a list).
+    }
 
-    CometChat.rejectCall(sessionId, status, object : CometChat.CallbackListener<Call>() {
-        override fun onSuccess(call: Call) {
-            Log.d(TAG, "Call rejected")
-            // Dismiss incoming call UI
+    override fun onIncomingCallEnded(call: InitiatedCall, reason: String) {
+        // Callee: the ring ended (caller cancelled, answered elsewhere, timed out, declined here).
+        // Caller: your outgoing call ended with reason "rejected", "busy", "cancelled" or "unanswered".
+        if (call.sessionId == currentSessionId) closeOutgoingScreen(reason)
+    }
+})
+
+// When the screen goes away:
+CometChatCalls.removeIncomingCallListener("my-screen")
+```
+</Tab>
+<Tab title="Java">
+```java
+CometChatCalls.addIncomingCallListener("my-screen", new CometChatCalls.IncomingCallListener() {
+    @Override
+    public void onIncomingCallReceived(InitiatedCall call) {
+        // A call for this user is ringing. The Push SDK already shows the ring;
+        // use this for your own state (badge, analytics, refreshing a list).
+    }
+
+    @Override
+    public void onIncomingCallEnded(InitiatedCall call, String reason) {
+        // Callee: the ring ended (caller cancelled, answered elsewhere, timed out, declined here).
+        // Caller: your outgoing call ended with reason "rejected", "busy", "cancelled" or "unanswered".
+        if (call.getSessionId().equals(currentSessionId)) closeOutgoingScreen(reason);
+    }
+});
+
+// When the screen goes away:
+CometChatCalls.removeIncomingCallListener("my-screen");
+```
+</Tab>
+</Tabs>
+
+| Who | `onIncomingCallEnded` reason |
+|-----|------------------------------|
+| Caller | `rejected` (callee declined), `busy` (callee was in another call), `unanswered` (nobody answered), `cancelled` (you cancelled from another device). Never `ongoing` or `ended`. |
+| Callee, still ringing | `cancelled` (caller gave up), `ongoing` (answered on another device), `rejected` / `busy` (declined here), `unanswered` (ring timed out), `ended` (the prepared session closed before the answer; it fires once per call, so a later `cancelled` push is not reported). Treat any other reason as "the ring is over" |
+| Callee, answered | Nothing; the joined session reports the end through `onSessionLeft` / `onConnectionClosed` |
+
+<Warning>
+Listener ids are keys. Registering the same id twice replaces the first listener instead of adding a second one, so give each screen a stable id and remove it when the screen is destroyed.
+</Warning>
+
+## Answer a call
+
+The Push SDK rings and, on **Answer**, asks for the microphone (and the camera for a video call), then starts the activity you registered with `PNConfiguration.Builder.setAnswerActivity`. That activity reads the call from its intent and joins. There is no separate "accept" call to make.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+class CallScreenActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_call)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { // API 27+; minSdk is 26
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
         }
 
-        override fun onError(e: CometChatException) {
-            Log.e(TAG, "Reject call failed: ${e.message}")
-        }
-    })
+        val call = CallBundles.getCall(intent) ?: return finish()
+        joinCallSession(call.sessionId, call.callType)
+    }
 }
 ```
 </Tab>
 <Tab title="Java">
 ```java
-void rejectIncomingCall(String sessionId) {
-    String status = CometChatConstants.CALL_STATUS_REJECTED;
-
-    CometChat.rejectCall(sessionId, status, new CometChat.CallbackListener<Call>() {
-        @Override
-        public void onSuccess(Call call) {
-            Log.d(TAG, "Call rejected");
-            // Dismiss incoming call UI
+public class CallScreenActivity extends AppCompatActivity {
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_call);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) { // API 27+; minSdk is 26
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
         }
 
-        @Override
-        public void onError(CometChatException e) {
-            Log.e(TAG, "Reject call failed: " + e.getMessage());
-        }
-    });
+        IncomingCall call = CallBundles.getCall(getIntent());
+        if (call == null) { finish(); return; }
+        joinCallSession(call.getSessionId(), call.getCallType());
+    }
 }
 ```
 </Tab>
 </Tabs>
 
-## Cancel a Call
+`IncomingCall` carries `sessionId`, `callerUid`, `callerName`, `callerAvatarUrl`, `callType`, `receiverType`, `conversationId` and `isVideo`.
 
-Cancel an outgoing call before it's answered:
+## Join the session
 
-<Tabs>
-<Tab title="Kotlin">
-```kotlin
-fun cancelOutgoingCall(sessionId: String) {
-    val status = CometChatConstants.CALL_STATUS_CANCELLED
-
-    CometChat.rejectCall(sessionId, status, object : CometChat.CallbackListener<Call>() {
-        override fun onSuccess(call: Call) {
-            Log.d(TAG, "Call cancelled")
-            // Dismiss outgoing call UI
-        }
-
-        override fun onError(e: CometChatException) {
-            Log.e(TAG, "Cancel call failed: ${e.message}")
-        }
-    })
-}
-```
-</Tab>
-<Tab title="Java">
-```java
-void cancelOutgoingCall(String sessionId) {
-    String status = CometChatConstants.CALL_STATUS_CANCELLED;
-
-    CometChat.rejectCall(sessionId, status, new CometChat.CallbackListener<Call>() {
-        @Override
-        public void onSuccess(Call call) {
-            Log.d(TAG, "Call cancelled");
-            // Dismiss outgoing call UI
-        }
-
-        @Override
-        public void onError(CometChatException e) {
-            Log.e(TAG, "Cancel call failed: " + e.getMessage());
-        }
-    });
-}
-```
-</Tab>
-</Tabs>
-
-## Join the Call Session
-
-After accepting a call (or when your outgoing call is accepted), join the call session using the Calls SDK:
+Both sides join the same way: the callee from the answer activity, the caller from `onParticipantJoined`. `joinSession` takes over the session that was prepared earlier, so it connects almost at once. On a prepared session the settings passed to `joinSession` are ignored: the ones frozen when the session was prepared apply. That is the caller's `options.sessionSettings`; the callee's session is prepared by the Push SDK with its own settings (session type and peer call), so layout or hidden-button settings passed by the callee have no effect.
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-fun joinCallSession(sessionId: String) {
-    val callViewContainer = findViewById<RelativeLayout>(R.id.call_view_container)
+fun joinCallSession(sessionId: String, callType: String) {
+    val container = findViewById<RelativeLayout>(R.id.call_view_container)
+    val isVideo = callType.equals(Constants.SESSION_TYPE_VIDEO, ignoreCase = true)
 
-    val sessionSettings = CometChatCalls.SessionSettingsBuilder()
-        .setSessionType(SessionType.VIDEO)
+    val settings = CometChatCalls.SessionSettingsBuilder()
+        .setSessionType(if (isVideo) SessionType.VIDEO else SessionType.VOICE)
         .build()
 
-    CometChatCalls.joinSession(sessionId, sessionSettings, callViewContainer,
+    CometChatCalls.joinSession(sessionId, settings, container,
         object : CometChatCalls.CallbackListener<CallSession>() {
-            override fun onSuccess(callSession: CallSession) {
-                Log.d(TAG, "Joined call session")
+            override fun onSuccess(session: CallSession) {
+                Log.d(TAG, "Joined $sessionId")
             }
 
             override fun onError(e: CometChatException) {
-                Log.e(TAG, "Failed to join: ${e.message}")
+                Log.e(TAG, "Join failed: ${e.message}")
+                finish()
             }
         }
     )
@@ -392,23 +355,25 @@ fun joinCallSession(sessionId: String) {
 </Tab>
 <Tab title="Java">
 ```java
-void joinCallSession(String sessionId) {
-    RelativeLayout callViewContainer = findViewById(R.id.call_view_container);
+void joinCallSession(String sessionId, String callType) {
+    RelativeLayout container = findViewById(R.id.call_view_container);
+    boolean isVideo = Constants.SESSION_TYPE_VIDEO.equalsIgnoreCase(callType);
 
-    SessionSettings sessionSettings = new CometChatCalls.SessionSettingsBuilder()
-        .setSessionType(SessionType.VIDEO)
+    SessionSettings settings = new CometChatCalls.SessionSettingsBuilder()
+        .setSessionType(isVideo ? SessionType.VIDEO : SessionType.VOICE)
         .build();
 
-    CometChatCalls.joinSession(sessionId, sessionSettings, callViewContainer,
+    CometChatCalls.joinSession(sessionId, settings, container,
         new CometChatCalls.CallbackListener<CallSession>() {
             @Override
-            public void onSuccess(CallSession callSession) {
-                Log.d(TAG, "Joined call session");
+            public void onSuccess(CallSession session) {
+                Log.d(TAG, "Joined " + sessionId);
             }
 
             @Override
             public void onError(CometChatException e) {
-                Log.e(TAG, "Failed to join: " + e.getMessage());
+                Log.e(TAG, "Join failed: " + e.getMessage());
+                finish();
             }
         }
     );
@@ -417,138 +382,192 @@ void joinCallSession(String sessionId) {
 </Tab>
 </Tabs>
 
-<Note>
-For more details on session customization and controlling the call, see [Actions](/calls/android/actions) and [Listeners](/calls/android/events).
-</Note>
+See [Join Session](/calls/android/join-session) for the container, [Session Settings](/calls/android/session-settings) for layouts and controls, and [Events](/calls/android/events) for everything the joined session reports.
 
-## End a Call
+## Decline a call
 
-Properly ending a call requires coordination between both SDKs to ensure all participants are notified and call logs are recorded correctly.
+Declining is handled by the Push SDK: the Decline button on the notification and on its incoming-call screen sends `endCall(sessionId, "rejected")`, and sends `"busy"` instead when the user is already in another call. The caller receives `onIncomingCallEnded` with that reason.
 
-<Warning>
-Always call `CometChat.endCall()` when ending a call. This notifies the other participant and ensures the call is properly logged. Without this, the other user won't know the call has ended and call logs may be incomplete.
-</Warning>
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant CallsSDK
-    participant ChatSDK
-    participant OtherParticipant
-    
-    User->>CallsSDK: leaveSession()
-    User->>ChatSDK: endCall(sessionId)
-    ChatSDK->>OtherParticipant: onCallEndedMessageReceived
-    OtherParticipant->>CallsSDK: leaveSession()
-```
-
-When using the default call UI, listen for the end call button click using `ButtonClickListener` and call `endCall()`:
+You only write decline code when you draw your own incoming-call screen:
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-val callSession = CallSession.getInstance()
+CometChatCallNotifications.decline(context, sessionId)
+```
+</Tab>
+<Tab title="Java">
+```java
+CometChatCallNotifications.decline(context, sessionId);
+```
+</Tab>
+</Tabs>
 
-// Listen for end call button click
-callSession.addButtonClickListener(this, object : ButtonClickListener() {
-    override fun onLeaveSessionButtonClicked() {
-        endCall(currentSessionId)
-    }
-    // Other callbacks...
-})
+Without the Push SDK calls module, decline through the Calls SDK directly: `CometChatCalls.endCall(sessionId, Constants.CALL_STATUS_REJECTED, listener)`.
 
-fun endCall(sessionId: String) {
-    // 1. Leave the call session (Calls SDK)
-    CallSession.getInstance().leaveSession()
+## Cancel a call
 
-    // 2. Notify other participants (Chat SDK)
-    CometChat.endCall(sessionId, object : CometChat.CallbackListener<Call>() {
-        override fun onSuccess(call: Call) {
-            Log.d(TAG, "Call ended successfully")
-            finish()
+The caller ends a call that is still ringing with `endCall` and the `cancelled` status. The callee's ring stops and a missed call is posted there.
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+fun cancelOutgoingCall(sessionId: String) {
+    CometChatCalls.endCall(sessionId, Constants.CALL_STATUS_CANCELLED,
+        object : CometChatCalls.CallbackListener<Void>() {
+            override fun onSuccess(result: Void?) = closeOutgoingScreen()
+            override fun onError(e: CometChatException) {
+                Log.e(TAG, "Cancel failed: ${e.message}")
+                closeOutgoingScreen()   // close locally either way
+            }
         }
-
-        override fun onError(e: CometChatException) {
-            Log.e(TAG, "End call failed: ${e.message}")
-            finish()
-        }
-    })
+    )
 }
 ```
 </Tab>
 <Tab title="Java">
 ```java
-CallSession callSession = CallSession.getInstance();
+void cancelOutgoingCall(String sessionId) {
+    CometChatCalls.endCall(sessionId, Constants.CALL_STATUS_CANCELLED,
+        new CometChatCalls.CallbackListener<Void>() {
+            @Override public void onSuccess(Void result) { closeOutgoingScreen(); }
+            @Override public void onError(CometChatException e) {
+                Log.e(TAG, "Cancel failed: " + e.getMessage());
+                closeOutgoingScreen();   // close locally either way
+            }
+        }
+    );
+}
+```
+</Tab>
+</Tabs>
 
-// Listen for end call button click
-callSession.addButtonClickListener(this, new ButtonClickListener() {
-    @Override
-    public void onLeaveSessionButtonClicked() {
-        endCall(currentSessionId);
+Disable the End button after the first tap, and ignore an `onParticipantJoined` that arrives after you cancelled: the cancel wins.
+
+## Ring timeout
+
+The callee's Push SDK ends an unanswered 1:1 call as `unanswered` when its ring window closes (45 seconds unless the push carries a `ringTimeout`). To close the caller's screen at the same moment even if that signal is late, run your own timer from `initiateCall` and end the call with the same status:
+
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+handler.postDelayed({
+    if (!answered) {
+        CometChatCalls.endCall(sessionId, Constants.CALL_STATUS_UNANSWERED, callback)
+        closeOutgoingScreen()
     }
-    // Other callbacks...
-});
+}, 45_000L)
+```
+</Tab>
+<Tab title="Java">
+```java
+handler.postDelayed(() -> {
+    if (!answered) {
+        CometChatCalls.endCall(sessionId, Constants.CALL_STATUS_UNANSWERED, callback);
+        closeOutgoingScreen();
+    }
+}, 45_000L);
+```
+</Tab>
+</Tabs>
 
-void endCall(String sessionId) {
-    // 1. Leave the call session (Calls SDK)
-    CallSession.getInstance().leaveSession();
+## End a call
 
-    // 2. Notify other participants (Chat SDK)
-    CometChat.endCall(sessionId, new CometChat.CallbackListener<Call>() {
-        @Override
-        public void onSuccess(Call call) {
-            Log.d(TAG, "Call ended successfully");
-            finish();
-        }
+Hang up by leaving the session. The room tells the other side, which receives `onParticipantLeft` and then `onSessionLeft` or `onConnectionClosed`. No status needs to be sent and the call is logged by the backend.
 
-        @Override
-        public void onError(CometChatException e) {
-            Log.e(TAG, "End call failed: " + e.getMessage());
-            finish();
-        }
+<Tabs>
+<Tab title="Kotlin">
+```kotlin
+val session = CometChatCalls.getActiveSession()
+
+// The default call UI's End button has already left when this fires; only clean up.
+session?.addButtonClickListener(this, object : ButtonClickListener() {
+    override fun onLeaveSessionButtonClicked() = finish()
+})
+
+// Your own hang-up control:
+fun hangUp() {
+    CometChatCalls.getActiveSession()?.leave()
+    finish()
+}
+```
+</Tab>
+<Tab title="Java">
+```java
+CallSession session = CometChatCalls.getActiveSession();
+
+// The default call UI's End button has already left when this fires; only clean up.
+if (session != null) {
+    session.addButtonClickListener(this, new ButtonClickListener() {
+        @Override public void onLeaveSessionButtonClicked() { finish(); }
     });
 }
+
+// Your own hang-up control:
+void hangUp() {
+    CallSession active = CometChatCalls.getActiveSession();
+    if (active != null) active.leave();
+    finish();
+}
 ```
 </Tab>
 </Tabs>
 
-The other participant receives `onCallEndedMessageReceived` callback and should leave the session:
+The other participant:
 
 <Tabs>
 <Tab title="Kotlin">
 ```kotlin
-CometChat.addCallListener(listenerID, object : CometChat.CallListener() {
-    override fun onCallEndedMessageReceived(call: Call) {
-        CallSession.getInstance().leaveSession()
-        finish()
-    }
-    // Other callbacks...
+CometChatCalls.getActiveSession()?.addSessionStatusListener(this, object : SessionStatusListener() {
+    override fun onSessionLeft() = finish()
+    override fun onConnectionClosed() = finish()
 })
 ```
 </Tab>
 <Tab title="Java">
 ```java
-CometChat.addCallListener(listenerID, new CometChat.CallListener() {
-    @Override
-    public void onCallEndedMessageReceived(Call call) {
-        CallSession.getInstance().leaveSession();
-        finish();
-    }
-    // Other callbacks...
+CallSession session = CometChatCalls.getActiveSession();
+if (session != null) session.addSessionStatusListener(this, new SessionStatusListener() {
+    @Override public void onSessionLeft() { finish(); }
+    @Override public void onConnectionClosed() { finish(); }
 });
 ```
 </Tab>
 </Tabs>
 
-## Call Status Values
+<Note>
+`CallSession.leaveSession()` is deprecated in 5.1; use `leave()`. Leave only the session your screen owns: after answering a second call over a live one, the first screen's clean-up must not leave the new session.
+</Note>
 
-| Status | Description |
-|--------|-------------|
-| `initiated` | Call has been initiated but not yet answered |
-| `ongoing` | Call is currently in progress |
-| `busy` | Receiver is busy on another call |
-| `rejected` | Receiver rejected the call |
-| `cancelled` | Caller cancelled before receiver answered |
-| `ended` | Call ended normally |
-| `missed` | Receiver didn't answer in time |
-| `unanswered` | Call was not answered |
+## Second call while in a call
+
+Handled by the Push SDK, the same way a phone does it. A call that arrives while the user is in another call rings over it with "Answering ends your current call". **Answer** leaves the live call, prepares the new one and opens your answer activity again (with `FLAG_ACTIVITY_SINGLE_TOP`, so it arrives in `onNewIntent` if the activity is still up: open a fresh screen for the new session). **Decline** sends `busy` and keeps the live call. A 1:1 call that arrives while another is already ringing, or while the user's own outgoing call is ringing, is declined as `busy` without ringing; a group call in that situation is dropped on this device without a reply.
+
+## Group calls
+
+To ring a group, call `initiateCall` with the group's GUID as `receiverUid` and `Constants.RECEIVER_TYPE_GROUP`; every member's device rings through the push. You can also start a group call without ringing: share a session id (for example in a custom message) and have each member join it with `joinSession`. When a group call rings, declining it or letting it ring out sends nothing: the call carries on for the other members, and the decline is local to that device.
+
+## Logout
+
+Log out of the Calls SDK when the user signs out (`CometChatCalls.logout`). On that logout the Push SDK stops a call still ringing for the old user and unregisters the push token. Logging out of the Chat SDK alone leaves the Calls SDK signed in, so a ring keeps playing for the old user and later declines go out with the old token.
+
+End or cancel any call of your own before logging out; the Calls SDK cannot send after the session is gone.
+
+## Call status values
+
+| Status | Meaning | Sent by |
+|--------|---------|---------|
+| `initiated` | Created, ringing | Backend, on `initiateCall` |
+| `ongoing` | Answered | Backend, when the callee joins |
+| `rejected` | Callee declined | Callee's Push SDK |
+| `busy` | Callee was in another call | Callee's Push SDK |
+| `cancelled` | Caller ended it before an answer | Caller, `endCall` |
+| `unanswered` | Nobody answered in the ring window | Callee's Push SDK (and optionally the caller's timer) |
+| `ended` | Hung up after being answered | Backend, when the session ends |
+| `missed` | How an unanswered or cancelled incoming call appears in call logs | Call logs |
+
+## Related
+
+- [Push ringing](/calls/android/voip-calling): dependencies, `PNConfiguration`, the FCM service, answer activity, your own incoming-call screen, readiness checks and what happens when the app is killed.
+- [Migrating from legacy ringing](/calls/android/migrating-from-legacy-ringing).
+- [Events](/calls/android/events), [Actions](/calls/android/actions), [Call Logs](/calls/android/call-logs).
