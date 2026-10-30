@@ -1,0 +1,271 @@
+---
+title: "Send While Offline"
+sidebarTitle: "Send While Offline"
+description: "Queue messages sent without a connection, track their status, and retry failed sends with the CometChat iOS SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// Send with the offline-aware overload (queued when offline, auto-sent on reconnect)
+CometChat.sendTextMessage(message: textMessage, onMessagePending: { message in
+    // messageStatus == .pending, fires right after the message is durably queued
+}, onMessageSent: { message in
+    // server ack: real id + sentAt
+}, onError: { error in
+    // ERROR_INTERNET_UNAVAILABLE = queued, not failed. Any other code = failed.
+})
+
+// Read offline state off a message
+let localId = message.localMessageId       // String?, stable client handle
+let status = message.messageStatus         // .pending .sending .sent .delivered .read .failed
+let reason = message.getFailureReason()    // CometChat.MessageFailureReason?, set only while failed
+
+// Inspect and recover the outbox
+CometChat.getPendingMessages(onSuccess: { messages in }, onError: { error in })  // pending + sending + failed
+CometChat.retryMessage(localId, onSuccess: { }, onError: { error in })           // one message
+CometChat.retryAllFailedMessages()                                               // transient failures only
+CometChat.discardLocalMessage(localId, onSuccess: { }, onError: { error in })    // delete an unsent message
+
+// Observe every outbox transition, app-wide
+CometChat.addOutboxListener("OUTBOX_LISTENER", outboxListener)   // OutboxListener
+```
+
+</Accordion>
+
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically when the connection returns. This page shows the offline-aware send overloads, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+
+<Note>
+Offline support is **off by default** and requires SDK **4.3.0** or newer. Queuing only happens once you [enable it](/sdk/ios/offline-enable); with offline off, a send over no connection fails exactly as before.
+</Note>
+
+The classic `sendTextMessage(message:onSuccess:onError:)` and its media, custom and interactive siblings are unchanged. They never queue and never report a pending stage; to get the offline behaviour, call the overloads below.
+
+## Send a Message
+
+Call the overload that takes `onMessagePending`, `onMessageSent` and `onError`. Its lifecycle is `onMessagePending` first (the message is durably queued), then exactly one final outcome — `onMessageSent` (the server accepted it) or, for a real failure, `onError`.
+
+```swift
+let textMessage = TextMessage(receiverUid: "UID", text: "Hello!", receiverType: .user)
+
+CometChat.sendTextMessage(message: textMessage, onMessagePending: { message in
+    // Queued and persisted; message.messageStatus == .pending
+    print("Pending, local id: \(message.localMessageId ?? "")")
+}, onMessageSent: { message in
+    // Server ack: message now carries its real id and sentAt
+    print("Sent: \(message.id)")
+}, onError: { error in
+    // Tell "queued, not failed" from a real failure by the error code
+    print("Send error: \(error?.errorCode ?? "")")
+})
+```
+
+The same three closures are accepted by all four persistent send methods:
+
+```swift
+CometChat.sendTextMessage(message: textMessage, onMessagePending: { _ in }, onMessageSent: { _ in }, onError: { _ in })
+CometChat.sendMediaMessage(message: mediaMessage, onMessagePending: { _ in }, onMessageSent: { _ in }, onError: { _ in })
+CometChat.sendCustomMessage(message: customMessage, onMessagePending: { _ in }, onMessageSent: { _ in }, onError: { _ in })
+CometChat.sendInteractiveMessage(message: interactiveMessage, onMessagePending: { _ in }, onMessageSent: { _ in }, onError: { _ in })
+```
+
+Each closure receives the concrete message type you sent (`TextMessage`, `MediaMessage`, and so on). An invalid send — empty text, or a custom message with no `customData` — is rejected with `onError` before anything is stored: it fires no `onMessagePending` and never enters the outbox.
+
+All callbacks are delivered on the main thread.
+
+## Queued, Not Failed
+
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `ERROR_INTERNET_UNAVAILABLE`. This is a **notification, not a failure**: the message stays durably pending, and `onMessageSent` fires **later**, on reconnect, when it actually goes.
+
+So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Read the error code to tell the two apart:
+
+| `error.errorCode` | Meaning | What to do |
+|---|---|---|
+| `ERROR_INTERNET_UNAVAILABLE` | Queued; not sent yet. Will auto-send on reconnect. | Show as sending/queued; nothing to do. |
+| Anything else | A real failure; the message will not retry on its own. | Offer the user a manual retry (see below). |
+
+```swift
+onError: { error in
+    if error?.errorCode == CometChatConstants.Errors.ERROR_INTERNET_UNAVAILABLE {
+        // Queued offline — it will send automatically on reconnect
+    } else {
+        // Real failure — surface a retry action
+    }
+}
+```
+
+<Note>
+The closures you pass to a send live in memory. If the app is killed while a message is queued, the send still completes on the next launch, but your closures are gone. Use the app-wide [`OutboxListener`](#observe-the-queue-app-wide) to hear about every outcome, including those.
+</Note>
+
+### Message status and failure reason
+
+Every message exposes its offline state. `localMessageId` is the SDK-generated handle stamped at compose time. It stays stable across the whole lifecycle — use it to retry or discard the message.
+
+| Property | Type | Notes |
+|---|---|---|
+| `localMessageId` | `String?` | Client handle; read-only. `nil` for messages that never went through the outbox. |
+| `messageStatus` | `CometChat.MessageStatus` | `.pending`, `.sending`, `.sent`, `.delivered`, `.read`, `.failed`. |
+| `getFailureReason()` / `failureReason` | `CometChat.MessageFailureReason?` | Set only on a failed message the SDK hands you; otherwise `nil`. |
+| `source` | `CometChat.MessageSource` | `.realtime` or `.sync`. How a received message reached the app. |
+
+<Warning>
+Use `messageStatus`, not `status`. `BaseMessage.status` is a pre-existing `String` property and is not the offline status.
+</Warning>
+
+`MessageFailureReason` values:
+
+| Reason | When |
+|---|---|
+| `.transient` | A temporary server error (a completed 5xx), or no answer after the auto-retry cap. Retryable. |
+| `.permanent` | The server rejected the message, or the error was not recognized. A manual retry will not help. |
+| `.queueFull` | A new send was refused because the queue is full (count cap). |
+| `.queueOverflow` | An older queued message was evicted to admit a newer one (`.dropOldest` only). |
+| `.byteOverflow` | A media send was refused because it exceeds the media byte budget. |
+| `.discarded` | The message was removed before it could send (for example a cache clear). |
+
+## Inspect the Queue
+
+`getPendingMessages(onSuccess:onError:)` returns the **entire unsent outbox** — every pending, sending and failed message, ordered by local compose time. Sent messages are not included. Read each message's `messageStatus` to group them.
+
+```swift
+CometChat.getPendingMessages(onSuccess: { messages in
+    for m in messages {
+        print("\(m.localMessageId ?? "") -> \(m.messageStatus)")
+    }
+}, onError: { error in
+    print("Could not read the outbox: \(error.errorCode)")
+})
+```
+
+If the cache is momentarily unavailable (busy, locked or full), it calls `onError` with `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` rather than answering an empty list — try again.
+
+<Note>
+The synchronous `getPendingMessages() -> [BaseMessage]` still exists but is deprecated: it cannot tell an empty outbox from one that is momentarily unreadable.
+</Note>
+
+### Observe the queue app-wide
+
+The per-call closures live only as long as the app does. To watch every queue transition — a live send, a reconnect auto-flush, a manual retry, or a resumed send after an app restart — register a global `OutboxListener`. Its failed callback carries the `MessageFailureReason`.
+
+```swift
+final class OutboxObserver: NSObject, OutboxListener {
+
+    func onOutboxMessagePending(_ message: BaseMessage) { }
+
+    func onOutboxMessageSent(_ message: BaseMessage) { }
+
+    func onOutboxMessageFailed(_ message: BaseMessage, _ reason: CometChat.MessageFailureReason) {
+        print("Failed: \(message.localMessageId ?? "") (\(reason))")
+    }
+}
+
+// Keep a strong reference — the SDK holds listeners weakly.
+let outboxObserver = OutboxObserver()
+CometChat.addOutboxListener("OUTBOX_LISTENER", outboxObserver)
+
+// Remove it when no longer needed
+CometChat.removeOutboxListener("OUTBOX_LISTENER")
+```
+
+<Warning>
+The SDK holds listeners **weakly**, so retain the object yourself. Registering a second listener under the same ID replaces the first, and removing an ID removes whatever is registered under it — use a distinct ID for each listener.
+</Warning>
+
+## Retry and Discard
+
+There is no automatic retry of a failed message — recovery is explicit and user-invoked. Use the message's `localMessageId`.
+
+- **`retryMessage(_:onSuccess:onError:)`** re-attempts one message. A failed message is reset to pending and sent; a pending message is attempted now rather than waiting for a reconnect. `onSuccess` fires when the message is sent; `onError` receives a rejection or that attempt's error.
+- **`retryAllFailedMessages()`** retries **transient** failures only; permanent ones are skipped. It has no callback — watch the outcome on your `OutboxListener`.
+- **`discardLocalMessage(_:onSuccess:onError:)`** deletes an unsent (pending or failed) message from the device, including its copied media. The original send closures get no final outcome, and no outbox event fires.
+
+```swift
+CometChat.retryMessage(localMessageId, onSuccess: {
+    print("Sent")
+}, onError: { error in
+    print("Retry rejected or failed: \(error.errorCode)")
+})
+
+CometChat.retryAllFailedMessages()
+
+CometChat.discardLocalMessage(localMessageId, onSuccess: {
+    print("Discarded")
+}, onError: { error in
+    print("Discard rejected: \(error.errorCode)")
+})
+```
+
+There is also a fire-and-forget `retryMessage(_ message: BaseMessage)` that takes the message itself and reports nothing. The callback forms of `retryMessage` and `discardLocalMessage` are Swift-only.
+
+`retryMessage` and `discardLocalMessage` reject, changing nothing, when:
+
+| Error code | Reason |
+|---|---|
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | The message is already on the wire. `retryMessage` rejects `.sending` messages; `discardLocalMessage` also rejects a pending message whose request is still outstanding. |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | No unsent message has that id (unknown, empty, or already sent). |
+| `ERROR_OFFLINE_DISABLED` | Offline support is not running. |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local cache was briefly unavailable. Try again. |
+
+## Auto-send on Reconnect
+
+By default, queued pending messages are sent automatically, in the order they were composed, when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/ios/offline-enable) and the [reference](/sdk/ios/offline-reference). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes failed (`.transient`), which you recover with `retryMessage`.
+
+Reconnect also runs a catch-up sync for received messages — see [Stay in Sync](/sdk/ios/offline-sync).
+
+## Queue Limits
+
+The outbox holds at most `maxPendingMessages` unsent messages (pending and sending); failed messages do not count. When the queue is full, `OfflineConfig.pendingQueueOverflowPolicy` decides what happens:
+
+| `PendingMessageOverflowPolicy` | Behaviour on overflow |
+|---|---|
+| `.rejectNewest` (**default**) | The new send is refused and reported with reason `.queueFull`. Nothing already queued is lost. |
+| `.dropOldest` | The oldest pending message is evicted (reason `.queueOverflow`) to admit the new one. |
+
+A media send that exceeds the media byte budget is refused with reason `.byteOverflow`.
+
+A **refused** send still reaches a final outcome. It fires `onMessagePending`, then `onError` with the code `ERROR_QUEUE_FULL` (or `ERROR_OFFLINE_MEDIA_BYTE_OVERFLOW`), and the `OutboxListener` receives `onOutboxMessagePending` followed by `onOutboxMessageFailed(_:_:)` carrying the exact reason. On the message you sent, `messageStatus` is `.failed`. An **evicted** message reports `onError` with `ERROR_QUEUE_OVERFLOW` on its own original send closures.
+
+| Code | Raised when |
+|---|---|
+| `ERROR_QUEUE_FULL` | A new send was refused because the outbox is full (`.rejectNewest`). |
+| `ERROR_QUEUE_OVERFLOW` | A queued message was evicted to make room (`.dropOldest`). |
+| `ERROR_OFFLINE_MEDIA_BYTE_OVERFLOW` | Outgoing media would exceed `maxMediaCacheSize`. |
+| `ERROR_OFFLINE_MEDIA_COPY_FAILED` | The media file could not be copied for offline send. The send fails permanently and immediately, with no pending stage. |
+
+<Warning>
+A refused or evicted message has **no durable row** — it does not appear in `getPendingMessages`, and calling `retryMessage` on its id returns `ERROR_OFFLINE_MESSAGE_NOT_FOUND`. Capture these from the failure callback and handle them at that moment. Prefer the default `.rejectNewest`, which never silently drops an already-queued message from another conversation.
+</Warning>
+
+## Edits, Deletes, and Reactions Need a Connection
+
+Offline queuing applies to **sending new messages** only. Changes to existing messages — edit, delete, add or remove a reaction — and other own actions are **not queued offline**. They are sent to the server whenever you trigger them, and they report an error if the request gets no answer. Their effect reaches the cache only once the server accepts them.
+
+## Durable Media Uploads
+
+Send a single `MediaMessage` built with `files:` and the SDK copies the bytes to the device before it reports pending, so the message survives an app restart and is sent on reconnect. A multi-attachment message built from `attachments` that were uploaded earlier queues as a small text-only row, because the files are already on the server. Uploading new files to hosted storage does need a connection (see [Upload Files](/sdk/ios/upload-files)).
+
+An in-progress multi-file upload batch survives an app restart: the SDK keeps the batch on disk and you can re-attach to it. Fetch the existing request for a conversation with `getExistingUploadFileRequest`, and read each file's progress through `getItems()`, which returns a list of `UploadFileItem` (each with a `state` of type `UploadFileState`: `.queued`, `.uploading`, `.uploaded`, `.failed`, or `.rejected`, which cannot be retried). Retry an individual file with `retryAttachment(fileId:)`; the SDK retries from its own copy, so you do not pass the file again.
+
+```swift
+// parentMessageId: 0 for the main composer, the thread parent's id for a thread composer.
+if let request = CometChat.getExistingUploadFileRequest(receiverId: "UID",
+                                                        receiverType: .user,
+                                                        parentMessageId: 0) {
+    for item in request.getItems() {
+        print("\(item.fileId) -> \(item.state)")
+        if item.state == .failed {
+            request.retryAttachment(fileId: item.fileId)
+        }
+    }
+}
+```
+
+`getExistingUploadFileRequest` returns `nil` when offline support is off, when nobody is logged in, or when no batch was kept for that chat. Files that were still uploading when the app was killed come back as `.failed`. For a restored item, `file` is `nil` — show a preview from `localCopyPath` instead.
+
+See [Media Caching](/sdk/ios/offline-media-caching) for downloading and caching received attachments.
+
+<Tip>
+For the full list of offline methods, listeners, enums, model fields, and error codes, see the [Offline Configuration & API Reference](/sdk/ios/offline-reference).
+</Tip>

@@ -1,0 +1,148 @@
+---
+title: "Media Caching"
+sidebarTitle: "Media Caching"
+description: "Cache image, video, audio and file attachments on the device so media stays viewable offline with the CometChat iOS SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```swift
+// Set the media caching mode at init (fixed for the session)
+let offlineConfig = OfflineConfig.Builder()
+    .setEnabled(true)
+    .setMediaCaching(.auto)                    // .auto (default) or .off
+    .setMaxMediaCacheSize(500 * 1024 * 1024)   // bytes; 0 = unlimited
+    .build()
+
+// Read the mode in effect
+let mode = CometChat.getMediaCachingMode()     // .off when offline is not active
+
+// Resolve cached bytes for an attachment
+let attachment = mediaMessage.attachment
+let localPath = attachment?.localPath                           // hydrated automatically on reads
+let cached = CometChat.getCachedMediaPath(attachment!.fileUrl)  // nil if not cached
+
+// Download on demand
+CometChat.downloadMedia(url: attachment!.fileUrl, messageServerId: mediaMessage.id,
+                        onProgress: { percent in },
+                        onSuccess: { localPath in },
+                        onError: { error in })
+
+// Observe background (.auto) downloads
+CometChat.addMediaDownloadListener("MEDIA_LISTENER", mediaObserver)   // MediaDownloadListener
+```
+
+</Accordion>
+
+With offline support on, the SDK can cache attachment bytes durably on the device so media stays viewable offline — even after the server's presigned URL has expired. This page covers the caching modes, what downloads automatically, how to read cached bytes, and how to download media on demand.
+
+<Note>
+Media caching applies only while offline support is active for the logged-in user (`CometChat.isOfflineEnabled()` is `true`). See [Enable Offline Support](/sdk/ios/offline-enable).
+</Note>
+
+## Caching modes
+
+The caching mode is set once, in the `OfflineConfig` you pass at initialization, and is fixed for the SDK session. There is no runtime switch — to change it, re-initialize the SDK with a new config.
+
+| `CometChat.MediaCachingMode` | Behavior |
+|---|---|
+| `.auto` (default) | Incoming media bytes are eagerly downloaded and cached, then LRU-managed. The outgoing copy is retained after the server acknowledges the send. |
+| `.off` | Incoming media bytes are **not** cached. The message metadata (including `fileUrl`) is still cached, so the message appears offline and the UI loads media live from the URL when online. The outgoing copy is dropped after the send is acknowledged. |
+
+Sending media always works in both modes.
+
+```swift
+let offlineConfig = OfflineConfig.Builder()
+    .setEnabled(true)
+    .setMediaCaching(.auto)
+    .setMaxMediaCacheSize(500 * 1024 * 1024)
+    .build()
+```
+
+Read the mode in effect at runtime with `CometChat.getMediaCachingMode()`. It returns `.off` whenever offline support is not active, whatever the app configured, so a UI layer can rely on it without reading the config itself.
+
+## What downloads automatically
+
+In `.auto` mode, media bytes are downloaded and cached automatically on the two live receive paths:
+
+- a **realtime** media message received while connected, and
+- opening a chat **online** (the server read refreshes and caches its media).
+
+A media message that arrives through a reconnect catch-up [sync](/sdk/ios/offline-sync) is cached as **metadata only** and renders as a placeholder; its bytes download the next time you open that chat online. This holds in both `.auto` and `.off`.
+
+In `.off` mode, nothing is auto-downloaded on any path; media loads live from its URL when online.
+
+## Reading cached media
+
+When bytes are already cached, the SDK **hydrates the local path automatically** on every message it delivers — you do not have to ask. Read it straight off the attachment:
+
+```swift
+if let attachment = mediaMessage.attachment, let localPath = attachment.localPath {
+    // Non-nil when bytes are cached. Render directly from disk — no network fetch.
+}
+```
+
+To look up the cached path explicitly, call `getCachedMediaPath` with the attachment's URL. It returns `nil` when the bytes are not cached (call `downloadMedia` to fetch them).
+
+```swift
+let path = CometChat.getCachedMediaPath(attachment.fileUrl)   // nil if not cached
+```
+
+<Note>
+Each attachment of a multi-attachment message resolves independently. An attachment with no cached bytes keeps `localPath == nil` and the UI loads it from the URL as before.
+</Note>
+
+## Downloading on demand
+
+Call `downloadMedia` to fetch and cache an attachment's bytes — for example when the user taps a placeholder. Pass the attachment's `fileUrl` and the message's server id. The SDK resolves the bytes in order: the cache, then the URL, then a re-signed URL (looked up with the message id) if the presigned one expired.
+
+```swift
+CometChat.downloadMedia(url: attachment.fileUrl, messageServerId: mediaMessage.id, onProgress: { percent in
+    // 0...100, best-effort.
+}, onSuccess: { localPath in
+    // Bytes cached; render from localPath.
+}, onError: { error in
+    print("Download failed: \(error.errorCode)")
+})
+```
+
+Without progress, use `downloadMedia(url:messageServerId:onSuccess:onError:)`.
+
+`onProgress` reports `0...100`, best-effort and never going backwards. It is emitted only when the server reports a content length; for an unknown-length download it is skipped and the call goes straight to `onSuccess`. Progress never blocks or fails the download. Dispatch to the main queue before updating UI from these closures.
+
+`onError` carries an offline error code, never a raw HTTP status:
+
+| Error code | Meaning | What to do |
+|---|---|---|
+| `ERROR_OFFLINE_MEDIA_NOT_CACHED` | The bytes are not cached and the device is offline. | Show a placeholder; do not retry until the connection returns. |
+| `ERROR_OFFLINE_MEDIA_UNRESOLVABLE` | The cache missed, the download failed, and re-signing produced nothing usable (or the URL was invalid). | A retry is allowed but likely to fail. |
+| `ERROR_OFFLINE_DISABLED` | Offline support is not enabled, or nobody is logged in. | Load from the URL as before. |
+
+## Observe background downloads
+
+In `.auto` mode, incoming media downloads in the background with no per-call callback. Register a `MediaDownloadListener` to learn when the bytes land (or fail) so a UI tile can refresh. Callbacks fire on the main thread.
+
+```swift
+final class MediaObserver: NSObject, MediaDownloadListener {
+
+    func onMediaDownloaded(_ messageId: String, _ url: String, _ localPath: String) {
+        // messageId: the message's server id (or its local id if not yet sent)
+        // url:       the attachment URL without its query string or fragment
+        // localPath: where the bytes landed
+    }
+
+    func onMediaDownloadFailed(_ attachment: Attachment?, _ error: CometChatException) { }
+}
+
+let mediaObserver = MediaObserver()   // keep a strong reference
+CometChat.addMediaDownloadListener("MEDIA_LISTENER", mediaObserver)
+```
+
+Remove the listener with `CometChat.removeMediaDownloadListener("MEDIA_LISTENER")`. The background `MediaDownloadListener` carries no progress callback — progress is reported only on the explicit `downloadMedia` path above.
+
+## Media cache size limit
+
+Cached media bytes are bounded by `maxMediaCacheSize` (default **500 MB**; `0` means unlimited). When the cache exceeds the limit, the least recently accessed media is deleted first until it is back under budget. The outgoing copies of un-sent messages and in-progress uploads are never evicted. An outgoing media send that cannot fit the budget fails with `ERROR_OFFLINE_MEDIA_BYTE_OVERFLOW` (see [Send While Offline](/sdk/ios/offline-send#queue-limits)).
+
+Media is stored as files in durable, app-private storage; the location is not configurable. Eviction runs silently in the background — there is no cache-limit callback. To reason about size, use `CometChat.getCacheSize()` and the configured limits. See the [configuration reference](/sdk/ios/offline-reference) for the full set of options.
