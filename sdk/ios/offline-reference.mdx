@@ -32,7 +32,7 @@ CometChat.clearOfflineCache()
 
 </Accordion>
 
-This page is the full surface of CometChat's offline support on iOS: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **4.2.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/ios/offline-enable), [Show Cached Data](/sdk/ios/offline-cached-data), [Send While Offline](/sdk/ios/offline-send), [Stay in Sync](/sdk/ios/offline-sync), [Media Caching](/sdk/ios/offline-media-caching), and [Encrypt the Cache](/sdk/ios/offline-encryption).
+This page is the full surface of CometChat's offline support on iOS: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **4.3.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/ios/offline-enable), [Show Cached Data](/sdk/ios/offline-cached-data), [Send While Offline](/sdk/ios/offline-send), [Stay in Sync](/sdk/ios/offline-sync), [Media Caching](/sdk/ios/offline-media-caching), and [Encrypt the Cache](/sdk/ios/offline-encryption).
 
 ## OfflineConfig options
 
@@ -41,7 +41,7 @@ Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig
 | Builder setter | Type | Default | Range / clamp | Effect |
 |---|---|---|---|---|
 | `setEnabled(_:)` | `Bool` | `false` | — | Master gate for the whole offline engine. With it off the SDK behaves exactly as before. |
-| `setCacheDurationDays(_:)` | `Int` | `0` (unlimited) | `>= 0`; negative treated as `0` | Message retention TTL in days. `0` = no age-based prune; eviction is by the byte/count caps instead. |
+| `setCacheDurationDays(_:)` | `Int` | `0` (unlimited) | `>= 0`; negative treated as `0` | Days to keep a conversation that has had no new message and has not been opened. `0` = no age-based prune; eviction is by the byte/count caps instead. |
 | `setMaxStorageSize(_:)` | `Int64` bytes | `262144000` (250 MB) | `0` = unlimited; negative treated as `0` | Byte budget for cached content: messages, entity snapshots and stored lists. The outbox is excluded. |
 | `setMaxMessagesPerConversation(_:)` | `Int` | `500` | clamped `[1, 1000]`; `0`/negative/over → `1000` | Per-conversation cached-message window. |
 | `setMaxConversations(_:)` | `Int` | `100` | clamped `[1, 1000]`; `0`/negative/over → `1000` | Cached-conversation cap. |
@@ -55,8 +55,6 @@ Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig
 | `setMaxSnapshotQueries(_:)` | `Int` | `100` | `0`/negative → `100` | Most entity-list snapshots (users, groups, group members, and so on) kept for offline replay; LRU. |
 | `setSnapshotTtlDays(_:)` | `Int` | `7` | `0`/negative → `7` | Days an entity-list snapshot is kept. |
 | `setDebugTracing(_:)` | `Bool` | `false` | — | Dev-only diagnostic tracing. Leave off in production. |
-
-{/* TODO(verify): the source comments for maxSnapshotQueries / snapshotTtlDays say "clamped to [1,1000]" / "[1,365]" but OfflineConfig only normalises 0/negative to the default and applies no upper clamp. The table documents the code; confirm intended behaviour. */}
 
 Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_:)` — see [Enable Offline Support](/sdk/ios/offline-enable). Each value is readable on the built `OfflineConfig` (for example `offlineConfig.maxConversations`), and `AppSettings.offlineConfig` exposes the active config read-only.
 
@@ -135,11 +133,13 @@ The cached phase answers a read only if **every** active filter is locally compu
 
 | Read | Answered from cache | Server-only (empty cached page) | Enrichment (never blocks) |
 |---|---|---|---|
-| `MessagesRequest` | category/categories, type/types, parent message (threads), hide replies, hide deleted, tags, has mentions, mentioned UIDs, has attachments, attachment types, hide messages from blocked users, has reactions, unread, pinned, saved | `searchKeyword`, `hasLinks`, `updatesOnly`, `interactionGoalCompletedOnly`; a group read narrowed to one sender | `withTags`, `withParent`, `mentionsWithTagInfo`, `mentionsWithBlockedInfo`, `hideQuotedMessages` |
+| `MessagesRequest` | category/categories, type/types, parent message (threads), hide replies, hide deleted, tags, has mentions, mentioned UIDs, has attachments, attachment types, hide messages from blocked users, has reactions, unread, pinned, saved | `searchKeyword`, `has(links:)`, `updatesOnly(onlyUpdates:)`, `setInteractionGoalCompletedOnly(_:)`; a group read narrowed to one sender | `withTags`, `withParent`, `mentionsWithTagInfo`, `mentionsWithBlockedInfo`, `hideQuotedMessages` |
 | `ConversationRequest` | conversation type, unread, tags, user tags, group tags, hide/only agentic, include blocked users, with blocked info, pinned by | `searchKeyword` | `withTags`, `withUserAndGroupTags` |
 | Users, groups, group members, banned members, blocked users, reactions, notification feed | Replays the snapshot recorded online for the **same builder settings**, page by page | `searchKeyword`; presence filters (`UsersRequest.set(status:)`, `GroupMembersRequest.set(status:)`) | — |
 
 ## Enums
+
+The enums are available as `CometChat.<Name>` in Swift (for example `CometChat.MessageStatus`). In Objective-C they are named `CometChat<Name>` (for example `CometChatMessageStatus`).
 
 | Enum | Values |
 |---|---|
@@ -172,7 +172,7 @@ Compare `CometChatException.errorCode` against these `CometChatConstants.Errors`
 | Code | Raised when |
 |---|---|
 | `ERROR_INTERNET_UNAVAILABLE` | A read reached the server phase with no connection (fires after the cached page on a two-phase fetch), or a send was queued offline (the "queued, not failed" notice). |
-| `ERROR_REQUEST_IN_PROGRESS` | A two-phase fetch was called on a request whose previous fetch is still in flight. |
+| `ERROR_REQUEST_IN_PROGRESS` | A two-phase fetch on a `MessagesRequest`, `ThreadsRequest` or `ReactionsRequest` was called while its previous fetch is still in flight. User, group, member and banned-member lists return an empty server result instead. |
 | `ERROR_USER_NOT_LOGGED_IN` | `forceSyncNow(onSuccess:onError:)` was called with nobody logged in. |
 | `ERROR_OFFLINE_SYNC_IN_PROGRESS` | `forceSyncNow(onSuccess:onError:)` was called while a sync is already running. |
 | `ERROR_OFFLINE_SYNC_COOLDOWN` | `forceSyncNow(onSuccess:onError:)` was called within the throttle cooldown. |
@@ -192,7 +192,7 @@ A background download that fails reports `onMediaDownloadFailed` with the error 
 
 ## Legacy overloads
 
-Unlike some platforms, the classic single-callback overloads are **not** deprecated on iOS. They are unchanged and never deliver a cached or pending result; the two-phase and pending-aware overloads are additive and chosen by argument label. Only these are deprecated:
+The classic single-callback overloads are **not** deprecated on iOS. They are unchanged and never deliver a cached or pending result. The two-phase and pending-aware overloads are additive, and you choose between them by argument label. Only these are deprecated:
 
 | Deprecated | Replacement |
 |---|---|
