@@ -1,0 +1,410 @@
+---
+title: "Send While Offline"
+sidebarTitle: "Send While Offline"
+description: "Queue messages sent without a connection, track their status, and retry failed sends with the CometChat Android SDK."
+---
+
+import OfflineDeprecatedSend from '/snippets/sdk/offline-deprecated-send.mdx';
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Send with the offline-aware listener (queued when offline, auto-sent on reconnect)
+CometChat.sendMessage(textMessage, object : CometChat.MessageSentListener() {
+    override fun onMessagePending(message: BaseMessage?) { /* status == PENDING, fires < 100ms */ }
+    override fun onMessageSent(message: BaseMessage?) { /* server ack: real id + sentAt */ }
+    override fun onError(e: CometChatException?) { /* PENDING = queued, FAILED = failed */ }
+})
+
+// Read offline state off a message
+val localId = message.localMessageId     // stable client handle while offline is running
+val status = message.status              // PENDING, SENDING, SENT, DELIVERED, READ, FAILED
+val reason = message.failureReason       // MessageFailureReason, set only while FAILED
+
+// Inspect and recover the outbox
+CometChat.getPendingMessages(callback)                  // PENDING + SENDING + FAILED
+CometChat.retryMessage(localId, messageSentListener)    // one message
+CometChat.retryAllFailedMessages(messageSentListener)   // transient failures only
+CometChat.discardLocalMessage(localId, stringCallback)  // delete an unsent message
+
+// Observe every outbox transition, app-wide
+CometChat.addOfflineMessageListener("LISTENER_ID", object : CometChat.OfflineMessageListener() {
+    override fun onOutboxMessagePending(message: BaseMessage?) {}
+    override fun onOutboxMessageSent(message: BaseMessage?) {}
+    override fun onOutboxMessageFailed(message: BaseMessage?, reason: MessageFailureReason?) {}
+})
+```
+
+</Accordion>
+
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically when the connection returns. This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+
+<Note>
+
+Offline support is **off by default** and requires SDK **5.1.0** or newer. Queuing only happens once you [enable it](/sdk/android/v5/offline-enable); with offline off, a send over no connection fails exactly as before.
+
+</Note>
+
+<OfflineDeprecatedSend method="`sendMessage()`, `sendMediaMessage()`, `sendCustomMessage()` and `sendInteractiveMessage()`" />
+
+## Send a Message
+
+Pass a `MessageSentListener` to `sendMessage`. Its lifecycle is `onMessagePending` first (the message is durably queued), then exactly one final outcome — `onMessageSent` (the server accepted it) or, for a real failure, `onError`.
+
+<Tabs>
+<Tab title="Java">
+```java
+TextMessage textMessage = new TextMessage("UID", "Hello!", CometChatConstants.RECEIVER_TYPE_USER);
+
+CometChat.sendMessage(textMessage, new CometChat.MessageSentListener() {
+    @Override
+    public void onMessagePending(BaseMessage message) {
+        // Queued and persisted; message.getStatus() == MessageStatus.PENDING
+        Log.d(TAG, "Pending, local id: " + message.getLocalMessageId());
+    }
+
+    @Override
+    public void onMessageSent(BaseMessage message) {
+        // Server ack: message now carries its real id and sentAt
+        Log.d(TAG, "Sent: " + message.getId());
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        // Inspect the message status to tell "queued, not failed" from a real failure
+        Log.e(TAG, "Send error: " + e.getCode());
+    }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val textMessage = TextMessage("UID", "Hello!", CometChatConstants.RECEIVER_TYPE_USER)
+
+CometChat.sendMessage(textMessage, object : CometChat.MessageSentListener() {
+    override fun onMessagePending(message: BaseMessage?) {
+        // Queued and persisted; message?.status == MessageStatus.PENDING
+        Log.d(TAG, "Pending, local id: ${message?.localMessageId}")
+    }
+
+    override fun onMessageSent(message: BaseMessage?) {
+        // Server ack: message now carries its real id and sentAt
+        Log.d(TAG, "Sent: ${message?.id}")
+    }
+
+    override fun onError(e: CometChatException?) {
+        // Inspect the message status to tell "queued, not failed" from a real failure
+        Log.e(TAG, "Send error: ${e?.code}")
+    }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+The same `MessageSentListener` is accepted by all four persistent send methods:
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.sendMessage(textMessage, listener);               // TextMessage
+CometChat.sendMediaMessage(mediaMessage, listener);         // MediaMessage
+CometChat.sendCustomMessage(customMessage, listener);       // CustomMessage
+CometChat.sendInteractiveMessage(interactiveMessage, listener); // InteractiveMessage
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.sendMessage(textMessage, listener)                // TextMessage
+CometChat.sendMediaMessage(mediaMessage, listener)          // MediaMessage
+CometChat.sendCustomMessage(customMessage, listener)        // CustomMessage
+CometChat.sendInteractiveMessage(interactiveMessage, listener) // InteractiveMessage
+```
+
+</Tab>
+
+</Tabs>
+
+## Queued, Not Failed
+
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `ERROR_INTERNET_UNAVAILABLE`. This is a **notification, not a failure**: the message stays durably `PENDING`, and `onMessageSent` fires **later**, on reconnect, when it actually goes.
+
+So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Always read `message.getStatus()` to tell the two apart:
+
+| `status` after `onError` | Meaning | What to do |
+|---|---|---|
+| `PENDING` | Queued; not sent yet. Will auto-send on reconnect. | Show as sending/queued; nothing to do. |
+| `FAILED` | A real failure; will not retry on its own. | Offer the user a manual retry (see below). |
+
+<Tabs>
+<Tab title="Java">
+```java
+@Override
+public void onError(CometChatException e) {
+    if (message.getStatus() == MessageStatus.PENDING) {
+        // Queued offline — it will send automatically on reconnect
+    } else if (message.getStatus() == MessageStatus.FAILED) {
+        // Real failure — surface a retry action
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+override fun onError(e: CometChatException?) {
+    when (message.status) {
+        MessageStatus.PENDING -> { /* Queued offline — auto-sends on reconnect */ }
+        MessageStatus.FAILED  -> { /* Real failure — surface a retry action */ }
+        else -> {}
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Message status and failure reason
+
+Every message exposes its offline state. `getLocalMessageId()` returns the SDK-generated handle that is stamped at compose (while offline is running) and stays stable across the whole lifecycle — use it to retry or discard the message.
+
+| Accessor | Type | Notes |
+|---|---|---|
+| `getLocalMessageId()` | `String` | Client handle; present while offline is running. |
+| `getStatus()` | `MessageStatus` | `PENDING`, `SENDING`, `SENT`, `DELIVERED`, `READ`, `FAILED`. |
+| `getFailureReason()` | `MessageFailureReason` | Set only while `FAILED`; otherwise empty. |
+
+`MessageFailureReason` values:
+
+| Reason | When |
+|---|---|
+| `TRANSIENT` | A temporary server error (for example 5xx or rate-limited), or no answer after the auto-retry cap. Retryable. |
+| `PERMANENT` | The server rejected the message, or the error was not recognized. A manual retry will not help. |
+| `QUEUE_FULL` | A new send was refused because the queue is full (count cap). |
+| `QUEUE_OVERFLOW` | An older queued message was evicted to admit a newer one (`DROP_OLDEST` only). |
+| `BYTE_OVERFLOW` | A media send was refused because it exceeds the queue's byte budget. |
+| `DISCARDED` | The message was removed before it could send (for example `discardLocalMessage`, or a cache clear). |
+
+## Inspect the Queue
+
+`getPendingMessages` returns the **entire un-acked outbox** — every `PENDING`, `SENDING`, and `FAILED` message, ordered by local compose time. Sent messages are not included. Read each message's `status` to group them.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.getPendingMessages(new CometChat.CallbackListener<List<BaseMessage>>() {
+    @Override
+    public void onSuccess(List<BaseMessage> messages) {
+        for (BaseMessage m : messages) {
+            Log.d(TAG, m.getLocalMessageId() + " -> " + m.getStatus());
+        }
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Could not read the outbox: " + e.getCode());
+    }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.getPendingMessages(object : CometChat.CallbackListener<List<BaseMessage>>() {
+    override fun onSuccess(messages: List<BaseMessage>) {
+        messages.forEach { Log.d(TAG, "${it.localMessageId} -> ${it.status}") }
+    }
+
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "Could not read the outbox: ${e?.code}")
+    }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+### Observe the queue app-wide
+
+The per-call `MessageSentListener` lives only as long as the call. To watch every queue transition — a live send, a reconnect auto-flush, a manual retry, or a resumed send after an app restart — register a global `OfflineMessageListener`. Its failed callback carries the `MessageFailureReason`.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.addOfflineMessageListener("LISTENER_ID", new CometChat.OfflineMessageListener() {
+    @Override
+    public void onOutboxMessagePending(BaseMessage message) { }
+
+    @Override
+    public void onOutboxMessageSent(BaseMessage message) { }
+
+    @Override
+    public void onOutboxMessageFailed(BaseMessage message, MessageFailureReason reason) {
+        Log.e(TAG, "Failed: " + message.getLocalMessageId() + " (" + reason + ")");
+    }
+});
+
+// Remove it when no longer needed
+CometChat.removeOfflineMessageListener("LISTENER_ID");
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.addOfflineMessageListener("LISTENER_ID", object : CometChat.OfflineMessageListener() {
+    override fun onOutboxMessagePending(message: BaseMessage?) {}
+    override fun onOutboxMessageSent(message: BaseMessage?) {}
+    override fun onOutboxMessageFailed(message: BaseMessage?, reason: MessageFailureReason?) {
+        Log.e(TAG, "Failed: ${message?.localMessageId} ($reason)")
+    }
+})
+
+// Remove it when no longer needed
+CometChat.removeOfflineMessageListener("LISTENER_ID")
+```
+
+</Tab>
+
+</Tabs>
+
+## Retry and Discard
+
+There is no automatic retry of a `FAILED` message — recovery is explicit and user-invoked. Use the message's `localMessageId`.
+
+- **`retryMessage(localMessageId, listener)`** re-attempts one message. A `FAILED` message is reset to `PENDING` and sent; a `PENDING` message is attempted now rather than waiting for a reconnect. The listener receives that attempt's outcome.
+- **`retryAllFailedMessages(listener)`** retries **transient** failures only; permanent ones are skipped.
+- **`discardLocalMessage(localMessageId, listener)`** deletes an unsent (`PENDING` or `FAILED`) message from the device, including its copied media. `onSuccess` receives the `localMessageId`.
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.retryMessage(localMessageId, messageSentListener);
+
+CometChat.retryAllFailedMessages(messageSentListener);
+
+CometChat.discardLocalMessage(localMessageId, new CometChat.CallbackListener<String>() {
+    @Override
+    public void onSuccess(String discardedLocalId) { }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Discard rejected: " + e.getCode());
+    }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.retryMessage(localMessageId, messageSentListener)
+
+CometChat.retryAllFailedMessages(messageSentListener)
+
+CometChat.discardLocalMessage(localMessageId, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(discardedLocalId: String?) {}
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "Discard rejected: ${e?.code}")
+    }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+`retryMessage` and `discardLocalMessage` reject, changing nothing, when:
+
+| Error code | Reason |
+|---|---|
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | The message is already sending (`SENDING`). |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | No unsent message has that id (unknown, or already sent). |
+| `ERROR_OFFLINE_DISABLED` | Offline support is not running. |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local cache was briefly unavailable. Try again. |
+
+## Auto-send on Reconnect
+
+By default, queued `PENDING` messages are sent automatically when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/android/v5/offline-enable) and the [reference](/sdk/android/v5/offline-reference). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes `FAILED` (`TRANSIENT`), which you recover with `retryMessage`.
+
+Reconnect also runs a catch-up sync for received messages — see [Stay in Sync](/sdk/android/v5/offline-sync).
+
+## Queue Limits
+
+The outbox holds at most `maxPendingMessages` messages still trying to send (`PENDING` + `SENDING`); `FAILED` messages do not count. When the queue is full, `OfflineConfig.pendingQueueOverflowPolicy` decides what happens:
+
+| `PendingMessageOverflowPolicy` | Behaviour on overflow |
+|---|---|
+| `REJECT_NEWEST` (**default**) | The new send is refused and reported with reason `QUEUE_FULL`. Nothing already queued is lost. |
+| `DROP_OLDEST` | The oldest `PENDING` message is evicted (reason `QUEUE_OVERFLOW`) to admit the new one. |
+
+A media send that exceeds the queue's byte budget is refused with reason `BYTE_OVERFLOW`.
+
+A **refused** send (`QUEUE_FULL` / `BYTE_OVERFLOW`) is never queued, so it fires **no** `onMessagePending`; it reports `onError` with the code `ERROR_PENDING_QUEUE_LIMIT`, and the global `OfflineMessageListener` receives `onOutboxMessageFailed(message, reason)` carrying the exact reason.
+
+<Warning>
+
+A refused or evicted message (`QUEUE_FULL`, `QUEUE_OVERFLOW`, `BYTE_OVERFLOW`) has **no durable row** — it does not appear in `getPendingMessages`, and calling `retryMessage` on its id does nothing. Capture these from the failure callback and handle them at that moment. Prefer the default `REJECT_NEWEST`, which never silently drops an already-queued message from another conversation.
+
+</Warning>
+
+## Edits, Deletes, and Reactions Need a Connection
+
+Offline queuing applies to **sending new messages** only. Changes to existing messages — edit, delete, add or remove a reaction — and other own actions are **not queued offline**. They are sent to the server whenever you trigger them, and they report the not-connected error if the request gets no answer. Their effect reaches the cache only once the server accepts them.
+
+## Durable Media Uploads
+
+A multi-attachment upload survives an app restart: the SDK re-attaches to an in-progress batch instead of restarting it. Fetch the existing request for a conversation with `getExistingUploadFileRequest`, and read each file's progress through `getItems()`, which returns a list of `UploadFileItemStatus` (each with a `State`: `QUEUED`, `UPLOADING`, `UPLOADED`, `FAILED`, or `REJECTED`, which cannot be retried). Retry an individual file with `retryAttachment(fileId)`.
+
+<Tabs>
+<Tab title="Java">
+```java
+UploadFileRequest request = CometChat.getExistingUploadFileRequest("UID",
+        CometChatConstants.RECEIVER_TYPE_USER);
+
+if (request != null) {
+    for (UploadFileItemStatus item : request.getItems()) {
+        Log.d(TAG, item.getFileId() + " -> " + item.getState());
+        if (item.getState() == UploadFileItemStatus.State.FAILED) {
+            request.retryAttachment(item.getFileId());
+        }
+    }
+}
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val request = CometChat.getExistingUploadFileRequest("UID",
+    CometChatConstants.RECEIVER_TYPE_USER)
+
+request?.items?.forEach { item ->
+    Log.d(TAG, "${item.fileId} -> ${item.state}")
+    if (item.state == UploadFileItemStatus.State.FAILED) {
+        request.retryAttachment(item.fileId)
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+See [Media Caching](/sdk/android/v5/offline-media-caching) for downloading and caching received attachments.
+
+<Tip>
+
+For the full list of offline methods, listeners, enums, model fields, and error codes, see the [Offline Configuration & API Reference](/sdk/android/v5/offline-reference).
+
+</Tip>

@@ -4,6 +4,8 @@ sidebarTitle: "Upload Files"
 description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
 ---
 
+import OfflineDeprecatedSend from '/snippets/sdk/offline-deprecated-send.mdx';
+
 `CometChat.createUploadFileRequest(receiverId, receiverType)` returns an **`UploadFileRequest`** — the entry point for uploading files **directly to storage** with **per-file progress, success, and failure**. Upload is **decoupled from sending**: each uploaded file yields an `Attachment` (carrying a hosted URL), which you then attach to a `MediaMessage` and send with [`sendMediaMessage()`](/sdk/android/v5/send-message#media-message).
 
 A request object is scoped to **one destination** (`receiverId` / `receiverType`) and **one upload batch**. This is the recommended way to build a **multi-attachment composer**: create a request, upload a batch of files, show a progress bar per file, let the user remove or retry individual files, then send them as a single media message with multiple attachments (or split across several).
@@ -13,6 +15,10 @@ A request object is scoped to **one destination** (`receiverId` / `receiverType`
 
 The classic path (passing a `File`, or a list of files, straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
 </Info>
+
+<Note>
+With offline support enabled (SDK 5.1.0+), an upload batch and its files are persisted on the device: an in-progress batch survives an app restart and can be restored and retried, and a media message you send without a connection is durably queued and sent on reconnect. See [Send While Offline](/sdk/android/v5/offline-send).
+</Note>
 
 ## The upload-then-send flow
 
@@ -380,6 +386,8 @@ There is no auto-clear on send or logout — call `clearAll()` yourself after a 
 
 Once your files are uploaded, collect their `Attachment`s (from `request.getAttachments()` or from `result.getSuccessful()` in `onComplete`), set them on a `MediaMessage` built with the **no-file constructor**, and send. One batch can go out as a single multi-attachment message, or you can split the attachments across several messages — e.g. one message per media type using `getAttachmentsByType()`, reusing the same batch id across the sends.
 
+<OfflineDeprecatedSend method="`sendMediaMessage()`" />
+
 <Tabs>
 <Tab title="Java">
 ```java
@@ -418,9 +426,14 @@ UploadFileListener listener = new UploadFileListener() {
         mediaMessage.setCaption("Trip photos");
         mediaMessage.setMuid(request.getBatchId()); // reconcile the message with its upload batch
 
-        CometChat.sendMediaMessage(mediaMessage, new CometChat.CallbackListener<MediaMessage>() {
+        CometChat.sendMediaMessage(mediaMessage, new CometChat.MessageSentListener() {
             @Override
-            public void onSuccess(MediaMessage message) {
+            public void onMessagePending(BaseMessage message) {
+                // Durably queued when offline; message.getStatus() == MessageStatus.PENDING
+            }
+
+            @Override
+            public void onMessageSent(BaseMessage message) {
                 Log.d(TAG, "Media message sent successfully");
                 request.clearAll(); // release the batch
             }
@@ -474,8 +487,12 @@ val listener = object : UploadFileListener() {
         mediaMessage.caption = "Trip photos"
         mediaMessage.muid = request.batchId // reconcile the message with its upload batch
 
-        CometChat.sendMediaMessage(mediaMessage, object : CometChat.CallbackListener<MediaMessage>() {
-            override fun onSuccess(message: MediaMessage) {
+        CometChat.sendMediaMessage(mediaMessage, object : CometChat.MessageSentListener() {
+            override fun onMessagePending(message: BaseMessage?) {
+                // Durably queued when offline; message?.status == MessageStatus.PENDING
+            }
+
+            override fun onMessageSent(message: BaseMessage?) {
                 Log.d(TAG, "Media message sent successfully")
                 request.clearAll() // release the batch
             }

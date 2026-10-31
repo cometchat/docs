@@ -1,0 +1,339 @@
+---
+title: "Show Cached Data"
+sidebarTitle: "Show Cached Data"
+description: "Render cached messages, conversations, and lists instantly and reconcile them against the server with the CometChat Android SDK."
+---
+
+import OfflineDeprecatedListener from '/snippets/sdk/offline-deprecated-listener.mdx';
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```kotlin
+// Every read fires up to two phases: cached first (instant), then server.
+val request = MessagesRequest.MessagesRequestBuilder().setUID("UID").setLimit(30).build()
+
+request.fetchPrevious(object : CometChat.MessageFetchListener() {
+    override fun onCachedMessages(messages: List<BaseMessage>) {
+        // Phase 1: local cache. Fires first, even when empty. Render immediately.
+    }
+    override fun onServerMessages(messages: List<BaseMessage>) {
+        // Phase 2: server. Replaces the same slice — reconcile, don't append. Never fires offline.
+    }
+    override fun onError(e: CometChatException) {
+        // Offline ends here, after the cached page, with ERROR_INTERNET_UNAVAILABLE.
+    }
+})
+
+// Single items (additive two-phase overloads)
+CometChat.getConversation("UID", CometChatConstants.CONVERSATION_TYPE_USER, conversationDetailsListener)
+CometChat.getMessageDetails(messageId, messageDetailsListener)
+```
+
+</Accordion>
+
+With offline support enabled, every list and lookup the SDK already offers answers from the on-device cache first and then from the server. Your UI paints instantly from the cache, then reconciles when the server replies. This page describes that contract, the reads it applies to, and how to merge the two phases.
+
+## The two-phase contract
+
+Each read fires **up to two** callbacks, always in this order:
+
+<Steps>
+<Step title="Cached phase">
+The SDK delivers a page from the local cache **first**, synchronously-fast. It fires **even when the page is empty** — an empty cached page is indistinguishable from a cache miss, by design. Render it right away.
+</Step>
+<Step title="Server phase">
+After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it.
+</Step>
+</Steps>
+
+Two rules follow from this:
+
+- **Offline, the read ends with an error.** After the cached page, a read whose server phase cannot be produced because the device is offline settles with `onError(CometChatConstants.Errors.ERROR_INTERNET_UNAVAILABLE)`. The call always settles — it never hangs.
+- **The server phase never fires offline.** It fires only on a genuine server response. Never treat a cached page as "end of history"; an empty cached page only means the end of the *cached* window.
+
+<Note>
+
+With offline support **off**, these new listeners behave like the classic callback: the cached phase never fires, and the server result arrives in `onServer…` instead of `onSuccess`. Nothing changes until you call `enabled(true)` (see [Enable Offline Support](/sdk/android/v5/offline-enable)). Minimum version **5.1.0**.
+
+</Note>
+
+## Read messages
+
+`MessagesRequest` supports both directions. `fetchPrevious` pages toward older messages; `fetchNext` pages toward newer ones. Both take a `MessageFetchListener`.
+
+<OfflineDeprecatedListener method="`fetchPrevious()` / `fetchNext()`" replacement="`MessageFetchListener`" />
+
+<Tabs>
+<Tab title="Java">
+```java
+MessagesRequest request = new MessagesRequest.MessagesRequestBuilder()
+    .setUID("UID")
+    .setLimit(30)
+    .build();
+
+request.fetchPrevious(new CometChat.MessageFetchListener() {
+    @Override
+    public void onCachedMessages(List<BaseMessage> messages) {
+        // Render the cached page immediately.
+    }
+
+    @Override
+    public void onServerMessages(List<BaseMessage> messages) {
+        // Reconcile this slice against the cached page, keyed by message id.
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Fetch failed: " + e.getCode());
+    }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val request = MessagesRequest.MessagesRequestBuilder()
+    .setUID("UID")
+    .setLimit(30)
+    .build()
+
+request.fetchPrevious(object : CometChat.MessageFetchListener() {
+    override fun onCachedMessages(messages: List<BaseMessage>) {
+        // Render the cached page immediately.
+    }
+
+    override fun onServerMessages(messages: List<BaseMessage>) {
+        // Reconcile this slice against the cached page, keyed by message id.
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e(TAG, "Fetch failed: ${e.code}")
+    }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Read conversations
+
+`ConversationsRequest` pages in one direction with `fetchNext`, taking a `ConversationFetchListener`.
+
+<OfflineDeprecatedListener method="`fetchNext()`" replacement="`ConversationFetchListener`" />
+
+<Tabs>
+<Tab title="Java">
+```java
+ConversationsRequest request = new ConversationsRequest.ConversationsRequestBuilder()
+    .setLimit(30)
+    .build();
+
+request.fetchNext(new CometChat.ConversationFetchListener() {
+    @Override
+    public void onCachedConversations(List<Conversation> conversations) {
+        // Render the cached list immediately.
+    }
+
+    @Override
+    public void onServerConversations(List<Conversation> conversations) {
+        // Reconcile, keyed by conversation id.
+    }
+
+    @Override
+    public void onError(CometChatException e) {
+        Log.e(TAG, "Fetch failed: " + e.getCode());
+    }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val request = ConversationsRequest.ConversationsRequestBuilder()
+    .setLimit(30)
+    .build()
+
+request.fetchNext(object : CometChat.ConversationFetchListener() {
+    override fun onCachedConversations(conversations: List<Conversation>) {
+        // Render the cached list immediately.
+    }
+
+    override fun onServerConversations(conversations: List<Conversation>) {
+        // Reconcile, keyed by conversation id.
+    }
+
+    override fun onError(e: CometChatException) {
+        Log.e(TAG, "Fetch failed: ${e.code}")
+    }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Read the other lists
+
+Every remaining list read gains the same two-phase overload. Each has its own listener with cached/server callbacks of the matching type plus `onError`.
+
+| Request | Fetch method(s) | Listener | Cached / server callback |
+|---|---|---|---|
+| `MessagesRequest` | `fetchPrevious`, `fetchNext` | `MessageFetchListener` | `onCachedMessages` / `onServerMessages` |
+| `ConversationsRequest` | `fetchNext` | `ConversationFetchListener` | `onCachedConversations` / `onServerConversations` |
+| `ThreadsRequest` | `fetchNext` | `ThreadsFetchListener` | `onCachedThreads` / `onServerThreads` |
+| `UsersRequest` | `fetchNext` | `UserFetchListener` | `onCachedUsers` / `onServerUsers` |
+| `BlockedUsersRequest` | `fetchNext` | `UserFetchListener` | `onCachedUsers` / `onServerUsers` |
+| `GroupsRequest` | `fetchNext` | `GroupFetchListener` | `onCachedGroups` / `onServerGroups` |
+| `GroupMembersRequest` | `fetchNext` | `GroupMemberFetchListener` | `onCachedGroupMembers` / `onServerGroupMembers` |
+| `BannedGroupMembersRequest` | `fetchNext` | `BannedGroupMemberFetchListener` | `onCachedBannedGroupMembers` / `onServerBannedGroupMembers` |
+| `ReactionsRequest` | `fetchPrevious`, `fetchNext` | `ReactionFetchListener` | `onCachedReactions` / `onServerReactions` |
+| `NotificationFeedRequest` | `fetchNext` | `NotificationFeedFetchListener` | `onCachedNotificationFeedItems` / `onServerNotificationFeedItems` |
+
+The call shape is identical to the conversations example above — swap the request, the listener, and the callback names.
+
+<Tabs>
+<Tab title="Java">
+```java
+UsersRequest request = new UsersRequest.UsersRequestBuilder()
+    .setLimit(30)
+    .build();
+
+request.fetchNext(new CometChat.UserFetchListener() {
+    @Override
+    public void onCachedUsers(List<User> users) { /* render */ }
+
+    @Override
+    public void onServerUsers(List<User> users) { /* reconcile, keyed by uid */ }
+
+    @Override
+    public void onError(CometChatException e) { Log.e(TAG, e.getCode()); }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+val request = UsersRequest.UsersRequestBuilder()
+    .setLimit(30)
+    .build()
+
+request.fetchNext(object : CometChat.UserFetchListener() {
+    override fun onCachedUsers(users: List<User>) { /* render */ }
+
+    override fun onServerUsers(users: List<User>) { /* reconcile, keyed by uid */ }
+
+    override fun onError(e: CometChatException) { Log.e(TAG, e.code) }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+
+For `ReactionsRequest`, `fetchPrevious` and `fetchNext` are cached independently — each direction keeps its own cached pages. Users, groups, members, banned members, reactions, and the notification feed are served from a per-request snapshot rather than a shared store; per-builder details live on each request's own page and in the [Offline Configuration & API Reference](/sdk/android/v5/offline-reference).
+
+</Note>
+
+## Read a single item
+
+`getConversation` and `getMessageDetails` each add a two-phase overload. Unlike the list reads, the cached callback fires **only when the item is cached** — never with an empty or null object. A cache miss goes straight to the server phase online, or straight to `onError` offline.
+
+<OfflineDeprecatedListener method="`getConversation()`" replacement="`ConversationDetailsListener`" />
+
+<Tabs>
+<Tab title="Java">
+```java
+CometChat.getConversation(
+    "UID",
+    CometChatConstants.CONVERSATION_TYPE_USER,
+    new CometChat.ConversationDetailsListener() {
+        @Override
+        public void onCachedConversation(Conversation conversation) {
+            // Fires only on a cache hit.
+        }
+
+        @Override
+        public void onServerConversation(Conversation conversation) {
+            // Server copy, written through before delivery.
+        }
+
+        @Override
+        public void onError(CometChatException e) {
+            Log.e(TAG, "Lookup failed: " + e.getCode());
+        }
+    });
+
+CometChat.getMessageDetails(messageId, new CometChat.MessageDetailsListener() {
+    @Override
+    public void onCachedMessage(BaseMessage message) { /* cache hit only */ }
+
+    @Override
+    public void onServerMessage(BaseMessage message) { /* server copy */ }
+
+    @Override
+    public void onError(CometChatException e) { Log.e(TAG, e.getCode()); }
+});
+```
+
+</Tab>
+
+<Tab title="Kotlin">
+```kotlin
+CometChat.getConversation(
+    "UID",
+    CometChatConstants.CONVERSATION_TYPE_USER,
+    object : CometChat.ConversationDetailsListener() {
+        override fun onCachedConversation(conversation: Conversation) {
+            // Fires only on a cache hit.
+        }
+
+        override fun onServerConversation(conversation: Conversation) {
+            // Server copy, written through before delivery.
+        }
+
+        override fun onError(e: CometChatException) {
+            Log.e(TAG, "Lookup failed: ${e.code}")
+        }
+    })
+
+CometChat.getMessageDetails(messageId, object : CometChat.MessageDetailsListener() {
+    override fun onCachedMessage(message: BaseMessage) { /* cache hit only */ }
+
+    override fun onServerMessage(message: BaseMessage) { /* server copy */ }
+
+    override fun onError(e: CometChatException) { Log.e(TAG, e.code) }
+})
+```
+
+</Tab>
+
+</Tabs>
+
+## Merge the two phases
+
+The server phase **replaces the same slice** — it is a reconcile, not a second batch. Render the cached page straight away, then on the server phase diff it into your displayed list keyed by the item's stable id (message id, conversation id, uid, guid). Do not append the server page to the cached one.
+
+<Tip>
+
+Key your list by id so the two phases merge cleanly: update items that changed, add new ones, and drop cached items the server slice omits. To page further back, issue the next `fetchPrevious()` / `fetchNext()` rather than treating the server phase as more pages.
+
+</Tip>
+
+## When the cached page is empty
+
+The cache answers a read **only if every filter on it is locally computable**. A single server-only predicate makes the entire cached phase return an empty list — with no error and no warning — while the server phase still answers in full. The guiding rule is *better empty than wrong*.
+
+The most common server-only predicate is `searchKeyword`, which blanks the cached phase on every request. Other examples include `hasLinks`, `updatesOnly`, and `interactionGoalCompletedOnly` on `MessagesRequest`, and the presence filters (`UsersRequest.setUserStatus`, `GroupMembersRequest.setStatus`) on the entity lists.
+
+<Warning>
+
+An offline-critical screen must use only cache-supported filters — one innocuous builder flag can silently disable the cached phase for a whole screen. The full per-builder matrix of what the cache answers lives in the [Offline Configuration & API Reference](/sdk/android/v5/offline-reference).
+
+</Warning>
