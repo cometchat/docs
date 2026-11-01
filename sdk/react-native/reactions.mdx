@@ -35,8 +35,8 @@ const reactions = await request.fetchNext();
 
 // Listen for reaction events
 CometChat.addMessageListener("LISTENER_ID", new CometChat.MessageListener({
-  onMessageReactionAdded: (reaction) => {},
-  onMessageReactionRemoved: (reaction) => {}
+  onMessageReactionAdded: (reactionEvent) => {},
+  onMessageReactionRemoved: (reactionEvent) => {}
 }));
 ```
 
@@ -164,13 +164,13 @@ reactions.forEach((reaction) => {
 
 ## Fetch Reactions for a Message
 
-To get the full list of who reacted with what on a specific message, use `ReactionsRequestBuilder`. You can paginate through results with `fetchNext()` and `fetchPrevious()` (max 100 per request).
+To get the full list of who reacted with what on a specific message, use `ReactionsRequestBuilder`. You can paginate through results with `fetchNext()` and `fetchPrevious()` (default 10, maximum 1000 per request). A larger limit is sent as 1000.
 
 | Builder Method | Description |
 | --- | --- |
 | `setMessageId(value)` | The message ID to fetch reactions for. Required. |
 | `setReaction(value)` | Filter to a specific emoji (e.g., `"😊"`). When set, only reactions matching this emoji are returned. |
-| `setLimit(value)` | Number of reactions to fetch per request. Max 100. |
+| `setLimit(value)` | Number of reactions to fetch per request. Default 10, maximum 1000. |
 
 ### Fetch Next
 
@@ -186,7 +186,7 @@ let reactionsRequest = new CometChat.ReactionsRequestBuilder()
 .build();
 
 reactionsRequest.fetchNext().then(
-    (reactions: CometChat.MessageReaction[]) => {
+    (reactions: CometChat.Reaction[]) => {
       console.log("list fetched:", reactions);
     },
     (error: CometChat.CometChatException) => {
@@ -232,7 +232,7 @@ let reactionsRequest = new CometChat.ReactionsRequestBuilder()
 .build();
 
 reactionsRequest.fetchPrevious().then(
-    (reactions: CometChat.MessageReaction[]) => {
+    (reactions: CometChat.Reaction[]) => {
       console.log("list fetched:", reactions);
     },
     (error: CometChat.CometChatException) => {
@@ -264,9 +264,23 @@ reactionsRequest.fetchPrevious().then(
 </Tab>
 </Tabs>
 
+### Offline Behaviour
+
+With [offline support](/sdk/react-native/offline-cached-data) enabled, `ReactionsRequest.fetchNext()` and `fetchPrevious()` first deliver `onCachedReactions` from the device when you pass a `ReactionFetchListener` (empty when nothing was recorded), then `onServerReactions` with the live page to reconcile by reaction id. Use a separate `ReactionsRequest` for each direction. Offline, a read ends with `onError` with code `FAILED_TO_FETCH` after the cached page.
+
+| Builder method | Offline |
+| --- | --- |
+| `setLimit()` | Cached |
+| `setMessageId()` | Cached |
+| `setReaction()` | Cached |
+
+The cached phase replays the page this request last received from the server online, in the same direction. It does not re-run these settings as a query against the cache.
+
 ## Real-Time Reaction Events
 
 Register a `MessageListener` to receive reaction events as they happen. This is how you keep your UI in sync when other users add or remove reactions.
+
+Override `onMessageReactionAdded` and `onMessageReactionRemoved`. Each receives a `ReactionEvent`, whose `getReaction()` returns the `Reaction` and whose `getReceiverId()`, `getReceiverType()`, `getConversationId()` and `getParentMessageId()` identify where it happened.
 
 <Tabs>
 <Tab title="TypeScript">
@@ -274,11 +288,11 @@ Register a `MessageListener` to receive reaction events as they happen. This is 
 let listenerID:string = "UNIQUE_LISTENER_ID";
 
 CometChat.addMessageListener(listenerID, new CometChat.MessageListener({
-    onMessageReactionAdded:(message: Object) => {
-      console.log("Reaction added", message);
+    onMessageReactionAdded:(reactionEvent: CometChat.ReactionEvent) => {
+      console.log("Reaction added", reactionEvent.getReaction().getReaction());
     },
-    onMessageReactionRemoved:(message: Object) => {
-      console.log("Reaction removed", message);
+    onMessageReactionRemoved:(reactionEvent: CometChat.ReactionEvent) => {
+      console.log("Reaction removed", reactionEvent.getReaction().getReaction());
     }
   }))
 ```
@@ -289,11 +303,11 @@ CometChat.addMessageListener(listenerID, new CometChat.MessageListener({
 let listenerID = "UNIQUE_LISTENER_ID";
 
 CometChat.addMessageListener(listenerID, new CometChat.MessageListener({
-    onMessageReactionAdded:(message) => {
-      console.log("Reaction added", message);
+    onMessageReactionAdded:(reactionEvent) => {
+      console.log("Reaction added", reactionEvent.getReaction().getReaction());
     },
-    onMessageReactionRemoved:(message) => {
-      console.log("Reaction removed", message);
+    onMessageReactionRemoved:(reactionEvent) => {
+      console.log("Reaction removed", reactionEvent.getReaction().getReaction());
     }
   }))
 ```
@@ -301,6 +315,8 @@ CometChat.addMessageListener(listenerID, new CometChat.MessageListener({
 </Tabs>
 
 ### Remove the Listener
+
+Remove the listener with the same listener ID:
 
 <Tabs>
 <Tab title="TypeScript">
@@ -326,11 +342,9 @@ Always remove listeners when they're no longer needed (e.g., on component unmoun
 
 ## Update Message With Reaction Info
 
-When a user adds or removes a reaction, you will receive a real-time event. Once you receive the real time event you would want to update the message with the latest reaction information. To do so you can use the `updateMessageWithReactionInfo()` method.
+When a user adds or removes a reaction, you will receive a real-time event. Once you receive it, you would want to update the message with the latest reaction information. To do so, use `CometChat.CometChatHelper.updateMessageWithReactionInfo()`.
 
-The `updateMessageWithReactionInfo()` method provides a seamless way to update the reactions on a message instance (`BaseMessage`) in real-time. This method ensures that when a reaction is added or removed from a message, the BaseMessage object's `getReactions()` property reflects this change immediately.
-
-When you receive a real-time reaction event (`MessageReaction`), call the `updateMessageWithReactionInfo()` method, passing the BaseMessage instance (`message`), event data (`MessageReaction`) and reaction event action type (`CometChat.REACTION_ACTION.REACTION_ADDED` or `CometChat.REACTION_ACTION.REACTION_REMOVED`) that corresponds to the message being reacted to.
+Pass the `BaseMessage` the reaction belongs to, the `Reaction` from the event (`reactionEvent.getReaction()`), and the action: `CometChat.REACTION_ACTION.REACTION_ADDED` from `onMessageReactionAdded` or `CometChat.REACTION_ACTION.REACTION_REMOVED` from `onMessageReactionRemoved`. It returns the message with its `getReactions()` updated.
 
 <Tabs>
 <Tab title="TypeScript">
@@ -338,10 +352,10 @@ When you receive a real-time reaction event (`MessageReaction`), call the `updat
 // The message to which the reaction is related
 let message: CometChat.BaseMessage = ...;
 
-// The reaction event data received in real-time
-let messageReaction: CometChat.MessageReaction = ...;
+// The reaction from the real-time ReactionEvent
+let messageReaction: CometChat.Reaction = reactionEvent.getReaction();
 
-// The received reaction event real-time action type
+// CometChat.REACTION_ACTION.REACTION_ADDED or CometChat.REACTION_ACTION.REACTION_REMOVED
 let action: CometChat.REACTION_ACTION = CometChat.REACTION_ACTION.REACTION_ADDED;
 
 let modifiedBaseMessage = CometChat.CometChatHelper.updateMessageWithReactionInfo(
@@ -357,10 +371,10 @@ action
 // The message to which the reaction is related
 let message = ...;
 
-// The reaction event data received in real-time
-let messageReaction = ...;
+// The reaction from the real-time ReactionEvent
+let messageReaction = reactionEvent.getReaction();
 
-// The received reaction event real-time action type
+// CometChat.REACTION_ACTION.REACTION_ADDED or CometChat.REACTION_ACTION.REACTION_REMOVED
 let action = CometChat.REACTION_ACTION.REACTION_ADDED;
 
 let modifiedBaseMessage = CometChat.CometChatHelper.updateMessageWithReactionInfo(
@@ -377,7 +391,7 @@ On success, this method returns a [`BaseMessage`](/sdk/reference/messages#baseme
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `message` | `BaseMessage` | The message object to update |
-| `messageReaction` | `MessageReaction` | The reaction event received from the listener |
+| `messageReaction` | `Reaction` | The reaction from the `ReactionEvent` received by the listener |
 | `action` | `REACTION_ACTION` | `CometChat.REACTION_ACTION.REACTION_ADDED` or `CometChat.REACTION_ACTION.REACTION_REMOVED` |
 
 ---
