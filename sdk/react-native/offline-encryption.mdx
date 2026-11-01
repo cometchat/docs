@@ -38,7 +38,7 @@ status.leakage;          // what is never covered (media files on disk)
 Offline support keeps the logged-in user's messages in a local database on the device. Turn encryption on to store that database **encrypted at rest** using [SQLCipher](https://www.zetetic.net/sqlcipher/). Encryption is **opt-in** and off by default; nothing changes until you set `encryption: true`. The minimum SDK version is **4.2.0**.
 
 <Note>
-Encryption covers the **message database only**. Downloaded media files (photos, voice notes, documents) stay as ordinary unencrypted files on disk, because their local paths are handed to image and video loaders. See [What is and isn't encrypted](#what-is-and-isn-t-encrypted). This is not end-to-end encryption: CometChat's servers still see message content.
+Encryption covers the **message database only**. Downloaded media files (photos, voice notes, documents) stay as ordinary unencrypted files on disk, because their local paths are handed to image and video loaders. See [What gets encrypted](#what-gets-encrypted). This is not end-to-end encryption: CometChat's servers still see message content.
 </Note>
 
 ## Prepare your app
@@ -106,7 +106,7 @@ const offlineConfig = new CometChat.OfflineConfig({
 
 ## Key storage
 
-You do not generate or manage the encryption key. The SDK derives a per-user key (scoped to the app ID and the logged-in user's UID) and keeps it in the platform keychain through `react-native-keychain`, or in the vault you supplied. The key never leaves the device and is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+You do not generate or manage the encryption key. The SDK generates a random 32-byte key, one per app ID and logged-in user (UID), and keeps it in the platform keychain through `react-native-keychain`, or in the vault you supplied. The key never leaves the device and is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
 
 ## Check encryption status
 
@@ -146,7 +146,7 @@ console.log(
 The two most useful support signals are `enabled === true` with `cipherAvailable === false` (SQLCipher is not compiled into the app — add the `op-sqlite` flag and rebuild) and `enabled === true` with `keyStorage === "NONE"` (no secure key store — install `react-native-keychain` or set a vault).
 </Tip>
 
-## What is and isn't encrypted
+## What gets encrypted
 
 | Data | Encrypted at rest? |
 |---|---|
@@ -157,7 +157,7 @@ Media bytes live outside the database because `Attachment.getLocalPath()` is pub
 
 ## Cache resets on key loss
 
-If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost and each is failed through its send listener. Changing the `encryption` setting between launches also rebuilds the cache in the new format.
+If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost. They lived inside the unreadable database, so they cannot be counted or reported one by one: `pendingMessagesLost` is `-1` (`CometChat.OFFLINE_PENDING_COUNT_UNKNOWN`). When the reset is `ENCRYPTION_CHANGED` instead, each queued message fails with reason `DISCARDED` and `pendingMessagesLost` is the exact count, unless the old database could not be read.
 
 Register an `OfflineCacheResetListener` to be told when this happens:
 
@@ -166,6 +166,7 @@ Register an `OfflineCacheResetListener` to be told when this happens:
 ```typescript
 CometChat.addOfflineCacheResetListener("LISTENER_ID", {
   onOfflineCacheReset: (reason: CometChat.OfflineCacheResetReason, pendingMessagesLost: number) => {
+    // pendingMessagesLost is -1 when the number lost is unknown, not zero.
     console.warn("Cache reset:", reason, "pending lost:", pendingMessagesLost);
   },
 });
@@ -175,6 +176,7 @@ CometChat.addOfflineCacheResetListener("LISTENER_ID", {
 ```javascript
 CometChat.addOfflineCacheResetListener("LISTENER_ID", {
   onOfflineCacheReset: (reason, pendingMessagesLost) => {
+    // pendingMessagesLost is -1 when the number lost is unknown, not zero.
     console.warn("Cache reset:", reason, "pending lost:", pendingMessagesLost);
   },
 });
@@ -182,4 +184,4 @@ CometChat.addOfflineCacheResetListener("LISTENER_ID", {
 </Tab>
 </Tabs>
 
-The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches). `pendingMessagesLost` is `-1` (`CometChat.OFFLINE_PENDING_COUNT_UNKNOWN`) when the queued messages could not be counted. See [Stay in Sync](/sdk/react-native/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/react-native/offline-reference) for every field and enum.
+The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, `ESCALATED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches, which also discards any queued messages and the cached media). See [Stay in Sync](/sdk/react-native/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/react-native/offline-reference) for every field and enum.

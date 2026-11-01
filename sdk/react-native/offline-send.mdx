@@ -34,7 +34,7 @@ await CometChat.discardLocalMessage(localId);  // delete an unsent message
 
 </Accordion>
 
-With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically when the connection returns. This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically once the connection is back and stable (with `autoSendPendingOnReconnect` on, the default). This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
 
 <Note>
 Offline support is **off by default** and requires SDK **4.2.0** or newer. Queuing only happens once you [enable it](/sdk/react-native/offline-enable); with offline off, a send over no connection fails exactly as before.
@@ -42,7 +42,7 @@ Offline support is **off by default** and requires SDK **4.2.0** or newer. Queui
 
 ## Send a Message
 
-Pass a `MessageSentListener` as the second argument to `sendMessage`. Its lifecycle is `onMessagePending` first (the message is durably queued), then exactly one final outcome — `onMessageSent` (the server accepted it) or, for a real failure, `onError`.
+Pass a `MessageSentListener` as the second argument to `sendMessage`. Its lifecycle is normally `onMessagePending` first (the message is durably queued), then its outcome: `onMessageSent` (the server accepted it) or `onError`. Offline, `onError` is a queued-not-failed notice and `onMessageSent` still fires later on reconnect, so both can fire for one send (see below). If the message cannot be queued at all, for example because its media could not be copied (reason `PERMANENT`), only `onError` fires.
 
 <Tabs>
 <Tab title="TypeScript">
@@ -112,13 +112,13 @@ Only a send **with a listener** is queued. A send with no listener goes straight
 
 ## Queued, Not Failed
 
-When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the not-connected error: code `FAILED_TO_FETCH`, `errorParams.queued === true`, and `reason` equal to `null`. The Promise rejects with the same error. This is a **notification, not a failure**: the message stays durably `PENDING`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. Do not send it again.
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the not-connected error: code `FAILED_TO_FETCH`, `errorParams.queued === true`, and `reason` equal to `null`. The Promise rejects with the same error. This is a **notification, not a failure**: the message stays durably `PENDING`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. Do not send it again. This is the default behaviour, with `autoSendPendingOnReconnect` on. With it off, an offline send becomes `FAILED` (`TRANSIENT`) right away: `onError` fires with a reason, and you recover the message with `retryMessage`.
 
 So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Use `reason` (or `error.errorParams.queued`) to tell the two apart:
 
 | `onError` arguments | Meaning | What to do |
 |---|---|---|
-| `reason == null`, `error.errorParams.queued === true` | Queued; not sent yet. Will auto-send on reconnect. | Show as sending/queued; nothing to do. |
+| `reason == null`, `error.errorParams.queued === true` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
 | `reason` is a `MessageFailureReason` | A real failure; will not retry on its own. | Offer the user a manual retry (see below). |
 
 <Tabs>
@@ -164,12 +164,12 @@ Read the offline status with `getMessageStatus()`. `BaseMessage.getStatus()` is 
 
 | Reason | When |
 |---|---|
-| `TRANSIENT` | A temporary server error (for example 5xx or rate-limited), or no answer after 5 reconnect attempts in a row. Retryable. |
+| `TRANSIENT` | A temporary server error (5xx, or 429 rate-limited), no answer after 5 automatic reconnect attempts in a row, or, with `autoSendPendingOnReconnect` off, no answer at all. Retryable. |
 | `PERMANENT` | The server rejected the message, or the error was not recognized. A manual retry will not help. |
 | `QUEUE_FULL` | A new send was refused because the queue is full (count cap). |
 | `QUEUE_OVERFLOW` | An older queued message was evicted to admit a newer one (`DROP_OLDEST` only). |
-| `BYTE_OVERFLOW` | A media send was refused because it exceeds the queue's byte budget. |
-| `DISCARDED` | The message was removed before it could send (for example `clearOfflineCache()`). |
+| `BYTE_OVERFLOW` | A media send was refused because its bytes do not fit in `maxMediaCacheSize`, the budget for the whole media cache, even after cached received media is evicted to make room. |
+| `DISCARDED` | A queued message was removed before it could send: by `clearOfflineCache()`, by a cache rebuild, or by leaving or deleting its conversation. Reported with code `ERROR_OFFLINE_MESSAGE_DISCARDED`. (`discardLocalMessage` reports `onSuccess` instead. A logout ends unsent sends without calling any listener.) |
 
 ## Inspect the Queue
 
@@ -243,7 +243,7 @@ CometChat.removeOfflineMessageListener("LISTENER_ID");
 
 ## Retry and Discard
 
-There is no automatic retry of a `FAILED` message — recovery is explicit and user-invoked. Use the message's local id. Each method takes an optional listener as a second argument; omit it and you get a Promise instead (never both).
+There is no automatic retry of a `FAILED` message — recovery is explicit and user-invoked. A `FAILED` message stays in the outbox until you retry or discard it. Use the message's local id. Each method takes an optional listener as a second argument; omit it and you get a Promise instead (never both).
 
 - **`retryMessage(localMessageId)`** re-attempts one message. A `FAILED` message is reset to `PENDING` and sent; a `PENDING` message is attempted now rather than waiting for a reconnect. The result is that attempt's outcome.
 - **`retryAllFailedMessages()`** retries **transient** failures only; permanent ones are skipped. The Promise form resolves once the retries are issued; pass a `MessageSentListener` to see each outcome.
@@ -289,7 +289,7 @@ These codes are available as `CometChat.OfflineErrorCode.MESSAGE_IN_FLIGHT`, `ME
 
 ## Auto-send on Reconnect
 
-By default, queued `PENDING` messages are sent automatically when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/react-native/offline-enable) and the [reference](/sdk/react-native/offline-reference). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes `FAILED` (`TRANSIENT`), which you recover with `retryMessage`.
+By default, queued `PENDING` messages are sent automatically when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/react-native/offline-enable) and the [reference](/sdk/react-native/offline-reference). A queued message that keeps getting no answer is retried on each reconnect, up to 5 times, then becomes `FAILED` (`TRANSIENT`). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes `FAILED` (`TRANSIENT`), which you recover with `retryMessage`.
 
 Reconnect also runs a catch-up sync for received messages — see [Stay in Sync](/sdk/react-native/offline-sync).
 
@@ -300,14 +300,14 @@ The outbox holds at most `maxPendingMessages` messages still trying to send (`PE
 | `PendingMessageOverflowPolicy` | Behaviour on overflow |
 |---|---|
 | `REJECT_NEWEST` (**default**) | The new send is refused and reported with reason `QUEUE_FULL`. Nothing already queued is lost. |
-| `DROP_OLDEST` | The oldest `PENDING` message is evicted (reason `QUEUE_OVERFLOW`) to admit the new one. |
+| `DROP_OLDEST` | The oldest `PENDING` message is evicted to admit the new one, and reported with `onError` (code `ERROR_PENDING_QUEUE_LIMIT`, reason `QUEUE_OVERFLOW`). If there is no `PENDING` message to evict, the new send is refused with `QUEUE_FULL`. |
 
-A media send that exceeds the queue's byte budget is refused with reason `BYTE_OVERFLOW`.
+A media send whose bytes do not fit in `maxMediaCacheSize`, even after cached received media is evicted, is refused with reason `BYTE_OVERFLOW`. Queued media is never evicted to make room.
 
 A **refused** send (`QUEUE_FULL` / `BYTE_OVERFLOW`) is never queued, so it fires **no** `onMessagePending`; it reports `onError` with the code `ERROR_PENDING_QUEUE_LIMIT`, and the global `OfflineMessageListener` receives `onOutboxMessageFailed(message, reason)` carrying the exact reason.
 
 <Warning>
-A refused or evicted message (`QUEUE_FULL`, `QUEUE_OVERFLOW`, `BYTE_OVERFLOW`) has **no durable row** — it does not appear in `getPendingMessages`, and calling `retryMessage` on its id does nothing. Capture these from the failure callback and handle them at that moment. Prefer the default `REJECT_NEWEST`, which never silently drops an already-queued message from another conversation.
+A refused or evicted message (`QUEUE_FULL`, `QUEUE_OVERFLOW`, `BYTE_OVERFLOW`) has **no durable row** — it does not appear in `getPendingMessages`, and calling `retryMessage` on its id rejects with `ERROR_OFFLINE_MESSAGE_NOT_FOUND`. Capture these from the failure callback and handle them at that moment. Prefer the default `REJECT_NEWEST`, which never silently drops an already-queued message from another conversation.
 </Warning>
 
 ## Edits, Deletes, and Reactions Need a Connection
@@ -316,7 +316,7 @@ Offline queuing applies to **sending new messages** only. Changes to existing me
 
 ## Durable Media Uploads
 
-A multi-attachment upload survives an app restart: the SDK re-attaches to an in-progress batch instead of restarting it. Fetch the existing request for a conversation with `getExistingUploadFileRequest` (a Promise that resolves `null` when there is none), and read each file's progress through `getItems()`, which returns a list of items, each with a `state` of `QUEUED`, `UPLOADING`, `UPLOADED`, `FAILED`, or `REJECTED` (which cannot be retried). Retry an individual file with `retryAttachment(fileId)`. With offline on, each item also carries `localCopyPath`, the SDK's copy of the bytes, for previews of a restored tray.
+A multi-attachment upload survives an app restart, but it never resumes on its own. Fetch the existing request for a conversation with `getExistingUploadFileRequest` (a Promise that resolves `null` when there is none), and read each file's progress through `getItems()`, which returns a list of items, each with a `state` of `QUEUED`, `UPLOADING`, `UPLOADED`, `FAILED`, or `REJECTED` (which cannot be retried). Retry an individual file with `retryAttachment(fileId)`. With offline on, each item also carries `localCopyPath`, the SDK's copy of the bytes, for previews of a restored tray.
 
 <Tabs>
 <Tab title="TypeScript">
