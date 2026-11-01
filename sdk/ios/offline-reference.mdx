@@ -36,7 +36,7 @@ This page is the full surface of CometChat's offline support on iOS: configurati
 
 ## OfflineConfig options
 
-Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig(enabled:encryption:…)`, whose arguments all default to the values below. The resulting `OfflineConfig` is immutable. Byte caps and the TTL treat `0` as **unlimited** (that dimension's eviction is disabled); the count caps are clamped and have no "unlimited".
+Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig(enabled:encryption:…)`, whose arguments all default to the values below. The resulting `OfflineConfig` is immutable. Byte caps and the TTL treat `0` or less as **unlimited** (that dimension's eviction is disabled); the count caps are clamped and have no "unlimited".
 
 | Builder setter | Type | Default | Range / clamp | Effect |
 |---|---|---|---|---|
@@ -54,7 +54,6 @@ Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig
 | `setEncryptionFailureBehavior(_:)` | `CometChat.EncryptionFailureBehavior` | `.onlineOnly` | — | What happens when encryption cannot run at all. |
 | `setMaxSnapshotQueries(_:)` | `Int` | `100` | `0`/negative → `100` | Most entity-list snapshots (users, groups, group members, and so on) kept for offline replay; LRU. |
 | `setSnapshotTtlDays(_:)` | `Int` | `7` | `0`/negative → `7` | Days an entity-list snapshot is kept. |
-| `setDebugTracing(_:)` | `Bool` | `false` | — | Dev-only diagnostic tracing. Leave off in production. |
 
 Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_:)` — see [Enable Offline Support](/sdk/ios/offline-enable). Each value is readable on the built `OfflineConfig` (for example `offlineConfig.maxConversations`), and `AppSettings.offlineConfig` exposes the active config read-only.
 
@@ -64,13 +63,13 @@ Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_
 |---|---|---|
 | `isOfflineEnabled()` | `Bool` | Whether offline support is active for the current session. |
 | `getMediaCachingMode()` | `CometChat.MediaCachingMode` | The effective media caching mode (`.off` whenever offline is not active). |
-| `getOfflineEncryptionStatus()` | `[String: Any]` | What encryption at rest is actually doing. |
+| `getOfflineEncryptionStatus()` | `[String: Any]` | What encryption at rest is actually doing. Compare its strings against the `CometChat.OfflineEncryptionTier` constants. |
 | `getPendingMessages(onSuccess:onError:)` | `Void` | All queued/failed messages in the outbox. The synchronous `getPendingMessages()` is deprecated. |
 | `retryMessage(_ localMessageId: String, onSuccess:onError:)` | `Void` | Retry one unsent message by its local id. Swift-only. |
 | `retryMessage(_ message: BaseMessage)` | `Void` | Fire-and-forget retry that takes the message. |
 | `retryAllFailedMessages()` | `Void` | Retry every transient-failed message in the outbox. No callback. |
 | `discardLocalMessage(_ localMessageId: String, onSuccess:onError:)` | `Void` | Remove one unsent message from the outbox. Swift-only. |
-| `forceSyncNow()` | `Void` | Trigger a catch-up sync immediately. |
+| `forceSyncNow()` | `Void` | Request a catch-up sync. Silently dropped if a sync is already running or one ran within the cooldown window, and a no-op when offline is not active. Use the callback overload to learn why a sync did not start. |
 | `forceSyncNow(onSuccess:onError:)` | `Void` | Same, with callbacks that report whether the sync was accepted. |
 | `getSyncState()` | `CometChat.SyncState` | Whether a catch-up sweep is currently running. |
 | `getLastSyncTimestamp()` | `Int` | Server time of the last successful sync, in epoch seconds. |
@@ -80,6 +79,8 @@ Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_
 | `downloadMedia(url:messageServerId:onProgress:onSuccess:onError:)` | `Void` | Same, with a `0...100` progress closure. |
 | `getCachedMediaPath(_ url: String)` | `String?` | Local path to already-cached bytes, or `nil`. |
 | `getExistingUploadFileRequest(receiverId:receiverType:parentMessageId:)` | `UploadFileRequest?` | Re-attach to a kept offline upload batch; `nil` when offline is off or none exists. |
+
+On the returned `UploadFileRequest`, `getItems()` lists each file's `UploadFileItem`, and `retryAttachment(fileId:)` retries one failed file. See [Upload Files](/sdk/ios/upload-files).
 
 ### Listener registration
 
@@ -120,7 +121,7 @@ iOS expresses the two-phase read as `onCached…` / `onServer…` / `onError` cl
 | Send closures (`sendTextMessage` / `sendMediaMessage` / `sendCustomMessage` / `sendInteractiveMessage`) | `onMessagePending(message)`, `onMessageSent(message)`, `onError(CometChatException?)` |
 | `OutboxListener` | `onOutboxMessagePending(_ message: BaseMessage)`, `onOutboxMessageSent(_ message: BaseMessage)`, `onOutboxMessageFailed(_ message: BaseMessage, _ reason: CometChat.MessageFailureReason)` |
 | `SyncListener` | `onConversationSyncStarted()`, `onConversationSyncCompleted(_ conversations: [Conversation])`, `onConversationSyncError(_ error: CometChatException)`, `onMessageSyncStarted()`, `onMessageSyncCompleted(_ messages: [BaseMessage], _ outcome: CometChat.SyncOutcome)`, `onMessageSyncError(_ error: CometChatException)` |
-| `OfflineCacheResetListener` | `onOfflineCacheReset(_ reason: CometChat.OfflineCacheResetReason, _ pendingMessagesLost: Int)` |
+| `OfflineCacheResetListener` | `onOfflineCacheReset(_ reason: CometChat.OfflineCacheResetReason, _ pendingMessagesLost: Int)`; `pendingMessagesLost` is `CometChat.offlinePendingCountUnknown` (`-1`) when the number is unknown |
 | `downloadMedia` closures | `onProgress(Int)`, `onSuccess(String)`, `onError(CometChatException)` |
 | `MediaDownloadListener` | `onMediaDownloaded(_ messageId: String, _ url: String, _ localPath: String)`, `onMediaDownloadFailed(_ attachment: Attachment?, _ error: CometChatException)` |
 | `CometChatMessageDelegate` | `onMessagesSynced(_ messages: [BaseMessage])` (offline addition to the existing delegate) |

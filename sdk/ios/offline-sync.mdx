@@ -44,12 +44,12 @@ Everything on this page is a no-op unless offline support is active for the logg
 
 ## How catch-up works
 
-A sync runs automatically when the connection settles after a reconnect. It never runs on a brief connect-then-drop flap, and overlapping triggers coalesce into a single sweep. It proceeds in two phases, in order:
+A sync runs automatically when the connection settles after a reconnect. It never runs on a brief connect-then-drop flap, and overlapping triggers coalesce: at most one follow-up sweep is queued behind the running one. It proceeds in two phases, in order:
 
 1. **Conversation phase** — the conversation list is fetched as one fresh page. A conversation-list UI can replace its list with the result.
 2. **Message phase** — the SDK replays the message changelog from the last sync point. New messages and updates to already-cached messages are merged into the cache.
 
-The sync is incremental and safe to repeat: it only moves forward from the last successful point, it never deletes cached messages, and a failed or interrupted phase simply resumes on the next reconnect. A first-ever sync (cold start) fetches the conversation list only, records where to resume from, and replays no message history. Older history is reached by scrolling online. A cold start fires the conversation-phase callbacks only.
+The sync is incremental and safe to repeat: it only moves forward from the last successful point, and a failed or interrupted phase simply resumes on the next reconnect. The conversation refresh does remove conversations the server no longer returns, along with their cached messages and any still-queued messages for them (which fail with reason `.discarded`). A first-ever sync (cold start) fetches the conversation list only, records where to resume from, and replays no message history. Older history is reached by scrolling online. A cold start fires the conversation-phase callbacks only.
 
 ## Listen for sync progress
 
@@ -98,7 +98,7 @@ The `SyncListener` is self-sufficient: `onMessageSyncCompleted` carries the swep
 | `CometChat.SyncOutcome` | Meaning |
 |---|---|
 | `.caughtUp` | The changelog was fully replayed; the cache reflects every server change up to the sync point. |
-| `.partial` | A page was ingested and the sync point advanced, but a backlog remains; it drains one page per reconnect. |
+| `.partial` | A page was ingested and the sync point advanced, but a backlog remains. Each sync, automatic or from `forceSyncNow`, drains one page of up to 1000 changes. |
 
 Remove the listener with `CometChat.removeSyncListener("SYNC_LISTENER")`.
 
@@ -129,6 +129,8 @@ extension ViewController: CometChatMessageDelegate {
 ```
 
 Register the delegate as usual, with `CometChat.messagedelegate = self` or `CometChat.addMessageListener("MSG_LISTENER", self)`. The per-message callbacks fire before the bulk `onMessagesSynced`.
+
+On reconnect, queued messages are sent first, then the sync runs. `forceSyncNow` runs only the sync; it does not send queued messages (use `retryMessage` or `retryAllFailedMessages` for those). A message deleted on the server reaches you as an update on `onMessagesSynced`, not as a removal.
 
 ## Check sync state
 
@@ -212,7 +214,7 @@ CometChat.clearOfflineCache()              // empty the entire per-user cache
 `getCacheSize()` returns the total on-disk size of the user's cache (the local database files plus the media files) as an `Int64`, or `0` when offline support is disabled or nobody is logged in. It is a **physical** size, so it can read higher than the logical `maxStorageSize` budget. It walks the files on the calling thread, so call it off the main thread.
 
 <Warning>
-`clearOfflineCache()` is destructive and irreversible. It empties the entire per-user cache — cached messages, conversations, media bytes **and the un-sent outbox**. Each still-queued pending or sending message fails with reason `.discarded` (`ERROR_OFFLINE_MESSAGE_DISCARDED`). A send already on the wire that the server accepts is still reported sent. The next sync is a cold start. It is a no-op unless offline support is active.
+`clearOfflineCache()` is destructive and irreversible. It empties the entire per-user cache — cached messages, conversations, media bytes **and the un-sent outbox**. Each still-queued pending or sending message fails with reason `.discarded` (`ERROR_OFFLINE_MESSAGE_DISCARDED`); messages that had already failed are removed without a further callback. A send already on the wire that the server accepts is still reported sent. The next sync is a cold start. It is a no-op unless offline support is active.
 </Warning>
 
 <Note>

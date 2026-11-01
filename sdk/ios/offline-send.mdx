@@ -34,7 +34,7 @@ CometChat.addOutboxListener("OUTBOX_LISTENER", outboxListener)   // OutboxListen
 
 </Accordion>
 
-With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically when the connection returns. This page shows the offline-aware send overloads, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically once the connection is back and stable (with `autoSendPendingOnReconnect` on, the default). This page shows the offline-aware send overloads, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
 
 <Note>
 Offline support is **off by default** and requires SDK **4.3.0** or newer. Queuing only happens once you [enable it](/sdk/ios/offline-enable); with offline off, a send over no connection fails exactly as before.
@@ -44,7 +44,7 @@ The classic `sendTextMessage(message:onSuccess:onError:)` and its media, custom 
 
 ## Send a Message
 
-Call the overload that takes `onMessagePending`, `onMessageSent` and `onError`. Its lifecycle is `onMessagePending` first (the message is durably queued), then exactly one final outcome — `onMessageSent` (the server accepted it) or, for a real failure, `onError`.
+Call the overload that takes `onMessagePending`, `onMessageSent` and `onError`. Its lifecycle is normally `onMessagePending` first (the message is durably queued), then its outcome: `onMessageSent` (the server accepted it) or `onError`. Offline, `onError` is a queued-not-failed notice and `onMessageSent` still fires later on reconnect, so both can fire for one send (see below). If the message cannot be queued at all, for example because its media could not be copied (code `ERROR_OFFLINE_MEDIA_COPY_FAILED`, reason `.permanent`), only `onError` fires.
 
 ```swift
 let textMessage = TextMessage(receiverUid: "UID", text: "Hello!", receiverType: .user)
@@ -76,13 +76,13 @@ All callbacks are delivered on the main thread.
 
 ## Queued, Not Failed
 
-When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `ERROR_INTERNET_UNAVAILABLE`. This is a **notification, not a failure**: the message stays durably pending, and `onMessageSent` fires **later**, on reconnect, when it actually goes.
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `ERROR_INTERNET_UNAVAILABLE`. This is a **notification, not a failure**: the message stays durably pending, and `onMessageSent` fires **later**, on reconnect, when it actually goes. This is the default behaviour, with `autoSendPendingOnReconnect` on. With it off, an offline send becomes failed (`.transient`) right away and `onError` carries the same code, so read the outcome from the `OutboxListener` or from `getPendingMessages`, and recover the message with `retryMessage`.
 
 So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Read the error code to tell the two apart:
 
 | `error.errorCode` | Meaning | What to do |
 |---|---|---|
-| `ERROR_INTERNET_UNAVAILABLE` | Queued; not sent yet. Will auto-send on reconnect. | Show as sending/queued; nothing to do. |
+| `ERROR_INTERNET_UNAVAILABLE` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
 | Anything else | A real failure; the message will not retry on its own. | Offer the user a manual retry (see below). |
 
 ```swift
@@ -118,12 +118,12 @@ Use `messageStatus`, not `status`. `BaseMessage.status` is a pre-existing `Strin
 
 | Reason | When |
 |---|---|
-| `.transient` | A temporary server error (a completed 5xx response or 429), or no answer after the SDK's automatic retries ran out. Retryable. |
+| `.transient` | A temporary server error (a completed 5xx response or 429), no answer after 5 automatic reconnect attempts, or, with `autoSendPendingOnReconnect` off, no answer at all. Retryable. |
 | `.permanent` | The server rejected the message, or the error was not recognized. A manual retry will not help. |
 | `.queueFull` | A new send was refused because the queue is full (count cap). |
 | `.queueOverflow` | An older queued message was evicted to admit a newer one (`.dropOldest` only). |
-| `.byteOverflow` | A media send was refused because it exceeds the media byte budget. |
-| `.discarded` | The message was removed before it could send (for example a cache clear). |
+| `.byteOverflow` | A media send was refused because caching its bytes would exceed `maxMediaCacheSize`, even after the SDK evicted cached received media to make room. |
+| `.discarded` | A queued message was removed before it could send: by `clearOfflineCache`, or because its conversation was removed. Reported with code `ERROR_OFFLINE_MESSAGE_DISCARDED`. (`discardLocalMessage` reports `onSuccess` instead.) |
 
 ## Inspect the Queue
 
@@ -175,7 +175,7 @@ The SDK holds listeners **weakly**, so retain the object yourself. Registering a
 
 ## Retry and Discard
 
-There is no automatic retry of a failed message — recovery is explicit and user-invoked. Use the message's `localMessageId`.
+There is no automatic retry of a failed message — recovery is explicit and user-invoked. A failed message stays in the outbox until you retry or discard it. Use the message's `localMessageId`.
 
 - **`retryMessage(_:onSuccess:onError:)`** re-attempts one message. A failed message is reset to pending and sent; a pending message is attempted now rather than waiting for a reconnect. `onSuccess` fires when the message is sent; `onError` receives a rejection or that attempt's error.
 - **`retryAllFailedMessages()`** retries **transient** failures only; permanent ones are skipped. It has no callback — watch the outcome on your `OutboxListener`.
@@ -210,7 +210,7 @@ There is also a fire-and-forget `retryMessage(_ message: BaseMessage)` that take
 
 ## Auto-send on Reconnect
 
-By default, queued pending messages are sent automatically, in the order they were composed, when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/ios/offline-enable) and the [reference](/sdk/ios/offline-reference). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes failed (`.transient`), which you recover with `retryMessage`.
+By default, queued pending messages are sent automatically, in the order they were composed, when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/ios/offline-enable) and the [reference](/sdk/ios/offline-reference). A queued message that keeps getting no answer is retried on each reconnect, up to 5 times, then becomes failed (`.transient`). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes failed (`.transient`), which you recover with `retryMessage`.
 
 Reconnect also runs a catch-up sync for received messages — see [Stay in Sync](/sdk/ios/offline-sync).
 
@@ -221,9 +221,9 @@ The outbox holds at most `maxPendingMessages` unsent messages (pending and sendi
 | `PendingMessageOverflowPolicy` | Behaviour on overflow |
 |---|---|
 | `.rejectNewest` (**default**) | The new send is refused and reported with reason `.queueFull`. Nothing already queued is lost. |
-| `.dropOldest` | The oldest pending message is evicted (reason `.queueOverflow`) to admit the new one. |
+| `.dropOldest` | The oldest pending message is evicted to admit the new one, and reported with `onError` (code `ERROR_QUEUE_OVERFLOW`, reason `.queueOverflow`). If there is no pending message to evict, the new send is refused with `.queueFull`. |
 
-A media send that exceeds the media byte budget is refused with reason `.byteOverflow`.
+A media send whose bytes would push the media cache over `maxMediaCacheSize` is refused with reason `.byteOverflow`. The SDK first evicts cached received media, least recently used first, and refuses the send only if that cannot make it fit.
 
 A **refused** send still reaches a final outcome. It fires `onMessagePending`, then `onError` with the code `ERROR_QUEUE_FULL` (or `ERROR_OFFLINE_MEDIA_BYTE_OVERFLOW`), and the `OutboxListener` receives `onOutboxMessagePending` followed by `onOutboxMessageFailed(_:_:)` carrying the exact reason. On the message you sent, `messageStatus` is `.failed`. An **evicted** message reports `onError` with `ERROR_QUEUE_OVERFLOW` on its own original send closures.
 
@@ -246,7 +246,7 @@ Offline queuing applies to **sending new messages** only. Changes to existing me
 
 Send a `MediaMessage` built with `files` and the SDK copies the file bytes to the device before it reports pending. The message then survives an app restart and is sent on reconnect. Only files you pass as `files` are copied. Files you already uploaded need no copy. Uploading new files to hosted storage does need a connection (see [Upload Files](/sdk/ios/upload-files)).
 
-An in-progress multi-file upload batch survives an app restart: the SDK keeps the batch on disk and you can re-attach to it. Fetch the existing request for a conversation with `getExistingUploadFileRequest`, and read each file's progress through `getItems()`, which returns a list of `UploadFileItem` (each with a `state` of type `UploadFileState`: `.queued`, `.uploading`, `.uploaded`, `.failed`, or `.rejected`, which cannot be retried). Retry an individual file with `retryAttachment(fileId:)`; the SDK retries from its own copy, so you do not pass the file again.
+An in-progress multi-file upload batch survives an app restart, but it never resumes on its own: the SDK keeps the batch on disk and you can re-attach to it. Fetch the existing request for a conversation with `getExistingUploadFileRequest`, and read each file's progress through `getItems()`, which returns a list of `UploadFileItem` (each with a `state` of type `UploadFileState`: `.queued`, `.uploading`, `.uploaded`, `.failed`, or `.rejected`, which cannot be retried). Retry an individual file with `retryAttachment(fileId:)`; the SDK retries from its own copy, so you do not pass the file again.
 
 ```swift
 // parentMessageId: 0 for the main composer, the thread parent's id for a thread composer.
