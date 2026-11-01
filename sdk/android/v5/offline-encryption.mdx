@@ -92,7 +92,7 @@ val offlineConfig = OfflineConfig.Builder()
 
 ## Key storage
 
-You do not supply or manage the encryption key. The SDK derives a per-user key (scoped to the app ID and the logged-in user's UID), wraps it with a non-exportable **Android Keystore** key, and stores the wrapped blob in the app's no-backup files directory. The key never leaves the device and is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+You do not supply or manage the encryption key. The SDK generates a random 32-byte key, one per app ID and logged-in user (UID), wraps it with a non-exportable **Android Keystore** key, and stores the wrapped blob in the app's no-backup files directory. The key never leaves the device and is never returned by any API. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
 
 ## Check encryption status
 
@@ -146,7 +146,7 @@ Media bytes live outside the database because `Attachment.getLocalPath()` is pub
 
 ## Cache resets on key loss
 
-If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost and each is failed through its send listener.
+If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost. They lived inside the unreadable database, so they cannot be counted or reported one by one: `pendingMessagesLost` is `OfflineCacheResetListener.PENDING_COUNT_UNKNOWN` (`-1`). When the reset is `ENCRYPTION_CHANGED` instead, each queued message fails with reason `DISCARDED` and `pendingMessagesLost` is the exact count, unless the old database could not be read.
 
 Register an `OfflineCacheResetListener` to be told when this happens:
 
@@ -156,6 +156,7 @@ Register an `OfflineCacheResetListener` to be told when this happens:
 CometChat.addOfflineCacheResetListener("LISTENER_ID", new OfflineCacheResetListener() {
     @Override
     public void onOfflineCacheReset(OfflineCacheResetReason reason, int pendingMessagesLost) {
+        // pendingMessagesLost is -1 (PENDING_COUNT_UNKNOWN) when the number lost is unknown, not zero.
         Log.w(TAG, "Cache reset: " + reason + ", pending lost=" + pendingMessagesLost);
     }
 });
@@ -166,6 +167,7 @@ CometChat.addOfflineCacheResetListener("LISTENER_ID", new OfflineCacheResetListe
 ```kotlin
 CometChat.addOfflineCacheResetListener("LISTENER_ID", object : OfflineCacheResetListener() {
     override fun onOfflineCacheReset(reason: OfflineCacheResetReason, pendingMessagesLost: Int) {
+        // pendingMessagesLost is -1 (PENDING_COUNT_UNKNOWN) when the number lost is unknown, not zero.
         Log.w(TAG, "Cache reset: $reason, pending lost=$pendingMessagesLost")
     }
 })
@@ -173,4 +175,4 @@ CometChat.addOfflineCacheResetListener("LISTENER_ID", object : OfflineCacheReset
 </Tab>
 </Tabs>
 
-The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches). See [Stay in Sync](/sdk/android/v5/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/android/v5/offline-reference) for every field and enum.
+The encryption-related reasons are `KEY_LOST`, `WRONG_KEY`, `CORRUPTED`, `ESCALATED`, and `ENCRYPTION_CHANGED` (you turned encryption on or off between launches, which also discards any queued messages and the cached media). See [Stay in Sync](/sdk/android/v5/offline-sync) for the full cache-reset flow and the complete list of reasons, and the [API Reference](/sdk/android/v5/offline-reference) for every field and enum.
