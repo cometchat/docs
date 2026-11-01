@@ -39,13 +39,13 @@ Pass a fetch listener as the optional argument and each read fires **up to two**
 The SDK delivers a page from the local cache **first**. It fires **even when the page is empty** — an empty cached page is indistinguishable from a cache miss, by design. Render it right away.
 </Step>
 <Step title="Server phase">
-After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it.
+After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it. (Blocked users are the exception: their server page is delivered but not written to the cache. The cached blocked-users list is kept current by the SDK itself.)
 </Step>
 </Steps>
 
 Three rules follow from this:
 
-- **Offline, the read ends with an error.** After the cached page, a read whose request gets no answer settles with `onError` carrying code `FAILED_TO_FETCH`. The call always settles — it never hangs.
+- **Offline, the read ends with an error.** After the cached page, a read whose request gets no answer settles with `onError` carrying code `FAILED_TO_FETCH`. A real server error reaches `onError` unchanged. The call always settles. Start the next fetch on a request object only after the previous one has returned: a second fetch started while one is running gets no cached page, and for messages, threads, reactions and the notification feed it ends with `onError` with code `REQUEST_IN_PROGRESS`.
 - **The server phase never fires offline.** It fires only on a genuine server response. Never treat a cached page as "end of history"; an empty cached page only means the end of the *cached* window.
 - **The Promise still settles too.** Passing a listener does not replace the returned Promise: it settles on the server outcome, so it also **rejects** offline. If you use only the listener, add a `.catch()` to avoid an unhandled rejection. Consume the result from one channel, not both.
 
@@ -218,7 +218,7 @@ request
 </Tabs>
 
 <Note>
-For `ReactionsRequest`, `fetchPrevious` and `fetchNext` are cached independently — each direction keeps its own cached pages. Users, groups, members, banned members, reactions, and the notification feed are served from a recorded copy of each request (up to `maxSnapshotQueries` distinct requests, each kept for `snapshotTtlDays`), so a list you never opened online is empty offline. See the [Configuration & API Reference](/sdk/javascript/offline-reference).
+For `ReactionsRequest`, use one request object per direction: an object caches only the first direction it fetches, and its cached phase stays empty in the other direction. Users, groups, members, banned members, reactions, and the notification feed are served from a recorded copy of each request (up to `maxSnapshotQueries` distinct requests, each kept for `snapshotTtlDays`), so a list you never opened online is empty offline. See the [Configuration & API Reference](/sdk/javascript/offline-reference).
 </Note>
 
 ## Read a single item
@@ -296,7 +296,7 @@ Key your list by id so the two phases merge cleanly: update items that changed, 
 
 The cache answers a read **only if every filter on it can be computed locally**. A single server-only filter makes the whole cached phase come back empty (or not fire at all), with no error and no warning, while the server phase still answers in full. The guiding rule is *better empty than wrong*.
 
-The most common server-only filter is `setSearchKeyword`, which blanks the cached phase on both messages and conversations. On `MessagesRequest`, `hasLinks`, `updatesOnly` and `interactionGoalCompletedOnly` are server-only too.
+The most common server-only filter is `setSearchKeyword`, which blanks the cached phase on any request that carries a search keyword (threads, reactions and the notification feed never carry one). Other examples are `hasLinks`, `updatesOnly` and `setInteractionGoalCompletedOnly` on `MessagesRequest`, setting a `UID` and a `GUID` together (one sender's messages in a group), and the status filters (`UsersRequest.setStatus`, `GroupMembersRequest.setStatus`) on the entity lists. `setUpdatedAfter` is a paging input, not a filter.
 
 <Warning>
 An offline-critical screen must use only cache-supported filters — one innocuous builder flag can silently disable the cached phase for a whole screen. The full per-builder matrix is in the [Configuration & API Reference](/sdk/javascript/offline-reference#cache-supported-filters).

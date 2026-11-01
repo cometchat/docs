@@ -39,7 +39,7 @@ CometChat.addOfflineMessageListener("LISTENER_ID", new CometChat.OfflineMessageL
 
 </Accordion>
 
-With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across a page reload or app restart and is sent automatically when the connection returns. This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across a page reload or app restart and is sent automatically once the connection is back and stable (with `autoSendPendingOnReconnect` on, the default). This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
 
 <Note>
 Offline support is **off by default** and requires SDK **4.3.0** or later. Queuing only happens once you [enable it](/sdk/javascript/offline-enable) **and** pass a `MessageSentListener`. A bare `await CometChat.sendMessage(message)` with no listener is never queued: offline, it rejects at once, as before.
@@ -47,7 +47,7 @@ Offline support is **off by default** and requires SDK **4.3.0** or later. Queui
 
 ## Send a Message
 
-Pass a `MessageSentListener` to `sendMessage`. Its lifecycle is `onMessagePending` first (the message is durably queued), then exactly one final outcome — `onMessageSent` (the server accepted it) or, for a real failure, `onError`.
+Pass a `MessageSentListener` to `sendMessage`. Its lifecycle is normally `onMessagePending` first (the message is durably queued), then its outcome: `onMessageSent` (the server accepted it) or `onError`. Offline, `onError` is a queued-not-failed notice and `onMessageSent` still fires later on reconnect, so both can fire for one send (see below). If the message cannot be queued at all, for example because its media file could not be copied (code `PERMANENT`), only `onError` fires.
 
 <Tabs>
 <Tab title="TypeScript">
@@ -121,13 +121,13 @@ The returned Promise is **not** replaced by the listener. It means "was it sent 
 
 ## Queued, Not Failed
 
-When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `FAILED_TO_FETCH`. This is a **notification, not a failure**: the message stays durably `PENDING`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. **Do not re-send on that error.**
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` **once** with the code `FAILED_TO_FETCH`. This is a **notification, not a failure**: the message stays durably `PENDING`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. **Do not re-send on that error.** This is the default behaviour, with `autoSendPendingOnReconnect` on. With it off, an offline send becomes `FAILED` (`TRANSIENT`) right away, and you recover it with `retryMessage`.
 
 So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Read the message's status to tell the two apart — keep the `localMessageId` from `onMessagePending`, then look the message up in the outbox:
 
 | `status` after `onError` | Meaning | What to do |
 |---|---|---|
-| `PENDING` | Queued; not sent yet. Will auto-send on reconnect. | Show as sending/queued; nothing to do. |
+| `PENDING` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
 | `FAILED` | A real failure; will not retry on its own. | Offer the user a manual retry (see below). |
 
 <Tabs>
@@ -199,12 +199,12 @@ Every message exposes its offline state. `getLocalMessageId()` returns the SDK-g
 
 | Reason | When |
 |---|---|
-| `TRANSIENT` | A temporary server error (for example 5xx or rate-limited), or no answer after five reconnect attempts. Retryable. |
+| `TRANSIENT` | A temporary server error (5xx, or 429 rate-limited), no answer after five automatic reconnect attempts, or, with `autoSendPendingOnReconnect` off, no answer at all. Retryable. |
 | `PERMANENT` | The server rejected the message, the error was not recognized, or copying an attachment into the store timed out. A manual retry will not help. |
 | `QUEUE_FULL` | A new send was refused because the queue is full (count cap). |
 | `QUEUE_OVERFLOW` | An older queued message was evicted to admit a newer one (`DROP_OLDEST` only). |
-| `BYTE_OVERFLOW` | A media send was refused because it exceeds the queue's byte budget. |
-| `DISCARDED` | The message was removed before it could send (for example a cache clear or a conversation purge). |
+| `BYTE_OVERFLOW` | A media send was refused because one of its files is larger than `maxMediaCacheSize`, the budget for the media cache. |
+| `DISCARDED` | A queued message was removed before it could send: by `clearOfflineCache`, by leaving or deleting its conversation, or because its saved media file is gone. Reported with code `ERROR_OFFLINE_MESSAGE_DISCARDED` on its send listener, and on `onOutboxMessageFailed`. |
 
 ## Inspect the Queue
 
@@ -282,7 +282,7 @@ CometChat.removeOfflineMessageListener("LISTENER_ID");
 
 ## Retry and Discard
 
-There is no automatic retry of a `FAILED` message — recovery is explicit and user-invoked. Each method accepts a message or its `localMessageId`.
+There is no automatic retry of a `FAILED` message — recovery is explicit and user-invoked. A `FAILED` message stays in the outbox until you retry or discard it. Each method accepts a message or its `localMessageId`.
 
 - **`retryMessage(message, listener?)`** re-attempts one message. A `FAILED` message is reset to `PENDING` and sent; a `PENDING` message is attempted now rather than waiting for a reconnect. The optional `MessageSentListener` and the returned Promise receive that attempt's outcome. With no answer, it fires the not-connected notice once (`FAILED_TO_FETCH`) and the message stays `PENDING`.
 - **`retryAllFailedMessages(listener?)`** retries **transient** failures only; permanent ones are skipped.
@@ -345,9 +345,9 @@ The outbox holds at most `maxPendingMessages` messages still trying to send (`PE
 | `PendingMessageOverflowPolicy` | Behaviour on overflow |
 |---|---|
 | `REJECT_NEWEST` (**default**) | The new send is refused and reported with reason `QUEUE_FULL`. Nothing already queued is lost. |
-| `DROP_OLDEST` | The oldest `PENDING` message is evicted (reason `QUEUE_OVERFLOW`) to admit the new one. |
+| `DROP_OLDEST` | The oldest `PENDING` message is evicted (reason `QUEUE_OVERFLOW`) to admit the new one. If there is no `PENDING` message to evict, the new send is refused with `QUEUE_FULL`. |
 
-A media send that exceeds the queue's byte budget is refused with reason `BYTE_OVERFLOW`.
+A media send with a file larger than `maxMediaCacheSize` is refused with reason `BYTE_OVERFLOW`; nothing is evicted to make room.
 
 A **refused** send (`QUEUE_FULL` / `BYTE_OVERFLOW`) is never queued, so it fires **no** `onMessagePending`; it reports `onError`, and the global `OfflineMessageListener` receives `onOutboxMessageFailed(message, reason)` carrying the exact reason. For `QUEUE_FULL` the error's `code` is `QUEUE_FULL`, with `details.maxPendingMessages`.
 
