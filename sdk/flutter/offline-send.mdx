@@ -17,7 +17,7 @@ class ChatSendListener extends MessageSentListener {
   @override
   void onMessageSent(BaseMessage message) { /* server ack: real id + sentAt */ }
   @override
-  void onError(CometChatException e) { /* pending = queued, failed = failed */ }
+  void onError(CometChatException e) { /* ERR_CONNECTION = queued, sends on reconnect */ }
 }
 
 CometChat.sendMessage(textMessage, listener: ChatSendListener());
@@ -80,7 +80,7 @@ class ChatSendListener extends MessageSentListener {
 
   @override
   void onError(CometChatException e) {
-    // Inspect the message status to tell "queued, not failed" from a real failure
+    // ERR_CONNECTION means queued, not failed; real failures arrive in onOutboxMessageFailed
     debugPrint("Send error: ${e.code}");
   }
 }
@@ -120,23 +120,38 @@ CometChat.sendInteractiveMessage(interactiveMessage, listener: listener); // Int
 
 When the device is offline, the send still fires `onMessagePending`, then fires `onError` with the code `ERR_CONNECTION` (details `ERROR_INTERNET_UNAVAILABLE`) for that attempt. This is a **notification, not a failure**: the message stays durably `pending`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. This is the default behaviour, with `autoSendPendingOnReconnect` on. With it off, an offline send becomes `failed` (`transient`) right away, and you recover it with `retryMessage`.
 
-So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Always read `message.status` to tell the two apart:
+So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Tell the two apart like this:
 
-| `status` after `onError` | Meaning | What to do |
+| Signal | Meaning | What to do |
 |---|---|---|
-| `pending` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
-| `failed` | A real failure; will not retry on its own. | Offer the user a manual retry (see below). |
+| `onError` with code `ERR_CONNECTION` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
+| `OfflineMessageListener.onOutboxMessageFailed(message, reason)` | A real failure; will not retry on its own. `message.status` is `failed` and `message.failureReason` says why. | Offer the user a manual retry (see below). |
+
+Every failure reaches `onOutboxMessageFailed`, whatever its cause. Match it to the message in your UI by `localMessageId`: the SDK sets it on the message you passed to `sendMessage` before `onMessagePending` fires. The `status` of that passed-in object is not updated; read status from the messages the SDK delivers (`onMessagePending`, `onOutboxMessageFailed`, `getPendingMessages()`).
 
 <Tabs>
 <Tab title="Dart">
 ```dart
+// In your MessageSentListener
 @override
 void onError(CometChatException e) {
-  // textMessage is the message you passed to sendMessage; the SDK updates its status in place.
-  if (textMessage.status == CometChatMessageStatus.pending) {
+  if (e.code == "ERR_CONNECTION") {
     // Queued offline — it will send automatically on reconnect
-  } else if (textMessage.status == CometChatMessageStatus.failed) {
-    // Real failure — surface a retry action
+  }
+}
+
+// App-wide: every real failure lands here
+class OutboxFailures extends OfflineMessageListener {
+  @override
+  void onOutboxMessagePending(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageSent(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageFailed(BaseMessage message, MessageFailureReason reason) {
+    // message.status == CometChatMessageStatus.failed; surface a retry action
+    // for the UI row whose localMessageId matches message.localMessageId
   }
 }
 ```
