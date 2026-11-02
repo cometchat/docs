@@ -3,6 +3,8 @@ title: "Thread Subscription"
 description: "Subscribe to and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat Flutter SDK."
 ---
 
+import FlutterOfflineListener from '/snippets/sdk/flutter-offline-listener.mdx';
+
 <Accordion title="AI Integration Quick Reference">
 
 | Field | Value |
@@ -14,7 +16,7 @@ description: "Subscribe to and unsubscribe from message threads, read subscripti
 | Key classes | `ThreadsRequestBuilder` · `ThreadsRequest` · `MessageThread` · `BaseMessage` · `RepliesOptions` |
 | Key fields | `BaseMessage.threadSubscribed` · `MessageThread.subscribed` |
 | Prerequisites | SDK initialised via [`CometChat.init()`](/sdk/flutter/setup) and a logged-in user via [`CometChat.login()`](/sdk/flutter/authentication-overview). |
-| Constraints | A thread is identified by its **parent message ID**. The SDK keeps no subscription state and fires no subscription event — the resolved call is the acknowledgement. |
+| Constraints | A thread is identified by its **parent message ID**. The SDK keeps no subscription state beyond the flag on each message (cached with it when offline support is on) and fires no subscription event — the resolved call is the acknowledgement. |
 | Related | [Threaded Messages](/sdk/flutter/threaded-messages) · [Notification Preferences](/notifications/preferences) |
 | Full reference | [`BaseMessage`](/sdk/reference/messages#basemessage) · [`CometChatException`](/sdk/reference/auxiliary#cometchatexception) |
 
@@ -34,9 +36,9 @@ Thread subscription builds on [Threaded Messages](/sdk/flutter/threaded-messages
 
 ## How State Works
 
-The SDK keeps **no subscription state of its own**. There is no cache and no listener to reconcile:
+The SDK keeps **no subscription state of its own** beyond the flag on each message, and there is no listener to reconcile:
 
-- Message-list fetches and `getMessageDetails()` ask the server for the flag, and it arrives on the message as the `threadSubscribed` field.
+- Message-list fetches and `getMessageDetails()` ask the server for the flag, and it arrives on the message as the `threadSubscribed` field. With [offline support](/sdk/flutter/offline-cached-data) on, the flag is also cached with the message, so a cached read returns the last known value and the server read then updates it.
 - `subscribeToThread()` and `unsubscribeFromThread()` complete when the server has accepted the change. The `onSuccess` callback **is** the acknowledgement — there is no follow-up event.
 
 Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
@@ -188,6 +190,8 @@ Replies sent from **this** device do not arrive on a listener — bump your thre
 
 ## Fetch the Threads a User Participates In
 
+<FlutterOfflineListener method="`fetchNext()`" listener="`ThreadsFetchListener`" />
+
 Use `ThreadsRequest` to build a thread inbox. Every returned thread is one the logged-in user is subscribed to — presence in the list *is* a subscription. `ThreadsRequest`, `MessageThread` and `ConversationListener` are exported from `package:cometchat_sdk/cometchat_sdk.dart`, not from the modular `core.dart` or `messaging.dart` entry points.
 
 <Tabs>
@@ -208,7 +212,7 @@ threadsRequest.fetchNext(onSuccess: (List<MessageThread> threads) {
 </Tab>
 </Tabs>
 
-`fetchNext()` takes **required** `onSuccess` and `onError` callbacks, like every other request in the SDK. Call it repeatedly on the same object to page through the list, using `hasMore()` as the loop condition — page on it rather than on the size of the last result. Once the list is exhausted, `fetchNext()` resolves an empty list.
+`fetchNext()` takes optional `listener`, `onSuccess`, and `onError` parameters — pass whichever you need. Call it repeatedly on the same object to page through the list, using `hasMore()` as the loop condition — page on it rather than on the size of the last result. Once the list is exhausted, `fetchNext()` resolves an empty list.
 
 <Tabs>
 <Tab title="Dart">
@@ -274,6 +278,15 @@ Each row is a `MessageThread`:
 <Note>
 Sort a thread inbox on `lastReply?.sentAt` falling back to `parentMessage?.sentAt` — a thread with no replies has no last reply, and `updatedAt` is a cursor, not a sort key. A row carries only the raw `receiverUid`, with no name or avatar: render the ID immediately and resolve the display name lazily with `CometChat.getUser()` or `CometChat.getGroup()` rather than dropping the row.
 </Note>
+
+## Offline Behaviour
+
+With [offline support](/sdk/flutter/offline-cached-data) enabled, `fetchNext()` on a `ThreadsFetchListener` delivers a cached page first (`onCachedThreads`, even when empty) and then the server list (`onServerThreads`); offline, it ends with `onError` (code `ERR_CONNECTION`, details `ERROR_INTERNET_UNAVAILABLE`) after the cached page. With `setParticipatedByMe(true)`, `onCachedThreads` holds the user's cached participated threads, in the same sort order; with `false`, it replays the last page fetched online for this request. `setUid()` / `setGuid()` scope that list to one conversation.
+
+| Builder method | Offline |
+|---|---|
+| `setParticipatedByMe` | Cached (`true`: your participated threads; `false`: the last page fetched online) |
+| `setUid` / `setGuid` | Cached (scope) |
 
 ## Notification Preferences
 

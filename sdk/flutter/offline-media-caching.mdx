@@ -1,0 +1,164 @@
+---
+title: "Media Caching"
+sidebarTitle: "Media Caching"
+description: "Cache image, video, audio and file attachments on the device so media stays viewable offline with the CometChat Flutter SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// Set the media caching mode at init (fixed for the session)
+final offlineConfig = OfflineConfig(
+  enabled: true,
+  mediaCaching: MediaCachingMode.auto,        // auto (default) or off
+  maxMediaCacheSize: 500 * 1024 * 1024,       // bytes; 0 = unlimited
+);
+
+// Read the mode in effect
+final MediaCachingMode mode = CometChat.getMediaCachingMode(); // off when offline is not active
+
+// Resolve cached bytes for a message's attachment
+final String? localPath = mediaMessage.attachment?.localPath;  // hydrated automatically on reads
+final String? cached = await CometChat.getCachedMediaPath(mediaMessage); // null if not cached
+
+// Download on demand
+await CometChat.downloadMedia(
+  mediaMessage,
+  listener: MediaCallbackListener(
+    onSuccess: (localPath) {},
+    onProgress: (percent) {},
+    onError: (MediaException e) {},
+  ),
+);
+
+// Observe background (auto) downloads
+CometChat.addMediaDownloadListener("MEDIA_LISTENER", _MyMediaDownloadListener());
+```
+
+</Accordion>
+
+With offline support on, the SDK can cache attachment bytes durably on the device so media stays viewable offline — even after the server's presigned URL has expired. This page covers the caching modes, what downloads automatically, how to read cached bytes, and how to download media on demand.
+
+<Note>
+
+Media caching applies only while offline support is active for the logged-in user (`CometChat.isOfflineEnabled()` is `true`). See [Enable Offline Support](/sdk/flutter/offline-enable).
+
+</Note>
+
+## Caching modes
+
+The caching mode is set once, in the `OfflineConfig` you pass at initialization, and is fixed for the SDK session. There is no runtime switch — to change it, re-initialize the SDK with a new config.
+
+| `MediaCachingMode` | Behavior |
+|---|---|
+| `auto` (default) | Incoming media bytes are eagerly downloaded and cached on any network, then LRU-managed. The outgoing copy is retained after the server acknowledges the send. |
+| `off` | Incoming media bytes are **not** cached. The message metadata (including the file URL) is still cached, so the message appears offline and the UI loads media live from the URL when online. The outgoing copy is dropped after the send is acknowledged. |
+
+Sending media always works in both modes.
+
+```dart
+final offlineConfig = OfflineConfig(
+  enabled: true,
+  mediaCaching: MediaCachingMode.auto,
+  maxMediaCacheSize: 500 * 1024 * 1024,
+);
+```
+
+Read the mode in effect at runtime with `CometChat.getMediaCachingMode()`. It returns `MediaCachingMode.off` whenever offline support is not active, whatever the app configured, so a UI layer can rely on it without reading the config itself.
+
+## What downloads automatically
+
+In `auto` mode, media bytes are downloaded and cached automatically on the two live receive paths:
+
+- a **realtime** media message received while connected, and
+- opening a chat **online** (the server read refreshes and caches its media).
+
+A media message that arrives through a reconnect catch-up [sync](/sdk/flutter/offline-sync) is cached as **metadata only** and renders as a placeholder; its bytes download lazily the next time you open that chat online. This holds in both `auto` and `off`.
+
+In `off` mode, nothing is auto-downloaded on any path; media loads live from its URL when online.
+
+## Reading cached media
+
+When bytes are already cached, the SDK **hydrates the local path automatically** on every message it delivers — you do not have to ask. Read it straight off the attachment:
+
+```dart
+final attachment = mediaMessage.attachment;
+final localPath = attachment?.localPath;   // non-null when bytes are cached
+if (localPath != null) {
+  // Render directly from disk — no network fetch.
+}
+```
+
+To look up the cached path explicitly, call `getCachedMediaPath`. It is a cheap filesystem check that never touches the network and returns `null` when the bytes are not cached (call `downloadMedia` to fetch them). The path is a cache hint that can disappear (LRU eviction, cache clear, auth wipe): re-resolve it on each render and never persist it in your own storage.
+
+```dart
+final String? path = await CometChat.getCachedMediaPath(mediaMessage); // null if not cached
+```
+
+<Note>
+
+Each attachment of a multi-attachment message resolves independently. An attachment with no cached bytes keeps `localPath == null` and the UI loads it from the URL as before.
+
+</Note>
+
+## Downloading on demand
+
+Call `downloadMedia` to fetch and cache a message's attachment bytes — for example when the user taps a placeholder. It is honored in **both** caching modes (an explicit download always wins). The SDK resolves off the main isolate (cached bytes, then a valid URL, then, for a CometChat-hosted URL the server rejects as expired or forbidden (HTTP 403 or 410), one re-signed URL) and reports back through the `MediaCallbackListener` you pass.
+
+```dart
+await CometChat.downloadMedia(
+  mediaMessage,
+  listener: MediaCallbackListener(
+    onSuccess: (localPath) {
+      // Bytes cached; render from localPath.
+    },
+    onProgress: (percent) {
+      // 0..100, best-effort.
+    },
+    onError: (MediaException e) {
+      // e.code is a typed MediaErrorCode.
+    },
+  ),
+);
+```
+
+`onProgress(int percent)` reports `0..100`, best-effort and monotonic non-decreasing. It is emitted only when the server reports a content length; for an unknown-length download it is skipped and the call goes straight to `onSuccess`. Progress never blocks or fails the download.
+
+`onError` receives a `MediaException` whose `code` is one of these typed `MediaErrorCode` values:
+
+| `MediaErrorCode` | Meaning |
+|---|---|
+| `offlineNotCached` | The device is offline and the bytes are not cached — expected, not a bug. |
+| `noUrl` | The attachment carries no usable URL. |
+| `resignFailed` | The presigned URL expired and could not be re-signed. |
+| `downloadFailed` | The bytes could not be fetched or written. |
+| `unavailable` | Offline support (or its media store) is not active. |
+
+## Observe background downloads
+
+In `auto` mode, incoming media downloads in the background with no per-call callback. Register a `MediaDownloadListener` to learn when the bytes land (or fail) so a UI tile can refresh. All callbacks fire on the main isolate.
+
+```dart
+class _MyMediaDownloadListener extends MediaDownloadListener {
+  @override
+  void onMediaDownloaded(String? messageLocalId, String attachmentId, String localPath) {
+    // messageLocalId: the message's server id (or local id if not yet sent)
+    // attachmentId:   the attachment URL without its query string
+    // localPath:      where the bytes landed
+  }
+
+  @override
+  void onMediaDownloadFailed(String? messageLocalId, String attachmentId, MediaException error) {}
+}
+
+CometChat.addMediaDownloadListener("MEDIA_LISTENER", _MyMediaDownloadListener());
+```
+
+Remove the listener with `CometChat.removeMediaDownloadListener("MEDIA_LISTENER")`. The background `MediaDownloadListener` carries no progress callback — progress is reported only on the explicit `downloadMedia` path above, and its `onMediaDownloadFailed` delivers a typed `MediaException` rather than a raw HTTP failure.
+
+## Media cache size limit
+
+Cached media bytes are bounded by `maxMediaCacheSize` (default **500 MB**; `0` means unlimited). When the cache exceeds the limit, the least recently accessed media is deleted first until it is back under budget. Media for un-sent (queued) messages is never evicted, though it still counts toward the budget; copies held for an in-progress upload are excluded from the budget. Because protected media is never evicted, the cache can briefly exceed `maxMediaCacheSize`. Bulk list loads and syncs do not refresh an item's recency.
+
+Media is stored as files in durable, app-private per-user storage; the location is not configurable. Eviction runs silently in the background — there is no cache-limit callback. To reason about size, use `CometChat.getCacheSize()` (a `Future<int>` of the total local bytes held) and the configured limits. See the [configuration reference](/sdk/flutter/offline-reference) for the full set of options.

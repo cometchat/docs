@@ -3,6 +3,8 @@ title: "Retrieve Conversations"
 description: "Fetch, filter, tag, and search CometChat conversations in Flutter apps using conversation request builders."
 ---
 
+import FlutterOfflineListener from '/snippets/sdk/flutter-offline-listener.mdx';
+
 <Accordion title="AI Integration Quick Reference">
 
 | Field | Value |
@@ -164,6 +166,8 @@ This feature is only available with `Conversation & Advanced Search`. The `Conve
 
 </Note>
 
+<Note>With offline support on, this filter is answered by the server only; the cached page is empty.</Note>
+
 <Tabs>
 <Tab title="Dart">
 ```dart
@@ -276,20 +280,33 @@ Once you have the object of the `ConversationsRequest` class, you need to call t
 
 A Maximum of only 50 Conversations can be fetched at once.
 
+<FlutterOfflineListener method="`fetchNext()`" listener="`ConversationFetchListener`" />
+
 <Tabs>
 <Tab title="Dart">
 ```dart
+class Class_Name extends ConversationFetchListener {
+  @override
+  void onCachedConversations(List<Conversation> conversations) {
+    // Render the cached list immediately (even when empty).
+  }
+
+  @override
+  void onServerConversations(List<Conversation> conversations) {
+    // Reconcile, keyed by conversation id.
+  }
+
+  @override
+  void onError(CometChatException e) {
+    // Handle failure (offline: ERR_CONNECTION after the cached page).
+  }
+}
+
 ConversationsRequest conversationRequest = (ConversationsRequestBuilder()
     ..limit = 50
   ).build();
 
-conversationRequest.fetchNext(
-      onSuccess: (List<Conversation> conversations){
-
-
-      }, onError: (CometChatException e){
-
-      }
+conversationRequest.fetchNext(listener: Class_Name());
 ```
 
 </Tab>
@@ -366,18 +383,34 @@ In order to fetch a specific conversation, you can use the `getConversation` met
 * user - Only fetches user conversation.
 * group - Only fetches group conversations.
 
+<Note>
+Pass a `ConversationDetailsListener` to `getConversation()` to receive the cached copy first. With offline support on, `onCachedConversation` delivers the cached conversation when there is one, then `onServerConversation` delivers the server copy, written through before delivery. Offline, the read ends with `onError` with code `ERR_CONNECTION` (details `ERROR_INTERNET_UNAVAILABLE`); when nothing is cached, `onError` is the only callback. Without a listener, `onSuccess` receives the server copy and `onError` is unchanged. `onSuccess` and `onError` are required either way — pass `null` for both when you use a listener.
+</Note>
+
 <Tabs>
 <Tab title="Dart">
 ```dart
+class Class_Name extends ConversationDetailsListener {
+  @override
+  void onCachedConversation(Conversation conversation) {
+    // Fires only on a cache hit.
+  }
+
+  @override
+  void onServerConversation(Conversation conversation) {
+    // Server copy, written through before delivery.
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint("Fetch Conversation failed : ${e.message}");
+  }
+}
+
 String conversationWith = "cometchat-uid-1"; //id of the user/group
 String conversationType = "user";
 CometChat.getConversation(conversationWith, conversationType,
-	onSuccess: (Conversation conversation) {
-		debugPrint("Fetch Conversation Successfully : $conversation");
-	}, onError: (CometChatException e) {
-		debugPrint("Fetch Conversation  failed  : ${e.message}");
-	}
-);
+	onSuccess: null, onError: null, listener: Class_Name());
 ```
 
 </Tab>
@@ -403,3 +436,19 @@ Conversation conversation = CometChat.getConversationFromMessage(message);
 While converting `Message` object to `Conversation` object, the `unreadMessageCount` & `tags` will not be available in the `Conversation` object. The unread message count needs to be managed in your client-side code.
 
 </Info>
+
+## Offline Behaviour
+
+With [offline support](/sdk/flutter/offline-cached-data) enabled, `fetchNext()` delivers a cached page first (`onCachedConversations`, even when empty) and then the server list (`onServerConversations`); offline, the read ends with `onError` with code `ERR_CONNECTION` (details `ERROR_INTERNET_UNAVAILABLE`) after the cached page. The cached page is answered only when every builder filter on the request is locally computable — a single server-only filter blanks the cached page while the server phase still answers in full.
+
+| Builder option | Offline |
+|---|---|
+| `conversationType` | Cached |
+| `tags` | Cached |
+| `userTags` / `groupTags` | Cached |
+| `unread` | Cached (last-known count; the server phase corrects it) |
+| `includeBlockedUsers` / `withBlockedInfo` | Cached |
+| `withUserAndGroupTags` / `withTags` | Cached (enrichment) |
+| `hideAgentic` / `onlyAgentic` | Cached |
+| `pinnedBy` | Cached |
+| `searchKeyword` | Server only — cached page is empty |
