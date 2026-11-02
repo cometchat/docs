@@ -4,6 +4,8 @@ sidebarTitle: "Thread Subscription"
 description: "Subscribe and unsubscribe from message threads, read subscription state off a message, and fetch participated threads with the CometChat Android SDK."
 ---
 
+import OfflineDeprecatedListener from '/snippets/sdk/offline-deprecated-listener.mdx';
+
 {/* TL;DR for Agents and Quick Reference */}
 <Accordion title="AI Integration Quick Reference">
 
@@ -23,7 +25,7 @@ val request = ThreadsRequest.ThreadsRequestBuilder()
     .setParticipatedByMe(true)
     .setLimit(30)
     .build()
-request.fetchNext(callbackListener)          // List<MessageThread>
+request.fetchNext(threadsFetchListener)      // onCachedThreads + onServerThreads
 ```
 
 </Accordion>
@@ -40,9 +42,9 @@ Thread subscription builds on [Threaded Messages](/sdk/android/v5/threaded-messa
 
 ## How State Works
 
-The SDK keeps **no subscription state of its own**. There is no cache and no thread listener to reconcile:
+The SDK keeps **no subscription state of its own** beyond the flag on each message, and there is no thread listener to reconcile:
 
-- Every message fetch asks the server for the flag, and it arrives on the message — read it with `BaseMessage.isThreadSubscribed()`.
+- Every message fetch asks the server for the flag, and it arrives on the message — read it with `BaseMessage.isThreadSubscribed()`. With [offline support](/sdk/android/v5/offline-cached-data) on, the flag is also cached with the message, so a cached read returns the last known value and the server read then updates it.
 - `subscribeToThread()` and `unsubscribeFromThread()` call back when the server has accepted the change. **The callback is the acknowledgement** — there is no follow-up event.
 
 Your app owns the resulting UI state. That means you decide when to flip a toggle optimistically, and you decide what a thread's state is before you have fetched it.
@@ -82,7 +84,7 @@ CometChat.subscribeToThread(parentMessageId, object : CometChat.CallbackListener
       Log.d(TAG, "Subscribed to thread: $response")
   }
 
-  override fun onError(e: CometChatException?) {
+  override fun onError(e: CometChatException) {
       Log.e(TAG, "Failed to subscribe: ${e?.message}")
   }
 })
@@ -125,7 +127,7 @@ CometChat.unsubscribeFromThread(parentMessageId, object : CometChat.CallbackList
       Log.d(TAG, "Unsubscribed from thread: $response")
   }
 
-  override fun onError(e: CometChatException?) {
+  override fun onError(e: CometChatException) {
       Log.e(TAG, "Failed to unsubscribe: ${e?.message}")
   }
 })
@@ -223,7 +225,7 @@ CometChat.subscribeToThread(parentMessageId, object : CometChat.CallbackListener
       parentMessage.isThreadSubscribed = true
   }
 
-  override fun onError(e: CometChatException?) { }
+  override fun onError(e: CometChatException) { }
 })
 ```
 
@@ -291,6 +293,8 @@ To build a thread inbox — one row per thread the user is part of — create a 
 | `setGuid(String value)`        | Scope the list to threads in this group. Mutually exclusive with `setUid()`.                                                    |
 | `setParticipatedByMe(boolean)` | Defaults to `true`. Only the threads the logged-in user participates in are returned.                                          |
 
+<OfflineDeprecatedListener method="`fetchNext()`" replacement="`ThreadsFetchListener`" />
+
 <Tabs>
 <Tab title="Java">
 ```java
@@ -299,9 +303,14 @@ ThreadsRequest threadsRequest = new ThreadsRequest.ThreadsRequestBuilder()
   .setLimit(30)
   .build();
 
-threadsRequest.fetchNext(new CometChat.CallbackListener<List<MessageThread>>() {
+threadsRequest.fetchNext(new CometChat.ThreadsFetchListener() {
   @Override
-  public void onSuccess(List<MessageThread> threads) {
+  public void onCachedThreads(List<MessageThread> threads) {
+      // Render the cached thread inbox immediately.
+  }
+
+  @Override
+  public void onServerThreads(List<MessageThread> threads) {
       for (MessageThread thread : threads) {
           Log.d(TAG, "Thread " + thread.getParentMessageId()
                   + " has " + thread.getReplyCount() + " replies");
@@ -324,15 +333,19 @@ val threadsRequest = ThreadsRequest.ThreadsRequestBuilder()
   .setLimit(30)
   .build()
 
-threadsRequest.fetchNext(object : CometChat.CallbackListener<List<MessageThread>>() {
-  override fun onSuccess(threads: List<MessageThread>?) {
-      threads?.forEach { thread ->
+threadsRequest.fetchNext(object : CometChat.ThreadsFetchListener() {
+  override fun onCachedThreads(threads: List<MessageThread>) {
+      // Render the cached thread inbox immediately.
+  }
+
+  override fun onServerThreads(threads: List<MessageThread>) {
+      threads.forEach { thread ->
           Log.d(TAG, "Thread ${thread.parentMessageId} has ${thread.replyCount} replies")
       }
   }
 
-  override fun onError(e: CometChatException?) {
-      Log.e(TAG, "Threads fetch failed: ${e?.message}")
+  override fun onError(e: CometChatException) {
+      Log.e(TAG, "Threads fetch failed: ${e.message}")
   }
 })
 ```
@@ -407,6 +420,15 @@ See [Notification Preferences](/notifications) for how to read and update a user
 | `ERR_MESSAGE_ID_NOT_FOUND`  | The parent message does not exist (for example, it was deleted).                                                                                    |
 
 ---
+
+## Offline Behaviour
+
+With [offline support](/sdk/android/v5/offline-cached-data) enabled, `fetchNext()` delivers a cached page first (`onCachedThreads`, even when empty) and then the server list (`onServerThreads`); offline, it ends with `onError` with code `ERROR_INTERNET_UNAVAILABLE` after the cached page. With `setParticipatedByMe(true)`, `onCachedThreads` holds the user's cached participated threads, in the same sort order; with `false`, it replays the last page fetched online for this request. `setUid()` / `setGuid()` scope that list to one conversation.
+
+| Builder method | Offline |
+|---|---|
+| `setParticipatedByMe` | Cached (`true`: your participated threads; `false`: the last page fetched online) |
+| `setUid` / `setGuid` | Cached (scope) |
 
 ## Next Steps
 
