@@ -218,11 +218,11 @@ export function setupPushOnLogin(): () => void {
   ];
 
   const start = async () => {
-    // Await each permission request before the next — Android allows only one pending
-    // request per activity. A rejection means the OS could not be asked (not that the user
-    // declined), and must not stop init(): the push token still has to register.
-    await CometChatPNHelper.requestNotificationPermission().catch(() => false);
-    await CometChatPNHelper.requestCallPermissions(); // mic + camera, needed before a call connects
+    // Calling first. With no config this only subscribes to the call events, so it
+    // cannot overwrite the core's settings — and the ring a call push buffered before
+    // JavaScript existed is drained by the core's init() below, with a listener already
+    // attached. Omit this in a chat-only app; without it nothing rings.
+    await CometChatVoipNotifications.init();
 
     await CometChatPushNotifications.init({
       fcmProviderId: AppCredentials.fcmProviderId, // Android
@@ -232,9 +232,13 @@ export function setupPushOnLogin(): () => void {
       ringInForeground: true, // the VoIP package rings while the app is open too
     });
 
-    // Then the VoIP package, with no config — it reads the core's. Omit this in a
-    // chat-only app; without it nothing rings.
-    await CometChatVoipNotifications.init();
+    // Permissions last. Each of these waits for the user to answer, and anything awaited
+    // before the two init() calls spends the cold-launch ring window. A rejection means the
+    // OS could not be asked (not that the user declined) and must not stop setup: the push
+    // token registers either way. Await one before the next — Android allows only one
+    // pending request per activity.
+    await CometChatPNHelper.requestNotificationPermission().catch(() => false);
+    await CometChatPNHelper.requestCallPermissions(); // mic + camera, before a call connects
   };
   start().catch(error => console.log('Push setup failed:', error));
 
@@ -349,12 +353,12 @@ npm install @cometchat/push-notifications-voip-react-native
 ```ts
 import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
 
-await CometChatVoipNotifications.init();          // AFTER the core init, with NO config
+await CometChatVoipNotifications.init();          // BEFORE the core init, with NO config
 CometChatVoipNotifications.onCallAccepted(call => navigate(SCREENS.ongoingCall, call));
 ```
 
 <Warning>
-Passing a config to `CometChatVoipNotifications.init()` in a chat app re-runs the core initialisation and drops every chat option set above, including `notificationSmallIcon` and the channel settings. Only a calls-only app passes its config there.
+Call this **before** `CometChatPushNotifications.init()`, and pass it no config. The core's `init()` drains the ring a call push buffered before JavaScript existed, so it has to run second or the ring is delivered with nothing subscribed to it. With a config this would initialise the core itself, using only what you passed — so `notificationSmallIcon` and the channel settings would never be set. Only a calls-only app passes its config there.
 </Warning>
 
 See [Push Ringing](/calls/react-native/voip-calling) for the whole calling setup, [Ringing](/calls/react-native/ringing) for placing and answering calls, and [Migrating from Legacy Ringing](/calls/react-native/migrating-from-legacy-ringing) if your app still uses `CometChat.addCallListener`.

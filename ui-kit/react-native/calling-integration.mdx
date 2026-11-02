@@ -35,7 +35,7 @@ sequenceDiagram
     participant P as Callee · Push SDK
     participant U as Callee · UI Kit
 
-    A->>BE: Call button → CometChatCalls.initiateCall
+    A->>BE: Call button → CometChat.initiateCall (the Kit's current path)
     Note over A: Outgoing call screen: "calling…"
     BE-->>P: Push (initiated)
     P->>P: Rings: notification, full-screen screen / CallKit
@@ -64,7 +64,7 @@ Installing the Calls SDK is what enables calling; the UI Kit detects it at start
 `minSdkVersion` must be 24 or higher, and the iOS deployment target 13 or higher. Below API 26 the ring posts a plain notification rather than the channel-backed, full-screen one.
 
 <Note>
-The UI Kit requires `@cometchat/calls-sdk-react-native` 5.1 or newer and both Push Notifications packages at 2.0 or newer. Ringing behaviour described here does not exist below those versions.
+**Incoming-call ringing** needs both Push Notifications packages at 2.0 or newer and `@cometchat/calls-sdk-react-native` 5.1 or newer; below those versions nothing on this page rings. The UI Kit's own call buttons and screens work with the Calls SDK support it already shipped, and are unchanged by these packages.
 </Note>
 
 ## Step 2: Initialise, in this order
@@ -74,7 +74,11 @@ import { CometChatUIKit } from '@cometchat/chat-uikit-react-native';
 import { CometChatPushNotifications } from '@cometchat/push-notifications-react-native';
 import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
 
-// 1. Push first — a call push may be what started this process.
+// 1. Calling first, with no config — a call push may be what started this process,
+//    and the core's init() below is what drains the ring it buffered.
+await CometChatVoipNotifications.init();
+
+// 2. Then the core, with your own settings.
 await CometChatPushNotifications.init({
   appId: APP_ID,
   region: REGION,
@@ -83,14 +87,13 @@ await CometChatPushNotifications.init({
   notificationSmallIcon: 'ic_notification',
   callKitName: 'Acme',
 });
-await CometChatVoipNotifications.init();          // no config — see the warning
 
-// 2. Then the UI Kit, which initialises the Chat and Calls SDKs.
+// 3. Then the UI Kit, which initialises the Chat and Calls SDKs.
 await CometChatUIKit.init({ appId: APP_ID, region: REGION, authKey: AUTH_KEY });
 ```
 
 <Warning>
-**Do not pass a config to `CometChatVoipNotifications.init()` in a chat app.** It re-runs the core initialisation and drops `notificationSmallIcon`, `androidChannelId` and every other chat-side option. Only a calls-only app, which never calls `CometChatPushNotifications.init`, passes its config there.
+**Do not pass a config to `CometChatVoipNotifications.init()` in a chat app.** With a config it initialises the core itself, using only what you passed — so `notificationSmallIcon`, `androidChannelId` and every other chat-side option is never set. With no config it only subscribes, which is what lets it run first safely. Only a calls-only app, which never calls `CometChatPushNotifications.init`, passes its config there.
 </Warning>
 
 <Warning>
@@ -186,10 +189,15 @@ if (readiness !== 'ready') {
 ```ts
 await CometChatPushNotifications.unregister();   // needs the credential; must come first
 CometChatVoipNotifications.clearIdentity();
-await CometChatUIKit.logout();
+await CometChatUIKit.logout();                   // Chat SDK only
+await CometChatCalls.logout();                   // the Kit does not do this for you
 ```
 
-`CometChatUIKit.logout` logs out of the Chat SDK and the Calls SDK. `unregister()` must run **before** it: deleting the token from the backend needs the logged-in credential, and skipping it leaves the device receiving the departed user's call pushes.
+`unregister()` must run **before** the logouts: deleting the token from the backend needs the logged-in credential, and skipping it leaves the device receiving the departed user's call pushes.
+
+<Warning>
+**`CometChatUIKit.logout()` logs out of the Chat SDK only** — `CometChatUIKit.ts` calls `CometChat.logout()` and nothing else. Call `CometChatCalls.logout()` yourself, or the Calls SDK stays signed in as the departed user and a call can still ring.
+</Warning>
 
 ## What the UI Kit does from here
 
@@ -201,8 +209,8 @@ Once calling is active, the voice and video call buttons render in the [MessageH
 
 | Moment | What happens | Component |
 |--------|--------------|-----------|
-| Tap a call button | `CometChatCalls.initiateCall`, then the outgoing screen opens | [Call Buttons](/ui-kit/react-native/call-buttons) |
-| Waiting | "Calling…", then "Ringing…" when the callee's device is reached; End cancels the call; 45 s with no answer ends it as unanswered | [Outgoing Call](/ui-kit/react-native/outgoing-call) |
+| Tap a call button | `CometChat.initiateCall`, then the outgoing screen opens | [Call Buttons](/ui-kit/react-native/call-buttons) |
+| Waiting | "Calling…"; End cancels the call; 45 s with no answer ends it as unanswered. The Kit's outgoing screen holds no Calls SDK session, so it cannot advance to "Ringing…" — place the call yourself with `CometChatCalls.initiateCall` if you need that | [Outgoing Call](/ui-kit/react-native/outgoing-call) |
 | Callee declines / is busy / does not answer | The outgoing screen closes with the reason | Outgoing Call |
 | Incoming call | The Push SDK rings and draws the incoming-call screen | Push SDK (no UI Kit component) |
 | Answer | `onCallAccepted` fires and your call screen mounts | [Call Features](/ui-kit/react-native/call-features) |
