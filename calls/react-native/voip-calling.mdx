@@ -24,7 +24,7 @@ flowchart LR
 ## Prerequisites
 
 - [Calls SDK 5.1 set up](/calls/react-native/setup) and the user logged in.
-- **Android**: a Firebase project with your app, `google-services.json` in `android/app/`, and `@react-native-firebase/app` + `@react-native-firebase/messaging` installed.
+- **Android**: a Firebase project with your app, `google-services.json` in `android/app/`, and the Google Services plugin applied (Step 1). You don't need `@react-native-firebase`.
 - **iOS**: an APNs provider with a token-based (`.p8`) key in the CometChat dashboard, and the **Push Notifications** capability plus the **Voice over IP** background mode enabled in Xcode.
 - Push notifications enabled in the CometChat dashboard with an **FCM** provider (Android) and an **APNs** provider (iOS), and those providers' ids.
 - React Native 0.78 or later, `minSdkVersion 24` on Android, and an iOS deployment target of 15.1 or later (what current React Native requires, whatever the packages' podspecs allow). Some ring behaviours degrade below API 26, where Android gained notification channels and full-screen intents: on 24–25 the ring posts a plain notification instead of the channel-backed, full-screen one.
@@ -53,6 +53,42 @@ Installing the VoIP package is the whole opt-in: the core package detects it and
 <Note>
 The Calls SDK is a dependency of the VoIP package, not a peer: the package calls into it to pre-warm and leave sessions, and a version mismatch there is a silent failure rather than a build error.
 </Note>
+
+### Native setup
+
+**Android:** apply the Google Services plugin. The push package already depends on `firebase-messaging`, so don't add it yourself.
+
+```groovy android/build.gradle lines
+buildscript {
+  dependencies {
+    classpath("com.google.gms:google-services:4.4.2")
+  }
+}
+```
+
+```groovy android/app/build.gradle lines
+apply plugin: "com.google.gms.google-services"
+```
+
+**iOS:** register for VoIP pushes before React Native starts, and hand the APNs token to the package. When a call wakes a killed app, iOS terminates the app unless the call reaches CallKit within a few seconds.
+
+```swift ios/YourApp/AppDelegate.swift lines
+import react_native_cometchat_push_notifications
+import react_native_cometchat_push_notifications_voip
+
+// In application(_:didFinishLaunchingWithOptions:), before startReactNative:
+CometChatPushNotificationsAppDelegate.registerForVoIPPushes()
+
+// In your AppDelegate:
+func application(
+  _ application: UIApplication,
+  didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+) {
+  CometChatPushNotificationsAppDelegate.didRegisterAPNsToken(deviceToken)
+}
+```
+
+The [iOS push guide](/notifications/react-native-push-notifications-ios) has the full `AppDelegate`.
 
 ## Step 2: Initialise once
 
@@ -172,7 +208,7 @@ messaging().setBackgroundMessageHandler(async remoteMessage => {
 
 ## Step 5: Answer and join
 
-On **Answer** the SDK stops the ring, asks for the microphone (and the camera for a video call), brings your app to the front and emits `onCallAccepted`. There is nothing to "accept".
+On **Answer** the SDK stops the ring, brings your app to the front and emits `onCallAccepted`. It doesn't ask for the microphone or camera; request them after sign-in (Step 6). There is nothing to "accept".
 
 ```tsx
 function App() {
@@ -248,7 +284,7 @@ if (readiness !== 'ready') {
 | `autostartDisabled` | An OEM autostart restriction blocks the push wake |
 | `voipBackgroundModeMissing` | iOS: the `voip` background mode is not declared |
 | `voipTokenMissing` | iOS: PushKit never issued a token, so no call push can arrive |
-| `microphoneDenied` | The user refused the microphone at an answer; calls still ring but join muted |
+| `microphoneDenied` | The user refused the microphone; calls still ring but join muted |
 
 **Diagnostics for a bug report.** `getDiagnostics()` returns a redacted snapshot (whether a provider id exists, never what it is; never a token or payload):
 
