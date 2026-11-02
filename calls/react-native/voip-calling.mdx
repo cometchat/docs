@@ -14,10 +14,9 @@ flowchart LR
     FCM["FCM data push (Android)<br/>PushKit (iOS)"] --> H["Push SDK native layer"]
     H --> D{Push SDK decides}
     D -->|ring| R["Notification + full-screen screen / CallKit"]
-    D -->|in another call| W[Rings over the live call]
-    D -->|another call ringing| B[Declined as busy]
-    R -->|Answer| P[Mic / camera prompt]
-    P --> A["onCallAccepted → your call screen"]
+    D -->|in another call, or another call already ringing| W[Rings anyway]
+    W --> R
+    R -->|Answer| A["onCallAccepted → your call screen"]
     R -->|Decline| Q["endCall(rejected), queued"]
     R -->|45 s| T["Ring stops + missed call<br/>(nothing sent)"]
 ```
@@ -133,7 +132,7 @@ await CometChatPushNotifications.init({
 
 ## Step 3: Register the background task
 
-Android can decline or time out a call while your app is fully killed. Register the background task at module scope in `index.js`, before `AppRegistry.registerComponent`:
+Android can send a decline while your app is fully killed. Register the background task at module scope in `index.js`, before `AppRegistry.registerComponent`:
 
 ```js index.js
 import { registerBackgroundCallTask } from '@cometchat/push-notifications-voip-react-native';
@@ -195,7 +194,7 @@ function App() {
 }
 ```
 
-`PNCallInfo` fields: `sessionId`, `callerUid`, `callerName`, `callerAvatar`, `callType`, `receiverId`, `receiverType`, `conversationId`, `initiatedAtMs`, `expiresAtMs`, `isPeerCall` and `source` (`push` or `websocket`). The ring window is anchored to the caller's `initiatedAtMs`, not to a timer on this device, so both sides stop ringing together however late the push arrived; prefer `expiresAtMs` to a timer of your own.
+`PNCallInfo` fields: `sessionId`, `callerUid`, `callerName`, `callerAvatar`, `callType`, `receiverId`, `receiverType`, `expiresAtMs`, `isPeerCall`, `source` (`push` for a call the package received, `app` for one handed over with `showIncomingCall`) and `callAction`. `expiresAtMs` is an absolute instant anchored to the caller's own start, not a duration from now, so both sides stop ringing together however late the push arrived — read it rather than starting a timer of your own.
 
 <Warning>
 **Every field arrives from Android as a string**, including `isPeerCall` (`"true"` / `"false"`) and `expiresAtMs`. Coerce before use.
@@ -207,13 +206,9 @@ A call answered before your JavaScript existed — the killed-app case this pack
 
 ## Step 6: Permissions and ring readiness
 
-Declare in the manifest and `Info.plist` what the SDKs only request:
+**On Android there is nothing to declare.** `POST_NOTIFICATIONS` comes from the push package's manifest, and `RECORD_AUDIO`, `CAMERA` and `BLUETOOTH_CONNECT` from the VoIP package's; the manifest merger adds them to your app. The SDK requests the runtime prompts for you — `CometChatPNHelper.requestNotificationPermission()` and `requestCallPermissions()`.
 
-```xml android/app/src/main/AndroidManifest.xml
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.CAMERA" />
-```
+**On iOS you do declare these**, because `Info.plist` keys are your app's own and nothing merges them in from a pod:
 
 ```xml ios/YourApp/Info.plist
 <key>NSMicrophoneUsageDescription</key>
@@ -224,13 +219,17 @@ Declare in the manifest and `Info.plist` what the SDKs only request:
 <array><string>voip</string><string>audio</string></array>
 ```
 
-Everything else (full-screen intent, foreground service of type `phoneCall`, wake lock, vibrate, the ring activity and the ring service on Android; CallKit and PushKit on iOS) comes from the packages' own manifests.
+Everything else on Android (full-screen intent, foreground service of type `phoneCall`, `MANAGE_OWN_CALLS`, wake lock, vibrate, the ring activity and the ring service) comes from the packages' own manifests too, and CallKit and PushKit are linked by the VoIP pod. See [the Android permissions breakdown](/notifications/react-native-push-notifications-android) for which package declares what, and what a chat-only app gets.
 
 <Warning>
 **A missing `NSMicrophoneUsageDescription` terminates the app mid-ring on iOS.** It looks exactly like the ring expiring early. Check the device's crash reports before treating a short ring as an SDK bug.
 </Warning>
 
-**Microphone and camera.** The SDK asks at the moment of answering: the answer is recorded first so the ring stops, the system prompt appears, and your screen opens whatever the user chose. A denied microphone joins muted and never fails the call. Ask earlier as well (at sign-in, for example) with `CometChatPNHelper.requestCallPermissions()` so the first call is not where the user meets the prompt.
+**Microphone and camera — ask for these yourself.** On React Native the package does **not** prompt when the user answers; it dismisses the ring and hands the call straight to your JavaScript. Call `CometChatPNHelper.requestCallPermissions()` once after sign-in, so the permission is already granted by the time a call arrives.
+
+<Warning>
+**A user who declined the microphone answers into a call with no audio, and nothing re-asks.** On Android 14+ the Calls SDK's ongoing-call foreground service also needs `RECORD_AUDIO`. Check `CometChatPNHelper.requestCallPermissions()` succeeded before relying on calls, and ask again from your own call screen if it did not. The native Android SDK re-asks at the moment of answering; the React Native package does not yet.
+</Warning>
 
 **Ring readiness.** Several device settings silence a call with no error anywhere. Check once after sign-in and tell the user:
 
@@ -317,7 +316,7 @@ End & accept waits for the new session's prepare to settle, up to 5 seconds, bef
 
 Posted as "Missed call" / "Missed group call" with the caller's name and call type, one per session, grouped under the SDK's own summary so Android never folds them into your other notifications.
 
-Posted when: nobody answers in the ring window; a `cancelled`, `unanswered` or `timed_out` push ends a ring here; such a push arrives for a call that never rang here (the `initiated` push was lost or overtaken); an `initiated` push arrives already expired; a call is declined as busy without ringing.
+Posted when: nobody answers in the ring window; a `cancelled`, `unanswered` or `timed_out` push ends a ring here; such a push arrives for a call that never rang here (the `initiated` push was lost or overtaken); an `initiated` push arrives already expired.
 
 Not posted when: answered here or on another device; declined (`rejected` or `busy`) here; ended; the user's own outgoing call; logout while ringing.
 
@@ -330,8 +329,8 @@ This is the case the push exists for.
 1. The high-priority data push (Android) or the PushKit push (iOS) starts the app process.
 2. The native layer finds no in-memory configuration and restores it from disk.
 3. The ring runs on a foreground service of type `phoneCall` on Android, so the system keeps the process alive through the answer; on iOS CallKit holds the call. An alarm backs up the ring timeout.
-4. On Answer, the SDK asks for permissions, launches your app and buffers the answered call until your JavaScript subscribes.
-5. A decline or timeout is sent through the background task, so it goes out even if the process dies right after the tap.
+4. On Answer, the SDK launches your app and buffers the answered call until your JavaScript subscribes. It does not ask for the microphone here — request it after sign-in instead (see Step 6).
+5. A **decline** is sent through the background task, so it goes out even if the process dies right after the tap. A ring that simply times out sends nothing — the ring stops, a missed call is posted locally, and the caller's `unanswered` comes from the backend's own ring window.
 
 Call `CometChatVoipNotifications.init()` as the first `await` in your app's entry point, from stored credentials, so the answer finds a ready SDK.
 
