@@ -57,7 +57,7 @@ What each side sees:
 - [Calls SDK set up](/calls/react-native/setup) and the user [logged in](/calls/react-native/authentication).
 - Push notifications configured with the Push Notifications SDK 2.0. The whole push side of ringing is on the [Push ringing](/calls/react-native/voip-calling) page; this page assumes it is done.
 - Microphone and camera usage strings in `Info.plist`: `NSMicrophoneUsageDescription` and `NSCameraUsageDescription`. These are yours to add — a library cannot supply them. On Android the VoIP package's own manifest already declares `RECORD_AUDIO` and `CAMERA`, and they merge into your app; the SDKs request them at runtime.
-- React Native 0.78 or later, `minSdkVersion 24` on Android, and an iOS deployment target of 13 or later.
+- React Native 0.78 or later, `minSdkVersion 24` on Android, and an iOS deployment target of 15.1 or later.
 
 ```json package.json
 {
@@ -107,7 +107,7 @@ if (error) {
 ```
 
 <Note>
-Every Calls SDK method that can fail resolves to `{ data, error }` — one of the two is always `null`. Check `error` first; there is no `isSuccess` or `value`.
+`initiateCall` and `endCall` resolve to `{ data, error }` — one of the two is always `null`. Check `error` first; there is no `isSuccess` or `value`. Others differ: `connect()` and `login()` reject on failure, and `init()` resolves to `{ success, error }`.
 </Note>
 
 | Parameter | Description |
@@ -159,9 +159,8 @@ function listenOnPreparedSession(call) {
 
   // The prepared session closed before anyone joined: the call is over.
   const offClosed = session.addEventListener('onConnectionClosed', closeOutgoingScreen);
-  const offTimedOut = session.addEventListener('onSessionTimedOut', closeOutgoingScreen);
 
-  return () => [offConnected, offJoined, offClosed, offTimedOut].forEach(off => off());
+  return () => [offConnected, offJoined, offClosed].forEach(off => off());
 }
 ```
 
@@ -169,16 +168,16 @@ function listenOnPreparedSession(call) {
 |-------|----------------------------------|
 | `onParticipantConnected(callee)` | The callee's phone got the push and the Push SDK pre-warmed the session: it is ringing there |
 | `onParticipantJoined(callee)` | The callee answered. Join now |
-| `onConnectionClosed` / `onSessionTimedOut` | The call ended before anyone joined (declined, cancelled from another device, or the session died) |
+| `onConnectionClosed` | The call ended before anyone joined (declined, cancelled from another device, the session died, or nobody joined within 5 minutes). `onSessionTimedOut` isn't part of this: it only reports an idle joined session |
 
 `addEventListener` returns an unsubscribe function. Call it when your screen unmounts; listeners survive the session otherwise.
 
 <Warning>
-**A prepared session has no roster.** A ring-only connection receives `onParticipantLeft` but never `onParticipantJoined` for participants who were already there, because there are none. `onParticipantConnected` is the only caller-side signal that the callee's device has been reached.
+**A participant who has only prepared isn't in the roster.** A callee whose device has prepared the session reaches the caller as `onParticipantConnected`, not `onParticipantJoined`, and that is the only caller-side signal that the callee's device has been reached. Participants who have actually joined are reported as usual, including to a session that is still prepared, so handle a callee who is already there.
 </Warning>
 
 <Note>
-**The caller only shows "Ringing…" when the call was delivered by push.** A call delivered over the websocket to an app that is already in the foreground makes no pre-join on the callee's side, so no `onParticipantConnected` ever reaches the caller and the screen stays on "Calling…".
+**The caller only shows "Ringing…" once the push has reached the callee's device and its session is prepared.** Until then no `onParticipantConnected` reaches the caller, and the screen stays on "Calling…".
 </Note>
 
 ## Listen for calls starting and ending
@@ -386,7 +385,7 @@ The SDK never decides on its own that the user is busy. A second call rings, and
 
 ## Group calls
 
-To ring a group, call `initiateCall` with the group's GUID and `receiverType: 'group'`, and leave `isPeerCall` off. A group call can also be a session every member joins with a session id you share with them (for example in a custom message). A group call that rings through the push behaves the same as a 1:1 one: declining it sends `rejected`, and letting it ring out sends nothing. The difference is only in what that means — the session carries on for the other members either way, so neither action ends the call.
+To ring a group, call `initiateCall` with the group's GUID and `receiverType: 'group'`, and leave `isPeerCall` off. A group call can also be a session every member joins with a session id you share with them (for example in a custom message). A group call rung through the push rings every member, and letting it ring out sends nothing.
 
 ## Logout
 

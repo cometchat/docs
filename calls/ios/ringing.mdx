@@ -48,7 +48,7 @@ What each side sees:
 | Call created | `initiateCall` succeeds; show "Calling…" | VoIP push arrives; CallKit rings |
 | Callee's device reached | `onParticipantConnected` → show "Ringing…" | Ringing |
 | Callee answers | `onParticipantJoined` → `joinSession` | `presentCall(_:)` → your call screen → `joinSession` |
-| Callee declines / is busy / does not answer | Not reliably reported. `onConnectionClosed` fires only when the callee's device had prepared the session; a busy decline, or a decline before the callee's device connected, closes nothing. Poll [Call Logs](/calls/ios/call-logs) while ringing, and keep your [ring timer](#ring-timeout) | Ring stops; `callDidEnd(_:reason:)`; a missed call in Recents if unanswered |
+| Callee declines / is busy / does not answer | Not reliably reported. `onConnectionClosed` fires only when the callee's device had prepared the session; a busy decline, or a decline before the callee's device connected, closes nothing. Poll the [call's status](/calls/ios/call-logs#check-one-call) while ringing, and keep your [ring timer](#ring-timeout) | Ring stops; `callDidEnd(_:reason:)`; a missed call in Recents if unanswered |
 | Caller cancels | — (you ended it) | Ring stops; `onIncomingCallEnded` with `cancelled`, or `ended` when the callee's device had prepared the session; a missed call in Recents |
 | Either side hangs up | `onParticipantLeft` / `onSessionLeft` | same |
 
@@ -170,7 +170,7 @@ class OutgoingCallViewController: UIViewController, SessionStatusListener, Parti
 | `onConnected` | Your own prepare finished; the join will be near-instant |
 | `onParticipantConnected(participant:)` | The callee's phone got the push and prepared the session: it is ringing there |
 | `onParticipantJoined(participant:)` | The callee answered. Call `joinSession` now |
-| `onConnectionClosed` | The call ended before anyone joined (declined, busy, rung out, cancelled, the session died, or the prepared session expired after 5 minutes). `onSessionTimedOut` is not part of this: it only reports an idle joined session |
+| `onConnectionClosed` | The prepared session closed before anyone joined: a decline or ring-out when the callee's device had prepared it, a cancel, the session dying, or the 5-minute expiry. A busy decline, or a decline before the callee's device connected, doesn't close it. `onSessionTimedOut` is not part of this: it only reports an idle joined session |
 
 The SDK holds these listeners weakly and does not remove them for you: remove them when the screen goes away, and when the call screen takes over.
 
@@ -346,7 +346,7 @@ See [Join Session](/calls/ios/join-session) for the container, [Session Settings
 
 ## Decline a call
 
-Declining is handled by the Push SDK: CallKit's Decline button sends `endCall(sessionID:status:)` with `rejected`, and with `busy` instead when the user is already in another call. The decline goes through a queue that is replayed when the app next launches, if that is within 90 seconds, in case iOS suspends the app before it is sent. A group call's decline is local: nothing is sent. On the caller, the prepared session closes (`onConnectionClosed`).
+Declining is handled by the Push SDK: CallKit's Decline button sends `endCall(sessionID:status:)` with `rejected`, and with `busy` instead when the user is already in another call. The decline goes through a queue that is replayed when the app next launches, if that is within 90 seconds, in case iOS suspends the app before it is sent. A group call's decline is local: nothing is sent. On the caller, the prepared session closes (`onConnectionClosed`) only if the callee's device had prepared it, and never for `busy`; so [read the status while it rings](/calls/ios/call-logs#check-one-call).
 
 You only write decline code when you offer a Decline button of your own, for example on an in-app banner (Swift only):
 
@@ -375,7 +375,7 @@ Disable the End button after the first tap, and ignore an `onParticipantJoined` 
 
 ## Ring timeout
 
-The callee's Push SDK ends an unanswered 1:1 call as `unanswered` when its ring window closes (45 seconds unless the push carries a `ringTimeout`), which closes the caller's prepared session. To close the caller's screen at the same moment even when the callee's device was never reached, run your own timer from `initiateCall` and end the call with the same status. The Push SDK's default window is `RingConstants.defaultRingTimeoutMs` (45 000 ms), public in `CometChatPushNotificationsCalls`, so the caller's timer can use the same value:
+The callee's Push SDK ends an unanswered 1:1 call as `unanswered` when its ring window closes (45 seconds unless the push carries a `ringTimeout`), which closes the caller's prepared session if the callee's device had prepared it. To close the caller's screen at the same moment even when the callee's device was never reached, run your own timer from `initiateCall` and end the call with the same status. The Push SDK's default window is `RingConstants.defaultRingTimeoutMs` (45 000 ms), public in `CometChatPushNotificationsCalls`, so the caller's timer can use the same value:
 
 ```swift
 let ringTimeout = DispatchWorkItem { [weak self] in
