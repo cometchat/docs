@@ -27,22 +27,21 @@ flowchart LR
 - **Android**: a Firebase project with your app, `google-services.json` in `android/app/`, and `@react-native-firebase/app` + `@react-native-firebase/messaging` installed.
 - **iOS**: a VoIP Services certificate uploaded to the CometChat dashboard, and the **Push Notifications** capability plus the **Voice over IP** background mode enabled in Xcode.
 - Push notifications enabled in the CometChat dashboard with an **FCM** provider (Android) and an **APNs** provider (iOS), and those providers' ids.
-- `minSdkVersion 24` on Android, iOS 13+. Some ring behaviours degrade below API 26, where Android gained notification channels and full-screen intents: on 24–25 the ring posts a plain notification instead of the channel-backed, full-screen one.
+- React Native 0.78 or later, `minSdkVersion 24` on Android, and an iOS deployment target of 13 or later (the packages' podspecs set `:ios => "13.0"`). Some ring behaviours degrade below API 26, where Android gained notification channels and full-screen intents: on 24–25 the ring posts a plain notification instead of the channel-backed, full-screen one.
 
 ## Step 1: Add the dependencies
 
 ```bash
 npm install @cometchat/push-notifications-react-native@2.0.0-alpha.1 \
             @cometchat/push-notifications-voip-react-native@2.0.0-alpha.1 \
-            @cometchat/calls-sdk-react-native@5.1.0-alpha.2 \
-            --registry https://npm.cloudsmith.io/cometchat/call-team/
+            @cometchat/calls-sdk-react-native@^5.1.0
 cd ios && pod install
 ```
 
 ```json package.json
 {
   "dependencies": {
-    "@cometchat/calls-sdk-react-native": "5.1.0-alpha.2",
+    "@cometchat/calls-sdk-react-native": "^5.1.0",
     "@cometchat/push-notifications-react-native": "2.0.0-alpha.1",
     "@cometchat/push-notifications-voip-react-native": "2.0.0-alpha.1"
   }
@@ -50,7 +49,7 @@ cd ios && pod install
 ```
 
 <Warning>
-**All three are prereleases and must be pinned exactly.** npm excludes prereleases from caret ranges, so `^2.0.0` does not match `2.0.0-alpha.1` and `^5.1.0` does not match `5.1.0-alpha.2` — write the full version with no `^`. They are served from CometChat's registry rather than public npm, so keep the `--registry` flag (or put it in an `.npmrc`); without it the install fails to resolve.
+**The Calls SDK is on public npm; the two push packages are still prereleases.** `@cometchat/calls-sdk-react-native@5.1.0` is published and is its `latest`, so a caret range resolves it. The push packages are `2.0.0-alpha.1` and must be pinned exactly, because npm excludes prereleases from caret ranges — `^2.0.0` does not match `2.0.0-alpha.1`. Write those two as full versions with no `^`.
 </Warning>
 
 Installing the VoIP package is the whole opt-in: the core package detects it and installs the ringer. The Chat SDK is optional for both packages; a calls-only app works.
@@ -269,7 +268,7 @@ if (readiness !== 'ready') {
 | `callMode`, `ringInForeground`, `defaultRingTimeoutMs` | `'manual'` explains a phone that never rings by design |
 | `aggressiveOem`, `manufacturer`, `model`, `sdkInt`, `platform` | OEM background restrictions |
 
-`verifyPushSetup()` registers the token and reports `ok`, `tokenNotRegistered`, `notLoggedIn`, `testPushUnavailable` (registration worked, the loopback test push is not available on the backend yet: a warning, not a failure) or `testPushTimeout` (the test push never arrived: delivery is broken). The token value is never logged, only its length and a short prefix.
+`verifyPushSetup()` registers the token and reports one of seven values: `ok`, `notInitialised` (no `init()` yet), `notLoggedIn`, `notificationsDisabled` (the OS permission is off, so nothing can be shown), `tokenNotRegistered`, `testPushUnavailable` (registration worked, the loopback test push is not available on the backend yet: a warning, not a failure) or `testPushTimeout` (the test push never arrived: delivery is broken). The token value is never logged, only its length and a short prefix.
 
 ## How a ring ends
 
@@ -332,7 +331,7 @@ This is the case the push exists for.
 4. On Answer, the SDK launches your app and buffers the answered call until your JavaScript subscribes. It does not ask for the microphone here — request it after sign-in instead (see Step 6).
 5. A **decline** is sent through the background task, so it goes out even if the process dies right after the tap. A ring that simply times out sends nothing — the ring stops, a missed call is posted locally, and the caller's `unanswered` comes from the backend's own ring window.
 
-Call `CometChatVoipNotifications.init()` as the first `await` in your app's entry point, from stored credentials, so the answer finds a ready SDK.
+Call `CometChatVoipNotifications.init()` as the first `await` in your app's entry point — **before** reading stored credentials or restoring the session, not from them. It needs no login to wire up the ring; awaiting a credentials read first spends the cold-launch ring window, which is what the warning in step 2 is about. Restore the session straight afterwards, and the answered call is delivered once your JavaScript subscribes.
 
 <Note>
 **On iOS, APNs and VoIP pushes really are delivered to the Simulator** and will cold-launch a killed app. Only CallKit's own call presentation does not appear there, so test the ring on a device and the delivery path anywhere.
@@ -356,7 +355,7 @@ await CometChatVoipNotifications.init({
 
 ## Tokens
 
-You do not register the push token. The SDK fetches it from Firebase or PushKit and registers it on login, under the Chat auth token when there is one and the Calls auth token otherwise; it unregisters on logout.
+You do not register the push token. The SDK fetches it from Firebase or PushKit and registers it on login, under the Chat auth token when there is one and the Calls auth token otherwise. **Unregistering is yours to call.** Unlike the native Android and iOS SDKs, this package installs no logout listener, so nothing deletes the token on its own — see below.
 
 Unregister **before** the session goes away:
 
