@@ -597,7 +597,8 @@ Add `src/push/logout.ts` and call it from your logout button instead of logging 
 
 ```ts src/push/logout.ts lines
 import { CometChatUIKit } from '@cometchat/chat-uikit-react-native';
-import { CometChatPushNotifications } from '@cometchat/push-notifications-react-native';
+import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
+import { CometChatPushNotifications, PNError } from '@cometchat/push-notifications-react-native';
 
 /** Log out and stop this device receiving the user's notifications. Resolves false on failure. */
 export async function logout(): Promise<boolean> {
@@ -606,11 +607,19 @@ export async function logout(): Promise<boolean> {
   try {
     await CometChatPushNotifications.unregister();
   } catch (error) {
-    console.log('Failed to unregister the push token:', error);
-    return false;
+    // Offline or a 5xx can succeed later, so keep the user signed in and let them retry.
+    if (error instanceof PNError && error.code === 'networkError') {
+      console.log('Could not unregister the push token; staying signed in to retry:', error);
+      return false;
+    }
+    // Anything else — a rejected auth token is HTTP 401 — fails identically every time.
+    // Blocking would trap the user in a session they cannot leave, and would not delete the
+    // token either. Log it and sign out.
+    console.log('Push token left registered on this device:', error);
   }
   try {
-    await CometChatUIKit.logout();
+    await CometChatUIKit.logout();   // Chat SDK only — see the note below
+    await CometChatCalls.logout();
     return true;
   } catch (error) {
     console.log('Logout failed:', error);
@@ -618,6 +627,10 @@ export async function logout(): Promise<boolean> {
   }
 }
 ```
+
+<Warning>
+**`CometChatUIKit.logout()` logs out of the Chat SDK only** — it calls `CometChat.logout()` and clears the Kit's own user, nothing else. Call `CometChatCalls.logout()` yourself, or the Calls SDK stays signed in as the departed user and a call can still ring. A **calls-only** app (no Chat SDK) uses `unregister()` → `clearIdentity()` → `CometChatCalls.logout()`; `CometChatPushNotifications.logout()` cannot work there, because it calls into the Chat SDK.
+</Warning>
 
 ```tsx lines
 const onLogoutPress = async () => {
