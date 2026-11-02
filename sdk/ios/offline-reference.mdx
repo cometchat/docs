@@ -32,7 +32,7 @@ CometChat.clearOfflineCache()
 
 </Accordion>
 
-This page is the full surface of CometChat's offline support on iOS: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **4.3.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/ios/offline-enable), [Show Cached Data](/sdk/ios/offline-cached-data), [Send While Offline](/sdk/ios/offline-send), [Stay in Sync](/sdk/ios/offline-sync), [Media Caching](/sdk/ios/offline-media-caching), and [Encrypt the Cache](/sdk/ios/offline-encryption).
+This page is the full surface of CometChat's offline support on iOS: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **4.2.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/ios/offline-enable), [Show Cached Data](/sdk/ios/offline-cached-data), [Send While Offline](/sdk/ios/offline-send), [Stay in Sync](/sdk/ios/offline-sync), [Media Caching](/sdk/ios/offline-media-caching), and [Encrypt the Cache](/sdk/ios/offline-encryption).
 
 ## OfflineConfig options
 
@@ -52,7 +52,7 @@ Build with `OfflineConfig.Builder`, or with the Swift initializer `OfflineConfig
 | `setMediaCaching(_:)` | `CometChat.MediaCachingMode` | `.auto` | — | Receive-side media mode. Fixed at init. |
 | `setEncryption(_:)` | `Bool` | `false` | — | Encrypt the cache database at rest. See [Encrypt the Cache](/sdk/ios/offline-encryption). |
 | `setEncryptionFailureBehavior(_:)` | `CometChat.EncryptionFailureBehavior` | `.onlineOnly` | — | What happens when encryption cannot run at all. |
-| `setMaxSnapshotQueries(_:)` | `Int` | `100` | `0`/negative → `100` | Most entity-list snapshots (users, groups, group members, and so on) kept for offline replay; LRU. |
+| `setMaxSnapshotQueries(_:)` | `Int` | `100` | `0`/negative → `100` | Most entity-list snapshots kept for offline replay, across users, groups, group members, banned members, reactions and the notification feed; LRU. |
 | `setSnapshotTtlDays(_:)` | `Int` | `7` | `0`/negative → `7` | Days an entity-list snapshot is kept. |
 
 Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_:)` — see [Enable Offline Support](/sdk/ios/offline-enable). Each value is readable on the built `OfflineConfig` (for example `offlineConfig.maxConversations`), and `AppSettings.offlineConfig` exposes the active config read-only.
@@ -80,7 +80,7 @@ Attach the config at init via `AppSettings.AppSettingsBuilder.setOfflineConfig(_
 | `getCachedMediaPath(_ url: String)` | `String?` | Local path to already-cached bytes, or `nil`. |
 | `getExistingUploadFileRequest(receiverId:receiverType:parentMessageId:)` | `UploadFileRequest?` | Re-attach to a kept offline upload batch; `nil` when offline is off or none exists. |
 
-On the returned `UploadFileRequest`, `getItems()` lists each file's `UploadFileItem`, and `retryAttachment(fileId:)` retries one failed file. See [Upload Files](/sdk/ios/upload-files).
+On the returned `UploadFileRequest`, `getItems()` lists each file's `UploadFileItemStatus`, and `retryAttachment(fileId:)` retries one failed file. See [Upload Files](/sdk/ios/upload-files).
 
 ### Listener registration
 
@@ -98,13 +98,13 @@ Listeners are held **weakly** — keep a strong reference — and each ID holds 
 
 ### Two-phase fetch overloads
 
-iOS expresses the two-phase read as `onCached…` / `onServer…` / `onError` closure overloads of the existing fetch methods. The only listener protocol on the read path is `ConversationDetailsListener`. With offline off the cached closure never fires.
+iOS expresses the two-phase read as `onCached…` / `onServer…` / `onError` closure overloads of the existing fetch methods. The only listener protocols on the read path are `ConversationDetailsListener` and `MessageDetailsListener`. With offline off the cached closure never fires.
 
 | Call | Callbacks |
 |---|---|
 | `MessagesRequest.fetchNext` / `fetchPrevious` | `onCachedMessages([BaseMessage])`, `onServerMessages([BaseMessage])`, `onError(CometChatException?)` |
 | `ThreadsRequest.fetchNext` | `onCachedThreads([MessageThread])`, `onServerThreads([MessageThread])`, `onError(CometChatException?)` |
-| `CometChat.getMessageDetails(_:…)` | `onCachedMessage(BaseMessage?)`, `onServerMessage(BaseMessage?)`, `onError(CometChatException?)` |
+| `CometChat.getMessageDetails(_:listener:)` | `MessageDetailsListener`: `onCachedMessage(BaseMessage)`, `onServerMessage(BaseMessage?)`, `onError(CometChatException?)` |
 | `ConversationRequest.fetchNext` | `onCachedConversations([Conversation])`, `onServerConversations([Conversation])`, `onError(CometChatException?)` |
 | `CometChat.getConversation(conversationWith:conversationType:listener:)` | `ConversationDetailsListener`: `onCachedConversation(Conversation)`, `onServerConversation(Conversation?)`, `onError(CometChatException?)` |
 | `UsersRequest.fetchNext`, `BlockedUserRequest.fetchNext` | `onCachedUsers([User])`, `onServerUsers([User])`, `onError(CometChatException?)` |
@@ -164,7 +164,7 @@ The enums are available as `CometChat.<Name>` in Swift (for example `CometChat.M
 | `BaseMessage.failureReason` / `getFailureReason()` | `CometChat.MessageFailureReason?` | Why a failed message last failed; `nil` otherwise. Device-only, never sent to the server. |
 | `BaseMessage.source` | `CometChat.MessageSource` | How a message reached the app. Read-only. |
 | `Attachment.localPath` | `String?` | Absolute device path to cached media bytes, or `nil` when not cached. Never sent to the server. |
-| `UploadFileItem` (from `UploadFileRequest.getItems()`) | — | `fileId`, `file` (`nil` after a restart), `name`, `size`, `mime`, `state` (`UploadFileState`), `error`, `attachment`, `localCopyPath`. |
+| `UploadFileItemStatus` (from `UploadFileRequest.getItems()`) | — | `fileId`, `file` (`nil` once uploaded; no bytes after a restart), `name`, `size`, `mime`, `state` (`UploadFileState`), `error`, `attachment`, `localCopyPath`. |
 
 ## Error codes
 
@@ -197,7 +197,6 @@ The classic single-callback overloads are **not** deprecated on iOS. They are un
 
 | Deprecated | Replacement |
 |---|---|
-| `getConversation(conversationWith:conversationType:onCachedConversation:onServerConversation:onError:)` | `getConversation(conversationWith:conversationType:listener:)` with a `ConversationDetailsListener` |
 | `getPendingMessages() -> [BaseMessage]` | `getPendingMessages(onSuccess:onError:)` |
 | `NotificationFeedRequest.fetchNext(onCachedFeedItems:onServerFeedItems:onError:)` | `fetchNext(onCachedNotificationFeedItems:onServerNotificationFeedItems:onError:)` |
 
@@ -207,7 +206,7 @@ The classic single-callback overloads are **not** deprecated on iOS. They are un
 | `MessagesRequest.fetchPrevious(onSuccess:onError:)` | `fetchPrevious(onCachedMessages:onServerMessages:onError:)` |
 | `ConversationRequest.fetchNext(onSuccess:onError:)` | `fetchNext(onCachedConversations:onServerConversations:onError:)` |
 | `ThreadsRequest.fetchNext(onSuccess:onError:)` | `fetchNext(onCachedThreads:onServerThreads:onError:)` |
-| `CometChat.getMessageDetails(_:onSuccess:onError:)` | `getMessageDetails(_:onCachedMessage:onServerMessage:onError:)` |
+| `CometChat.getMessageDetails(_:onSuccess:onError:)` | `getMessageDetails(_:listener:)` with a `MessageDetailsListener` |
 | `CometChat.sendTextMessage(message:onSuccess:onError:)` | `sendTextMessage(message:onMessagePending:onMessageSent:onError:)` |
 | `CometChat.sendMediaMessage(message:onSuccess:onError:)` | `sendMediaMessage(message:onMessagePending:onMessageSent:onError:)` |
 | `CometChat.sendCustomMessage(message:onSuccess:onError:)` | `sendCustomMessage(message:onMessagePending:onMessageSent:onError:)` |
