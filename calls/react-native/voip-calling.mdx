@@ -28,26 +28,31 @@ flowchart LR
 - **Android**: a Firebase project with your app, `google-services.json` in `android/app/`, and `@react-native-firebase/app` + `@react-native-firebase/messaging` installed.
 - **iOS**: a VoIP Services certificate uploaded to the CometChat dashboard, and the **Push Notifications** capability plus the **Voice over IP** background mode enabled in Xcode.
 - Push notifications enabled in the CometChat dashboard with an **FCM** provider (Android) and an **APNs** provider (iOS), and those providers' ids.
-- `minSdkVersion 26` on Android, iOS 13+.
+- `minSdkVersion 24` on Android, iOS 13+. Some ring behaviours degrade below API 26, where Android gained notification channels and full-screen intents: on 24–25 the ring posts a plain notification instead of the channel-backed, full-screen one.
 
 ## Step 1: Add the dependencies
 
 ```bash
-npm install @cometchat/push-notifications-react-native \
-            @cometchat/push-notifications-voip-react-native \
-            @cometchat/calls-sdk-react-native
+npm install @cometchat/push-notifications-react-native@2.0.0-alpha.1 \
+            @cometchat/push-notifications-voip-react-native@2.0.0-alpha.1 \
+            @cometchat/calls-sdk-react-native@5.1.0-alpha.2 \
+            --registry https://npm.cloudsmith.io/cometchat/call-team/
 cd ios && pod install
 ```
 
 ```json package.json
 {
   "dependencies": {
-    "@cometchat/calls-sdk-react-native": "^5.1.0",
-    "@cometchat/push-notifications-react-native": "^2.0.0",
-    "@cometchat/push-notifications-voip-react-native": "^2.0.0"
+    "@cometchat/calls-sdk-react-native": "5.1.0-alpha.2",
+    "@cometchat/push-notifications-react-native": "2.0.0-alpha.1",
+    "@cometchat/push-notifications-voip-react-native": "2.0.0-alpha.1"
   }
 }
 ```
+
+<Warning>
+**All three are prereleases and must be pinned exactly.** npm excludes prereleases from caret ranges, so `^2.0.0` does not match `2.0.0-alpha.1` and `^5.1.0` does not match `5.1.0-alpha.2` — write the full version with no `^`. They are served from CometChat's registry rather than public npm, so keep the `--registry` flag (or put it in an `.npmrc`); without it the install fails to resolve.
+</Warning>
 
 Installing the VoIP package is the whole opt-in: the core package detects it and installs the ringer. The Chat SDK is optional for both packages; a calls-only app works.
 
@@ -286,12 +291,16 @@ Call waiting, the way the phone app does it. "In a call" means the Calls SDK is 
 
 | Situation | Behaviour |
 |-----------|-----------|
-| Call while in a call | Rings over the live call with the normal ring; the text adds "Answering ends your current call". The live call is untouched |
+| Call while in a call | Rings over the live call with the ordinary incoming-call notification and its Answer and Decline buttons. The live call is untouched |
 | Answer (End & accept) | Leaves the live call, waits for the Calls SDK to release it, prepares the new session, emits `onCallAccepted` for it |
 | Decline | `busy` to the caller; the live call continues |
 | No action | `unanswered` to the caller, missed call; the live call continues |
-| Call while another one is already ringing here | Declined as `busy` without ringing, missed call. The first keeps ringing |
-| Call while the user's own outgoing call is ringing | Declined as `busy` without ringing, missed call |
+| Call while another one is already ringing here | It rings too. There is one ring slot, so the newer call takes it and the first ring is replaced |
+| Call while the user's own outgoing call is ringing | It rings. The user's own outgoing call is unaffected |
+
+<Note>
+**The SDK never decides on its own that the user is busy.** A second call always rings; `busy` is sent only when the user taps Decline on it. The one thing the SDK does suppress is a call's own push arriving back on the caller's device — that is filtered out rather than rung, and nothing is sent to anyone.
+</Note>
 
 <Note>
 End & accept waits for the new session's prepare to settle, up to 5 seconds, before handing the call to your screen. Joining before the previous session has been released is what silently never completes.
@@ -495,13 +504,63 @@ In MANUAL mode with nothing built, the call is silently lost: no notification, n
 
 ## Reporting a call you placed yourself
 
-An outgoing call made from your own screen can be reported so the system call UI and the call log know about it:
+**iOS only.** An outgoing call you place yourself has to be reported to CallKit; nothing does it for you. Incoming calls get a CallKit report for free because PushKit forces one, but an outgoing call has to ask — and without it CallKit does not own the audio session, so a cellular call or another VoIP app can take the microphone and never give it back, the call never reaches Recents, and iOS cannot show it in the in-call status bar.
 
 ```ts
+// Right after initiateCall succeeds, so CallKit shows the callee and the call type.
 CometChatVoipNotifications.reportOutgoingCall(sessionId, calleeName, hasVideo);
+
+// When the far side answers: ends CallKit's "connecting" state and starts its timer.
 CometChatVoipNotifications.reportCallConnected(sessionId);
+
+// When it ends. Required — otherwise CallKit keeps the in-call status bar up and the
+// audio session active for a call that is over.
 CometChatVoipNotifications.reportCallEnded(sessionId, 'ended');
 ```
+
+<Note>
+All three are **no-ops on Android**, which has no equivalent: an outgoing call there is ordinary app audio, with no system call UI and no Recents entry. They are declared on both platforms deliberately, so you can call them unconditionally without a `Platform.OS` check.
+</Note>
+
+<Warning>
+Pair every `reportOutgoingCall` with a `reportCallEnded`. CallKit otherwise believes the call is still running.
+</Warning>
+
+## Knowing about a call in your own code
+
+Listen on **this** SDK, not on the Calls SDK. On React Native the VoIP package is where an incoming call announces itself and its end; the Calls SDK has no incoming-call listener, because on this platform it never sees the call until you join one. It is the same callback whether the call arrived by push on a killed process or on a live one — the package buffers the ring natively and drains the buffer at `init()`.
+
+```ts
+import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
+
+// A call for this user is ringing. The package already shows the ring; use this
+// for your own state — a badge, analytics, refreshing a list.
+const offRinging = CometChatVoipNotifications.onCallRinging(call => {
+  track('call_ringing', { from: call.callerUid, session: call.sessionId });
+});
+
+// The user answered: open your call screen.
+const offAccepted = CometChatVoipNotifications.onCallAccepted(call => {
+  openCallScreen(call.sessionId, call.callType);
+});
+
+// The call ended, with the reason: 'rejected', 'busy', 'cancelled', 'unanswered',
+// 'ended' or 'failed'.
+const offEnded = CometChatVoipNotifications.onCallEnded(event => {
+  clearCallState(event.sessionId, event.reason);
+});
+
+// When the screen goes away:
+[offRinging, offAccepted, offEnded].forEach(off => off());
+```
+
+Each `on…` returns an unsubscribe function — call it when your screen unmounts, or every handler fires twice after the next mount. Subscribing late is safe: a ring or an answered call that arrived before your component mounted is held and delivered to the first subscriber, so the call that launched a killed app is not lost.
+
+<Note>
+**Coming from the Android or iOS guides?** They tell you to listen on the Calls SDK with `addIncomingCallListener`. React Native has no such method — the split between the two packages puts incoming calls on the VoIP package instead, as above. The Calls SDK's `addEventListener` is for a session you are already connected to, not for calls arriving.
+</Note>
+
+See [Listen for calls starting and ending](/calls/react-native/ringing#listen-for-calls-starting-and-ending) for how these pair with the caller-side session events.
 
 ## Troubleshooting
 

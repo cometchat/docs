@@ -56,18 +56,26 @@ What each side sees:
 
 - [Calls SDK set up](/calls/react-native/setup) and the user [logged in](/calls/react-native/authentication).
 - Push notifications configured with the Push Notifications SDK 2.0. The whole push side of ringing is on the [Push ringing](/calls/react-native/voip-calling) page; this page assumes it is done.
-- Microphone and camera permissions declared: `RECORD_AUDIO` and `CAMERA` in `AndroidManifest.xml`, `NSMicrophoneUsageDescription` and `NSCameraUsageDescription` in `Info.plist`. The SDKs request them at runtime but do not declare them.
-- `minSdkVersion 26` on Android, iOS 13+.
+- Microphone and camera usage strings in `Info.plist`: `NSMicrophoneUsageDescription` and `NSCameraUsageDescription`. These are yours to add — a library cannot supply them. On Android the VoIP package's own manifest already declares `RECORD_AUDIO` and `CAMERA`, and they merge into your app; the SDKs request them at runtime.
+- `minSdkVersion 24` on Android, iOS 13+.
 
 ```json package.json
 {
   "dependencies": {
-    "@cometchat/calls-sdk-react-native": "^5.1.0",
-    "@cometchat/push-notifications-react-native": "^2.0.0",
-    "@cometchat/push-notifications-voip-react-native": "^2.0.0"
+    "@cometchat/calls-sdk-react-native": "5.1.0-alpha.2",
+    "@cometchat/push-notifications-react-native": "2.0.0-alpha.1",
+    "@cometchat/push-notifications-voip-react-native": "2.0.0-alpha.1"
   }
 }
 ```
+
+<Warning>
+**These are prerelease versions and must be pinned exactly.** A caret range does not match a prerelease — `^5.1.0` will not resolve `5.1.0-alpha.2` — so write the full version with no `^`. The Calls SDK prerelease is served from CometChat's registry, not public npm; see [Calls SDK set up](/calls/react-native/setup) for the install command.
+</Warning>
+
+<Note>
+Some ring behaviours degrade below API 26: Android gained notification channels and full-screen intents there, so on API 24–25 the ring posts a plain notification instead of the channel-backed, full-screen one. The packages themselves build and run at 24.
+</Note>
 
 <Warning>
 Send call pushes at **high** FCM priority. At normal priority the call still rings, but Android refuses the Push SDK's foreground service, so the process can be killed between the ring and the answer.
@@ -84,21 +92,24 @@ Send call pushes at **high** FCM priority. At normal priority the call still rin
 ```ts
 import { CometChatCalls } from '@cometchat/calls-sdk-react-native';
 
-const result = await CometChatCalls.initiateCall(receiverUid, {
+const { data: call, error } = await CometChatCalls.initiateCall(receiverUid, {
   type: 'audio',                 // or 'video'
   receiverType: 'user',
-  sessionSettings: { sessionType: 'voice' },   // 'video' for a video call
+  sessionSettings: { sessionType: 'VOICE' },   // 'VIDEO' for a video call
 });
 
-if (result.isSuccess) {
-  const call = result.value;
+if (error) {
+  console.error('Could not start the call:', error);
+} else {
   console.log(`Calling ${call.receiver}, session ${call.sessionId}`);
   showOutgoingScreen(call);
   listenOnPreparedSession(call);
-} else {
-  console.error('Could not start the call:', result.error);
 }
 ```
+
+<Note>
+Every Calls SDK method that can fail resolves to `{ data, error }` — one of the two is always `null`. Check `error` first; there is no `isSuccess` or `value`.
+</Note>
 
 | Parameter | Description |
 |-----------|-------------|
@@ -110,7 +121,7 @@ if (result.isSuccess) {
 `InitiatedCall` gives you `sessionId`, `messageId` (the id of the call message in the conversation), `sender`, `receiver`, `receiverType`, `type`, `status`, `initiatedAt`, `conversationId` and `session` — the session already being prepared for this call.
 
 <Warning>
-**Always set the session type in `sessionSettings`.** The Calls SDK freezes the session settings when it prepares the session and its default is video, so an audio call started without `sessionType: 'voice'` opens the caller's camera. The settings you pass here are the ones the caller later joins with.
+**Always set the session type in `sessionSettings`, and spell it in capitals.** The only accepted values are `'VOICE'` and `'VIDEO'`. The Calls SDK freezes the session settings when it prepares the session and its default is video, so an audio call started without `sessionType: 'VOICE'` opens the caller's camera — and so does a lowercase `'voice'`, which matches neither value and falls through to video. The settings you pass here are the ones the caller later joins with.
 </Warning>
 
 <Note>
@@ -119,6 +130,10 @@ if (result.isSuccess) {
 
 <Note>
 There is no client-side ring timeout. Both sides stop at the ring window the backend sends in the push (45 seconds by default). A caller that wants its own screen to time out can end the call as `unanswered` after the same window, as shown under [Ring timeout](#ring-timeout).
+</Note>
+
+<Note>
+**On iOS, report the outgoing call to CallKit.** Nothing does it for you: without it CallKit does not own the audio session, so a cellular call or another VoIP app can take the microphone and never give it back, and the call never reaches Recents. Incoming calls get this for free because PushKit forces a CallKit report; an outgoing call has to ask. See [Reporting a call you placed yourself](/calls/react-native/voip-calling#reporting-a-call-you-placed-yourself). The methods are safe to call on Android, where they do nothing.
 </Note>
 
 ## Show "Ringing…" and detect the answer
@@ -226,7 +241,7 @@ function App() {
 }
 ```
 
-`PNCallInfo` carries `sessionId`, `callerUid`, `callerName`, `callerAvatar`, `callType`, `receiverId`, `receiverType`, `conversationId`, `source` and `expiresAtMs`.
+`PNCallInfo` carries `sessionId`, `callerUid`, `callerName`, `callerAvatar`, `callType`, `receiverId`, `receiverType`, `expiresAtMs`, `isPeerCall`, `source` and `callAction`.
 
 <Warning>
 **Every field of a call payload arrives from Android as a string.** `isPeerCall` is `"true"` / `"false"`, not a boolean, and `expiresAtMs` is a string of digits. Compare against strings or coerce before use.
@@ -247,17 +262,26 @@ function CallScreen({ sessionId }) {
   const [callToken, setCallToken] = useState(null);
 
   useEffect(() => {
+    const offs = [];
     (async () => {
       // Hands back the session already prepared for this call, without minting a second token.
-      const session = await CometChatCalls.connect(sessionId, { sessionType: 'voice' });
+      const session = await CometChatCalls.connect(sessionId, { sessionType: 'VOICE' });
       setCallToken(session.callToken);
+      // The end of the call comes from the session, not from a prop on the component.
+      offs.push(session.addEventListener('onSessionLeft', goBack));
+      offs.push(session.addEventListener('onConnectionClosed', goBack));
     })();
+    return () => offs.forEach(off => off());
   }, [sessionId]);
 
   if (!callToken) return <Connecting />;
-  return <CometChatCalls.Component callToken={callToken} onCallEnded={() => goBack()} />;
+  return <CometChatCalls.Component callToken={callToken} />;
 }
 ```
+
+<Warning>
+**`CometChatCalls.Component` takes `callToken` or `sessionId`, and no event props.** It has no `onCallEnded`; passing one is silently ignored, so a screen that relies on it never navigates away. Subscribe to `onSessionLeft` / `onConnectionClosed` on the session, as above.
+</Warning>
 
 See [Join Session](/calls/react-native/join-session) for the component, [Session Settings](/calls/react-native/session-settings) for layouts and controls, and [Events](/calls/react-native/events) for everything the joined session reports.
 
@@ -292,8 +316,8 @@ The caller ends a call that is still ringing with `endCall` and the `cancelled` 
 
 ```ts
 async function cancelOutgoingCall(sessionId: string) {
-  const result = await CometChatCalls.endCall(sessionId, 'cancelled');
-  if (!result.isSuccess) console.error('Cancel failed:', result.error);
+  const { error } = await CometChatCalls.endCall(sessionId, 'cancelled');
+  if (error) console.error('Cancel failed:', error);
   closeOutgoingScreen();          // close locally either way
 }
 ```
@@ -344,7 +368,11 @@ session?.addEventListener('onConnectionClosed', goBack);
 
 ## Second call while in a call
 
-Handled by the Push SDK, the same way a phone does it. A call that arrives while the user is in another call rings over it with "Answering ends your current call". **Answer** leaves the live call, prepares the new one and emits `onCallAccepted` again for the new session — open a fresh screen for it. **Decline** sends `busy` and keeps the live call. A call that arrives while another is already ringing, or while the user's own outgoing call is ringing, is declined as `busy` without ringing.
+Handled by the Push SDK, the same way a phone does it. A call that arrives while the user is in another call rings over it, with the ordinary incoming-call notification and its Answer and Decline buttons. **Answer** leaves the live call, prepares the new one and emits `onCallAccepted` again for the new session — open a fresh screen for it. **Decline** sends `busy` and keeps the live call.
+
+<Note>
+The SDK never decides on its own that the user is busy. A second call rings, and only the user's own Decline sends `busy` — so a call arriving while another is ringing, or while the user's own outgoing call is still ringing, rings too rather than being auto-rejected.
+</Note>
 
 ## Group calls
 
