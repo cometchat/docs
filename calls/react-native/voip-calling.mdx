@@ -80,12 +80,17 @@ await CometChatVoipNotifications.init({
 });
 ```
 
-**An app that also does chat** initialises the core with its own settings first, then calls the VoIP `init()` with **no arguments**:
+**An app that also does chat** calls the VoIP `init()` **first and with no arguments**, then initialises the core with its own chat settings:
 
 ```ts
 import { CometChatPushNotifications } from '@cometchat/push-notifications-react-native';
 import { CometChatVoipNotifications } from '@cometchat/push-notifications-voip-react-native';
 
+// 1. Calling first. With no config this only subscribes to the call events —
+//    it does not initialise the core, so it cannot overwrite your chat settings.
+await CometChatVoipNotifications.init();
+
+// 2. Then the core, with your own settings.
 await CometChatPushNotifications.init({
   appId: APP_ID,
   region: REGION,
@@ -95,23 +100,25 @@ await CometChatPushNotifications.init({
   androidChannelId: 'chat_messages',
   callKitName: 'Acme',
 });
-
-await CometChatVoipNotifications.init();   // no config
 ```
 
 <Warning>
-**Passing a config to `CometChatVoipNotifications.init()` when the core is already initialised re-runs that initialisation and drops the chat options you set.** A chat app that calls `init(config)` on the VoIP package silently loses `notificationSmallIcon`, `androidChannelId` and every other chat-side setting.
+**This order is not a style choice — reversing it loses the cold-launch ring.** A call that woke the process is reported to CallKit and emitted before JavaScript exists, so native buffers it. The **core's** `init()` is what drains that buffer. Initialise the core first and the ring is delivered while nothing is subscribed to it yet, and it is gone: on iOS the app rings on CallKit but never prepares the session, so the caller is never told the callee is ringing.
 </Warning>
 
 <Warning>
-**`CometChatVoipNotifications.init()` must be the first thing you `await` on startup.** Anything awaited before it — a stored-credentials read, a chat login, a remote config fetch — eats the cold-launch ring window, and a call that woke the process is lost before the ring is wired up.
+**`CometChatVoipNotifications.init()` must be the first thing you `await` on startup.** Anything awaited before it — a stored-credentials read, a chat login, a remote config fetch — eats the cold-launch ring window.
 </Warning>
+
+<Note>
+**Don't pass a config to `CometChatVoipNotifications.init()` in a chat app.** With a config it initialises the core for you, using only what you passed — so `notificationSmallIcon`, `androidChannelId` and every other chat-side setting is never set. Pass a config there only in a **calls-only** app, which calls nothing else.
+</Note>
 
 | Option | Default | What it does |
 |--------|---------|--------------|
 | `appId`, `region` | none | Your CometChat app; required unless the Chat SDK already initialised |
 | `fcmProviderId` / `apnsProviderId` | none | The dashboard providers the token is registered under |
-| `callMode` | `'AUTO'` | `'AUTO'` rings. `'MANUAL'` only parses and forwards; see [MANUAL mode](#manual-mode) |
+| `callMode` | `'auto'` | `'auto'` rings. `'manual'` only parses and forwards; see [manual mode](#manual-mode) |
 | `notificationSmallIcon` | none | Status-bar icon for every notification (Android) |
 | `androidChannelId` / `androidChannelName` | SDK defaults | The channel chat notifications are posted on |
 | `defaultRingTimeoutMs` | `45000` | Ring window when the push carries no `ringTimeout` |
@@ -260,7 +267,7 @@ if (readiness !== 'ready') {
 | `callChannelImportance` | below `IMPORTANCE_HIGH`: no heads-up and no sound |
 | `interruptionFilter` | anything but `1`: Do Not Disturb is filtering |
 | `ringReadiness`, `ignoringBatteryOptimizations`, `canDrawOverlays` | Why a push may never reach the device |
-| `callMode`, `ringInForeground`, `defaultRingTimeoutMs` | `MANUAL` explains a phone that never rings by design |
+| `callMode`, `ringInForeground`, `defaultRingTimeoutMs` | `'manual'` explains a phone that never rings by design |
 | `aggressiveOem`, `manufacturer`, `model`, `sdkInt`, `platform` | OEM background restrictions |
 
 `verifyPushSetup()` registers the token and reports `ok`, `tokenNotRegistered`, `notLoggedIn`, `testPushUnavailable` (registration worked, the loopback test push is not available on the backend yet: a warning, not a failure) or `testPushTimeout` (the test push never arrived: delivery is broken). The token value is never logged, only its length and a short prefix.
@@ -487,9 +494,9 @@ If you want the in-app ring to match your brand exactly, draw it yourself with `
 
 The avatar is always the caller's initials; the screen does not load the avatar URL. The ringtone is the device's default on the incoming-call channel; because Android freezes a channel's sound at creation, the SDK never changes it afterwards.
 
-## MANUAL mode
+## Manual mode
 
-`callMode: 'MANUAL'` makes the SDK parse, gate and forward only. It never rings on its own. The call reaches `onCallRinging`, and from there every step is yours:
+`callMode: 'manual'` makes the SDK parse, gate and forward only. It never rings on its own. The call reaches `onCallRinging`, and from there every step is yours:
 
 ```ts
 CometChatVoipNotifications.showIncomingCall(payload);   // post the ring, arm expiry
@@ -499,7 +506,7 @@ CometChatVoipNotifications.endCallUI(sessionId);
 ```
 
 <Warning>
-In MANUAL mode with nothing built, the call is silently lost: no notification, no ringtone, no screen, nothing sent to the caller, who rings out to `unanswered`. Use MANUAL only if you are rebuilding the whole ring.
+In manual mode with nothing built, the call is silently lost: no notification, no ringtone, no screen, nothing sent to the caller, who rings out to `unanswered`. Use `'manual'` only if you are rebuilding the whole ring.
 </Warning>
 
 ## Reporting a call you placed yourself
