@@ -438,36 +438,27 @@ Keep `minSdkVersion 24` or higher.
 
 ### 4.2 Manifest permissions and components
 
-You don't edit `AndroidManifest.xml`. The package's manifest is merged into your app with everything push and calls need:
+You don't edit `AndroidManifest.xml`. Each package's manifest is merged into your app, and **call permissions are opt-in** — they come from the `-voip` package, not from `@cometchat/push-notifications-react-native`.
 
-- **Components:** its `FirebaseMessagingService`, the incoming-call foreground service, the full-screen `CallRingingActivity` (shows over the lock screen), the call action receiver, and the background task service for killed-app declines.
-- **Permissions:** `POST_NOTIFICATIONS`, `USE_FULL_SCREEN_INTENT`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_PHONE_CALL`, `MANAGE_OWN_CALLS`, `WAKE_LOCK`, `VIBRATE`, `RECORD_AUDIO`, `CAMERA` and `BLUETOOTH_CONNECT`. Camera and microphone hardware are declared optional, so Google Play doesn't hide your app from devices without them.
+`@cometchat/push-notifications-react-native` alone merges in:
+
+- **Components:** its `FirebaseMessagingService`, the notification-tap trampoline activity, and the headless task service that handles a notification while the app is killed.
+- **Permissions:** `POST_NOTIFICATIONS`, `VIBRATE` and `WAKE_LOCK`. Nothing else.
+
+`@cometchat/push-notifications-voip-react-native` adds what a ringing call needs:
+
+- **Components:** the incoming-call foreground service, the full-screen `CallRingingActivity` (shows over the lock screen), the call action receiver and the ring-expiry alarm receiver.
+- **Permissions:** `USE_FULL_SCREEN_INTENT`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_PHONE_CALL`, `MANAGE_OWN_CALLS`, `RECORD_AUDIO`, `CAMERA` and `BLUETOOTH_CONNECT`. Camera and microphone hardware are declared optional, so Google Play doesn't hide your app from devices without them.
+
+<Info>
+**Chat-only apps:** don't install the `-voip` package. Your merged manifest gets only `POST_NOTIFICATIONS`, `VIBRATE` and `WAKE_LOCK`, so there is no Play Console full-screen-intent declaration to complete and no `tools:node="remove"` to write. Also pass `voip: false` to `init()` so call pushes never ring, and skip `requestCallPermissions()` and `registerBackgroundCallTask()`.
+</Info>
 
 <Warning>
-**Google Play (Android 14+):** apps with calls complete two declarations in Play Console under **App content** — **Full-screen intent permission** (calling as core functionality) and **Foreground service permissions** (the **Phone call** type). Without the first, Play revokes `USE_FULL_SCREEN_INTENT` and calls ring only as a heads-up notification.
+**Google Play (Android 14+):** apps that install the `-voip` package complete two declarations in Play Console under **App content** — **Full-screen intent permission** (calling as core functionality) and **Foreground service permissions** (the **Phone call** type). Without the first, Play revokes `USE_FULL_SCREEN_INTENT` and calls ring only as a heads-up notification.
 </Warning>
 
-**Chat-only apps** pass `voip: false` to `init()` so call pushes never ring, remove the call permissions and components (with `xmlns:tools="http://schemas.android.com/tools"` on the `manifest` element), and skip `requestCallPermissions()` and `registerBackgroundCallTask()`:
-
-```xml android/app/src/main/AndroidManifest.xml lines
-<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" tools:node="remove" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" tools:node="remove" />
-<uses-permission android:name="android.permission.MANAGE_OWN_CALLS" tools:node="remove" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
-<uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
-
-<application>
-  <service android:name="com.cometchat.pushnotification.reactnative.IncomingCallService" tools:node="remove" />
-  <activity android:name="com.cometchat.pushnotification.reactnative.CallRingingActivity" tools:node="remove" />
-  <receiver android:name="com.cometchat.pushnotification.reactnative.CallActionReceiver" tools:node="remove" />
-  <service android:name="com.cometchat.pushnotification.reactnative.CometChatHeadlessTaskService" tools:node="remove" />
-</application>
-```
-
-`tools:node="remove"` drops an entry whichever library declared it — keep any permission another part of your app still uses.
-
-In `src/push/pushNotifications.ts`, also delete the `CometChatCalls` import and the `CometChatCalls.endSession()` call: `@cometchat/calls-sdk-react-native` is an optional peer dependency, so a chat-only app that doesn't install it fails to bundle while that import remains.
+Don't strip the call permissions back out of an app that installs `-voip`. The Calls SDK's ongoing-call foreground service needs `RECORD_AUDIO` and `CAMERA` on Android 14+ even for an audio-only call, and removing `MANAGE_OWN_CALLS` or `FOREGROUND_SERVICE_PHONE_CALL` downgrades every incoming call to a plain notification.
 
 ### 4.3 Notification icon
 
@@ -725,7 +716,7 @@ Use physical devices and a **release** build: a debug build loads its JavaScript
 | `init()` rejects with `ERR_PN_CONFIGURE` | The native setup failed, and the error message says why. If it mentions `FirebaseApp`, Firebase isn't initialized: `google-services.json` must be in `android/app` and the Google Services plugin applied (step 4.1). |
 | Notifications work on an existing install but not on a fresh one | A permission request wasn't awaited, so the notification dialog was cancelled unseen (step 5.1). `adb shell dumpsys package <id> \| grep POST_NOTIFICATIONS`: `granted=false` with no `USER_SET` flag means the dialog was never answered. |
 | Two notifications for one message | Another push library is still installed (step 3.1). With `@react-native-firebase/messaging`, follow step 4.5. |
-| Incoming call is a plain notification, not the full-screen ringing screen | The merged manifest still has `MANAGE_OWN_CALLS` and `FOREGROUND_SERVICE_PHONE_CALL` — a leftover chat-only `tools:node="remove"` strips them. On MIUI, Oppo and Vivo, grant the step 4.4 permissions. From Google Play, complete the full-screen intent declaration (step 4.2). |
+| Incoming call is a plain notification, not the full-screen ringing screen | Check `@cometchat/push-notifications-voip-react-native` is installed — without it the manifest has no `MANAGE_OWN_CALLS` or `FOREGROUND_SERVICE_PHONE_CALL` and nothing can ring full-screen. If you upgraded from 1.x, delete any `tools:node="remove"` lines the old chat-only instructions had you add; they strip permissions the `-voip` package now supplies. On MIUI, Oppo and Vivo, grant the step 4.4 permissions. From Google Play, complete the full-screen intent declaration (step 4.2). |
 | Declining a call in a killed app doesn't reject it | `registerBackgroundCallTask()` is called at module scope in `index.js`, and the app has been opened and logged in once since installing (so `init()` saved the Chat SDK settings). Test on a release build. |
 | Token registration errors | The provider IDs match the dashboard exactly, and `usePushOnLogin()` is rendered after CometChat is initialized. |
 | No notification while the app is open | Expected with `showInForeground: false` (the default) — set it to `true`. For calls, `ringInForeground` decides whether the system call UI or your in-app screen rings. |
