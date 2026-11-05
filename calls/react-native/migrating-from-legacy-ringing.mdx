@@ -1,0 +1,326 @@
+---
+title: "Migrating from Legacy Ringing"
+sidebarTitle: "Migrating from Legacy Ringing"
+sdk_version: "5.x"
+description: "Move a React Native app from Chat SDK call signalling and Push Notifications SDK 1.0 VoIP to ringing with the Calls SDK 5.1 and the Push Notifications SDK 2.0: what to add, what to delete, and how each method maps."
+---
+
+Legacy ringing signalled calls through the Chat SDK: `CometChat.initiateCall` created the call, a `CallListener` on the WebSocket told the callee, `acceptCall` and `rejectCall` answered, and the app rang the device itself — usually with `react-native-callkeep` and `react-native-voip-push-notification` wired up by hand. Ringing now runs on the Calls SDK and the Push Notifications SDK's VoIP package. The Chat SDK's calling methods are deprecated.
+
+This page is the diff. For the full description of the current flow see [Ringing](/calls/react-native/ringing); for the push side see [Push ringing](/calls/react-native/voip-calling).
+
+## Before you start
+
+Ringing with the Calls SDK is opt-in on the client: moving your app to the Calls SDK 5.1 and Push Notifications SDK 2.0 APIs below is the migration. While some of your users are still on legacy ringing, one dashboard setting lets the two flows call each other; see [While some users are still on legacy ringing](#while-some-users-are-still-on-legacy-ringing).
+
+If you use the CometChat UI Kit, keep its calling as it is: the Kit's call components still use the Chat SDK (`CometChat.initiateCall`, `CometChat.acceptCall`), so installing these packages doesn't move them to this flow. This guide applies to your own calling screens and handlers. See [Calling integration](/ui-kit/react-native/calling-integration).
+
+## Why it changed
+
+| Legacy | Now |
+|--------|-----|
+| Incoming calls arrived on the Chat WebSocket, so a killed or backgrounded app needed a separate push + CallKeep integration to ring | One path: the push rings in every app state, with the app killed included |
+| Four pieces of app code rang the device (listener, overlay, ringtone, busy check) | The Push SDK rings, draws the incoming screen, handles busy, timeout and missed calls |
+| `acceptCall` / `rejectCall` / `endCall` were HTTP calls your app had to sequence with the session | Answer = join. Decline, timeout and busy are sent by the Push SDK through a durable queue |
+| Caller only knew "accepted" or "rejected" | Caller sees "Ringing…" (the callee's device was reached), "answered", and the reason a call ended (`declined`, `timedOut`, `cancelled`, `answeredElsewhere`) |
+| Chat SDK required for calling | Chat SDK needed for chat only; a calls-only app works |
+
+## Before and after
+
+```mermaid
+sequenceDiagram
+    participant A as Caller
+    participant Chat as Chat SDK (WebSocket)
+    participant B as Callee
+    rect rgb(240,240,240)
+    Note over A,B: Legacy ringing
+    A->>Chat: CometChat.initiateCall(call)
+    Chat-->>B: CallListener.onIncomingCallReceived
+    B->>B: App shows its own incoming UI, CallKeep, ringtone
+    B->>Chat: CometChat.acceptCall(sessionId)
+    Chat-->>A: CallListener.onOutgoingCallAccepted
+    A->>A: start session
+    B->>B: start session
+    A->>Chat: CometChat.endCall(sessionId)
+    Chat-->>B: onCallEndedMessageReceived
+    end
+```
+
+```mermaid
+sequenceDiagram
+    participant A as Caller
+    participant BE as Backend
+    participant P as Callee · Push SDK
+    participant C as Callee · Calls SDK
+    rect rgb(232,244,236)
+    Note over A,C: Ringing now
+    A->>BE: CometChatCalls.initiateCall(uid, options)
+    BE-->>P: push (initiated)
+    P->>P: rings, shows incoming screen / CallKit
+    P->>C: connect(sessionId)
+    C-->>A: onParticipantConnected ("Ringing…")
+    P->>C: Answer → onCallAccepted → mount the call component
+    C-->>A: onParticipantJoined → caller joins
+    A->>A: session.leave() to hang up
+    end
+```
+
+## Step 1: Update dependencies
+
+```bash
+npm install @cometchat/calls-sdk-react-native@^5.1.0 \
+            @cometchat/push-notifications-react-native@^2.0.0 \
+            @cometchat/push-notifications-voip-react-native@^2.0.0
+cd ios && pod install
+```
+
+- `minSdkVersion` 24 or higher on Android, iOS 15.1+. Below API 26 the ring posts a plain notification rather than the channel-backed, full-screen one.
+- Keep `google-services.json`. `@react-native-firebase/messaging` is optional: if you keep it, forward pushes to the package as in section 4.5 of the [Android push guide](/notifications/react-native-push-notifications-android).
+- Remove `react-native-callkeep` and `react-native-voip-push-notification` if nothing else uses them; the VoIP package registers with PushKit and CallKit itself.
+
+<Warning>
+`callMode` defaults to `'auto'`, which is what this page assumes. Installing the VoIP package is the opt-in: the core package detects it and installs the ringer.
+</Warning>
+
+## Step 2: Replace the push configuration
+
+<Tabs>
+<Tab title="Before (Push SDK 1.0)">
+```ts
+// 1.0 had no appId or region of its own: it required the Chat SDK to be
+// initialised and logged in first, and read both from it.
+await CometChatPushNotifications.init({
+  fcmProviderId: FCM_PROVIDER_ID,
+  apnsProviderId: APNS_PROVIDER_ID,
+  notificationSmallIcon: 'ic_notification',
+  voip: true,
+});
+
+// One package, so the call callbacks lived on it. 1.0 accepted the call
+// through the Chat SDK itself; this fired afterwards.
+CometChatPushNotifications.onCallAccepted(call => {
+  navigate('Call', { sessionId: call.sessionId });
+});
+```
+</Tab>
+<Tab title="After (Push SDK 2.0)">
+```ts
+await CometChatVoipNotifications.init();   // first, and with no config
+
+await CometChatPushNotifications.init({
+  appId, region,
+  fcmProviderId: FCM_PROVIDER_ID,
+  apnsProviderId: APNS_PROVIDER_ID,
+  notificationSmallIcon: 'ic_notification',
+  callKitName: 'Acme',
+});
+
+CometChatVoipNotifications.onCallAccepted(call => {
+  navigate('Call', { sessionId: call.sessionId });   // no acceptCall to make
+});
+```
+</Tab>
+</Tabs>
+
+<Warning>
+A **calls-only** app passes its configuration to `CometChatVoipNotifications.init(config)` instead and never calls the core's `init`. An app that does both must not pass a config to the VoIP `init()` — that re-runs the core initialisation and drops every chat option.
+</Warning>
+
+<Warning>
+**`onCallAccepted` and `onCallEnded` moved packages.** In 1.0 they were on `CometChatPushNotifications`; in 2.0 they are on `CometChatVoipNotifications`. The old names are gone rather than deprecated, so a call left on the core object throws `is not a function` — search your app for `CometChatPushNotifications.onCall` and repoint both.
+</Warning>
+
+If your Chat and Calls SDKs point at a staging or dedicated deployment, pass the same host as `clientHost`. Otherwise the push token registers on the default host and no push ever arrives.
+
+## Step 3: Make `init()` the first thing you await
+
+```ts
+// index.js / App.tsx
+await CometChatVoipNotifications.init();   // FIRST
+await CometChatUIKit.init(uiKitSettings);  // then everything else
+await restoreSessionAndLogin();
+```
+
+A cold launch caused by a call push has a ring window measured from the caller's side. Anything awaited before `init()` — a stored-credentials read, a remote config fetch, a login — spends that window, and the call is lost before the ring is wired up.
+
+## Step 4: Register the background task and delete the token code
+
+```js index.js
+import { registerBackgroundCallTask } from '@cometchat/push-notifications-voip-react-native';
+registerBackgroundCallTask();
+```
+
+The Push SDK registers the token on login by itself. **Unregistering is not automatic** — this package installs no logout listener, so call `unregister()` before you log out (see Step 7). Remove:
+
+- `messaging().getToken()` + `registerPushToken(...)` after login
+- `VoipPushNotification.addEventListener('register', …)` and the APNs VoIP token plumbing
+- `unregisterPushToken(...)` before logout — replaced by `CometChatPushNotifications.unregister()`, which must run **before** `logout()`
+
+## Step 5: Delete the app-side ringing
+
+Everything in this list is now done by the Push SDK. Remove it, or it will fight the SDK's ring (two ringtones, two screens, a busy reject sent on top of the SDK's).
+
+- `CometChat.addCallListener(...)` and its `onIncomingCallReceived` handler
+- The incoming-call modal, overlay or screen you rendered from it
+- Your own ringtone or sound player for incoming calls
+- The "already in a call → reject with busy" check
+- `RNCallKeep.setup`, `displayIncomingCall`, `answerCall`/`endCall` event wiring, `VoipPushNotification` handlers, and the `READ_PHONE_STATE` / `MANAGE_OWN_CALLS` / `ANSWER_PHONE_CALLS` permission chain
+- Any foreground check around call pushes
+
+Keep `NSMicrophoneUsageDescription`, `NSCameraUsageDescription` and the `voip` background mode in `Info.plist` — those are your app's own and nothing merges them in. You can drop `RECORD_AUDIO`, `CAMERA` and `POST_NOTIFICATIONS` from your Android manifest: the push package declares `POST_NOTIFICATIONS`, the VoIP package declares the other two, and the manifest merger adds them for you. (An app that installs only the push package gets no call permissions at all — that is the point of the split.)
+
+## Step 6: Rewrite the call code
+
+| Legacy | Now | Notes |
+|--------|-----|-------|
+| `CometChat.initiateCall(new CometChat.Call(uid, type, RECEIVER_TYPE_USER))` | `CometChatCalls.initiateCall(uid, { type, receiverType, sessionSettings })` | Set `sessionSettings.sessionType`, or an audio call opens the camera |
+| `CometChat.initiateCall(call, timeoutSeconds)` | No client timeout. The ring window is 45 s on both sides (or the push's `ringTimeout`) | Run your own 45 s timer on the caller if you want the screen to close on its own |
+| `CallListener.onIncomingCallReceived(call)` | Nothing to write; the Push SDK rings. For your own state use `CometChatVoipNotifications.onCallRinging` | Fires whether the call came by push on a killed process or on a live one |
+| `CallListener.onOutgoingCallAccepted(call)` | `session.addEventListener('onParticipantJoined', …)` on the session `initiateCall` prepared, via `CometChatCalls.getActiveSession()` | New in-between event: `onParticipantConnected` = the callee's device is ringing |
+| `CallListener.onOutgoingCallRejected(call)` | `CometChatVoipNotifications.onCallEnded` with reason `declined` | `rejected` and `busy` both map to `declined`; read `PNCallInfo.callAction` for the wire value |
+| `CallListener.onIncomingCallCancelled(call)` | `onCallEnded` with `cancelled`; the Push SDK has already stopped the ring | |
+| `CallListener.onCallEndedMessageReceived(call)` | `onSessionLeft` / `onConnectionClosed` on the joined session; `onCallEnded` with `timedOut` while ringing | |
+| `CometChat.acceptCall(sessionId)` then start the session | `onCallAccepted` fires; mount the call component | The Push SDK doesn't ask for the mic or camera. On Android, call `CometChatPNHelper.requestCallPermissions()` after sign-in; on iOS the system asks on first use |
+| `CometChat.rejectCall(sessionId, CALL_STATUS_REJECTED)` | Push SDK Decline button. Own incoming screen: `CometChatVoipNotifications.declineCall(sessionId)` | Sends `busy` automatically when in another call |
+| `CometChat.rejectCall(sessionId, CALL_STATUS_BUSY)` | Nothing; the Push SDK decides busy | |
+| `CometChat.rejectCall(sessionId, CALL_STATUS_CANCELLED)` | `CometChatCalls.endCall(sessionId, 'cancelled')` | |
+| `CometChatCalls.startSession(...)` / `joinSession(...)` | `CometChatCalls.connect(sessionId)` then `<CometChatCalls.Component callToken={session.callToken} />` | The session is already prepared, so the join is near-instant |
+| `session.leaveSession()` + `CometChat.endCall(sessionId)` | `session.leave()` | No status to send on a hang-up; the room tells the other side and the backend logs it |
+| `CometChat.getActiveCall()` / `clearActiveCall()` | `CometChatCalls.getActiveSession()` (null when no session is prepared or joined) | |
+| `CometChat.logout()` | `CometChatCalls.logout()` as well — the UI Kit's `CometChatUIKit.logout` does **not** do it for you — after `CometChatPushNotifications.unregister()` | Otherwise the Calls SDK stays signed in as the old user and a ring is not stopped |
+
+### Caller screen, before and after
+
+<Tabs>
+<Tab title="Before">
+```ts
+CometChat.addCallListener(LISTENER_ID, new CometChat.CallListener({
+  onOutgoingCallAccepted: call => startSession(call.getSessionId()),
+  onOutgoingCallRejected: () => close('rejected'),
+  onIncomingCallCancelled: () => close('cancelled'),
+}));
+
+const call = await CometChat.initiateCall(
+  new CometChat.Call(uid, CometChat.CALL_TYPE.AUDIO, CometChat.RECEIVER_TYPE.USER),
+);
+setStatus('Calling…');
+```
+</Tab>
+<Tab title="After">
+```ts
+const { data: call, error } = await CometChatCalls.initiateCall(uid, {
+  type: 'audio',
+  receiverType: 'user',
+  sessionSettings: { sessionType: 'VOICE' },   // capitals: 'VOICE' / 'VIDEO'
+});
+if (error) return showError(error);             // { data, error }, not isSuccess
+
+const session = CometChatCalls.getActiveSession();
+const me = CometChatCalls.getLoggedInUser()?.uid;
+setStatus('Calling…');
+
+session?.addEventListener('onParticipantConnected', p => {
+  if (p.uid !== me) setStatus('Ringing…');       // new: the callee's device was reached
+});
+session?.addEventListener('onParticipantJoined', p => {
+  if (p.uid !== me) joinCall(call.sessionId);
+});
+
+CometChatVoipNotifications.onCallEnded(e => close(e.reason));  // declined / timedOut
+```
+</Tab>
+</Tabs>
+
+### Callee screen, before and after
+
+<Tabs>
+<Tab title="Before">
+```ts
+CometChat.addCallListener(LISTENER_ID, new CometChat.CallListener({
+  onIncomingCallReceived: async call => {
+    if (inACall) return CometChat.rejectCall(call.getSessionId(), CometChat.CALL_STATUS.BUSY);
+    playRingtone();
+    RNCallKeep.displayIncomingCall(call.getSessionId(), call.getSender().getName());
+    showIncomingModal(call);
+  },
+  onIncomingCallCancelled: () => { stopRingtone(); hideIncomingModal(); },
+}));
+
+async function onAnswerPressed(call) {
+  stopRingtone();
+  await CometChat.acceptCall(call.getSessionId());
+  startSession(call.getSessionId());
+}
+```
+</Tab>
+<Tab title="After">
+```ts
+// Nothing rings here any more: the Push SDK does, in every app state.
+CometChatVoipNotifications.onCallAccepted(call => {
+  navigate('Call', { sessionId: call.sessionId });
+});
+```
+</Tab>
+</Tabs>
+
+## Step 7: Change the logout
+
+<Tabs>
+<Tab title="Before">
+```ts
+await CometChat.logout();
+```
+</Tab>
+<Tab title="After">
+```ts
+await CometChatPushNotifications.unregister();   // needs the credential; must come first
+CometChatVoipNotifications.clearIdentity();
+await CometChatUIKit.logout();                   // Chat SDK only
+await CometChatCalls.logout();                   // the Kit does not do this for you
+```
+</Tab>
+</Tabs>
+
+`unregister()` after `logout()` cannot authenticate the delete, so the token stays registered and the device goes on receiving the departed user's call pushes. Logging out of the Chat SDK alone leaves the Calls SDK signed in, so a ring keeps playing for the old user.
+
+## If you drew your own incoming-call screen
+
+You can keep it. Subscribe to `onCallRinging` instead of `CallListener.onIncomingCallReceived`, close it from `onRingEnded`, and answer and decline through `CometChatVoipNotifications.answerCall` / `declineCall`. Tell the SDK your screen is up with `notifyCallScreenOpen(sessionId)` so it does not also show its own. See [Your own incoming-call screen](/calls/react-native/voip-calling#your-own-incoming-call-screen).
+
+This replaces the in-app screen only. A push that arrives while your app is killed still rings with the SDK's native screen on Android and CallKit on iOS — neither can be drawn from JavaScript that is not running.
+
+## While some users are still on legacy ringing
+
+Your users don't all update at once, so during the rollout one CometChat app has devices on both flows. A device's flow comes from its push registration: a device on the Calls SDK 5.1 and Push Notifications SDK 2.0 receives only the call-initiated push, and a device still on legacy ringing keeps receiving the legacy call events.
+
+To let users on the two flows call each other, turn on **Connect legacy ringing** in the CometChat dashboard under **Voice & Video Calls → Settings**. CometChat then also sends calls made on this flow as legacy call events, so devices on either flow ring for calls from the other.
+
+- Turn it on before the first users update, and leave it on while any version of your app still in use rings the legacy way.
+- It can't be turned off from the dashboard.
+- The six legacy call events (ongoing, cancelled, rejected, unanswered, busy and ended) are under **Show legacy** in **Notifications → Settings → Call Preferences**. They only reach devices on legacy ringing.
+
+<Note>
+This is a server-side bridge, so it needs no code on either side. A device that has been updated does not need the legacy `CallListener` back — keep it deleted.
+</Note>
+
+## What users will notice
+
+- Calls now ring with the app killed, and from the lock screen.
+- The caller sees "Ringing…" once the callee's device has actually been reached, and a reason when a call ends.
+- A second call rings over a live one instead of being silently rejected.
+- Missed calls appear as their own notifications.
+
+## Checklist
+
+- [ ] Calls SDK 5.1, Push SDK 2.0 core **and** VoIP packages installed; CallKeep and VoIP-push libraries removed
+- [ ] `CometChatVoipNotifications.init()` is the first `await` on startup, and the chat app passes it **no** config
+- [ ] `registerBackgroundCallTask()` called at module scope in `index.js`
+- [ ] All `CometChat.addCallListener` call handling, app-side ringtones and busy checks deleted
+- [ ] Caller listens on the prepared session for `onParticipantConnected` / `onParticipantJoined`
+- [ ] `onCallAccepted` and `onCallEnded` repointed from `CometChatPushNotifications` to `CometChatVoipNotifications`, and subscribed before the first call can arrive
+- [ ] Hang-up uses `session.leave()`, cancel uses `endCall(sessionId, 'cancelled')`
+- [ ] Logout unregisters push first, then clears the identity, then logs out
+- [ ] `requestCallPermissions()` called after sign-in; `ensureRingReady()` checked; `NSMicrophoneUsageDescription` present
+- [ ] Staging or dedicated host passed to the Push SDK as well
+- [ ] **Connect legacy ringing** turned on in the dashboard before the first users update, if any of your app versions still ring the legacy way
+- [ ] All three packages installed: Calls SDK 5.1 and both Push Notifications packages at 2.0

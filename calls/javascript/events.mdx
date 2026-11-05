@@ -20,11 +20,33 @@ const unsubscribe = CometChatCalls.addEventListener("eventName", (data) => {
 unsubscribe();
 ```
 
+Listeners are global: they are not tied to a session, work before any session exists, and stay registered across sessions until you call the function they return. The session object has the same method, `session.addEventListener(eventName, listener)`, with the same behavior. To ask whether there is a session right now, use `CometChatCalls.getActiveSession()`:
+
+```javascript
+// null when no session is preparing, prepared or joined
+const session = CometChatCalls.getActiveSession();
+if (session) {
+  console.log("Live session", session.sessionId, session.prepareStatus);
+}
+```
+
+`getActiveSession()` returns the session as soon as it starts **preparing**, before anyone joins: from the moment `CometChatCalls.initiateCall` has created the call on the caller, and from the moment `CometChatCalls.connect` is called on a ringing callee. It returns `null` again once the session ends, its prepare fails or is cancelled, or a prepared session expires after 5 minutes. While a session is only prepared, the SDK reports `onConnected`, `onConnectionFailed` (fatal errors only), `onConnectionClosed` and the roster events (`onParticipantConnected`, `onParticipantJoined`, `onParticipantLeft`, `onParticipantListChanged`); that is what lets a caller see "ringing" and "answered" without joining (see [Ringing](/calls/javascript/ringing)).
+
 ---
 
 ## Session Events
 
 Monitor the call session lifecycle including join/leave events and connection status.
+
+### Connected
+
+Fired when a prepared session has connected: signalling only, no camera or microphone, and other participants do not see you yet. It fires once per prepare (`initiateCall` on the caller, `connect` on the callee); the actual join is `onSessionJoined`.
+
+```javascript
+CometChatCalls.addEventListener("onConnected", () => {
+  console.log("Session prepared: the join will be near-instant");
+});
+```
 
 ### Session Joined
 
@@ -48,7 +70,7 @@ CometChatCalls.addEventListener("onSessionLeft", () => {
 
 ### Session Timed Out
 
-Fired when the session ends due to inactivity timeout.
+Fired when the session ends due to inactivity timeout. It is not used on a prepared session: one that nobody joins within 5 minutes reports `onConnectionClosed` instead.
 
 ```javascript
 CometChatCalls.addEventListener("onSessionTimedOut", () => {
@@ -78,7 +100,7 @@ CometChatCalls.addEventListener("onConnectionRestored", () => {
 
 ### Connection Closed
 
-Fired when the connection is permanently closed.
+Fired when the connection is permanently closed. On a session that was only prepared (an outgoing call still ringing, or an incoming call this tab prepared), it means the call ended before anyone joined: declined, cancelled (in a 1:1 call), the room went away, `leave()` or `endCall` tore it down, or nobody joined within 5 minutes. The event carries no reason.
 
 ```javascript
 CometChatCalls.addEventListener("onConnectionClosed", () => {
@@ -92,9 +114,19 @@ CometChatCalls.addEventListener("onConnectionClosed", () => {
 
 Monitor participant activities including join/leave, audio/video state, hand raise, screen sharing, and recording.
 
+### Participant Connected
+
+Fired when a remote participant's device has prepared the session without joining it. On the caller's prepared session, this is the callee's device ringing.
+
+```javascript
+CometChatCalls.addEventListener("onParticipantConnected", (participant) => {
+  console.log("Participant waiting:", participant.uid);
+});
+```
+
 ### Participant Joined
 
-Fired when a participant joins the call.
+Fired when a participant joins the call. On the caller's prepared session, this is the callee answering: join with `session.join(container)` now.
 
 ```javascript
 CometChatCalls.addEventListener("onParticipantJoined", (participant) => {
@@ -386,7 +418,7 @@ Intercept UI button clicks from the default call interface to add custom behavio
 
 ### Leave Session Button Clicked
 
-Fired when the leave button is clicked.
+Fired when the leave button is clicked. The SDK leaves the session itself right after, so only clean up here.
 
 ```javascript
 CometChatCalls.addEventListener("onLeaveSessionButtonClicked", () => {
