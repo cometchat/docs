@@ -1,0 +1,177 @@
+---
+title: "Push Notifications"
+description: "Wire web push into an Angular app that uses the CometChat UI Kit — service worker registration, FCM token lifecycle tied to UI Kit login and logout, and where the product-level notification docs take over."
+---
+
+## Overview
+
+Push notifications are configured at the product level, not in the UI Kit. The dashboard
+setup, provider configuration and payload reference all live in the
+[Notifications](/notifications/push-overview) section, and the token APIs come from the
+[JavaScript SDK](/sdk/javascript/overview).
+
+This page covers only the parts that are specific to an **Angular app using the UI Kit**: where
+to register the service worker, and how to tie the token lifecycle to `CometChatUIKit` login
+and logout so a device never keeps receiving another user's notifications.
+
+<Note>
+Read [Web Push Notifications](/notifications/web-push-notifications) first. It covers the
+Firebase project, provider configuration and payload reference this page assumes are already
+done — and its code samples are the canonical ones.
+</Note>
+
+## Why the lifecycle matters here
+
+The UI Kit owns the session. If you register an FCM token independently of
+`CometChatUIKit.login()` and `logout()`, two things go wrong on shared devices:
+
+* A token registered before login is not associated with any user, so notifications never
+  arrive.
+* A token left registered after logout keeps delivering the **previous** user's messages to
+  whoever signs in next.
+
+Register on login. Unregister on logout. Treat those as one unit.
+
+## Step 1 — Service worker
+
+Angular's build does not copy an arbitrary service worker to the output root. Add it to the
+`assets` array so `firebase-messaging-sw.js` is served from the origin root, which is where
+FCM expects it.
+
+```json title="angular.json" expandable
+{
+  "assets": [
+    { "glob": "**/*", "input": "public" },
+    {
+      "glob": "firebase-messaging-sw.js",
+      "input": "src",
+      "output": "/"
+    }
+  ]
+}
+```
+
+```js title="src/firebase-messaging-sw.js" expandable
+importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
+
+firebase.initializeApp({
+  apiKey: 'FCM_API_KEY',
+  projectId: 'FCM_PROJECT_ID',
+  messagingSenderId: 'FCM_SENDER_ID',
+  appId: 'FCM_APP_ID',
+});
+
+firebase.messaging().onBackgroundMessage((payload) => {
+  self.registration.showNotification(
+    payload.notification?.title ?? 'New message',
+    { body: payload.notification?.body, data: payload.data }
+  );
+});
+```
+
+<Warning>
+The service worker must be reachable at `/firebase-messaging-sw.js`, not
+`/assets/firebase-messaging-sw.js`. If registration fails silently in production but works in
+development, check the built output first.
+</Warning>
+
+## Step 2 — Tie the token to the UI Kit session
+
+Register the token **after** `CometChatUIKit.login()` resolves, and unregister **before**
+`logout()`.
+
+```ts title="src/app/services/push.service.ts" expandable
+import { Injectable, inject, PLATFORM_ID } from '@angular/core';
+import { isPlatformBrowser } from '@angular/common';
+import { CometChatNotifications } from '@cometchat/chat-sdk-javascript';
+import { getMessaging, getToken, deleteToken } from 'firebase/messaging';
+
+@Injectable({ providedIn: 'root' })
+export class PushService {
+  private readonly isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
+
+  /** Call immediately after CometChatUIKit.login() resolves. */
+  async register(): Promise<void> {
+    if (!this.isBrowser) return;
+    if (Notification.permission === 'denied') return;
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+
+    const token = await getToken(getMessaging(), {
+      vapidKey: 'YOUR_VAPID_KEY',
+    });
+    if (!token) return;
+
+    await CometChatNotifications.registerPushToken(
+      token,
+      CometChatNotifications.PushPlatforms.FCM_WEB,
+      'YOUR_FCM_PROVIDER_ID'
+    );
+  }
+
+  /** Call BEFORE CometChatUIKit.logout(). */
+  async unregister(): Promise<void> {
+    if (!this.isBrowser) return;
+    try {
+      await CometChatNotifications.unregisterPushToken();
+      await deleteToken(getMessaging());
+    } catch {
+      // Token may already be gone; logout must not be blocked by this.
+    }
+  }
+}
+```
+
+```ts title="usage" expandable
+// Login
+await CometChatUIKit.login(uid);
+await this.push.register();
+
+// Logout — unregister first, while the session still exists
+await this.push.unregister();
+await CometChatUIKit.logout();
+```
+
+<Tip>
+Ask for notification permission after a deliberate user action, not on first paint. Browsers
+increasingly suppress permission prompts that fire on load, and a denied permission is hard
+to recover from.
+</Tip>
+
+## Step 3 — Foreground messages
+
+While the app is open, the service worker does not fire. The UI Kit already renders incoming
+messages in the open conversation, so use foreground push only for conversations the user is
+**not** currently looking at.
+
+```ts expandable
+import { getMessaging, onMessage } from 'firebase/messaging';
+
+onMessage(getMessaging(), (payload) => {
+  const conversationId = payload.data?.['conversationId'];
+  if (conversationId === this.chatState.activeConversation()?.getConversationId()) {
+    return; // already visible in the message list
+  }
+  this.toast.show(payload.notification?.title, payload.notification?.body);
+});
+```
+
+## SSR
+
+`getToken()`, `Notification` and the service worker registration are browser-only. If your app
+uses SSR, guard every call — the `isPlatformBrowser` check in the service above is the
+minimum. See [SSR](/ui-kit/angular/ssr).
+
+## Campaigns
+
+Campaign pushes carry their own delivery and click tracking. That flow is documented
+separately in [Campaigns](/ui-kit/angular/campaigns#handling-push-notifications-for-campaigns).
+
+## Related
+
+* [Push Notifications Overview](/notifications/push-overview) — dashboard and provider setup
+* [Web Push Notifications](/notifications/web-push-notifications) — the canonical web push setup
+* [Methods](/ui-kit/angular/methods) — login and logout
+* [Production Checklist](/ui-kit/angular/production)

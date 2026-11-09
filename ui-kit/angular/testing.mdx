@@ -1,0 +1,162 @@
+---
+title: "Testing"
+description: "Unit and end-to-end testing strategies for an Angular app that uses the CometChat UI Kit — what to mock, how to set up TestBed with standalone kit components, and why an unmocked kit hangs the suite."
+---
+
+## Overview
+
+Kit components are live: on mount they attach SDK listeners, open a WebSocket and start
+fetching. In a test runner that is not a failure you can read — it is a suite that **hangs**.
+There is no assertion, no stack trace and no failing test name, so the usual instinct is to
+suspect your own async code.
+
+<Warning>
+**If your suite times out with no output after adding a `<cometchat-*>` component, this page
+is the cause.** Mock `CometChatUIKit` and the SDK before any kit component is created.
+</Warning>
+
+## What to mock
+
+| Symbol | Why | Minimum stub |
+| ------ | --- | ------------ |
+| `CometChatUIKit.init` | Opens a connection | resolve immediately |
+| `CometChatUIKit.getLoggedinUser` | Every kit component calls it on init | resolve a fake `User`, or `null` |
+| `CometChat.addMessageListener` and friends | Register real listeners | no-op |
+| `CometChat.getConversation` | Called on message-list mount | resolve a fake conversation |
+| Request builders (`MessagesRequestBuilder`, …) | Network fetches | return a request whose `fetchNext()` resolves `[]` |
+
+You rarely need all of these. Mock what the component under test actually reaches.
+
+## Unit tests: prefer not to mount the kit
+
+The cheapest and most stable approach is to keep kit components out of your unit tests
+entirely. Your component's own logic — routing, state, the handlers you pass in — is what you
+are testing; the kit is a third party with its own suite.
+
+```ts title="chat.component.spec.ts" expandable
+import { TestBed } from '@angular/core/testing';
+import { NO_ERRORS_SCHEMA } from '@angular/core';
+import { ChatComponent } from './chat.component';
+
+describe('ChatComponent', () => {
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [ChatComponent],
+      // Unknown <cometchat-*> elements are ignored rather than instantiated.
+      schemas: [NO_ERRORS_SCHEMA],
+    })
+      // Standalone components are replaced, not removed from imports.
+      .overrideComponent(ChatComponent, {
+        remove: { imports: [/* CometChatMessageListComponent, ... */] },
+        add: { schemas: [NO_ERRORS_SCHEMA] },
+      })
+      .compileComponents();
+  });
+
+  it('routes a thread click to the thread view', () => {
+    const fixture = TestBed.createComponent(ChatComponent);
+    const component = fixture.componentInstance;
+
+    component.onThreadRepliesClick({ getId: () => 42 } as never);
+
+    expect(component.activeThreadId()).toBe(42);
+  });
+});
+```
+
+<Note>
+`NO_ERRORS_SCHEMA` silences unknown-element errors but does not stop a component that is
+genuinely imported from being instantiated. For standalone components you must also remove
+the kit component from `imports`, as shown above.
+</Note>
+
+## When you do need to mount a kit component
+
+Stub the UI Kit surface before `TestBed.createComponent()` runs.
+
+```ts title="setup-cometchat-mocks.ts" expandable
+import { CometChatUIKit } from '@cometchat/chat-uikit-angular';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+
+export function mockCometChat(user: Partial<CometChat.User> = {}) {
+  const fakeUser = {
+    getUid: () => 'test-uid',
+    getName: () => 'Test User',
+    getAuthToken: () => 'test-token',
+    ...user,
+  } as CometChat.User;
+
+  spyOn(CometChatUIKit, 'init').and.returnValue(Promise.resolve(true));
+  spyOn(CometChatUIKit, 'getLoggedinUser').and.returnValue(Promise.resolve(fakeUser));
+
+  spyOn(CometChat, 'addMessageListener').and.stub();
+  spyOn(CometChat, 'removeMessageListener').and.stub();
+  spyOn(CometChat, 'addGroupListener').and.stub();
+  spyOn(CometChat, 'addConnectionListener').and.stub();
+
+  spyOn(CometChat, 'getConversation').and.returnValue(
+    Promise.resolve({
+      getUnreadMessageCount: () => 0,
+      getLastReadMessageId: () => '0',
+    } as unknown as CometChat.Conversation)
+  );
+
+  return fakeUser;
+}
+```
+
+```ts title="message-list.spec.ts" expandable
+import { TestBed } from '@angular/core/testing';
+import { CometChatMessageListComponent } from '@cometchat/chat-uikit-angular';
+import { mockCometChat } from './setup-cometchat-mocks';
+
+describe('CometChatMessageList in context', () => {
+  beforeEach(async () => {
+    mockCometChat();
+    await TestBed.configureTestingModule({
+      imports: [CometChatMessageListComponent],
+    }).compileComponents();
+  });
+
+  it('mounts without opening a connection', () => {
+    const fixture = TestBed.createComponent(CometChatMessageListComponent);
+    fixture.detectChanges();
+    expect(fixture.componentInstance).toBeTruthy();
+  });
+});
+```
+
+<Tip>
+Put `mockCometChat()` in a shared setup file and call it from your global test setup, so a new
+spec cannot accidentally open a real connection.
+</Tip>
+
+## End-to-end tests
+
+E2E is where the kit should be real. Two things make those runs reliable:
+
+* **Use dedicated test users on a test App ID.** Presence, receipts and unread counts are
+  stateful; sharing users across parallel runs produces flakes that look like product bugs.
+* **Wait on rendered content, not on timeouts.** The list renders asynchronously after the
+  socket connects. Wait for a message bubble to appear rather than sleeping.
+
+```ts title="chat.spec.ts (Playwright)"
+await page.goto('/chat');
+await expect(page.locator('.cometchat-message-list')).toBeVisible();
+await expect(page.getByText('Hello')).toBeVisible({ timeout: 15_000 });
+```
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| ------- | ----- | --- |
+| Suite hangs with no output | A kit component opened a real connection | Mock `CometChatUIKit` and the SDK listeners before `createComponent()` |
+| `'cometchat-message-list' is not a known element` | Standalone component not imported | Add it to `imports`, or use `NO_ERRORS_SCHEMA` if you do not want it mounted |
+| Component renders nothing | Missing from `imports: []` — the kit fails silently here | Add the component class to the importing component's `imports` |
+| Flaky unread-count assertions | Shared test users across parallel runs | One user per worker on a test App ID |
+
+## Related
+
+* [Troubleshooting](/ui-kit/angular/troubleshooting)
+* [Methods](/ui-kit/angular/methods)
+* [SSR](/ui-kit/angular/ssr)
