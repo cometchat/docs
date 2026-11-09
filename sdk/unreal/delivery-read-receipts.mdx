@@ -3,20 +3,30 @@ title: "Delivery & Read Receipts"
 description: "Track when messages are delivered to and read by recipients."
 ---
 
-Delivery and read receipts let you show checkmark indicators (✓ delivered, ✓✓ read) next to messages in your chat UI. The CometChat Unreal SDK delivers these as real-time events through the `OnReceiptReceived` delegate.
+Delivery and read receipts let you show checkmark indicators (✓ delivered, ✓✓ read) next to messages in your chat UI. The CometChat Unreal SDK delivers these as real-time events through two delegates on the subsystem — `OnMessagesDelivered` and `OnMessagesRead` — each carrying an `FCometChatMessageReceipt`. A `read` receipt implies `delivered`.
 
 ---
 
-## Listen for Receipt Events
+## Use Case: Checkmark States (✓ / ✓✓ / blue ✓✓)
 
-Bind to the `OnReceiptReceived` delegate on the Subsystem.
+**Goal:** drive per-message tick states like a familiar messaging app — a single grey tick when sent, a double grey tick when delivered, and a blue double tick when read.
+
+Two real-time delegates carry these transitions, both with an `FCometChatMessageReceipt` payload:
+
+| State | Source | Meaning |
+| ----- | ------ | ------- |
+| ✓ (single grey) | your local send success | Message accepted by the server |
+| ✓✓ (double grey) | `OnMessagesDelivered` | Reached the recipient's device |
+| ✓✓ (blue) | `OnMessagesRead` | Recipient viewed the message |
+
+Bind both delegates once, before Login (see [Real-Time Events](/sdk/unreal/real-time-events)).
 
 <Tabs>
 <Tab title="Blueprint">
 1. Get a reference to the **CometChat Subsystem**
-2. Drag off and search for **On Receipt Received**
-3. Use **Bind Event** to connect it to a custom event
-4. The custom event receives an `FCometChatReceiptEvent` parameter
+2. **Bind Event** to **On Messages Delivered** → set that message row to the double grey tick using `Receipt.MessageId`
+3. **Bind Event** to **On Messages Read** → set that message row to the blue double tick
+4. Use `Receipt.ReceiverType` / `Receipt.ReceiverId` to confirm the receipt is for the conversation you're showing
 </Tab>
 <Tab title="C++">
 ```cpp
@@ -25,62 +35,89 @@ void AMyActor::BeginPlay()
     Super::BeginPlay();
 
     UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
-    Chat->OnReceiptReceived.AddDynamic(this, &AMyActor::HandleReceipt);
+    Chat->OnMessagesDelivered.AddDynamic(this, &AMyActor::HandleDelivered);
+    Chat->OnMessagesRead.AddDynamic(this, &AMyActor::HandleRead);
 }
 
-void AMyActor::HandleReceipt(const FCometChatReceiptEvent& Event)
+void AMyActor::HandleDelivered(const FCometChatMessageReceipt& Receipt)
 {
-    if (Event.Status == TEXT("delivered"))
-    {
-        // Show single checkmark ✓
-        MarkMessageDelivered(Event.MessageId);
-    }
-    else if (Event.Status == TEXT("read"))
-    {
-        // Show double checkmark ✓✓
-        MarkMessageRead(Event.MessageId);
-    }
+    SetTickState(Receipt.MessageId, ETick::DeliveredGrey); // ✓✓
+}
+
+void AMyActor::HandleRead(const FCometChatMessageReceipt& Receipt)
+{
+    SetTickState(Receipt.MessageId, ETick::ReadBlue);      // ✓✓ (blue)
 }
 ```
 </Tab>
 </Tabs>
 
----
-
-## FCometChatReceiptEvent
+### FCometChatMessageReceipt
 
 | Property | Type | Description |
 | -------- | ---- | ----------- |
 | `MessageId` | `FString` | The message this receipt applies to |
-| `Uid` | `FString` | The user who triggered the receipt (the recipient) |
-| `Status` | `FString` | `delivered` — message reached the device; `read` — message was viewed |
-| `Timestamp` | `int64` | Unix timestamp when the receipt was generated |
+| `Sender` | `FCometChatUser` | The user who generated the receipt (the recipient) |
+| `ReceiverType` | `FString` | `"user"` or `"group"` |
+| `ReceiverId` | `FString` | The conversation UID or GUID |
+| `ReceiptType` | `FString` | `"delivered"` or `"read"` |
+| `DeliveredAt` | `int64` | Unix timestamp of delivery (when set) |
+| `ReadAt` | `int64` | Unix timestamp of read (when set) |
+| `Timestamp` | `int64` | Unix timestamp the receipt was generated |
+
+<Info>
+For groups, use `OnMessagesDeliveredToAll` / `OnMessagesReadByAll` to switch the ticks only once **every** member has delivered/read, rather than on the first receipt.
+</Info>
 
 ---
 
-## Receipt Flow
+## Send a Read Receipt
 
-```mermaid
-flowchart TD
-    A["Sender sends message"] --> B["Message arrives on recipient's device"]
-    B --> C["'delivered' receipt"]
-    C -.-> D["OnReceiptReceived — Status: delivered"]
-    B --> E["Recipient views message"]
-    E --> F["'read' receipt"]
-    F -.-> G["OnReceiptReceived — Status: read"]
+Delivery receipts are sent automatically for incoming messages, but you send **read** receipts yourself when a message is actually seen. Use the **Mark As Read Async** node (and **Mark As Delivered Async** if you manage delivery manually). Both are async nodes with **On Success** and **On Failure**.
 
-    style A fill:#333,stroke:#666,color:#fff
-    style B fill:#444,stroke:#888,color:#fff
-    style C fill:#333,stroke:#666,color:#fff
-    style D fill:#333,stroke:#666,color:#fff
-    style E fill:#444,stroke:#888,color:#fff
-    style F fill:#333,stroke:#666,color:#fff
-    style G fill:#333,stroke:#666,color:#fff
+<Tabs>
+<Tab title="Blueprint">
+1. When a message row scrolls fully into view, call **Mark As Read Async** with that `FCometChatMessage`
+2. **On Success** → update your local "read" bookkeeping (this is a parameterless success pin)
+3. **On Failure** → receives an `FCometChatError`; log it and retry the mark later
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::MarkVisibleMessageRead(const FCometChatMessage& Message)
+{
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+    if (!Chat->IsLoggedIn()) return; // no connection → nothing to send
+
+    auto* Action = UCometChatMarkAsReadAction::MarkAsReadAsync(this, Message);
+    Action->OnSuccess.AddDynamic(this, &AMyActor::HandleMarkedRead);
+    Action->OnFailure.AddDynamic(this, &AMyActor::HandleError);
+    Action->Activate();
+}
+
+void AMyActor::HandleMarkedRead()
+{
+    // Local read state confirmed on the server
+}
+
+void AMyActor::HandleError(const FCometChatError& Error)
+{
+    UE_LOG(LogTemp, Error, TEXT("Mark-as-read failed: %s"), *Error.Message);
+}
 ```
+</Tab>
+</Tabs>
 
 <Info>
-A `read` receipt implies `delivered`. If you receive a `read` event for a message you haven't seen a `delivered` event for, treat it as both delivered and read.
+`OnMessagesDelivered` / `OnMessagesRead` are real-time delegates: a dropped socket pauses them, so reconcile tick state after reconnect and pair the view with a [connection banner](/sdk/unreal/connection-status). `MarkAsReadAsync` / `MarkAsDeliveredAsync` are async nodes — always wire **On Failure** (`FCometChatError`) so a failed receipt doesn't silently desync your read state.
 </Info>
+
+<Tip>
+**Best practice:** only call **Mark As Read** when a message is actually visible on screen — fully scrolled into the viewport — not when the conversation merely opens. This keeps unread counts and blue ticks honest.
+</Tip>
+
+<Warning>
+**Avoid** marking the entire history read the moment a chat opens, or marking off-screen messages read. It corrupts unread counts for you and misreports "read" to the sender. Mark per message as each becomes visible.
+</Warning>
 
 ---
 

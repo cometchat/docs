@@ -1,0 +1,352 @@
+---
+title: "AI Features"
+description: "Add AI bots, smart replies, conversation starters, and summaries to your Unreal Engine game with CometChat's AI async nodes."
+---
+
+CometChat's AI features let your game do more than relay text: players can ask an in-game bot for help, get one-tap smart replies, receive ice-breakers when a new match's DM opens, and catch up on a busy guild chat with a one-line summary. The Unreal SDK exposes each of these as an async node (Blueprint) or an async action (C++).
+
+Every AI call in this guide is a **latent async operation**. On success it returns a raw **JSON `FString`** that your game parses — the SDK does not deserialize it for you, so you stay in control of the shape you expect. See [Parsing the JSON Result](#parsing-the-json-result) below.
+
+### AI Request Flow
+
+```mermaid
+flowchart LR
+    A["Your Game"] --> B["AI Async Node"]
+    B --> C["C++ SDK"] --> D["CometChat AI Service"]
+    D -->|"On Success"| E["JSON FString Result"]
+    E --> F["Parse & render in UI"]
+
+    style A fill:#333,stroke:#666,color:#fff
+    style B fill:#444,stroke:#888,color:#fff
+    style C fill:#333,stroke:#666,color:#fff
+    style D fill:#555,stroke:#999,color:#ccc
+    style E fill:#333,stroke:#666,color:#fff
+    style F fill:#333,stroke:#666,color:#fff
+```
+
+<Info>
+Each feature must be enabled for your app in the [CometChat Dashboard](https://app.cometchat.com) before these calls return data. **Ask Bot** additionally requires a configured **AI Bot**; **Smart Replies**, **Conversation Starter**, and **Conversation Summary** each require their matching AI feature to be turned on. A call to a disabled feature comes back on the **On Failure** pin.
+</Info>
+
+<Info>
+Throughout this page, `ReceiverType` is either `"user"` (a 1:1 conversation, where the receiver ID is a user's UID) or `"group"` (a group conversation, where the receiver ID is the group's GUID). All async **On Failure** handlers receive a simple `(const FCometChatError& Error)`.
+</Info>
+
+---
+
+## Ask a Bot
+
+Send a free-form question to an AI bot configured in your dashboard and get its reply. This is perfect for an in-game help bot ("Guide Bot") that answers questions about crafting, quests, or controls without a human on the other end.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Ask Bot Async** node.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| Receiver Id | `FString` | UID of the user or GUID of the group the bot conversation belongs to |
+| Receiver Type | `FString` | `"user"` or `"group"` |
+| Bot Id | `FString` | The UID of the AI bot to ask (as configured in the dashboard) |
+| Question | `FString` | The player's free-form question |
+
+**On Success** returns a JSON `FString` — the bot's reply. Parse it and display the answer in your help panel.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatAskBotAction.h"
+
+void AMyActor::AskGuideBot(const FString& PlayerQuestion)
+{
+    auto* Action = UCometChatAskBotAction::AskBotAsync(
+        this,
+        TEXT("guide-bot"),   // Receiver Id — the bot's own conversation (1:1)
+        TEXT("user"),        // Receiver Type
+        TEXT("guide-bot"),   // Bot Id
+        PlayerQuestion       // e.g. "How do I craft a health potion?"
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnBotReplied);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnBotReplied(const FString& Result)
+{
+    // Result is a JSON string containing the bot's reply — parse and show it.
+    UE_LOG(LogTemp, Log, TEXT("Guide Bot replied: %s"), *Result);
+}
+
+// Shared async failure handler used across this page.
+void AMyActor::OnError(const FCometChatError& Error)
+{
+    UE_LOG(LogTemp, Error, TEXT("AI request failed: %s"), *Error.Message);
+}
+```
+</Tab>
+</Tabs>
+
+<Tip>
+Show a "Guide Bot is thinking…" spinner between calling the node and the **On Success** pin firing. AI responses take longer than a normal message send, so give the player feedback that something is happening.
+</Tip>
+
+---
+
+## Get Smart Replies
+
+Fetch a short list of AI-suggested replies for the latest messages in a conversation. Render them as tap-to-send chips above the keyboard so players can respond with one tap during fast-paced matches.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Get Smart Replies Async** node.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| Receiver Id | `FString` | UID of the user (1:1) or GUID of the group |
+| Receiver Type | `FString` | `"user"` or `"group"` |
+
+**On Success** returns a JSON `FString` — a JSON **array** of suggested reply strings (for example, `["Sounds good!","On my way","Give me 5 min"]`). Parse it into chips.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatGetSmartRepliesAction.h"
+
+void AMyActor::LoadSmartReplies(const FString& FriendUid)
+{
+    auto* Action = UCometChatGetSmartRepliesAction::GetSmartRepliesAsync(
+        this,
+        FriendUid,      // Receiver Id
+        TEXT("user")    // Receiver Type — a 1:1 conversation
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnSmartRepliesReady);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnSmartRepliesReady(const FString& Result)
+{
+    // Result is a JSON array of strings — parse it and build reply chips.
+    TArray<TSharedPtr<FJsonValue>> Suggestions;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Result);
+    if (FJsonSerializer::Deserialize(Reader, Suggestions))
+    {
+        for (const TSharedPtr<FJsonValue>& Value : Suggestions)
+        {
+            const FString Reply = Value->AsString();
+            UE_LOG(LogTemp, Log, TEXT("Smart reply: %s"), *Reply);
+            // AddReplyChipToUI(Reply);
+        }
+    }
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+Smart replies reflect the **most recent messages** in the conversation. Call the node when the chat panel gains focus (or after a new incoming message) so the suggestions stay relevant to what was just said.
+</Info>
+
+---
+
+## Get Conversation Starter
+
+Ask the AI for opener suggestions when a conversation has little or no history — ideal for the first DM after two players are matched, or when a new member joins a guild and doesn't know what to say.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Get Conversation Starter Async** node.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| Receiver Id | `FString` | UID of the user (1:1) or GUID of the group |
+| Receiver Type | `FString` | `"user"` or `"group"` |
+
+**On Success** returns a JSON `FString` containing one or more suggested opening lines. Parse it and offer them as tappable ice-breakers.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatGetConversationStarterAction.h"
+
+void AMyActor::SuggestOpeners(const FString& MatchedPlayerUid)
+{
+    auto* Action = UCometChatGetConversationStarterAction::GetConversationStarterAsync(
+        this,
+        MatchedPlayerUid,   // Receiver Id
+        TEXT("user")        // Receiver Type
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnStartersReady);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnStartersReady(const FString& Result)
+{
+    // Result is JSON — parse out the opener suggestions and show them as chips.
+    UE_LOG(LogTemp, Log, TEXT("Conversation starters: %s"), *Result);
+}
+```
+</Tab>
+</Tabs>
+
+<Tip>
+Conversation starters are most useful on an **empty** conversation. Once real messages exist, switch to [Smart Replies](#get-smart-replies) so suggestions follow the live conversation instead of starting a fresh one.
+</Tip>
+
+---
+
+## Get Conversation Summary
+
+Generate a concise, AI-written summary of a conversation. Show it as a "Catch me up" banner when a player returns to a busy guild chat they've missed, so they don't have to scroll through hundreds of messages.
+
+<Tabs>
+<Tab title="Blueprint">
+Call the **Get Conversation Summary Async** node.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| Receiver Id | `FString` | UID of the user (1:1) or GUID of the group |
+| Receiver Type | `FString` | `"user"` or `"group"` |
+
+**On Success** returns a JSON `FString` — the AI-generated summary. Parse out the summary text and display it.
+</Tab>
+<Tab title="C++">
+```cpp
+#include "AsyncActions/CometChatGetConversationSummaryAction.h"
+
+void AMyActor::CatchUpOnGuildChat(const FString& GuildGuid)
+{
+    auto* Action = UCometChatGetConversationSummaryAction::GetConversationSummaryAsync(
+        this,
+        GuildGuid,       // Receiver Id — the group's GUID
+        TEXT("group")    // Receiver Type
+    );
+    Action->OnSuccess.AddDynamic(this, &AMyActor::OnSummaryReady);
+    Action->OnFailure.AddDynamic(this, &AMyActor::OnError);
+    Action->Activate();
+}
+
+void AMyActor::OnSummaryReady(const FString& Result)
+{
+    // Result is a JSON summary — parse it and show a "Catch me up" banner.
+    UE_LOG(LogTemp, Log, TEXT("Guild chat summary: %s"), *Result);
+}
+```
+</Tab>
+</Tabs>
+
+<Info>
+Summaries are generated from recent conversation history and work best when there are enough messages to summarize. For a quiet 1:1 with only a handful of messages, the summary may simply restate them.
+</Info>
+
+---
+
+## Parsing the JSON Result
+
+Ask Bot, Smart Replies, Conversation Starter, and Conversation Summary all deliver their payload as a raw JSON `FString`. Nothing is deserialized for you — parse it yourself in the **On Success** handler.
+
+- **C++** — use Unreal's built-in JSON module (`FJsonSerializer` with `TJsonReaderFactory`). Deserialize into a `TArray<TSharedPtr<FJsonValue>>` for a JSON array (Smart Replies) or a `TSharedPtr<FJsonObject>` for a JSON object (a summary). Add `"Json"` to your module's `PublicDependencyModuleNames` in the `.Build.cs` file, and include the headers below.
+- **Blueprint** — feed the `Result` string into a JSON parsing node (from a JSON Blueprint plugin such as the built-in JSON Blueprint Utilities, or your own C++ helper exposed as a `UFUNCTION`) and read the fields you need.
+
+```cpp
+#include "Serialization/JsonSerializer.h"
+#include "Dom/JsonObject.h"
+
+// Parsing a JSON object result (e.g. a summary payload)
+void AMyActor::ParseSummary(const FString& Result)
+{
+    TSharedPtr<FJsonObject> Root;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Result);
+    if (FJsonSerializer::Deserialize(Reader, Root) && Root.IsValid())
+    {
+        const FString Summary = Root->GetStringField(TEXT("summary"));
+        UE_LOG(LogTemp, Log, TEXT("Summary text: %s"), *Summary);
+    }
+}
+```
+
+<Warning>
+Never assume the JSON is well-formed. AI responses and network conditions vary — always check the return value of `FJsonSerializer::Deserialize` and guard against missing fields before reading them, or a malformed payload will crash a shipping build.
+</Warning>
+
+---
+
+## Real-Time AI Events
+
+Beyond the request/response nodes above, the `UCometChatSubsystem` streams **AI assistant activity in real time** over the same WebSocket that delivers messages. Bind these delegates to react as an AI assistant works — for example, to show a streaming "typing" state while a bot composes a reply, or to render tool-call progress. All delegates fire on the **Game Thread**, so you can update UI directly.
+
+| Delegate | Payload | Fires When |
+| -------- | ------- | ---------- |
+| `OnAIAssistantEvent` | `FCometChatAIAssistantEvent` | A generic AI assistant lifecycle event occurs (e.g. the assistant starts or finishes) |
+| `OnAIAssistantMessageReceived` | `FCometChatMessage` | An AI assistant message arrives |
+| `OnAIToolResultReceived` | `FCometChatMessage` | An AI tool finishes and returns a result |
+| `OnAIToolArgumentsReceived` | `FCometChatMessage` | An AI tool's arguments are received |
+
+<Tabs>
+<Tab title="Blueprint">
+1. Get a reference to the **CometChat Subsystem**
+2. Drag off the Subsystem pin and search for the delegate name (e.g., **On AI Assistant Event**)
+3. Select **Bind Event** to wire it to a custom event node
+
+Bind **On AI Assistant Event** to receive an `FCometChatAIAssistantEvent`; bind **On AI Assistant Message Received**, **On AI Tool Result Received**, or **On AI Tool Arguments Received** to receive an `FCometChatMessage`.
+</Tab>
+<Tab title="C++">
+```cpp
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+
+    UCometChatSubsystem* Chat = GetGameInstance()->GetSubsystem<UCometChatSubsystem>();
+
+    Chat->OnAIAssistantEvent.AddDynamic(this, &AMyActor::HandleAIAssistantEvent);
+    Chat->OnAIAssistantMessageReceived.AddDynamic(this, &AMyActor::HandleAIMessage);
+    Chat->OnAIToolResultReceived.AddDynamic(this, &AMyActor::HandleAIToolResult);
+    Chat->OnAIToolArgumentsReceived.AddDynamic(this, &AMyActor::HandleAIToolArguments);
+}
+
+void AMyActor::HandleAIAssistantEvent(const FCometChatAIAssistantEvent& Event)
+{
+    UE_LOG(LogTemp, Log, TEXT("AI event [%s] from %s in conversation %s: %s"),
+        *Event.EventType, *Event.SenderUid, *Event.ConversationId, *Event.Data);
+}
+
+void AMyActor::HandleAIMessage(const FCometChatMessage& Message)
+{
+    UE_LOG(LogTemp, Log, TEXT("AI assistant message: %s"), *Message.Text);
+}
+
+void AMyActor::HandleAIToolResult(const FCometChatMessage& Message)
+{
+    UE_LOG(LogTemp, Log, TEXT("AI tool result received (id %s)"), *Message.Id);
+}
+
+void AMyActor::HandleAIToolArguments(const FCometChatMessage& Message)
+{
+    UE_LOG(LogTemp, Log, TEXT("AI tool arguments received (id %s)"), *Message.Id);
+}
+```
+</Tab>
+</Tabs>
+
+### FCometChatAIAssistantEvent
+
+| Property | Type | Description |
+| -------- | ---- | ----------- |
+| `EventType` | `FString` | The kind of AI assistant event (e.g. a start/end or status marker) |
+| `Data` | `FString` | The event payload, typically a JSON string you parse for details |
+| `ConversationId` | `FString` | The conversation the event belongs to |
+| `SenderUid` | `FString` | The UID associated with the event (the bot/assistant) |
+
+<Warning>
+**Bind AI delegates before calling Login.** Events that arrive between login completing and your bindings being set up will be missed. See [Real-Time Events](/sdk/unreal/real-time-events) for the full delegate catalog and threading guarantees.
+</Warning>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Real-Time Events" icon="bolt" href="/sdk/unreal/real-time-events">
+    The full catalog of subsystem delegates, including AI assistant events.
+  </Card>
+  <Card title="Send a Message" icon="paper-plane" href="/sdk/unreal/send-message">
+    Send the replies and starters your players pick straight into the chat.
+  </Card>
+</CardGroup>
