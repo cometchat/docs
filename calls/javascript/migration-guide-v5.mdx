@@ -71,7 +71,7 @@ CometChatCalls.init(callAppSettings).then(
 
 ## Authentication
 
-In v4, the Calls SDK had no dedicated authentication step. It relied on the Chat SDK's auth token (`CometChat.getUserAuthToken()`) or a REST API to obtain an auth token, which you then passed manually to `generateToken()`.
+In v4, the Calls SDK had no dedicated authentication step. It relied on the Chat SDK's auth token (the logged-in user's `getAuthToken()`) or a REST API to obtain an auth token, which you then passed manually to `generateToken()`.
 
 v5 introduces its own `login()` method. After calling `login()`, the SDK caches the auth token internally.
 
@@ -79,7 +79,7 @@ v5 introduces its own `login()` method. After calling `login()`, the SDK caches 
 <Tab title="v4">
 ```javascript
 // No dedicated Calls SDK login — relied on Chat SDK for auth token
-const authToken = CometChat.getUserAuthToken();
+const authToken = (await CometChat.getLoggedinUser()).getAuthToken();
 
 // Had to pass authToken manually
 CometChatCalls.generateToken(sessionId, authToken).then(
@@ -196,7 +196,7 @@ CometChatCalls.generateToken(sessionId, authToken).then((token) => {
 <Tab title="v5">
 ```javascript
 // Generate a call token for the session, then join with it
-CometChatCalls.generateToken(sessionId).then((token) => {
+CometChatCalls.generateToken(sessionId).then(({ token }) => {
   CometChatCalls.joinSession(token, sessionSettings, document.getElementById("callContainer"));
 });
 ```
@@ -305,16 +305,18 @@ CometChatCalls.addEventListener("onCallLayoutChanged", (layoutType) => { });
 
 ### New Events Require `addEventListener()`
 
-The events introduced in v5 are only delivered through `addEventListener()`. None of the v4 registration paths — `setCallListener()` / `setCallEventListener()` on `CallSettingsBuilder` and `CometChatCalls.addCallEventListener(name, listener)` — will ever fire them, because `OngoingCallListener` only carries the legacy v4 event set. Events such as `onSessionJoined`, `onConnectionLost`, `onLeaveSessionButtonClicked`, and `onCallLayoutChanged` are unreachable from a v4 listener no matter how it is registered.
+The events introduced in v5 are only delivered through `addEventListener()`. The v4 registration path — `setCallListener()` on `CallSettingsBuilder` — never fires them, because `OngoingCallListener` only carries the legacy v4 event set. (v4's `CometChatCalls.addCallEventListener()` is not in v5 at all.) Events such as `onSessionJoined`, `onConnectionLost`, `onLeaveSessionButtonClicked`, and `onCallLayoutChanged` are unreachable from a v4 listener no matter how it is registered.
 
 You don't have to migrate everything at once. `addEventListener()` works alongside an existing v4 listener without breaking it — keep your current `OngoingCallListener` for the legacy events and add `addEventListener()` subscriptions for the new ones.
 
 ```javascript
 // Existing v4 listener keeps working
-CometChatCalls.addCallEventListener("MY_LISTENER", new CometChatCalls.OngoingCallListener({
-  onCallEnded: () => { },
-  onUserJoined: (user) => { },
-}));
+const callSettings = new CometChatCalls.CallSettingsBuilder()
+  .setCallListener(new CometChatCalls.OngoingCallListener({
+    onCallEnded: () => { },
+    onUserJoined: (user) => { },
+  }))
+  .build();
 
 // Add v5-only events alongside it
 CometChatCalls.addEventListener("onConnectionLost", () => { });
@@ -345,3 +347,36 @@ CometChatCalls.addEventListener("onCallLayoutChanged", (layoutType) => { });
 | `CometChatCalls.OngoingCallListener` | `CometChatCalls.addEventListener()` |
 | `CometChatCalls.startSession()` | `CometChatCalls.joinSession()` |
 | `CometChatCalls.endSession()` | `CometChatCalls.leaveSession()` |
+
+---
+
+## 5.0 to 5.1
+
+5.1 moves ringing onto the Calls SDK. No 5.0 method is deprecated; the Chat SDK's calling methods are superseded:
+
+| Superseded | Replacement |
+|------------|-------------|
+| Chat SDK calling: `CometChat.initiateCall`, `acceptCall`, `rejectCall`, `endCall`, `startCall`, `getActiveCall`, `clearActiveCall`, Chat SDK `CallSettings` | `CometChatCalls.initiateCall`, `connect`, `session.join(container)`, `endCall(sessionId, status)`, `session.leave()`, `getActiveSession()` |
+
+`CometChat.addCallListener` is not superseded on the web: an incoming call still reaches an open tab through it.
+
+New in 5.1:
+
+- `CometChatCalls.initiateCall(receiver, options)` with `InitiateCallOptions`, resolving with `{ data, error }` where `data` is an `InitiatedCall`
+- `CometChatCalls.endCall(sessionId, status)` with `EndCallStatus` (`"rejected"`, `"busy"`, `"cancelled"`, `"unanswered"`)
+- `CometChatCalls.connect(sessionId, sessionSettings)`, which prepares a session ahead of the join, and `PrepareStatus` (`"none"`, `"pending"`, `"prepared"`, `"cancelled"`, `"failed"`)
+- `CometChatCalls.getActiveSession()`, `CometChatCalls.getSessionState()` and `CometChatCalls.getParticipants()`
+- The `CallSession` session object: `sessionId`, `callToken`, `settings`, `prepareStatus`, `settled`, `error`, `join(container)`, `leave()`, `endSessionForAll()`, `isSessionActive()`, `isSessionJoined()`, `getSessionState()`, `getParticipants()`, `addEventListener()` and every session action as a method
+- The `onConnected` and `onParticipantConnected` events
+- The exported `CallParticipant` type
+
+Changed in 5.1:
+
+- `CallSession` replaces the placeholder class 5.0 exported under that name: its `getInstance()` is gone, and `addEventListener()` now returns an unsubscribe function instead of `{ remove }`. Get the session from `initiateCall`, `connect` or `getActiveSession()`.
+- `joinSession()` can return more errors: `SESSION_SETTINGS_REQUIRED` (no settings passed), `SESSION_ALREADY_PREPARED` and `SESSION_CANCELLED` (the join was cancelled by `leaveSession()` before it completed). A failed token verification is now returned as `error` too.
+- For TypeScript: the error type of `joinSession()` (and of `session.join(container)`) is now the exported `JoinSessionException`; in 5.0 it was `VerifyTokenException`. `JoinSessionException` covers the token-verification error plus the three names above, so code that narrows on `error.name` may need the new cases.
+- `leaveSession()` returns a Promise that resolves when the leave has been handled.
+
+`joinSession()` returns `SESSION_ALREADY_PREPARED` while a session is prepared: join that one with `session.join(container)`, or cancel it with `session.leave()` first. A prepared session keeps the settings it was prepared with.
+
+The step-by-step move from Chat SDK signalling is on [Migrating from Legacy Ringing](/calls/javascript/migrating-from-legacy-ringing).

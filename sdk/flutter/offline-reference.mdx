@@ -1,0 +1,205 @@
+---
+title: "Offline Configuration & API Reference"
+sidebarTitle: "Configuration & API Reference"
+description: "A complete reference for the offline configuration options, public methods, listeners, enums, model fields, and error codes with the CometChat Flutter SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// Build the config (every field has a default; set only what you change)
+final offlineConfig = OfflineConfig(
+  enabled: true,
+  maxConversations: 100,
+  maxMessagesPerConversation: 500,
+  maxPendingMessages: 50,
+  mediaCaching: MediaCachingMode.auto,
+  encryption: false,
+);
+
+// Introspection / control
+CometChat.isOfflineEnabled();            // bool
+CometChat.getMediaCachingMode();         // MediaCachingMode
+CometChat.getOfflineEncryptionStatus();  // OfflineEncryptionStatus
+CometChat.getSyncState();                // SyncState
+CometChat.getLastSyncTimestamp();        // Future<int?> (device epoch ms)
+CometChat.getCacheSize();                // Future<int> (bytes)
+CometChat.getPendingMessages();          // Future<List<BaseMessage>>
+CometChat.forceSyncNow();                // or forceSyncNow(callback: …)
+CometChat.clearOfflineCache();
+```
+
+</Accordion>
+
+This page is the full surface of CometChat's offline support on Flutter: configuration options, public methods, listeners, enums, model fields, and error codes. The minimum SDK version is **5.1.0**, and offline support is **off by default**. For task-focused guides see [Enable Offline Support](/sdk/flutter/offline-enable), [Show Cached Data](/sdk/flutter/offline-cached-data), [Send While Offline](/sdk/flutter/offline-send), [Stay in Sync](/sdk/flutter/offline-sync), [Media Caching](/sdk/flutter/offline-media-caching), and [Encrypt the Cache](/sdk/flutter/offline-encryption).
+
+## OfflineConfig options
+
+Construct with the `const OfflineConfig({...})` named-parameter constructor. Every field is pre-set to its default, so pass only the ones you want to change; the resulting `OfflineConfig` is immutable. Byte caps and the TTL treat `<= 0` as **unlimited** (that dimension's eviction is disabled); the count caps are clamped and have no "unlimited". The shorthand `OfflineConfig.fromFlag(bool)` is the same as `offline(bool)`, and `OfflineConfig.disabled` is the off-by-default configuration.
+
+| Parameter | Type | Default | Range / clamp | Effect |
+|---|---|---|---|---|
+| `enabled` | `bool` | `false` | — | Master gate for the whole offline engine. With it off the SDK behaves exactly as before. |
+| `cacheDurationDays` | `int` | `0` (unlimited) | `>= 0`; negative treated as `0` | Message retention TTL in days. `0` = no age-based prune; eviction is by the byte/count caps instead. |
+| `maxStorageSize` | `int` bytes | `262144000` (250 MB) | `<= 0` = unlimited | Byte ceiling for the message/metadata database. |
+| `maxMessagesPerConversation` | `int` | `500` | clamped `[1, 1000]`; `<= 0` or over → `1000` | Per-conversation cached-message window. |
+| `maxConversations` | `int` | `100` | clamped `[1, 1000]`; `<= 0` or over → `1000` | Cached-conversation cap. |
+| `maxPendingMessages` | `int` | `50` | clamped `[1, 100]`; `<= 0` or over → `100` | Pending-send outbox capacity. |
+| `autoSendPendingOnReconnect` | `bool` | `true` | — | Auto-flush queued `PENDING` sends on reconnect. Gates only the outbox flush; the reconnect sync sweep runs regardless. |
+| `pendingQueueOverflowPolicy` | `PendingMessageOverflowPolicy` | `rejectNewest` | — | What the outbox does when it is full. |
+| `maxMediaCacheSize` | `int` bytes | `524288000` (500 MB) | `<= 0` = unlimited | Media-only byte budget (LRU). |
+| `mediaCaching` | `MediaCachingMode` | `auto` | — | Receive-side media mode. Fixed at init. |
+| `encryption` | `bool` | `false` | — | Encrypt the cache database at rest. Requires a build-hook stanza in your app's `pubspec.yaml`; without it, `encryptionFailureBehavior` decides what happens. See [Encrypt the Cache](/sdk/flutter/offline-encryption). |
+| `encryptionFailureBehavior` | `EncryptionFailureBehavior` | `onlineOnly` | — | What happens when encryption cannot run at all. |
+| `maxSnapshotQueries` | `int` | `100` | `>= 1`; `<= 0` → `100`; no upper clamp | Entity-list snapshots kept for offline replay, across users, groups, group members, banned members, reactions, the notification feed and threads with `setParticipatedByMe(false)`; LRU. |
+| `snapshotTtlDays` | `int` | `7` | `>= 1`; `<= 0` → `7` | Days an entity-list snapshot is kept after it was first recorded. |
+
+Attach the config at init via `AppSettingsBuilder.setOfflineConfig(OfflineConfig)`, or enable with defaults via the `offline(bool)` shorthand — see [Enable Offline Support](/sdk/flutter/offline-enable).
+
+## Public methods on CometChat
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `isOfflineEnabled()` | `bool` | Whether offline support is active for the current session. |
+| `getMediaCachingMode()` | `MediaCachingMode` | The effective media caching mode (`off` whenever offline is not active). |
+| `getOfflineEncryptionStatus()` | `OfflineEncryptionStatus` | What encryption at rest is actually doing, as typed fields (`enabled`, `atRest`, `keyStorage`, `cipherAvailable`, `cipher`). |
+| `getPendingMessages()` | `Future<List<BaseMessage>>` | All queued/failed messages in the outbox. |
+| `retryMessage(String localMessageId, {required MessageSentListener listener})` | `Future<void>` | Retry one failed message by its local id; the outcome arrives on `listener`. |
+| `retryAllFailedMessages()` | `Future<void>` | Retry every failed message in the outbox; outcomes arrive on the registered `OfflineMessageListener`. |
+| `discardLocalMessage(String localMessageId, {required onSuccess, required onError})` | `Future<void>` | Remove one unsent message from the outbox. |
+| `forceSyncNow({ForceSyncListener? callback})` | `Future<void>` | Request a catch-up sync. Silently dropped if a sync is already running or one ran within the cooldown window, and a no-op when offline is not active. Pass `callback` to learn why a sync did not start. |
+| `getSyncState()` | `SyncState` | Whether a catch-up sweep is currently running. |
+| `getLastSyncTimestamp()` | `Future<int?>` | Device-clock time of the last successful sync, in epoch milliseconds; `null` if the cache has never synced. |
+| `clearOfflineCache()` | `Future<void>` | Wipe the local cache (and fail any unsent messages). |
+| `getCacheSize()` | `Future<int>` | Current on-disk cache size in bytes (database + media). |
+| `downloadMedia(BaseMessage, {MediaCallbackListener? listener})` | `Future<void>` | Download and cache a message's attachment bytes. |
+| `getCachedMediaPath(BaseMessage)` | `Future<String?>` | Local path to already-cached bytes, or `null`. |
+| `getExistingUploadFileRequest(String receiverId, String receiverType, {int? parentMessageId})` | `Future<UploadFileRequest?>` | Re-attach to an in-progress offline upload (optionally for a thread parent). |
+
+On the returned `UploadFileRequest`, `getFiles()` lists each file as an `UploadFileView`, `retryAttachment(String fileId)` retries one failed file, and `addUploadListener(UploadFileListener)` observes progress. New batches are created with `CometChat.createUploadFileRequest`; see [Upload Files](/sdk/flutter/upload-files).
+
+### Listener registration
+
+| Method | Listener |
+|---|---|
+| `addMessageListener(String, MessageListener)` / `removeMessageListener(String)` | `MessageListener` (adds `onMessagesSynced`) |
+| `addOfflineMessageListener(String, OfflineMessageListener)` / `removeOfflineMessageListener(String)` | `OfflineMessageListener` |
+| `addSyncListener(String, SyncListener)` / `removeSyncListener(String)` | `SyncListener` |
+| `addOfflineCacheResetListener(String, OfflineCacheResetListener)` / `removeOfflineCacheResetListener(String)` | `OfflineCacheResetListener` |
+| `addMediaDownloadListener(String, MediaDownloadListener)` / `removeMediaDownloadListener(String)` | `MediaDownloadListener` |
+
+## Listeners and callbacks
+
+### Two-phase fetch listeners
+
+Each delivers the cached page first (when offline is active and a user is logged in), then the server result, then errors. Without a `listener:` the cached callback never fires.
+
+| Listener | Callbacks |
+|---|---|
+| `MessageFetchListener` | `onCachedMessages(List<BaseMessage>)`, `onServerMessages(List<BaseMessage>)`, `onError(CometChatException)` |
+| `ThreadsFetchListener` | `onCachedThreads(List<MessageThread>)`, `onServerThreads(List<MessageThread>)`, `onError(CometChatException)` |
+| `MessageDetailsListener` | `onCachedMessage(BaseMessage)`, `onServerMessage(BaseMessage)`, `onError(CometChatException)` |
+| `ConversationFetchListener` | `onCachedConversations(List<Conversation>)`, `onServerConversations(List<Conversation>)`, `onError(CometChatException)` |
+| `ConversationDetailsListener` | `onCachedConversation(Conversation)`, `onServerConversation(Conversation)`, `onError(CometChatException)` |
+| `UserFetchListener` | `onCachedUsers(List<User>)`, `onServerUsers(List<User>)`, `onError(CometChatException)` |
+| `BlockedUsersFetchListener` | `onCachedBlockedUsers(List<User>)`, `onServerBlockedUsers(List<User>)`, `onError(CometChatException)` |
+| `GroupFetchListener` | `onCachedGroups(List<Group>)`, `onServerGroups(List<Group>)`, `onError(CometChatException)` |
+| `GroupMemberFetchListener` | `onCachedGroupMembers(List<GroupMember>)`, `onServerGroupMembers(List<GroupMember>)`, `onError(CometChatException)` |
+| `BannedGroupMemberFetchListener` | `onCachedBannedGroupMembers(List<GroupMember>)`, `onServerBannedGroupMembers(List<GroupMember>)`, `onError(CometChatException)` |
+| `ReactionFetchListener` | `onCachedReactions(List<Reaction>)`, `onServerReactions(List<Reaction>)`, `onError(CometChatException)` |
+| `NotificationFeedFetchListener` | `onCachedNotificationFeedItems(List<NotificationFeedItem>)`, `onServerNotificationFeedItems(List<NotificationFeedItem>)`, `onError(CometChatException)` |
+
+### Send, sync, cache, and media listeners
+
+| Listener | Callbacks |
+|---|---|
+| `MessageSentListener` | `onMessagePending(BaseMessage)`, `onMessageSent(BaseMessage)`, `onError(CometChatException)` |
+| `OfflineMessageListener` | `onOutboxMessagePending(BaseMessage)`, `onOutboxMessageSent(BaseMessage)`, `onOutboxMessageFailed(BaseMessage, MessageFailureReason)` |
+| `SyncListener` | `onConversationSyncStarted()`, `onConversationSyncCompleted(List<Conversation>)`, `onConversationSyncError(CometChatException)`, `onMessageSyncStarted()`, `onMessageSyncCompleted(List<BaseMessage>, SyncOutcome)`, `onMessageSyncError(CometChatException)` |
+| `ForceSyncListener` | `onForceSyncComplete()`, `onForceSyncError(CometChatException)` |
+| `OfflineCacheResetListener` | `onOfflineCacheReset(OfflineCacheResetReason, int? pendingMessagesLost)`; `pendingMessagesLost` is `null` when the number cannot be known (not zero) |
+| `MediaCallbackListener` | `onSuccess(String localPath)`, `onProgress(int percent)`, `onError(MediaException)` |
+| `MediaDownloadListener` | `onMediaDownloaded(String? messageLocalId, String attachmentId, String localPath)`, `onMediaDownloadFailed(String? messageLocalId, String attachmentId, MediaException)` |
+| `MessageListener` | `onMessagesSynced(List<BaseMessage>)` (offline addition to the existing listener) |
+
+## Enums
+
+| Enum | Values |
+|---|---|
+| `MediaCachingMode` | `auto` (auto-download + retain received media), `off` (skip auto-download; metadata still cached) |
+| `MediaErrorCode` | `offlineNotCached`, `noUrl`, `resignFailed`, `downloadFailed`, `unavailable` |
+| `PendingMessageOverflowPolicy` | `dropOldest` (evict the oldest pending to admit a newer send), `rejectNewest` (reject the new send) |
+| `EncryptionFailureBehavior` | `onlineOnly` (server-only; never plaintext), `plaintextFallback` (open an unencrypted cache) |
+| `CometChatMessageStatus` | `pending`, `sending`, `sent`, `delivered`, `read`, `failed` |
+| `MessageFailureReason` | `transient` (retry likely helps), `permanent` (retry won't help), `queueOverflow` (evicted to admit a newer send), `queueFull` (new send rejected, queue full), `byteOverflow` (media exceeded the byte cap), `discarded` (removed before it could send) |
+| `SyncOutcome` | `caughtUp` (gap replayed exactly), `partial` (a page was ingested but more remains) |
+| `SyncState` | `idle`, `syncing` |
+| `OfflineCacheResetReason` | `keyLost`, `wrongKey`, `corrupted`, `escalated` (unclassified failure recurred and was escalated), `encryptionChanged` (the `encryption` setting changed between launches) |
+| `OfflineAtRest` | `none`, `sqlcipher`, `fieldAesGcm`, `opfsIsolation` |
+| `OfflineKeyStorage` | `keystore`, `software`, `asyncStorage`, `none` |
+| `UploadFileState` | `queued`, `requestingUrl`, `uploading`, `uploaded`, `attached`, `rejected`, `failed`, `cancelled` |
+
+On Flutter, `OfflineAtRest` is only ever `sqlcipher` or `none`, and `OfflineKeyStorage` only `keystore`, `software`, or `none`. The `fieldAesGcm`, `opfsIsolation`, and `asyncStorage` values exist for cross-SDK parity and are never reported by the Flutter SDK.
+
+## Model fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `BaseMessage.localMessageId` | `String?` | SDK-generated local handle for an optimistic/offline send; the stable key to reconcile the row when the server ack arrives. `null` for messages that never went through the outbox. |
+| `BaseMessage.status` | `CometChatMessageStatus` | Lifecycle status of the message. |
+| `BaseMessage.failureReason` | `MessageFailureReason?` | Why the message failed; non-`null` only while `status` is `failed`, otherwise `null`. |
+| `Attachment.localPath` | `String?` | Absolute device path to cached media bytes, or `null` when not cached. Never sent to the server. |
+
+## Error codes
+
+Compare `CometChatException.code` against these values. The offline send and sync codes are exposed as constants on `OfflineSendError` and `OfflineSyncError`; the rest are raw strings.
+
+| Code | Raised when |
+|---|---|
+| `ERR_CONNECTION` | A read reached the server phase with no connection (fires after the cached page on a two-phase fetch; the details carry `ERROR_INTERNET_UNAVAILABLE`). On a send made with a `listener:`, it means the message was queued — `onMessageSent` will still fire once the connection returns. On an upload, it means the transfer hit a network error. |
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | `forceSyncNow(callback: …)` was called while a sync is already running (`OfflineSyncError.inProgress`). |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | `forceSyncNow(callback: …)` was called within the throttle cooldown (`OfflineSyncError.cooldown`). |
+| `ERROR_OFFLINE_DISABLED` | An offline-only operation was called while offline support is not active (`OfflineSyncError.disabled`). |
+| `ERROR_OFFLINE_MESSAGE_DISCARDED` | A queued message was removed before it could send (`OfflineSendError.discarded`). |
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | `retryMessage` / `discardLocalMessage` targeted a message that is still being sent (`OfflineSendError.inFlight`). |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | `retryMessage` / `discardLocalMessage` found no unsent message with the given local id (`OfflineSendError.notFound`). |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local store was briefly unavailable, so `retryMessage` / `discardLocalMessage` changed nothing. Try again (`OfflineSendError.persistFailed`). |
+| `ERROR_OUTBOX_OVERFLOW` | A send was refused because the outbox is full; the reason is `queueFull`. |
+| `ERROR_OUTBOX_BYTE_OVERFLOW` | A media send was refused because it exceeds the media byte budget; the reason is `byteOverflow`. |
+| `ERROR_OUTBOX_MEDIA_COPY_FAILED` | A media send could not be queued because its file could not be copied. |
+| `ERROR_USER_NOT_LOGGED_IN` | An offline-only call was made with no logged-in user. |
+| `ERR_REQUEST_IN_PROGRESS` | A `MessagesRequest` or `ThreadsRequest` fetch was started while an earlier fetch on the same request object is still running. |
+| `ERROR_REQUEST_IN_PROGRESS` | The same, on `ReactionsRequest` and `NotificationFeedRequest`. |
+
+Media downloads fail with a typed `MediaException` carrying a `MediaErrorCode` (`offlineNotCached`, `noUrl`, `resignFailed`, `downloadFailed`, `unavailable`) rather than a string code — see [Media Caching](/sdk/flutter/offline-media-caching).
+
+## Cached results and the `listener:` parameter
+
+The two-phase fetch, single-item, and send methods each take an optional `listener:`. Pass one to receive the cached result first (when offline support is on), then the server result. Keep using `onSuccess` / `onError` instead when you only want the server result — those parameters work unchanged, and a send made through them is never queued.
+
+| Method | `onSuccess` / `onError` form | `listener:` form |
+|---|---|---|
+| `MessagesRequest.fetchNext` / `fetchPrevious` | server result only | `listener: MessageFetchListener` |
+| `ThreadsRequest.fetchNext` | server result only | `listener: ThreadsFetchListener` |
+| `ConversationsRequest.fetchNext` | server result only | `listener: ConversationFetchListener` |
+| `UsersRequest.fetchNext` | server result only | `listener: UserFetchListener` |
+| `BlockedUsersRequest.fetchNext` | server result only | `listener: BlockedUsersFetchListener` |
+| `GroupsRequest.fetchNext` | server result only | `listener: GroupFetchListener` |
+| `GroupMembersRequest.fetchNext` | server result only | `listener: GroupMemberFetchListener` |
+| `BannedGroupMembersRequest.fetchNext` | server result only | `listener: BannedGroupMemberFetchListener` |
+| `ReactionsRequest.fetchNext` | server result only | `listener: ReactionFetchListener` |
+| `NotificationFeedRequest.fetchNext` | server result only | `listener: NotificationFeedFetchListener` |
+| `CometChat.getConversation` | server result only | `listener: ConversationDetailsListener` |
+| `CometChatHelper.getMessageDetails` | server result only | `listener: MessageDetailsListener` |
+| `CometChat.sendMessage` / `sendMediaMessage` / `sendCustomMessage` / `sendInteractiveMessage` | direct send (never queued) | `listener: MessageSentListener` (durable outbox) |
+
+### Deprecated members
+
+Three members carry a `@Deprecated` annotation; each delegates to the method above, so migrate by moving the `listener:` to the standard method.
+
+| Member | Deprecation guidance |
+|---|---|
+| `MessagesRequest.fetch({required MessageFetchListener listener})` | Pass the listener to `fetchPrevious` instead: `fetchPrevious(listener: myMessageFetchListener)`. The two-phase read now lives on the standard fetch methods. |
+| `ConversationsRequest.fetch({required ConversationFetchListener listener})` | Pass the listener to `fetchNext` instead: `fetchNext(listener: myConversationFetchListener)`. The two-phase read now lives on the standard fetch method. |
+| `CometChat.sendMessageWithListener(BaseMessage, {required MessageSentListener listener})` | Pass the listener to the typed send method instead: `sendMessage(message, listener: myMessageSentListener)` — likewise `sendMediaMessage` / `sendCustomMessage` / `sendInteractiveMessage`. The durable outbox now lives on the standard send methods. |

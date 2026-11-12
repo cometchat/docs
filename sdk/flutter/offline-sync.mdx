@@ -1,0 +1,272 @@
+---
+title: "Stay in Sync"
+sidebarTitle: "Stay in Sync"
+description: "Catch up on everything that changed while offline, observe sync progress, trigger a manual sync, and manage the local cache with the CometChat Flutter SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// Observe the reconnect catch-up sync (conversation phase, then message phase)
+class ChatSyncListener extends SyncListener {
+  @override
+  void onConversationSyncCompleted(List<Conversation> conversations) { /* blind-replace list */ }
+  @override
+  void onMessageSyncCompleted(List<BaseMessage> newPlusUpdates, SyncOutcome outcome) {}
+  @override
+  void onMessageSyncError(CometChatException error) {}
+}
+CometChat.addSyncListener("SYNC_LISTENER", ChatSyncListener());
+CometChat.removeSyncListener("SYNC_LISTENER");
+
+// Poll sync state
+final state = CometChat.getSyncState();                // SyncState.idle | SyncState.syncing
+final lastSync = await CometChat.getLastSyncTimestamp(); // device epoch ms, null if never
+
+// Trigger a manual catch-up (with an acceptance callback)
+class ForceSync extends ForceSyncListener {
+  @override
+  void onForceSyncComplete() {}
+  @override
+  void onForceSyncError(CometChatException error) { /* inProgress / cooldown / disabled / not-logged-in */ }
+}
+CometChat.forceSyncNow(callback: ForceSync());
+
+// Observe cache rebuilds
+class ResetWatcher extends OfflineCacheResetListener {
+  @override
+  void onOfflineCacheReset(OfflineCacheResetReason reason, int? pendingMessagesLost) {}
+}
+CometChat.addOfflineCacheResetListener("RESET_LISTENER", ResetWatcher());
+
+// Inspect / clear the cache
+final bytes = await CometChat.getCacheSize();
+CometChat.clearOfflineCache();                          // destructive; drops the un-sent outbox
+```
+
+</Accordion>
+
+When the device comes back online, the SDK runs a **catch-up sync**: it refreshes the conversation list, then replays everything that changed in your messages since the last sync, and merges the results into the local cache. This page covers how to observe that sync, trigger one on demand, and manage the cache it maintains.
+
+<Note>
+
+Everything on this page is a no-op unless offline support is active for the logged-in user (`CometChat.isOfflineEnabled()` is `true`). See [Enable Offline Support](/sdk/flutter/offline-enable).
+
+</Note>
+
+## How catch-up works
+
+A sync runs automatically whenever the connection settles, including the first connect after login or launch. It never runs on a brief connect-then-drop flap, and overlapping triggers coalesce: at most one follow-up sweep is queued behind the running one. It proceeds in two phases, in order:
+
+1. **Conversation phase** — the conversation list is fetched as one fresh page. A conversation-list UI can blind-replace its list with the result.
+2. **Message phase** — the SDK replays the message changelog from the last sync point. New messages and updates to already-cached messages are merged into the cache.
+
+The sync is incremental and safe to repeat: it only moves forward from the last successful point, and a failed or interrupted phase simply resumes on the next reconnect. The conversation refresh does remove conversations you are no longer part of, along with their cached messages, media, and any still-queued messages for them (which fail with reason `discarded`). A first-ever sync (cold start) seeds its starting point from the newest conversation and fetches no message history — older history is reached by scrolling online.
+
+## Listen for sync progress
+
+Register a `SyncListener` to observe the lifecycle of every automatic and manual sync. Each phase fires `started`, then exactly one of `completed` / `error`, all on the main isolate. Override only the callbacks you need.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class ChatSyncListener extends SyncListener {
+  @override
+  void onConversationSyncStarted() {}
+
+  @override
+  void onConversationSyncCompleted(List<Conversation> conversations) {
+    // The full, fresh conversation page. Blind-replace your list.
+  }
+
+  @override
+  void onConversationSyncError(CometChatException error) {}
+
+  @override
+  void onMessageSyncStarted() {}
+
+  @override
+  void onMessageSyncCompleted(List<BaseMessage> newPlusUpdates, SyncOutcome outcome) {
+    // New + changed messages reconciled this sync. Merge by message id.
+  }
+
+  @override
+  void onMessageSyncError(CometChatException error) {}
+}
+
+CometChat.addSyncListener("SYNC_LISTENER", ChatSyncListener());
+```
+
+</Tab>
+</Tabs>
+
+| Callback | When it fires |
+|---|---|
+| `onConversationSyncStarted()` | The conversation refresh began. |
+| `onConversationSyncCompleted(List<Conversation> conversations)` | The refresh succeeded; `conversations` is the full conversation page. |
+| `onConversationSyncError(CometChatException)` | The refresh failed. A transport failure leaves the cache untouched; a malformed response still merges the rows it could parse but removes nothing. Either way the refresh retries on the next reconnect. |
+| `onMessageSyncStarted()` | The message changelog sweep began. Never fires on a cold start. |
+| `onMessageSyncCompleted(List<BaseMessage> newPlusUpdates, SyncOutcome)` | The sweep finished; `newPlusUpdates` carries the new and changed messages. |
+| `onMessageSyncError(CometChatException)` | The sweep failed; it resumes on the next reconnect. |
+
+The two phases are independent — a conversation-phase error does not stop the message phase. A phase error is informational: the cache is never left in a wrong state and the sweep resumes automatically.
+
+The `SyncListener` is self-sufficient: `onMessageSyncCompleted` carries the swept messages, including `action` and `call` messages that the `MessageListener` does not deliver, so you can use it without a `MessageListener`.
+
+`onMessageSyncCompleted` reports the outcome:
+
+| `SyncOutcome` | Meaning |
+|---|---|
+| `caughtUp` | The changelog was fully replayed; the cache reflects every server change up to the sync point. |
+| `partial` | A page was ingested and the sync point advanced, but a backlog remains. Each sync, automatic or from `forceSyncNow`, drains one page of up to 1000 changes. |
+
+Remove the listener with `CometChat.removeSyncListener("SYNC_LISTENER")`.
+
+## Receiving synced messages
+
+If you already use a `MessageListener`, synced messages still arrive there, so you usually do not need a `SyncListener` to keep your chat up to date:
+
+- **Genuinely new** messages arrive one-by-one on the typed callbacks (`onTextMessageReceived`, `onMediaMessageReceived`, `onCustomMessageReceived`, …), each tagged with source `'SYNC'`.
+- **Updates** to already-cached messages arrive together on `onMessagesSynced(List<BaseMessage>)`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class ChatMessageListener with MessageListener {
+  @override
+  void onTextMessageReceived(TextMessage message) {
+    if (message.source == 'SYNC') {
+      // Delivered by a catch-up sync. Suppress notification spam if you wish.
+    }
+  }
+
+  // Do the same in onMediaMessageReceived, onCustomMessageReceived and the other typed callbacks.
+
+  @override
+  void onMessagesSynced(List<BaseMessage> messages) {
+    // Updates to already-cached messages. Merge by id.
+  }
+}
+
+CometChat.addMessageListener("MSG_LISTENER", ChatMessageListener());
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+On reconnect, queued messages are sent first, then the sync runs. `forceSyncNow` runs only the sync; it does not send queued messages (use `retryMessage` or `retryAllFailedMessages` for those). A message deleted on the server reaches you as an update on `onMessagesSynced`, not as a removal.
+</Note>
+
+## Check sync state
+
+Poll the current sync state and the time of the last completed sync at any time.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final SyncState state = CometChat.getSyncState();          // SyncState.idle or SyncState.syncing
+final int? lastSync = await CometChat.getLastSyncTimestamp(); // device epoch ms; null if never synced
+```
+
+</Tab>
+</Tabs>
+
+`getSyncState()` returns `SyncState.syncing` while a sweep is in flight, otherwise `SyncState.idle` (also when offline support is disabled). `getLastSyncTimestamp()` returns the time of the last completed message-sync as a device-clock epoch value in **milliseconds**, and `null` if the cache has never synced. It is informational — a value to show in a UI, not a cursor the sync depends on.
+
+## Trigger a manual sync
+
+Call `forceSyncNow` to run a catch-up immediately — for example behind a pull-to-refresh. It routes through the same throttle as the automatic sync, so it will not start a second overlapping sweep or hammer the backend.
+
+Pass a `ForceSyncListener` to learn whether the request was accepted; the sync's actual progress and outcome still arrive on your registered `SyncListener`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class ForceSync extends ForceSyncListener {
+  @override
+  void onForceSyncComplete() {
+    // Accepted and started.
+  }
+
+  @override
+  void onForceSyncError(CometChatException error) {
+    // Rejected — see the code.
+  }
+}
+
+CometChat.forceSyncNow(callback: ForceSync());
+```
+
+</Tab>
+</Tabs>
+
+If you do not need the acceptance result, call `CometChat.forceSyncNow()` with no `callback`; a rejected request is silently dropped.
+
+| Rejection code | Meaning |
+|---|---|
+| `ERROR_OFFLINE_SYNC_IN_PROGRESS` | A sync (automatic or manual) is already running. |
+| `ERROR_OFFLINE_SYNC_COOLDOWN` | A sync ran too recently; the exception details carry the remaining cooldown in milliseconds (retry-after). |
+| `ERROR_OFFLINE_DISABLED` | A user is logged in but offline support is not active. |
+| `ERROR_USER_NOT_LOGGED_IN` | Nobody is logged in. |
+
+## When the cache resets
+
+In rare cases the SDK cannot keep the existing cache — for example the encryption key became unrecoverable, or the database file is corrupt. When this happens it rebuilds the cache from scratch and notifies an `OfflineCacheResetListener`. Any un-sent messages that were queued are lost in the rebuild; `pendingMessagesLost` reports how many — or `null` when it cannot be known.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class ResetWatcher extends OfflineCacheResetListener {
+  @override
+  void onOfflineCacheReset(OfflineCacheResetReason reason, int? pendingMessagesLost) {
+    // The cache was rebuilt. Re-fetch anything you need; it will re-sync from the server.
+    // pendingMessagesLost == null means an unknown number were lost, not zero.
+  }
+}
+
+CometChat.addOfflineCacheResetListener("RESET_LISTENER", ResetWatcher());
+```
+
+</Tab>
+</Tabs>
+
+| `OfflineCacheResetReason` | Cause |
+|---|---|
+| `keyLost` | The device key could not be recovered (OS update, cleared app data, restored backup); a fresh key was minted. |
+| `wrongKey` | The database exists but does not decrypt under the current key. |
+| `corrupted` | The database file is corrupt on disk. |
+| `escalated` | An unclassified open failure recurred across launches and was escalated to a permanent rebuild. |
+| `encryptionChanged` | The `encryption` setting changed, so the on-disk cache was rebuilt in the configured format. This also discards any queued messages and the cached media. |
+
+Remove the listener with `CometChat.removeOfflineCacheResetListener("RESET_LISTENER")`. See [Encrypt the Cache](/sdk/flutter/offline-encryption) for the encryption-related reasons.
+
+## Manage the cache
+
+Read the current cache size, or clear the cache entirely.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final int bytes = await CometChat.getCacheSize();   // DB + media byte store, in bytes
+
+CometChat.clearOfflineCache();                       // wipe the entire per-user cache
+```
+
+</Tab>
+</Tabs>
+
+`getCacheSize()` returns the total cache size in bytes (local database plus the media byte store) as a single figure, or `0` when offline support is disabled or nobody is logged in.
+
+<Warning>
+
+`clearOfflineCache()` is destructive and irreversible. It empties the entire per-user cache — cached messages, conversations, media bytes **and the un-sent outbox**. Each still-queued `pending` / `sending` message fails with reason `discarded`; messages that had already failed are removed without a further callback. It is a no-op unless offline support is active.
+
+</Warning>
+
+<Note>
+
+You never need to clear the cache on logout — the SDK does it for you. The cache is stored **per user**: it survives app restarts and a token refresh for the same logged-in user, and is wiped automatically on logout, when the server rejects the auth token, or when a different user or app ID is used. See [Offline Support](/sdk/flutter/offline-overview).
+
+</Note>

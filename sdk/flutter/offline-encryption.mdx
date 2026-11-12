@@ -1,0 +1,171 @@
+---
+title: "Encrypt the Cache"
+sidebarTitle: "Encrypt the Cache"
+description: "Encrypt the offline message cache at rest, choose what happens when encryption cannot run, and inspect the live encryption status with the CometChat Flutter SDK."
+---
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// 1. Select the cipher engine in your APP's own pubspec.yaml (the SDK cannot do it for you):
+//    hooks:
+//      user_defines:
+//        sqlite3:
+//          source: sqlite3mc
+
+// 2. Turn encryption on in OfflineConfig (off by default)
+final offlineConfig = OfflineConfig(
+  enabled: true,
+  encryption: true,                                               // encrypt the cache database at rest
+  encryptionFailureBehavior: EncryptionFailureBehavior.onlineOnly, // default; never writes plaintext
+);
+
+// 3. Inspect what encryption is actually doing
+final status = CometChat.getOfflineEncryptionStatus();
+status.enabled;          // what was configured
+status.atRest;           // OfflineAtRest.sqlcipher or OfflineAtRest.none
+status.keyStorage;       // OfflineKeyStorage.keystore / .software / .none
+status.cipherAvailable;  // is the cipher engine present in this build?
+status.cipher;           // engine cipher string once proven, else null
+```
+
+</Accordion>
+
+Offline support keeps the logged-in user's messages in a local database on the device. Turn encryption on to store that database **encrypted at rest** using [SQLite3 Multiple Ciphers](https://utelle.github.io/SQLite3MultipleCiphers/). Encryption is **opt-in** and off by default; nothing changes until you set `encryption: true`. The minimum SDK version is **5.1.0**. It works on all Flutter targets — Android, iOS, macOS, Windows, Linux and web.
+
+<Note>
+Encryption covers the **message database only**. Downloaded media files (photos, voice notes, documents) stay as ordinary unencrypted files on disk, because their local paths are handed to native image and video loaders. See [What is and isn't encrypted](#what-gets-encrypted).
+</Note>
+
+## Add the cipher engine
+
+Unlike the other `OfflineConfig` flags, `encryption: true` is not sufficient on its own. The cipher engine is chosen by a build hook whose user-defines are read from the **root package's** `pubspec.yaml` only, so the SDK cannot select it on your behalf. Add this stanza to your **own app's** `pubspec.yaml`:
+
+```yaml
+hooks:
+  user_defines:
+    sqlite3:
+      source: sqlite3mc
+```
+
+`hooks:` is a top-level key in your app's `pubspec.yaml` — a sibling of `dependencies:`, not nested under it. You do not need to add any `sqlite3` dependency yourself; the SDK already depends on it, and this stanza only selects the cipher-enabled build.
+
+<Warning>
+Without this stanza the app links stock SQLite, which cannot encrypt. The cache then **cannot run encrypted**, and what happens is decided by [`encryptionFailureBehavior`](#choose-what-happens-when-encryption-cannot-run) — by default the session runs server-only (no local cache). The SDK never creates a database that is labelled encrypted but is not. The status API reports this case as `enabled: true` with `cipherAvailable: false`.
+</Warning>
+
+### Web
+
+Flutter web needs one extra step: copy the cipher-enabled WebAssembly build the SDK ships into your app's web root.
+
+```bash
+# macOS / Linux
+cp ~/.pub-cache/hosted/pub.dev/cometchat_sdk-<version>/lib/assets/web/sqlite3mc.wasm web/sqlite3mc.wasm
+
+# Windows
+copy %LOCALAPPDATA%\Pub\Cache\hosted\pub.dev\cometchat_sdk-<version>\lib\assets\web\sqlite3mc.wasm web\sqlite3mc.wasm
+```
+
+Replace `<version>` with your installed `cometchat_sdk` version, and copy the file again after every SDK upgrade — the asset must match the SDK version. Use the copy the SDK ships, not one from the `sqlite3` package — only the bundled build can key a database in the browser. If the asset is missing, the encrypted open fails and `encryptionFailureBehavior` decides what happens. On web the cipher is `ChaCha20-Poly1305` (native targets report `AES-256-CBC/HMAC-SHA512`) and the key is a non-extractable WebCrypto key, so `keyStorage` reads `OfflineKeyStorage.software`; both are real whole-database encryption.
+
+## Turn on encryption
+
+Set `encryption: true` on the `OfflineConfig` you pass to the SDK during initialization (see [Enable Offline Support](/sdk/flutter/offline-enable)).
+
+```dart
+final offlineConfig = OfflineConfig(
+  enabled: true,
+  encryption: true,
+  encryptionFailureBehavior: EncryptionFailureBehavior.onlineOnly,
+);
+```
+
+## Choose what happens when encryption cannot run
+
+`encryptionFailureBehavior` decides what the cache does when encryption **cannot be applied at all** on this build or device — for example the cipher engine is not linked, or secure key storage is unavailable. It governs only that case: a transient failure still retries, and a lost or wrong key self-heals by wiping and rebuilding the cache **encrypted**.
+
+| Value | Behavior | Writes plaintext? |
+|---|---|---|
+| `onlineOnly` *(default)* | Do not open a local cache at all — the session runs server-only. Makes a setup mistake visible: offline simply does not work until the cipher engine is added. | No |
+| `plaintextFallback` | Open an **unencrypted** cache so offline keeps working, and log the downgrade at error level. The status API then reports `atRest: none` and `cipherAvailable: false` so the downgrade stays visible. | Yes |
+
+<Warning>
+`plaintextFallback` means cached message content may be stored **unencrypted** on disk whenever encryption cannot run. This availability-over-guarantee trade is wrong for compliance use — keep the default `onlineOnly` if cached content must never be written in the clear.
+</Warning>
+
+## Key storage
+
+You do not supply or manage the encryption key. The SDK generates a random 32-byte key, one per app ID and logged-in user (UID), stores it in the platform's secure key store, and never returns it from any API. The key never leaves the device. If the key is lost or the stored database no longer matches it, the cache resets and rebuilds — see [Cache resets](#cache-resets-on-key-loss).
+
+| Platform | Key store |
+|---|---|
+| Android | Android Keystore |
+| iOS / macOS | Keychain |
+| Windows | DPAPI |
+| Linux | libsecret |
+| Web | WebCrypto non-extractable key |
+
+<Note>
+On all five native targets `keyStorage` reports `OfflineKeyStorage.keystore`, which names the *kind* of vault, not that hardware is involved: iOS and Android are hardware-backed, while Windows DPAPI, Linux libsecret and the macOS login keychain are OS software stores tied to the login. Web reports `OfflineKeyStorage.software`.
+</Note>
+
+## Check encryption status
+
+`CometChat.getOfflineEncryptionStatus()` returns an `OfflineEncryptionStatus` describing what encryption is **actually** doing — never what was merely requested. It is safe to call at any time and never returns the key or any part of it.
+
+```dart
+final status = CometChat.getOfflineEncryptionStatus();
+debugPrint("enabled=${status.enabled}"
+    " atRest=${status.atRest}"
+    " keyStorage=${status.keyStorage}"
+    " cipherAvailable=${status.cipherAvailable}"
+    " cipher=${status.cipher}");
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `enabled` | `bool` | What was **configured** (`OfflineConfig.encryption`), not what was achieved. |
+| `atRest` | `OfflineAtRest` | Coverage actually achieved: `OfflineAtRest.sqlcipher` once an encrypted open is proven, otherwise `OfflineAtRest.none`. |
+| `keyStorage` | `OfflineKeyStorage` | `OfflineKeyStorage.keystore` when a key was resolved from the OS vault, `.software` on web, `.none` when this session holds no key. Read `none` as "no key in use", not "no key exists". |
+| `cipherAvailable` | `bool` | Whether the cipher engine is present and linked in this build. `false` when encryption is off or the `pubspec.yaml` hook / web asset is missing. |
+| `cipher` | `String?` | The engine's cipher string once an encrypted open is proven (`AES-256-CBC/HMAC-SHA512` native, `ChaCha20-Poly1305` on web), else `null`. |
+
+<Tip>
+The single most useful support signal is `enabled == true` with `cipherAvailable == false`: encryption was switched on but could not run. On Flutter that almost always means the `hooks:` stanza was never added to the app's own `pubspec.yaml` (or, on web, the `sqlite3mc.wasm` asset is missing).
+</Tip>
+
+<Note>
+The normative, cross-SDK wire strings behind these enums (`SQLCIPHER`, `NONE`, `KEYSTORE`, `SOFTWARE`, `ONLINE_ONLY`, `PLAINTEXT_FALLBACK`) are available through each value's `wireValue`, so an auditor gets the same answer from every CometChat SDK.
+</Note>
+
+## What gets encrypted
+
+| Data | Encrypted at rest? |
+|---|---|
+| Message database (messages, conversations, metadata, the pending-send outbox) | Yes, when `atRest` is `OfflineAtRest.sqlcipher` |
+| Downloaded media files on disk (images, video, audio, documents) | **No** — stored as ordinary files outside the database |
+
+Media bytes live outside the database because `Attachment.localPath` is public API and those paths are passed straight to native media loaders. "Encrypted at rest" here always means the message database, never the media cache.
+
+## Cache resets on key loss
+
+If the key can no longer decrypt the stored database, the SDK wipes the local cache and rebuilds it **encrypted** — it never silently falls back to plaintext for a cache that could be encrypted. Any unsent messages still queued in the outbox at that point are lost.
+
+How they are reported depends on the reason. When the reset is `encryptionChanged` (you turned encryption on or off between launches), each queued message fails with reason `discarded` and `pendingMessagesLost` is the exact count. For a key or corruption reset, the queued rows lived inside the unreadable database, so they cannot be counted one by one: they are lost silently and `pendingMessagesLost` is `null`. **`null` is not zero** — it means an unknown number were lost.
+
+Register an `OfflineCacheResetListener` to be told when this happens:
+
+```dart
+class _MyCacheResetListener extends OfflineCacheResetListener {
+  @override
+  void onOfflineCacheReset(OfflineCacheResetReason reason, int? pendingMessagesLost) {
+    // pendingMessagesLost is null when the number lost is unknown, not zero.
+    debugPrint("Cache reset: $reason, pending lost=$pendingMessagesLost");
+  }
+}
+
+CometChat.addOfflineCacheResetListener("LISTENER_ID", _MyCacheResetListener());
+```
+
+The cache-reset reasons are `keyLost`, `wrongKey`, `corrupted`, `escalated`, and `encryptionChanged` (turning encryption on or off between launches, which also discards any queued messages and the cached media). See [Stay in Sync](/sdk/flutter/offline-sync) for the full cache-reset flow, and the [API Reference](/sdk/flutter/offline-reference) for every field and enum.
