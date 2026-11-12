@@ -1,0 +1,271 @@
+---
+title: "Show Cached Data"
+sidebarTitle: "Show Cached Data"
+description: "Render cached messages, conversations, and lists instantly and reconcile them against the server with the CometChat Flutter SDK."
+---
+
+import FlutterOfflineListener from '/snippets/sdk/flutter-offline-listener.mdx';
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// Every read fires up to two phases: cached first (instant), then server.
+// Pass a `listener:` to turn on the cache phase.
+final request =
+    (MessagesRequestBuilder()..uid = "UID"..limit = 30).build();
+
+request.fetchPrevious(listener: MyMessageFetchListener());
+
+class MyMessageFetchListener extends MessageFetchListener {
+  @override
+  void onCachedMessages(List<BaseMessage> messages) {
+    // Phase 1: local cache. Fires first, even when empty. Render immediately.
+  }
+  @override
+  void onServerMessages(List<BaseMessage> messages) {
+    // Phase 2: server. Replaces the same slice — reconcile, don't append. Never fires offline.
+  }
+  @override
+  void onError(CometChatException e) {
+    // Offline ends here, after the cached page, with code ERR_CONNECTION.
+  }
+}
+
+// Single items
+CometChat.getConversation("UID", CometChatConversationType.user,
+    listener: ChatConversationDetailsListener(), onSuccess: null, onError: null);
+CometChatHelper.getMessageDetails(messageId, listener: ChatMessageDetailsListener());
+```
+
+</Accordion>
+
+With offline support enabled, every list and lookup the SDK already offers answers from the on-device cache first and then from the server. Your UI paints instantly from the cache, then reconciles when the server replies. This page describes that contract, the reads it applies to, and how to merge the two phases.
+
+## The two-phase contract
+
+Each read fires **up to two** callbacks, always in this order:
+
+<Steps>
+<Step title="Cached phase">
+The SDK delivers a page from the local cache **first**, synchronously-fast. It fires **even when the page is empty** — an empty cached page is indistinguishable from a cache miss, by design. Render it right away.
+</Step>
+<Step title="Server phase">
+After a successful server response, the SDK delivers the server's copy for the **same slice** and writes it through to the cache before the callback. Reconcile your displayed list against it. (Blocked users are the exception: their server page is delivered but not written to the cache, which keeps that list current through its own background refresh.)
+</Step>
+</Steps>
+
+Two rules follow from this:
+
+- **Offline, the read ends with an error.** After the cached page, a read that gets no answer because the device is offline settles with `onError`, code `ERR_CONNECTION`. A real server error reaches `onError` unchanged. The call always settles, as long as you wait for each fetch to return before starting the next one on the same request object.
+- **The server phase never fires offline.** It fires only on a genuine server response. Never treat a cached page as "end of history"; an empty cached page only means the end of the *cached* window.
+
+<Note>
+
+The `listener:` turns on the cache phase. The `onSuccess` / `onError` form of the same method keeps working and receives only the server result — the cached phase never fires through it. Nothing changes until you call `OfflineConfig(enabled: true)` (see [Enable Offline Support](/sdk/flutter/offline-enable)). Minimum version **5.1.0**.
+
+</Note>
+
+## Read messages
+
+`MessagesRequest` supports both directions. `fetchPrevious` pages toward older messages; `fetchNext` pages toward newer ones. Pass a `MessageFetchListener` to either.
+
+<FlutterOfflineListener method="`fetchPrevious()` / `fetchNext()`" listener="`MessageFetchListener`" />
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request =
+    (MessagesRequestBuilder()..uid = "UID"..limit = 30).build();
+
+request.fetchPrevious(listener: ChatMessageFetchListener());
+
+class ChatMessageFetchListener extends MessageFetchListener {
+  @override
+  void onCachedMessages(List<BaseMessage> messages) {
+    // Render the cached page immediately.
+  }
+
+  @override
+  void onServerMessages(List<BaseMessage> messages) {
+    // Reconcile this slice against the cached page, keyed by message id.
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint("Fetch failed: ${e.code}");
+  }
+}
+```
+</Tab>
+</Tabs>
+
+## Read conversations
+
+`ConversationsRequest` pages in one direction with `fetchNext`, taking a `ConversationFetchListener`.
+
+<FlutterOfflineListener method="`fetchNext()`" listener="`ConversationFetchListener`" />
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request = (ConversationsRequestBuilder()..limit = 30).build();
+
+request.fetchNext(listener: ChatConversationFetchListener());
+
+class ChatConversationFetchListener extends ConversationFetchListener {
+  @override
+  void onCachedConversations(List<Conversation> conversations) {
+    // Render the cached list immediately.
+  }
+
+  @override
+  void onServerConversations(List<Conversation> conversations) {
+    // Reconcile, keyed by conversation id.
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint("Fetch failed: ${e.code}");
+  }
+}
+```
+</Tab>
+</Tabs>
+
+## Read the other lists
+
+Every remaining list read gains the same two-phase behaviour. Each has its own listener with cached/server callbacks of the matching type plus `onError`.
+
+| Request | Fetch method(s) | Listener | Cached / server callback |
+|---|---|---|---|
+| `MessagesRequest` | `fetchPrevious`, `fetchNext` | `MessageFetchListener` | `onCachedMessages` / `onServerMessages` |
+| `ConversationsRequest` | `fetchNext` | `ConversationFetchListener` | `onCachedConversations` / `onServerConversations` |
+| `ThreadsRequest` | `fetchNext` | `ThreadsFetchListener` | `onCachedThreads` / `onServerThreads` |
+| `UsersRequest` | `fetchNext` | `UserFetchListener` | `onCachedUsers` / `onServerUsers` |
+| `BlockedUsersRequest` | `fetchNext` | `BlockedUsersFetchListener` | `onCachedBlockedUsers` / `onServerBlockedUsers` |
+| `GroupsRequest` | `fetchNext` | `GroupFetchListener` | `onCachedGroups` / `onServerGroups` |
+| `GroupMembersRequest` | `fetchNext` | `GroupMemberFetchListener` | `onCachedGroupMembers` / `onServerGroupMembers` |
+| `BannedGroupMembersRequest` | `fetchNext` | `BannedGroupMemberFetchListener` | `onCachedBannedGroupMembers` / `onServerBannedGroupMembers` |
+| `ReactionsRequest` | `fetchNext` | `ReactionFetchListener` | `onCachedReactions` / `onServerReactions` |
+| `NotificationFeedRequest` | `fetchNext` | `NotificationFeedFetchListener` | `onCachedNotificationFeedItems` / `onServerNotificationFeedItems` |
+
+On these requests — `UsersRequest`, `BlockedUsersRequest`, `GroupsRequest`, `GroupMembersRequest`, `BannedGroupMembersRequest`, `ReactionsRequest`, and `NotificationFeedRequest` — `onSuccess` and `onError` are declared `required`. When you drive the read with a `listener:`, pass `onSuccess: null, onError: null` and handle every result on the listener.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request = (UsersRequestBuilder()..limit = 30).build();
+
+request.fetchNext(
+  listener: ChatUserFetchListener(),
+  onSuccess: null,
+  onError: null,
+);
+
+class ChatUserFetchListener extends UserFetchListener {
+  @override
+  void onCachedUsers(List<User> users) {
+    // render
+  }
+
+  @override
+  void onServerUsers(List<User> users) {
+    // reconcile, keyed by uid
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint(e.code);
+  }
+}
+```
+</Tab>
+</Tabs>
+
+<Note>
+
+`ReactionsRequest` caches the `fetchNext` direction; `fetchPrevious` returns the server page directly. Users, groups, members, banned members, reactions, and the notification feed are served from a per-request snapshot rather than a shared store; per-builder details live on each request's own page and in the [Configuration & API Reference](/sdk/flutter/offline-reference).
+
+</Note>
+
+## Read a single item
+
+`getConversation` and `getMessageDetails` each deliver a two-phase result through a listener. Unlike the list reads, the cached callback fires **only when the item is cached** — never with an empty or null object. A cache miss goes straight to the server phase online, or straight to `onError` offline.
+
+- `CometChat.getConversation(...)` takes a `ConversationDetailsListener`. Its `onSuccess` / `onError` are `required`, so pass `onSuccess: null, onError: null` when you use the listener.
+- The two-phase message lookup lives on `CometChatHelper.getMessageDetails(messageId, listener: ...)`.
+
+<FlutterOfflineListener method="`getConversation()`" listener="`ConversationDetailsListener`" />
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.getConversation(
+  "UID",
+  CometChatConversationType.user,
+  listener: ChatConversationDetailsListener(),
+  onSuccess: null,
+  onError: null,
+);
+
+class ChatConversationDetailsListener extends ConversationDetailsListener {
+  @override
+  void onCachedConversation(Conversation conversation) {
+    // Fires only on a cache hit.
+  }
+
+  @override
+  void onServerConversation(Conversation conversation) {
+    // Server copy, written through before delivery.
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint("Lookup failed: ${e.code}");
+  }
+}
+
+CometChatHelper.getMessageDetails(messageId, listener: ChatMessageDetailsListener());
+
+class ChatMessageDetailsListener extends MessageDetailsListener {
+  @override
+  void onCachedMessage(BaseMessage message) {
+    // cache hit only
+  }
+
+  @override
+  void onServerMessage(BaseMessage message) {
+    // server copy
+  }
+
+  @override
+  void onError(CometChatException e) {
+    debugPrint(e.code);
+  }
+}
+```
+</Tab>
+</Tabs>
+
+## Merge the two phases
+
+The server phase **replaces the same slice** — it is a reconcile, not a second batch. Render the cached page straight away, then on the server phase diff it into your displayed list keyed by the item's stable id (message id, conversation id, uid, guid). Do not append the server page to the cached one.
+
+<Tip>
+
+Key your list by id so the two phases merge cleanly: update items that changed, add new ones, and drop cached items the server slice omits. To page further back, issue the next `fetchPrevious()` / `fetchNext()` rather than treating the server phase as more pages.
+
+</Tip>
+
+## When the cached page is empty
+
+The cache answers a read **only if every filter on it is locally computable**. A single server-only predicate makes the entire cached phase return an empty list — with no error and no warning — while the server phase still answers in full. The guiding rule is *better empty than wrong*.
+
+The most common server-only predicate is `searchKeyword`, which blanks the cached phase on any request that carries a search keyword — except `BlockedUsersRequest`, which answers it from the cache as a substring match on the user's name (threads, reactions and the notification feed never carry one). Other examples include `hasLinks`, `updatesOnly`, and `interactionGoalCompletedOnly` on `MessagesRequest`, setting a `uid` and a `guid` together outside a thread (one sender's messages in a group), and the presence filters (`UsersRequestBuilder.userStatus`, `GroupMembersRequestBuilder.status`) on the entity lists.
+
+<Warning>
+
+An offline-critical screen must use only cache-supported filters — one innocuous builder flag can silently disable the cached phase for a whole screen. The full per-builder matrix of what the cache answers lives in the [Configuration & API Reference](/sdk/flutter/offline-reference).
+
+</Warning>

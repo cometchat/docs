@@ -4,6 +4,8 @@ sidebarTitle: "Upload Files"
 description: "Upload files directly to storage with per-file progress, remove, and retry through an UploadFileRequest — then send them as one or more media messages with multiple attachments."
 ---
 
+import FlutterOfflineSend from '/snippets/sdk/flutter-offline-send.mdx';
+
 <Accordion title="AI Integration Quick Reference">
 
 | Field | Value |
@@ -30,6 +32,10 @@ A request object is scoped to **one destination** (`receiverId` / `receiverType`
 
 The classic path (passing a `files` list straight to the `MediaMessage` constructor) uploads and sends in one blocking call — you get no progress, no per-file remove, and no per-file retry. An `UploadFileRequest` moves the upload out of the send call so you can drive a rich composer UI, then send instantly because the files are already hosted.
 </Info>
+
+<Note>
+With offline support enabled (SDK 5.1.0+), an upload batch and its files are persisted on the device: an in-progress batch survives an app restart, but it never resumes on its own (fetch it with `CometChat.getExistingUploadFileRequest` and retry each failed file — see [Restore a batch](#restore-a-batch-after-a-restart)), and a media message you send without a connection is durably queued and sent on reconnect. See [Send While Offline](/sdk/flutter/offline-send).
+</Note>
 
 ## The upload-then-send flow
 
@@ -211,6 +217,8 @@ Attach the `Attachment` objects the batch produced — the ones you kept from `o
 Keep one message to a single kind. `type` is what a receiving UI picks its bubble from, so images in a message typed `file` render as file cards rather than a grid. If the user picked a mix, group the attachments by kind and send one message per kind — this is exactly what the UI Kit's composer does, tagging each message with a shared `batchId` so they display as one group.
 </Note>
 
+<FlutterOfflineSend method="`sendMediaMessage()`" />
+
 <Tabs>
 <Tab title="Dart">
 ```dart
@@ -222,14 +230,36 @@ MediaMessage mediaMessage = MediaMessage(
   caption: "From the trip",         // optional
 );
 
-await CometChat.sendMediaMessage(mediaMessage,
-  onSuccess: (MediaMessage message) {
-    debugPrint("Sent with ${message.attachments?.length} attachments");
-  },
-  onError: (CometChatException e) {
+// Pass a listener for the offline-aware flow. onMessageSent is the drop-in for
+// onSuccess; with offline support on, onMessagePending fires first and the
+// message is sent on reconnect.
+await CometChat.sendMediaMessage(mediaMessage, listener: _SendListener(request));
+```
+
+```dart
+class _SendListener extends MessageSentListener {
+  _SendListener(this.request);
+  final UploadFileRequest request;
+
+  @override
+  void onMessagePending(BaseMessage message) {
+    // Fires on every send while offline support is enabled;
+    // message.status == CometChatMessageStatus.pending.
+  }
+
+  @override
+  void onMessageSent(BaseMessage message) {
+    debugPrint("Media message sent");
+    request.clearAll(); // release the batch
+  }
+
+  @override
+  void onError(CometChatException e) {
+    // With offline support on, this also fires with code ERR_CONNECTION when a
+    // message is queued offline; real failures arrive in onOutboxMessageFailed.
     debugPrint("Sending failed: ${e.message}");
   }
-);
+}
 ```
 
 </Tab>
@@ -249,8 +279,32 @@ await CometChat.sendMediaMessage(mediaMessage,
 The non-retryable codes arrive via `onFileError`, the retryable ones via `onFileFailure`.
 
 <Warning>
-Upload state is in-memory and does not survive the app being killed — a batch cannot be resumed after a restart. A file with no progress for 30 seconds is treated as stalled and failed (retryable).
+Without offline support, upload state is in-memory and does not survive the app being killed — a batch cannot be resumed after a restart. With offline support enabled the batch persists; see [Restore a batch](#restore-a-batch-after-a-restart). A file with no progress for 30 seconds is treated as stalled and failed (retryable).
 </Warning>
+
+## Restore a batch after a restart
+
+With offline support enabled, an in-progress upload batch and its files are persisted on the device, so a composer can rebuild its attachment tray after a connection drop or an app restart. Fetch the persisted batch with `CometChat.getExistingUploadFileRequest(receiverId, receiverType, {parentMessageId})`. It returns a `Future<UploadFileRequest?>` — `null` when there is no batch for that destination (or when offline support is off). Pass `parentMessageId` to restore a thread composer's batch.
+
+```dart
+final request = await CometChat.getExistingUploadFileRequest(
+  "cometchat-uid-1",
+  CometChatConversationType.user,
+);
+
+if (request != null) {
+  request.addUploadListener(myUploadListener); // re-attach your batch-wide listener
+  for (final file in request.getFiles()) {
+    if (file.state == UploadFileState.failed) {
+      request.retryAttachment(file.fileId);    // re-upload each failed file
+    }
+  }
+}
+```
+
+A batch is **never** auto-resumed — the user drives retry. `getFiles()` returns the batch's files in add order as a `List<UploadFileView>`; each view carries the app-supplied `fileId`, `name`, `size`, `mimeType`, the current `state`, the uploaded `attachment` (when done), an `errorMessage`, and `localCopyPath` (the SDK's durable copy of the bytes, usable as a thumbnail source on restore). A restored file comes back as either `UploadFileState.uploaded` (done) or `UploadFileState.failed` (retryable) — a file that was mid-flight at app-kill comes back `failed`.
+
+`UploadFileState` has eight values across the file's lifecycle: `queued`, `requestingUrl`, `uploading`, `uploaded`, `attached`, `rejected` (not retryable), `failed` (retryable), and `cancelled`.
 
 ## Next Steps
 

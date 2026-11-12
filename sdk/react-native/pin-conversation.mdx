@@ -7,6 +7,18 @@ description: "Pin and unpin conversations and fetch the pinned conversation list
 {/* TL;DR for Agents and Quick Reference */}
 <Accordion title="AI Integration Quick Reference">
 
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-sdk-react-native` |
+| Import | `import { CometChat } from "@cometchat/chat-sdk-react-native";` |
+| Key Methods | `pinConversation()`, `unpinConversation()`, `isPinConversationEnabled()`, `getPinConversationLimit()`, `getSystemPinConversationLimit()` |
+| Key Classes | `Conversation`, `ConversationsRequest`, `ConversationsRequestBuilder`, `CometChatException` |
+| Prerequisites | SDK initialized via [`CometChat.init()`](/sdk/react-native/setup-sdk) and a logged-in user via [`CometChat.login()`](/sdk/react-native/authentication-overview) |
+| Primary output | `pinConversation()` and `unpinConversation()` → `Promise<CometChat.Conversation>`; `isPinConversationEnabled()` → `Promise<boolean>`; `getPinConversationLimit()` and `getSystemPinConversationLimit()` → `Promise<number \| null>` |
+| Constraints | Pin by the peer's UID or GUID plus the receiver type, not by conversation ID. The feature needs the `features.ux.conversations.pinned.enabled` flag, which no plan seeds — it must be mapped per app. A conversation that has never been messaged, or that is hidden, rejects with `ERR_CONVERSATION_NOT_ACCESSIBLE`. `setPinnedBy()` takes exact, case-sensitive strings and silently drops anything else. This SDK has no `ConversationListener`, so keep the list in sync yourself. |
+| Related | [Retrieve Conversations](/sdk/react-native/retrieve-conversations) · [Pin a Message](/sdk/react-native/pin-message) · [Save a Message](/sdk/react-native/save-message) · [Delete a Conversation](/sdk/react-native/delete-conversation) |
+| Full reference | [`Conversation`](/sdk/reference/entities#conversation) · [`CometChatException`](/sdk/reference/auxiliary#cometchatexception) |
+
 ```javascript
 // Pin / unpin — addressed by peer + type, not by conversationId
 await CometChat.pinConversation("UID", CometChat.RECEIVER_TYPE.USER);
@@ -281,13 +293,7 @@ if (isPinned) {
 
 ## Keeping the List in Sync
 
-<Warning>
-  The React Native SDK does **not** expose a `ConversationListener`, and there
-  are no `onConversationPinned` / `onConversationUnpinned` callbacks. Conversation
-  pins made on another device do not arrive over the socket.
-</Warning>
-
-Update your list from the promise on the device that performed the action, and re-fetch the conversation list when the screen regains focus to pick up pins made elsewhere.
+On the device that performed the action, update your list from the Promise. Your own pin or unpin does **not** fire `onConversationPinned` / `onConversationUnpinned` on that device. Those callbacks fire on the user's **other** devices when a pin arrives there, so register a `ConversationListener` to reorder the list without a refetch.
 
 <Tabs>
 <Tab title="TypeScript">
@@ -311,6 +317,49 @@ CometChat.pinConversation("cometchat-uid-1", CometChat.RECEIVER_TYPE.USER).then(
     setConversations((prev) => reorderWithPinnedFirst(prev, conversation));
   }
 );
+```
+
+</Tab>
+
+</Tabs>
+
+Register the listener on every screen that shows the list, and remove it when the screen unmounts:
+
+<Tabs>
+<Tab title="TypeScript">
+```typescript
+CometChat.addConversationListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.ConversationListener({
+    onConversationPinned: (conversation: CometChat.Conversation) => {
+      console.log("Conversation pinned:", conversation);
+    },
+    onConversationUnpinned: (conversation: CometChat.Conversation) => {
+      console.log("Conversation unpinned:", conversation);
+    },
+  })
+);
+
+CometChat.removeConversationListener("UNIQUE_LISTENER_ID");
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+```javascript
+CometChat.addConversationListener(
+  "UNIQUE_LISTENER_ID",
+  new CometChat.ConversationListener({
+    onConversationPinned: (conversation) => {
+      console.log("Conversation pinned:", conversation);
+    },
+    onConversationUnpinned: (conversation) => {
+      console.log("Conversation unpinned:", conversation);
+    },
+  })
+);
+
+CometChat.removeConversationListener("UNIQUE_LISTENER_ID");
 ```
 
 </Tab>
@@ -375,6 +424,14 @@ CometChat.isPinConversationEnabled().then((enabled) => {
 </Tabs>
 
 Unlike the two message-level flags, this one is **not seeded anywhere and is off by default** — treat a `false` as the normal case for a new app, not as an error.
+
+## Offline Behaviour
+
+With [offline support](/sdk/react-native/offline-cached-data) enabled, passing a `ConversationFetchListener` to `fetchNext()` on a `setPinnedBy()` request calls `onCachedConversations` first (even when the page is empty) and then `onServerConversations` with the live list. Offline, the read ends with `onError` (`FAILED_TO_FETCH`) after the cached page, and the Promise rejects. `onCachedConversations` holds the pinned conversations the cache already knows about, in the same order.
+
+| Builder method | Offline |
+|---|---|
+| `setPinnedBy` | Cached |
 
 ---
 

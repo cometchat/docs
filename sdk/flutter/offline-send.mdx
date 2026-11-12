@@ -1,0 +1,336 @@
+---
+title: "Send While Offline"
+sidebarTitle: "Send While Offline"
+description: "Queue messages sent without a connection, track their status, and retry failed sends with the CometChat Flutter SDK."
+---
+
+import FlutterOfflineSend from '/snippets/sdk/flutter-offline-send.mdx';
+
+{/* TL;DR for Agents and Quick Reference */}
+<Accordion title="AI Integration Quick Reference">
+
+```dart
+// Send with the offline-aware listener (queued when offline, auto-sent on reconnect)
+class ChatSendListener extends MessageSentListener {
+  @override
+  void onMessagePending(BaseMessage message) { /* status == pending, fires fast */ }
+  @override
+  void onMessageSent(BaseMessage message) { /* server ack: real id + sentAt */ }
+  @override
+  void onError(CometChatException e) { /* ERR_CONNECTION = queued, sends on reconnect */ }
+}
+
+CometChat.sendMessage(textMessage, listener: ChatSendListener());
+
+// Read offline state off a message
+final localId = message.localMessageId;    // stable client handle while offline is running
+final status = message.status;             // CometChatMessageStatus: pending, sending, sent, delivered, read, failed
+final reason = message.failureReason;      // MessageFailureReason, set only while failed
+
+// Inspect and recover the outbox
+final pending = await CometChat.getPendingMessages();                 // pending + sending + failed
+CometChat.retryMessage(localId, listener: ChatSendListener());        // one message
+CometChat.retryAllFailedMessages();                                   // transient failures only
+CometChat.discardLocalMessage(localId, onSuccess: (id) {}, onError: (e) {}); // delete an unsent message
+
+// Observe every outbox transition, app-wide
+class OutboxWatcher extends OfflineMessageListener {
+  @override
+  void onOutboxMessagePending(BaseMessage message) {}
+  @override
+  void onOutboxMessageSent(BaseMessage message) {}
+  @override
+  void onOutboxMessageFailed(BaseMessage message, MessageFailureReason reason) {}
+}
+
+CometChat.addOfflineMessageListener("LISTENER_ID", OutboxWatcher());
+```
+
+</Accordion>
+
+With offline support enabled, a message you send while the device has no connection is **durably queued on the device** instead of failing. It keeps its place across an app restart and is sent automatically once the connection is back and stable (with `autoSendPendingOnReconnect` on, the default). This page shows the offline-aware send listener, how to read a message's status, how to inspect and recover the send queue, and the queue limits.
+
+<Note>
+
+Offline support is **off by default** and requires `cometchat_sdk` **5.1.0** or newer. Queuing only happens once you [enable it](/sdk/flutter/offline-enable); with offline off, a send over no connection fails exactly as before.
+
+</Note>
+
+<FlutterOfflineSend method="`sendMessage()`, `sendMediaMessage()`, `sendCustomMessage()` and `sendInteractiveMessage()`" />
+
+## Send a Message
+
+Pass a `MessageSentListener` to `sendMessage` through the `listener:` parameter. Its lifecycle is normally `onMessagePending` first (the message is durably queued), then its outcome: `onMessageSent` (the server accepted it) or `onError`. Offline, `onError` is a queued-not-failed notice and `onMessageSent` still fires later on reconnect, so both can fire for one send (see below). If the message cannot be queued at all, for example because its media could not be copied (code `ERROR_OUTBOX_MEDIA_COPY_FAILED`, reason `permanent`), only `onError` fires.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class ChatSendListener extends MessageSentListener {
+  @override
+  void onMessagePending(BaseMessage message) {
+    // Queued and persisted; message.status == CometChatMessageStatus.pending
+    debugPrint("Pending, local id: ${message.localMessageId}");
+  }
+
+  @override
+  void onMessageSent(BaseMessage message) {
+    // Server ack: message now carries its real id and sentAt
+    debugPrint("Sent: ${message.id}");
+  }
+
+  @override
+  void onError(CometChatException e) {
+    // ERR_CONNECTION means queued, not failed; real failures arrive in onOutboxMessageFailed
+    debugPrint("Send error: ${e.code}");
+  }
+}
+
+final textMessage = TextMessage(
+  text: "Hello!",
+  receiverUid: "UID",
+  receiverType: CometChatConversationType.user,
+  type: CometChatMessageType.text,
+);
+
+try {
+  await CometChat.sendMessage(textMessage, listener: ChatSendListener());
+} on CometChatException catch (e) {
+  // A send with a listener returns a Future that throws when the attempt gets
+  // no answer. Code ERR_CONNECTION here means the message is still queued and
+  // onMessageSent will fire on reconnect — it is not a failure.
+  debugPrint("Send threw: ${e.code}");
+}
+```
+
+</Tab>
+
+</Tabs>
+
+A send with a `listener:` returns a `Future`: it resolves with the server-acked message once the send is answered, and **rejects** (throws) when the send is attempted but gets no answer — the row stays durably `pending` and `onMessageSent` fires on a later reconnect. A send without a `listener:` is a direct send and is never queued.
+
+The same `MessageSentListener` is accepted by all four persistent send methods:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.sendMessage(textMessage, listener: listener);               // TextMessage
+CometChat.sendMediaMessage(mediaMessage, listener: listener);         // MediaMessage
+CometChat.sendCustomMessage(customMessage, listener: listener);       // CustomMessage
+CometChat.sendInteractiveMessage(interactiveMessage, listener: listener); // InteractiveMessage
+```
+
+</Tab>
+
+</Tabs>
+
+## Queued, Not Failed
+
+When the device is offline, the send still fires `onMessagePending`, then fires `onError` with the code `ERR_CONNECTION` (details `ERROR_INTERNET_UNAVAILABLE`) for that attempt. This is a **notification, not a failure**: the message stays durably `pending`, and `onMessageSent` fires **later**, on reconnect, when it actually goes. This is the default behaviour, with `autoSendPendingOnReconnect` on. With it off, an offline send becomes `failed` (`transient`) right away, and you recover it with `retryMessage`.
+
+So for a single send, `onError` and `onMessageSent` can **both** fire (offline, then reconnect), and `onError` does not always mean the message failed. Tell the two apart like this:
+
+| Signal | Meaning | What to do |
+|---|---|---|
+| `onError` with code `ERR_CONNECTION` | Queued; not sent yet. Auto-sends on reconnect (with `autoSendPendingOnReconnect` on, the default). | Show as sending/queued; nothing to do. |
+| `OfflineMessageListener.onOutboxMessageFailed(message, reason)` | A real failure; will not retry on its own. `message.status` is `failed` and `message.failureReason` says why. | Offer the user a manual retry (see below). |
+
+Every failure reaches `onOutboxMessageFailed`, whatever its cause. Match it to the message in your UI by `localMessageId`: the SDK sets it on the message you passed to `sendMessage` before `onMessagePending` fires. The `status` of that passed-in object is not updated; read status from the messages the SDK delivers (`onMessagePending`, `onOutboxMessageFailed`, `getPendingMessages()`).
+
+<Tabs>
+<Tab title="Dart">
+```dart
+// In your MessageSentListener
+@override
+void onError(CometChatException e) {
+  if (e.code == "ERR_CONNECTION") {
+    // Queued offline — it will send automatically on reconnect
+  }
+}
+
+// App-wide: every real failure lands here
+class OutboxFailures extends OfflineMessageListener {
+  @override
+  void onOutboxMessagePending(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageSent(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageFailed(BaseMessage message, MessageFailureReason reason) {
+    // message.status == CometChatMessageStatus.failed; surface a retry action
+    // for the UI row whose localMessageId matches message.localMessageId
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Message status and failure reason
+
+Every message exposes its offline state. `localMessageId` is the SDK-generated handle that is stamped at compose (while offline is running) and stays stable across the whole lifecycle — use it to retry or discard the message.
+
+| Accessor | Type | Notes |
+|---|---|---|
+| `localMessageId` | `String?` | Client handle; present while offline is running. |
+| `status` | `CometChatMessageStatus` | `pending`, `sending`, `sent`, `delivered`, `read`, `failed`. |
+| `failureReason` | `MessageFailureReason?` | Set only while `failed`; otherwise `null`. |
+
+`MessageFailureReason` values:
+
+| Reason | When |
+|---|---|
+| `transient` | A temporary server error (5xx, or 429 rate-limited), no answer after 5 automatic reconnect attempts, or, with `autoSendPendingOnReconnect` off, no answer at all. Retryable. |
+| `permanent` | The server rejected the message, the error was not recognized, or the message's media could not be copied for the offline send. A manual retry will not help. |
+| `queueFull` | A new send was refused because the queue is full (count cap). |
+| `queueOverflow` | An older queued message was evicted to admit a newer one (`dropOldest` only). |
+| `byteOverflow` | A media send was refused because caching its bytes would exceed `maxMediaCacheSize`, the budget for the whole media cache (received and queued media). |
+| `discarded` | A queued message was removed before it could send: by `clearOfflineCache`, by leaving or deleting its conversation, or by logout. Reported with code `ERROR_OFFLINE_MESSAGE_DISCARDED`. (`discardLocalMessage` reports `onSuccess` instead.) |
+
+## Inspect the Queue
+
+`getPendingMessages` returns the **entire un-acked outbox** — every `pending`, `sending`, and `failed` message, ordered by local compose time. Sent messages are not included. Read each message's `status` to group them.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final messages = await CometChat.getPendingMessages();
+for (final m in messages) {
+  debugPrint("${m.localMessageId} -> ${m.status}");
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Observe the queue app-wide
+
+The per-call `MessageSentListener` lives only as long as the call. To watch every queue transition — a live send, a reconnect auto-flush, a manual retry, or a resumed send after an app restart — register a global `OfflineMessageListener`. Its failed callback carries the `MessageFailureReason`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class OutboxWatcher extends OfflineMessageListener {
+  @override
+  void onOutboxMessagePending(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageSent(BaseMessage message) {}
+
+  @override
+  void onOutboxMessageFailed(BaseMessage message, MessageFailureReason reason) {
+    debugPrint("Failed: ${message.localMessageId} ($reason)");
+  }
+}
+
+CometChat.addOfflineMessageListener("LISTENER_ID", OutboxWatcher());
+
+// Remove it when no longer needed
+CometChat.removeOfflineMessageListener("LISTENER_ID");
+```
+
+</Tab>
+
+</Tabs>
+
+## Retry and Discard
+
+There is no automatic retry of a `failed` message — recovery is explicit and user-invoked. A `failed` message stays in the outbox until you retry or discard it. Use the message's `localMessageId`.
+
+- **`retryMessage(localMessageId, listener: ...)`** re-attempts one message. A `failed` message is reset to `pending` and sent; a `pending` message is attempted now rather than waiting for a reconnect. The listener receives that attempt's outcome.
+- **`retryAllFailedMessages()`** retries **transient** failures only; permanent ones are skipped. It takes no listener — outcomes arrive on the global `OfflineMessageListener`.
+- **`discardLocalMessage(localMessageId, onSuccess: ..., onError: ...)`** deletes an unsent (`pending` or `failed`) message from the device, including its copied media. `onSuccess` receives the `localMessageId`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.retryMessage(localMessageId, listener: ChatSendListener());
+
+CometChat.retryAllFailedMessages();
+
+CometChat.discardLocalMessage(
+  localMessageId,
+  onSuccess: (discardedLocalId) {},
+  onError: (e) {
+    debugPrint("Discard rejected: ${e.code}");
+  },
+);
+```
+
+</Tab>
+
+</Tabs>
+
+`retryMessage` and `discardLocalMessage` reject, changing nothing, when:
+
+| Error code | Reason |
+|---|---|
+| `ERROR_OFFLINE_MESSAGE_IN_FLIGHT` | The message is already sending (`sending`). |
+| `ERROR_OFFLINE_MESSAGE_NOT_FOUND` | No unsent message has that id (unknown, or already sent). |
+| `ERROR_OFFLINE_DISABLED` | Offline support is not running. |
+| `ERROR_OFFLINE_MESSAGE_PERSIST_FAILED` | The local cache was briefly unavailable. Try again. |
+
+## Auto-send on Reconnect
+
+By default, queued `pending` messages are sent automatically when the realtime connection is re-established. This is controlled by `OfflineConfig.autoSendPendingOnReconnect` (default `true`); see [Enable Offline Support](/sdk/flutter/offline-enable) and the [reference](/sdk/flutter/offline-reference). A queued message that keeps getting no answer is retried on each reconnect, up to 5 times, then becomes `failed` (`transient`). With it off, nothing retries a queued message on reconnect — a send that gets no answer becomes `failed` (`transient`), which you recover with `retryMessage`.
+
+Reconnect also runs a catch-up sync for received messages — see [Stay in Sync](/sdk/flutter/offline-sync).
+
+## Queue Limits
+
+The outbox holds at most `maxPendingMessages` messages still trying to send (`pending` + `sending`); `failed` messages do not count. When the queue is full, `OfflineConfig.pendingQueueOverflowPolicy` decides what happens:
+
+| `PendingMessageOverflowPolicy` | Behaviour on overflow |
+|---|---|
+| `rejectNewest` (**default**) | The new send is refused and reported with reason `queueFull`. Nothing already queued is lost. |
+| `dropOldest` | The oldest `pending` message is evicted to admit the new one, and reported with `onError` (reason `queueOverflow`). If there is no `pending` message to evict, the new send is refused with `queueFull`. |
+
+A count-based refusal or eviction is reported with code `ERROR_OUTBOX_OVERFLOW` (the exact reason is in the exception details). A media send whose bytes would push the media cache over `maxMediaCacheSize` is refused with reason `byteOverflow` and code `ERROR_OUTBOX_BYTE_OVERFLOW`; nothing is evicted to make room.
+
+A **refused** send (`queueFull` / `byteOverflow`) is never queued, so it fires **no** `onMessagePending`; it reports `onError`, and the global `OfflineMessageListener` receives `onOutboxMessageFailed(message, reason)` carrying the exact reason.
+
+<Warning>
+
+A refused or evicted message (`queueFull`, `queueOverflow`, `byteOverflow`) has **no durable row** — it does not appear in `getPendingMessages`, and calling `retryMessage` on its id fails with `ERROR_OFFLINE_MESSAGE_NOT_FOUND`. Capture these from the failure callback and handle them at that moment. Prefer the default `rejectNewest`, which never silently drops an already-queued message from another conversation.
+
+</Warning>
+
+## Edits, Deletes, and Reactions Need a Connection
+
+Offline queuing applies to **sending new messages** only. Changes to existing messages — edit, delete, add or remove a reaction — and other own actions are **not queued offline**. They are sent to the server whenever you trigger them, and they report the not-connected error if the request gets no answer. Their effect reaches the cache only once the server accepts them.
+
+## Durable Media Uploads
+
+A multi-attachment upload survives an app restart, but it never resumes on its own. Fetch the existing request for a conversation with `getExistingUploadFileRequest`, and read each file's progress through `getFiles()`, which returns a list of `UploadFileView` (each with a `state`: `queued`, `requestingUrl`, `uploading`, `uploaded`, `attached`, `cancelled`, `failed`, or `rejected`, which cannot be retried). Retry an individual file with `retryAttachment(fileId)`, and observe progress by registering an `UploadFileListener` with `addUploadListener`.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+final request = await CometChat.getExistingUploadFileRequest(
+  "UID",
+  CometChatConversationType.user,
+);
+
+if (request != null) {
+  for (final item in request.getFiles()) {
+    debugPrint("${item.fileId} -> ${item.state}");
+    if (item.state == UploadFileState.failed) {
+      request.retryAttachment(item.fileId);
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+See [Media Caching](/sdk/flutter/offline-media-caching) for downloading and caching received attachments, and [Upload Files & Send Attachments](/sdk/flutter/upload-files) for building a multi-attachment message.
+
+<Tip>
+
+For the full list of offline methods, listeners, enums, model fields, and error codes, see the [Offline Configuration & API Reference](/sdk/flutter/offline-reference).
+
+</Tip>

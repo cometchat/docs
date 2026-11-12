@@ -1,0 +1,189 @@
+---
+title: "Pin & Save Messages"
+sidebarTitle: "Pin & Save Messages"
+description: "Add pinned messages, saved messages, and pinned conversations to your Flutter app with the built-in options, indicators, and screens."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_chat_uikit` |
+| Import | `import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';` |
+| Purpose | Add pinned messages, saved messages, and pinned conversations to your Flutter app with the built-in options, indicators, and screens. |
+| Key widgets | `CometChatMessageList` · `CometChatMessageHeader` · `CometChatPinnedMessages` · `CometChatSavedMessages` · `CometChatConversations` |
+| Key helpers | `CometChatMessageListController.jumpToMessage()` · `CometChat.isPinMessageEnabled()` · `CometChat.isSaveMessageEnabled()` · `CometChat.isPinConversationEnabled()` |
+| Prerequisites | A working message view — see [Getting Started](/ui-kit/flutter/getting-started). |
+| Related | [Pinned Messages](/ui-kit/flutter/pinned-messages) · [Saved Messages](/ui-kit/flutter/saved-messages) · [Conversations](/ui-kit/flutter/conversations#pin-conversations) |
+
+</Accordion>
+
+<Note>
+**Available from UI Kit v6.1.1.** These features require `cometchat_chat_uikit` v6.1.1 or later, which depends on `cometchat_sdk` v5.0.7.
+</Note>
+
+## Overview
+
+Three related features help users keep track of what matters:
+
+| Feature | Scope | Visible to | Surfaces |
+| --- | --- | --- | --- |
+| **Pin Message** | One conversation | Everyone in it | Action-menu option, bubble indicator, header menu entry, [Pinned Messages](/ui-kit/flutter/pinned-messages) screen |
+| **Save Message** | All conversations | Only the acting user | Action-menu option, bubble indicator, [Saved Messages](/ui-kit/flutter/saved-messages) screen |
+| **Pin Conversation** | Conversation list | Only the acting user | Long-press option and pin icon in [Conversations](/ui-kit/flutter/conversations#pin-conversations) |
+
+The options, toasts and indicators are built into the UI Kit components. The integration work is wiring the two screens into your navigation and jumping to a message when a row is tapped.
+
+## Prerequisites
+
+- A working message view — see [Getting Started](/ui-kit/flutter/getting-started).
+- The features enabled for your app. The kit reads each flag at login and hides the matching options when it is off; check them yourself before showing your own entry points:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChat.isPinMessageEnabled();
+CometChat.isSaveMessageEnabled();
+CometChat.isPinConversationEnabled();
+```
+</Tab>
+</Tabs>
+
+## Pin & Save in the Message List
+
+With the features enabled, [CometChatMessageList](/ui-kit/flutter/message-list#pin-or-save-a-message) adds **Pin message** / **Unpin message** and **Save message** / **Unsave message** to the action menu of any sent, non-deleted message. The labels follow the message's current state.
+
+- **Pin** permission is enforced by the **server**, not the UI Kit: the option is shown to every participant, and a user who lacks permission gets a "You don't have permission to perform this action." toast when they tap it. Build custom pin UI the same way — show the action and handle the denial, rather than trying to predict the verdict client-side.
+- **Save** has no role gate — every user can save any message they can read.
+- All four actions apply immediately and show a toast (*Message pinned*, *Message saved*, …). When a cap is reached, the toast names the limit from the server's response.
+- Pinned and saved messages show a **pin** or **bookmark** glyph before the bubble's timestamp, updated live.
+
+## Step 1: Open Pinned Messages from the Chat Header
+
+[CometChatMessageHeader](/ui-kit/flutter/message-header#pinned-messages) has a built-in **Pinned Messages** entry in its ⋯ overflow menu, shown whenever Pin Message is enabled. Pass `onPinnedMessageItemTap` so a tapped row can jump the list:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+class _ChatScreenState extends State<ChatScreen> {
+  final _listController = CometChatMessageListController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: CometChatMessageHeader(
+        group: widget.group,
+        onPinnedMessageItemTap: (message) =>
+            _listController.jumpToMessage(message.id),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: CometChatMessageList(
+              group: widget.group,
+              controller: _listController,
+            ),
+          ),
+          CometChatMessageComposer(group: widget.group),
+        ],
+      ),
+    );
+  }
+}
+```
+</Tab>
+</Tabs>
+
+The header pushes [CometChatPinnedMessages](/ui-kit/flutter/pinned-messages) on the nearest `Navigator`. Tapping a row pops the screen and calls `onPinnedMessageItemTap`, and `jumpToMessage` scrolls to the message and highlights it, fetching the page around it first if needed. To present the list yourself — in a side panel on desktop, say — set `onPinnedMessagesTap` and call `CometChatPinnedMessages.show()` or embed the widget.
+
+## Step 2: Open Saved Messages from Your App Chrome
+
+Saved messages are **user-level**, so the entry point belongs in app chrome — a profile or user menu on the conversations screen, a settings row, or a navigation tab — not inside a single chat. The kit does not add one:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+if (CometChat.isSaveMessageEnabled())
+  ListTile(
+    leading: const Icon(Icons.bookmark_outline),
+    title: const Text("Saved messages"),
+    onTap: () => Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CometChatSavedMessages(onItemTap: _openSavedMessage),
+      ),
+    ),
+  ),
+```
+</Tab>
+</Tabs>
+
+### Open a Saved Message
+
+Because rows span conversations, opening a tapped message means resolving its conversation first. For a one-on-one message, the counterpart is the sender when someone else sent it and the receiver when the logged-in user did:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+void _openSavedMessage(BaseMessage message) {
+  final me = CometChatUIKit.loggedInUser?.uid;
+  final receiver = message.receiver;
+
+  Group? group;
+  User? user;
+  if (message.receiverType == CometChatReceiverType.group) {
+    group = receiver as Group;
+  } else {
+    user = message.sender?.uid == me ? receiver as User : message.sender;
+  }
+
+  // The saved list has already popped itself (popOnItemTap defaults to true).
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ChatScreen(
+        user: user,
+        group: group,
+        goToMessageId: message.id,
+      ),
+    ),
+  );
+}
+```
+</Tab>
+</Tabs>
+
+`ChatScreen` stands for your own messages screen: pass `goToMessageId` through to `CometChatMessageList` so it scrolls to the message when it mounts. If the conversation is already open, call `jumpToMessage` on its `CometChatMessageListController` instead.
+
+## Pin Conversations
+
+With the feature enabled, [CometChatConversations](/ui-kit/flutter/conversations#pin-conversations) adds **Pin** / **Unpin** to the long-press menu, shows a pin icon on pinned rows, and keeps pinned conversations at the top of the list — including when new messages arrive. No wiring is required; to hide the option:
+
+<Tabs>
+<Tab title="Dart">
+```dart
+CometChatConversations(
+  pinConversationOptionVisibility: false,
+)
+```
+</Tab>
+</Tabs>
+
+## Live Updates
+
+All surfaces stay in sync through the UI Kit event bus and the SDK listeners — pinning from the action menu updates the bubble glyph and the Pinned Messages screen without a refetch, pins made by other members arrive through `onMessagePinned`, and saves made on the user's other devices arrive through `onMessageSaved`. If you build custom UI, listen for `ccMessagePinned` / `ccMessageUnpinned` / `ccMessageSaved` / `ccMessageUnsaved` on `CometChatMessageEvents`; see [Events](/ui-kit/flutter/events).
+
+## Summary / Feature Matrix
+
+| Capability | Built-in | Your wiring |
+| --- | --- | --- |
+| Action-menu options and toasts | ✅ | — |
+| Bubble pin / bookmark glyphs | ✅ | — |
+| Pinned / Saved screens (list, long-press unpin/unsave, empty and error states, live updates) | ✅ | Navigate to the saved screen |
+| Chat-header "Pinned Messages" entry | ✅ | `onPinnedMessageItemTap` to jump |
+| Saved messages entry point | — | An item in your app chrome |
+| Jump-to-message | ✅ `jumpToMessage` / `goToMessageId` | Call it from the tap callbacks |
+| Conversation pinning (option, icon, ordering) | ✅ | — |
+
+## Next Steps & Further Reading
+
+- [Pinned Messages](/ui-kit/flutter/pinned-messages) · [Saved Messages](/ui-kit/flutter/saved-messages) — component references.
+- [Pin A Message](/sdk/flutter/pin-message) · [Save A Message](/sdk/flutter/save-message) · [Pin A Conversation](/sdk/flutter/pin-conversation) — the SDK APIs underneath.
