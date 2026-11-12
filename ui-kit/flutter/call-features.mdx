@@ -1,178 +1,97 @@
 ---
 title: "Call"
-description: "Integrate CometChat Flutter UI Kit calling with one-on-one and group audio/video calls, setup, initialization, and call events."
+description: "Add one-on-one and group audio and video calling to your Flutter UI Kit app: how a call works, what rings incoming calls, and which component handles each part."
 ---
 
 <Accordion title="AI Integration Quick Reference">
 
 | Field | Value |
 | --- | --- |
-| Package | `cometchat_chat_uikit` |
-| Import | `import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';` |
-| Purpose | Integrate CometChat Flutter UI Kit calling with one-on-one and group audio/video calls, setup, initialization, and call events. |
-| Key classes | `CometChatSubscriptionType` · `CometChatUIKit` |
-| Key methods | `addCallListener()` · `init()` · `removeCallListener()` |
-| Related | [Call Buttons](/ui-kit/flutter/call-buttons) · [Incoming Call](/ui-kit/flutter/incoming-call) · [Outgoing Call](/ui-kit/flutter/outgoing-call) · [Call Logs](/ui-kit/flutter/call-logs) |
+| Package | `cometchat_chat_uikit` (brings `cometchat_calls_sdk`); `cometchat_voip` in your app for ringing |
+| Import | `import 'package:cometchat_chat_uikit/cometchat_calls_uikit.dart';` |
+| Required setup | `enableCalls = true` and `callPushBridge` in `UIKitSettings`, `CallNavigationContext.navigatorKey` on `MaterialApp`, `cometchat_voip` initialized, every push handed to `CometChatVoip.handlePushNotification` |
+| Incoming calls | Rung by `cometchat_voip` (notification and ring screen on Android, CallKit on iOS), in every app state. No call listener, no incoming call component |
+| Key classes | `CometChatCallButtons` · `CometChatOutgoingCall` · `CometChatOngoingCall` · `CometChatCallLogs` · `CometChatCallPushBridge` |
+| Deprecated / superseded | `CometChatIncomingCall` (web only); Chat SDK `CometChat.addCallListener` / `initiateCall` / `acceptCall` / `rejectCall` / `endCall` (superseded) |
+| Related | [Calling Integration](/ui-kit/flutter/calling-integration) · [Push Ringing](/calls/flutter/voip-calling) · [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing) |
 
 </Accordion>
 
-## Overview
+CometChat's Calls feature lets you add one-on-one and group audio and video calling to your application. This page is an overview of how calling works in the Flutter UI Kit and which component handles each part.
 
-CometChat's Calls feature allows you to integrate one-on-one and group audio/video calling capabilities into your application. In V6, calling is built into the `cometchat_chat_uikit` package — no separate calls dependency needed.
+## How a call works
+
+```mermaid
+sequenceDiagram
+    participant A as Caller · UI Kit
+    participant BE as CometChat backend
+    participant V as Callee · cometchat_voip
+    participant U as Callee · UI Kit
+
+    A->>BE: Call button → initiateCall
+    Note over A: Outgoing call screen: "Calling…"
+    BE-->>V: Push (initiated)
+    V->>V: Rings: notification, ring screen or CallKit, ringtone
+    V-->>A: Callee's phone reached → "Ringing…"
+    V->>U: Answer → call push bridge → answered
+    U->>U: Call screen → joinSession
+    U-->>A: Callee joined → caller joins
+    Note over A,U: In call. Hang-up leaves the session on both sides.
+```
+
+- **Placing a call** is done by the UI Kit through the Calls SDK. The Chat SDK is not involved.
+- **Ringing the callee** is done by `cometchat_voip` from the call push, with the app in the foreground, in the background or killed. It draws the ring screen (CallKit on iOS) and asks for the microphone and camera on Answer.
+- **Joining** is done by the UI Kit: `cometchat_voip` hands the answered call to it through your app's call push bridge, and the UI Kit opens its call screen.
+- **Decline, timeout, busy and missed calls** are handled by `cometchat_voip`. The caller's outgoing call screen closes.
+- **The call itself** runs in the Calls SDK session on the UI Kit's call screen; hanging up leaves the session.
 
 ## Integration
 
-### Step 1: Add Dependency
+All steps are on the [Calling Integration](/ui-kit/flutter/calling-integration) page:
 
-Add the dependency to your `pubspec.yaml`:
-
-```yaml pubspec.yaml
-dependencies:
-  cometchat_chat_uikit: ^6.2.0
-```
-
-***
-
-### Step 2: Update build.gradle
-
-Set `minSdkVersion` to at least 26 in `android/app/build.gradle`:
-
-<Tabs>
-<Tab title="Groovy">
-```gradle
-defaultConfig {
-    minSdkVersion 26
-    targetSdkVersion flutter.targetSdkVersion
-    versionCode flutterVersionCode.toInteger()
-    versionName flutterVersionName
-}
-```
-</Tab>
-</Tabs>
-
-***
-
-### Step 3: Update iOS Podfile
-
-In `ios/Podfile`, set the minimum iOS version to 15.1:
-
-```
-platform :ios, '15.1'
-```
+1. Add `cometchat_voip` and Firebase, and initialize the Calls SDK and `cometchat_voip` at app start.
+2. Add the call push bridge (a short class over `cometchat_voip`) and set `enableCalls` and `callPushBridge` in `UIKitSettings`.
+3. Set `CallNavigationContext.navigatorKey` on your `MaterialApp`.
+4. Hand every push to `cometchat_voip` on Android, register the push token, check ring readiness after login, and log out through `CometChatUIKit.logout`.
 
 <Note>
-These are the Calls SDK's own floors (`minSdkVersion 26`, `platform :ios, '15.1'` as of
-`cometchat_calls_sdk` 5.0.7), and they apply to **every** UI Kit app — the kit depends on the Calls
-SDK unconditionally, so you inherit them even without enabling calling. Gradle and CocoaPods take
-the maximum across the dependency graph, so a lower value is a build error rather than a warning.
+There is no call listener to add. Apps that registered `CometChat.addCallListener` to show the incoming call screen should remove it; the Chat SDK's calling APIs are superseded. See [Migrating from Legacy Ringing](/calls/flutter/migrating-from-legacy-ringing). On web, which has no push ringing, the UI Kit keeps ringing calls with the Chat SDK.
 </Note>
 
-***
+## Call Components
 
-### Step 4: Modify UIKitSettings
+### Call Buttons
 
-Activate calling features by setting `enableCalls` to `true` in UIKitSettings:
+`CometChatCallButtons` places audio and video calls. It renders in the [Message Header](/ui-kit/flutter/message-header) when calls are enabled.
 
-<Tabs>
-<Tab title="Dart">
-```dart
-UIKitSettings uiKitSettings = (UIKitSettingsBuilder()
-  ..subscriptionType = CometChatSubscriptionType.allUsers
-  ..autoEstablishSocketConnection = true
-  ..region = "REGION"
-  ..appId = "APP_ID"
-  ..authKey = "AUTH_KEY"
-  ..enableCalls = true
-  ..callingConfiguration = CallingConfiguration()
-).build();
-
-CometChatUIKit.init(uiKitSettings: uiKitSettings,
-  onSuccess: (successMessage) {},
-  onError: (e) {},
-);
-```
-</Tab>
-</Tabs>
-
-To allow launching the Incoming Call screen from any widget, provide the navigator key:
-
-<Tabs>
-<Tab title="Dart">
-```dart
-MaterialApp(
-  navigatorKey: CallNavigationContext.navigatorKey,
-  home: YourHomeScreen(),
-)
-```
-</Tab>
-</Tabs>
-
-### Listeners
-
-Register call listeners for top-level widgets:
-
-<Tabs>
-<Tab title="Dart">
-```dart
-class _YourClassNameState extends State<YourClassName> with CallListener {
-  @override
-  void initState() {
-    super.initState();
-    CometChat.addCallListener(listenerId, this);
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-    CometChat.removeCallListener(listenerId);
-  }
-
-  @override
-  void onIncomingCallReceived(Call call) {
-    debugPrint("onIncomingCallReceived");
-  }
-
-  @override
-  void onOutgoingCallAccepted(Call call) {
-    debugPrint("onOutgoingCallAccepted");
-  }
-
-  @override
-  void onOutgoingCallRejected(Call call) {
-    debugPrint("onOutgoingCallRejected");
-  }
-
-  @override
-  void onIncomingCallCancelled(Call call) {
-    debugPrint("onIncomingCallCancelled");
-  }
-
-  @override
-  void onCallEndedMessageReceived(Call call) {
-    debugPrint("onCallEndedMessageReceived");
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return const Placeholder();
-  }
-}
-```
-</Tab>
-</Tabs>
-
-***
-
-## Features
-
-### Incoming Call
-
-The Incoming Call widget lets users receive real-time audio and video calls. When a call is received, it displays caller information with accept/reject options.
+[Learn more about Call Buttons →](/ui-kit/flutter/call-buttons)
 
 ### Outgoing Call
 
-The Outgoing Call widget manages the outgoing call process. It displays recipient information and call status, and automatically transitions to the ongoing call screen when accepted.
+`CometChatOutgoingCall` shows "Calling…", then "Ringing…" once the callee's phone is reached, closes if the call is declined, busy or unanswered, and opens the call screen once the callee joins.
+
+<Frame>
+  <img src="/images/19e18c3f-outgoing_call-2320e109391cc42bcbc0dd7cd86a4111.png" />
+</Frame>
+
+[Learn more about Outgoing Call →](/ui-kit/flutter/outgoing-call)
+
+### Incoming Call
+
+On Android and iOS, incoming calls are rung and drawn by `cometchat_voip`, so there is no UI Kit component to place. On Android, its ring screen follows your UI Kit theme, light and dark, once you pass it ([Styling the ring screen](/ui-kit/flutter/calling-integration#styling-the-ring-screen)); on iOS, CallKit draws the call. The deprecated `CometChatIncomingCall` is shown on web only.
+
+[Incoming Call (deprecated) →](/ui-kit/flutter/incoming-call)
 
 ### Call Logs
 
-The [Call Logs](/ui-kit/flutter/call-logs) widget displays records of call events including caller, time, and duration.
+`CometChatCallLogs` displays the history of calls, including missed, received and dialed calls. Users can open call details and call back from the log.
+
+<Frame>
+  <img src="/images/d8dd671f-call_logs-d2071cb31b8a455b4a01c03a0f573b94.png" />
+</Frame>
+
+[Learn more about Call Logs →](/ui-kit/flutter/call-logs)
+
+### Call Log Details
+
+For participants, join and leave history and recordings of a call, see the [Call Log Details](/ui-kit/flutter/guide-call-log-details) guide.
