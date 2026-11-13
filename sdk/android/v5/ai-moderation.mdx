@@ -1,6 +1,9 @@
 ---
 title: "AI Moderation"
+description: "Screen text, image and video messages for unsafe content automatically in your Android app, and respond when each one is approved or rejected."
 ---
+
+import OfflineDeprecatedSend from '/snippets/sdk/offline-deprecated-send.mdx';
 
 ## Overview
 
@@ -28,10 +31,11 @@ sequenceDiagram
     participant Moderation
 
     App->>SDK: sendMessage()
+    SDK-->>App: onMessagePending (offline support on)
     SDK->>CometChat: Send Message
     CometChat->>Moderation: Process Message
     CometChat-->>SDK: Message (status: PENDING)
-    SDK-->>App: onSuccess (PENDING)
+    SDK-->>App: onMessageSent (PENDING)
     Moderation-->>CometChat: Moderation Result
     CometChat-->>SDK: onMessageModerated
     SDK-->>App: APPROVED or DISAPPROVED
@@ -40,7 +44,7 @@ sequenceDiagram
 | Step | Description |
 |------|-------------|
 | 1. Send Message | App sends a text, image, or video message |
-| 2. Pending Status | Message is sent with `PENDING` moderation status |
+| 2. Pending Status | Message is sent with `PENDING` moderation status (`getModerationStatus()`). This is separate from the send status: with offline support on, `onMessagePending` fires first, before the message reaches the server. |
 | 3. AI Processing | Moderation service analyzes the content |
 | 4. Result Event | `onMessageModerated` event fires with final status |
 
@@ -72,21 +76,28 @@ The `getModerationStatus()` method returns one of the following values:
 
 When you send a text, image, or video message, check the initial moderation status:
 
+<OfflineDeprecatedSend method="`sendMessage()`" />
+
 <Tabs>
   <Tab title="Kotlin">
     ```kotlin
     val textMessage = TextMessage(receiverUID, "Hello, how are you?", CometChatConstants.RECEIVER_TYPE_USER)
 
-    CometChat.sendMessage(textMessage, object : CometChat.CallbackListener<TextMessage>() {
-        override fun onSuccess(message: TextMessage) {
+    CometChat.sendMessage(textMessage, object : CometChat.MessageSentListener() {
+        override fun onMessagePending(message: BaseMessage?) {
+            // Fires once the message is queued while offline support is enabled; message?.status == MessageStatus.PENDING
+        }
+
+        override fun onMessageSent(message: BaseMessage?) {
             // Check moderation status
-            if (message.moderationStatus == ModerationStatus.PENDING) {
+            if ((message as? TextMessage)?.moderationStatus == ModerationStatus.PENDING) {
                 Log.d(TAG, "Message is under moderation review")
                 // Show pending indicator in UI
             }
         }
 
         override fun onError(e: CometChatException) {
+            // With offline support on, this also fires when a message is queued offline: check the message's status (PENDING = queued, FAILED = failed).
             Log.e(TAG, "Message sending failed: ${e.message}")
         }
     })
@@ -96,11 +107,17 @@ When you send a text, image, or video message, check the initial moderation stat
     ```java
     TextMessage textMessage = new TextMessage(receiverUID, "Hello, how are you?", CometChatConstants.RECEIVER_TYPE_USER);
 
-    CometChat.sendMessage(textMessage, new CometChat.CallbackListener<TextMessage>() {
+    CometChat.sendMessage(textMessage, new CometChat.MessageSentListener() {
         @Override
-        public void onSuccess(TextMessage message) {
+        public void onMessagePending(BaseMessage message) {
+            // Fires once the message is queued while offline support is enabled; message.getStatus() == MessageStatus.PENDING
+        }
+
+        @Override
+        public void onMessageSent(BaseMessage message) {
             // Check moderation status
-            if (message.getModerationStatus().equals(ModerationStatus.PENDING)) {
+            if (message instanceof TextMessage
+                    && ((TextMessage) message).getModerationStatus().equals(ModerationStatus.PENDING)) {
                 Log.d(TAG, "Message is under moderation review");
                 // Show pending indicator in UI
             }
@@ -108,6 +125,7 @@ When you send a text, image, or video message, check the initial moderation stat
 
         @Override
         public void onError(CometChatException e) {
+            // With offline support on, this also fires when a message is queued offline: check the message's status (PENDING = queued, FAILED = failed).
             Log.e(TAG, "Message sending failed: " + e.getMessage());
         }
     });
