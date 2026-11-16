@@ -1,0 +1,381 @@
+---
+title: "Offline Support"
+sidebarTitle: "Offline Support"
+description: "Turn on offline support in the CometChat iOS UI Kit so saved chats open without a connection, sends queue until reconnect, and every list shows clear offline states."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Default | Off. Nothing changes until you pass an `OfflineConfig` |
+| Enable | `UIKitSettings().setOfflineConfig(OfflineConfig(enabled: true))` before `build()`, then `CometChatUIKit.init(uiKitSettings:)` |
+| UI Kit | `CometChatUIKitSwift` 5.3.0 or later (Swift Package Manager) |
+| Chat SDK | `CometChatSDK` 4.2.1 or later (resolved by the UI Kit package) |
+| `OfflineConfig` options | [iOS SDK offline reference](/sdk/ios/offline-reference) |
+| Styling | `CometChatMessageList.offlineStyle` (`CometChatOfflineStyle`) |
+| Hide notices | `hideOfflineNotices` on `CometChatMessageList` and `CometChatConversations` |
+| Events | `ccMessageSendStateChanged`, `ccOfflineCacheReset` on `CometChatMessageEventListener` |
+| Discarded send | `CometChatUIKit.sendFormMessage` / `sendCardMessage` / `sendSchedulerMessage` call `onError` with `ERROR_OFFLINE_MESSAGE_DISCARDED` on logout or cache reset |
+
+</Accordion>
+
+With offline support turned on, the iOS UI Kit reads from the Chat SDK's on-device cache. Chats the user has opened before appear at once, even with no connection. Messages sent while offline wait in a queue and go out when the connection returns. Every list shows a clear state when it has nothing saved and can't reach the server.
+
+The UI Kit builds on the Chat SDK's offline support. This page covers what the UI Kit adds on top. For cache settings, encryption, media caching and sync, see the [iOS SDK offline docs](/sdk/ios/offline-overview).
+
+## Overview
+
+**Works offline:**
+- Conversations, users, groups and group members you have loaded before show at once from the cache.
+- Saved message history, including threads, opens without a connection.
+- New messages, including media, are queued and sent automatically on reconnect. A queued message shows a clock until it is sent.
+- Images, video, audio and files that are on the device open from the saved copy.
+- After a reconnect, the SDK's catch-up brings in what changed while you were away, including a kick, ban or leave in a group.
+
+**Needs a connection:**
+- The first load of any chat or list that was never opened before.
+- Keyword search with no saved match.
+- Editing or deleting a sent message, and adding or removing a reaction. These aren't queued. They report an error when there is no connection, and a failed reaction is rolled back.
+- Message information, call logs, calls and AI streamed replies.
+- Media that has no copy on the device.
+
+## Requirements
+
+| Requirement | Version |
+| --- | --- |
+| CometChat iOS UI Kit (`CometChatUIKitSwift`) | 5.3.0 or later |
+| CometChat iOS Chat SDK (`CometChatSDK`) | 4.2.1 or later |
+| iOS | 15.1 or later |
+| Xcode | 16 or later |
+
+The UI Kit links the Chat SDK directly, so the higher SDK minimum applies to every app on UI Kit 5.3.0, whether or not it turns offline on. The UI Kit calls `CometChat.initFromSettings(offlineConfig:onSuccess:onError:)`, which Chat SDK 4.2.0 doesn't have. UI Kit 5.3.0 therefore needs a later Chat SDK, even though the [SDK offline pages](/sdk/ios/offline-enable) list 4.2.0 for using the SDK on its own.
+
+Install or update the UI Kit with Swift Package Manager:
+
+1. Go to **File → Add Package Dependencies** (or select the existing package to update it).
+2. Enter the repository URL:
+
+```
+https://github.com/cometchat/cometchat-uikit-ios
+```
+
+3. Select **Up to Next Major Version** and enter:
+
+```
+5.3.0
+```
+
+4. Add the **CometChatUIKitSwift** product to your app target.
+
+Swift Package Manager resolves `CometChatSDK` for you. If your project pins `chat-sdk-ios` to an exact version or to **Up to Next Minor Version** on 4.1.x, package resolution fails. Change that rule to **Up to Next Major Version** from 4.2.1.
+
+<Warning>
+**CocoaPods:** the latest UI Kit on CocoaPods is 5.1.18, and new releases ship through Swift Package Manager only. Offline support isn't available through CocoaPods. Move CocoaPods projects to Swift Package Manager to use it.
+</Warning>
+
+## Enable offline support
+
+Offline support is **off by default**. Turn it on by passing an `OfflineConfig` to `UIKitSettings.setOfflineConfig(_:)` before you call `build()` and `CometChatUIKit.init`. The UI Kit passes the config straight to the Chat SDK and stores nothing of its own.
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = (scene as? UIWindowScene) else { return }
+
+        // Offline support is off unless you set a config with enabled = true.
+        let offlineConfig = OfflineConfig.Builder()
+            .setEnabled(true)
+            .build()
+
+        let uikitSettings = UIKitSettings()
+            .set(appID: "APP_ID")        // Replace with your App ID
+            .set(region: "REGION")       // Replace with your Region
+            .set(authKey: "AUTH_KEY")    // Replace with your Auth Key (dev only)
+            .subscribePresenceForAllUsers()
+            .setOfflineConfig(offlineConfig)
+            .build()
+
+        CometChatUIKit.init(uiKitSettings: uikitSettings) { result in
+            switch result {
+            case .success:
+                // Log in, then show the UI Kit screens as usual.
+                debugPrint("CometChat initialized with offline support")
+            case .failure(let error):
+                debugPrint("Initialization failed: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+```
+
+`OfflineConfig` has more options, such as cache size, retention, the pending-message limit, encryption and media caching. Set only the ones you need. Every option is described in the [Configuration & API Reference](/sdk/ios/offline-reference#offlineconfig-options). You can also create the config with `OfflineConfig(enabled: true)`, as shown in [Enable Offline Support](/sdk/ios/offline-enable).
+
+<Note>
+Offline support is active only while a user is logged in. Call `CometChat.isOfflineEnabled()` at the moment you need to know. See [Verify it is active](/sdk/ios/offline-enable).
+</Note>
+
+## How the components behave offline
+
+### Lists: Conversations, Users, Groups and Group Members
+
+- Saved rows show first. The server page then loads and updates the list in place.
+- Rows already on screen stay when a load can't reach the server. A failure caused by having no connection shows no error view.
+- With nothing saved and no connection, the list shows an icon and **Connect to load chats** (or users, groups, members). This state has no Retry button. The list loads once by itself when the connection returns.
+- Lists opened with only a filter, such as online users, tags, a scope, banned members or unread chats, behave like a plain list and show **Connect to load …**.
+- Only a server answer of an empty page ends paging.
+
+### Search
+
+A **keyword** search with no saved match while offline shows **Connect to search** with a second line, **Search needs an internet connection.** It doesn't call `onError`. This applies to a non-empty keyword from the search box or from the list's request builder. A list opened with filters alone shows **Connect to load …** instead.
+
+`CometChatSearch` shows **Connect to search** when a keyword search can't connect, or when both the conversation and message requests fail because the device isn't connected. Results already on screen stay. A search showing the offline state runs again once when the connection returns.
+
+### Message list and threads
+
+- Saved history shows at once. Older and newer pages come from the cache first, then from the server.
+- A chat that was never saved, opened offline, shows **Connect to load messages** and calls `onError`. It loads once by itself when the connection returns.
+- When the list reaches the end of the saved messages with no connection, it shows a tappable **Connect to load more** row at that edge: older messages at the top, newer ones at the bottom. Tap it to try again. On reconnect each blocked edge loads once by itself, older first. Scrolling loads older messages again once the connection is back.
+- Jumping to a message and starting from the first unread anchor on that message first. Paging and live messages don't scroll the list away until it has settled, for at most 6 seconds. If the target isn't saved and the server can't be reached, the chat stays on its newest page.
+- When more messages arrive than one refresh can bridge, a **Jump to latest** pill appears. Your reading position stays until you tap it.
+- Images, video, audio and files show the on-device copy first. With no copy and no connection, the bubble shows a placeholder with the file name, size and **Available when online**. It redraws as the normal bubble when the connection returns. Tapping it while connected asks the SDK to download the file.
+
+### Composer and unsent messages
+
+- A message sent while offline appears at once with a clock. It goes out automatically on reconnect. Media attachments queue the same way.
+- An unsent message (pending, sending or failed) offers only **Retry** and **Delete** in its long-press menu and its VoiceOver actions. It offers no Copy, Reply, React or Edit until it has been sent.
+- A failed message shows **Not sent. Tap to retry** under the bubble. Tapping that line or the failed icon retries it. Every failed message can be retried, whatever the reason.
+- **Retry** asks the SDK to retry the queued message, so it never creates a duplicate. A message the SDK never queued (for example, refused because the queue was full or the file was too large) is sent again as a new send.
+- **Delete** removes the unsent message. If it was already sent in the meantime, the sent copy is deleted instead.
+- If the message is being sent at that moment, Retry and Delete change nothing and the list shows **Sending… try again in a moment** for 4 seconds.
+- A full queue shows **Too many messages waiting to send**. A file that is too big for the offline media cache shows **File too large to send offline**. Each notice shows once per message.
+
+### Presence
+
+While the SDK isn't connected, nobody shows as online: there's no online dot in any list and no "Online" or last-seen subtitle in the message header. Presence returns when the UI Kit fetches users again after reconnecting.
+
+### Pinned, Saved, Reactions and Notifications
+
+`CometChatPinnedMessages`, `CometChatSavedMessages`, the reaction list and `CometChatNotificationFeed` follow the same rules as the other lists. Saved rows show first. With nothing saved and no connection, they show **Connect to load messages**, **Connect to load reactions** or **Connect to load notifications**.
+
+### Logout and user switch
+
+Cached data belongs to the logged-in user. On logout or a user switch, the UI Kit clears every list on screen, search results, the notification feed, the pinned and saved panels and the composer's upload tray before the next user's first frame. Any message still waiting to be sent is answered with `ERROR_OFFLINE_MESSAGE_DISCARDED`. See [Send completions](#send-completions).
+
+## Offline states and texts
+
+Override any of these texts by defining the same key in your app's `Localizable.strings`, as described in [Localize](/ui-kit/ios/localize). Every language the UI Kit ships includes them.
+
+| Text | Key | Where it appears |
+| --- | --- | --- |
+| Connect to load chats | `CONNECT_TO_LOAD_CHATS` | `CometChatConversations` with nothing saved, offline |
+| Connect to load users | `CONNECT_TO_LOAD_USERS` | `CometChatUsers` |
+| Connect to load groups | `CONNECT_TO_LOAD_GROUPS` | `CometChatGroups` |
+| Connect to load members | `CONNECT_TO_LOAD_MEMBERS` | `CometChatGroupMembers` |
+| Connect to load messages | `CONNECT_TO_LOAD_MESSAGES` | `CometChatMessageList`, `CometChatPinnedMessages`, `CometChatSavedMessages` |
+| Connect to load reactions | `CONNECT_TO_LOAD_REACTIONS` | Reaction list |
+| Connect to load notifications | `CONNECT_TO_LOAD_NOTIFICATIONS` | `CometChatNotificationFeed` |
+| Connect to search | `CONNECT_TO_SEARCH` | Keyword search in a list, offline, no saved match |
+| Connect to search | `CONNECT_TO_SEARCH_MESSAGES` | `CometChatSearch` |
+| Search needs an internet connection. | `CONNECT_TO_SEARCH_SUBTITLE` | Second line under "Connect to search" |
+| Connect to load more | `CONNECT_TO_LOAD_MORE` | Message list and threads, at a blocked edge |
+| Not sent yet | `MESSAGE_NOT_SENT_YET` | VoiceOver label of a queued message's clock |
+| Not sent. Tap to retry | `MESSAGE_NOT_SENT_TAP_TO_RETRY` | Under a failed message |
+| Sending… try again in a moment | `SEND_IN_FLIGHT` | Retry or Delete on a message being sent |
+| Available when online | `MEDIA_AVAILABLE_WHEN_ONLINE` | Media placeholder |
+| Jump to latest | `JUMP_TO_LATEST` | Message list pill |
+| Too many messages waiting to send | `OFFLINE_QUEUE_FULL` | Notice when the queue is full |
+| File too large to send offline | `OFFLINE_FILE_TOO_LARGE` | Notice when media doesn't fit the cache |
+| 1 unsent message was removed | `UNSENT_MESSAGE_REMOVED` | Notice |
+| 1 message wasn't sent / %d messages weren't sent | `MESSAGES_NOT_SENT_ONE` / `MESSAGES_NOT_SENT_OTHER` | Notice |
+| 1 unsent message couldn't be recovered / %d unsent messages couldn't be recovered | `UNSENT_MESSAGES_LOST_ONE` / `UNSENT_MESSAGES_LOST_OTHER` | Notice after the SDK resets its cache |
+| Some unsent messages may not have been sent | `UNSENT_MESSAGES_MAYBE_LOST` | Notice after a cache reset with an unknown count |
+
+## Errors and callbacks
+
+### When `onError` fires
+
+With offline support on, every list follows the same rules:
+
+- **Rows on screen, no connection:** the rows stay. No error view, no `onError`.
+- **Rows on screen, any other error:** the rows stay. `onError` fires once if the user or your app started the load: opening the screen, pull to refresh, a new keyword, paging, a jump or Retry. A reload the UI Kit starts itself after a reconnect, sync or cache reset stays quiet.
+- **Nothing on screen, no connection:** the **Connect to load …** state shows, and `onError` fires once.
+- **Nothing on screen, any other error:** the error view with Retry shows, and `onError` fires.
+- **Keyword search offline with nothing saved:** **Connect to search** shows, with no `onError`.
+- **Empty server answer:** the normal empty view.
+
+`CometChatSearch` and the reaction list now also have `set(onError:)`.
+
+### Send completions
+
+`CometChatUIKit.sendFormMessage`, `CometChatUIKit.sendCardMessage` and `CometChatUIKit.sendSchedulerMessage` answer each send once:
+
+- `onSuccess` fires when the server accepts the message.
+- `onError` fires when the SDK reports a failure.
+- A send that is only queued (offline) calls neither while the session lasts.
+- If the user logs out, switches user, or the offline cache is reset before the message was sent, `onError` fires once, quietly, with the error code `ERROR_OFFLINE_MESSAGE_DISCARDED`. The UI Kit shows no error for it: the message row going away is the only visible signal.
+
+```swift lines
+import CometChatUIKitSwift
+import CometChatSDK
+
+func send(_ formMessage: FormMessage) {
+    CometChatUIKit.sendFormMessage(formMessage, onSuccess: { sent in
+        print("Form message sent: \(sent.id)")
+    }, onError: { error in
+        if error?.errorCode == "ERROR_OFFLINE_MESSAGE_DISCARDED" {
+            // Logout, user switch or cache reset before it was sent. Don't show an error.
+            return
+        }
+        print("Send failed: \(error?.errorDescription ?? "")")
+    })
+}
+```
+
+The UI Kit's own senders (the composers, stickers and smart replies) handle this case themselves and show no error.
+
+### Offline events
+
+`CometChatMessageEventListener` has two events for offline support. Both have empty default bodies, so you implement only the ones you need. Neither fires while offline support is off.
+
+| Event | Fires when |
+| --- | --- |
+| `ccMessageSendStateChanged(message:state:reason:)` | An own message moves between `CometChatMessageSendState` values: `.sending`, `.sent`, `.failed` or `.discarded`. `reason` is the SDK's `CometChat.MessageFailureReason`, if any. |
+| `ccOfflineCacheReset(reason:pendingMessagesLost:)` | The Chat SDK reset its on-device cache. `pendingMessagesLost` is `CometChat.offlinePendingCountUnknown` (`-1`) when the SDK can't tell how many unsent messages were lost. |
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+import CometChatSDK
+
+class ChatViewController: UIViewController, CometChatMessageEventListener {
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        CometChatMessageEvents.addListener("offline-listener", self)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        CometChatMessageEvents.removeListener("offline-listener")
+    }
+
+    func ccMessageSendStateChanged(message: BaseMessage, state: CometChatMessageSendState, reason: CometChat.MessageFailureReason?) {
+        print("Message \(message.muid) is now \(state)")
+    }
+
+    func ccOfflineCacheReset(reason: CometChat.OfflineCacheResetReason, pendingMessagesLost: Int) {
+        print("Offline cache reset, unsent messages lost: \(pendingMessagesLost)")
+    }
+}
+```
+
+For the SDK's own reasons and error codes, see the [Configuration & API Reference](/sdk/ios/offline-reference#error-codes).
+
+## Customization
+
+### Offline style
+
+`CometChatMessageList.offlineStyle` is a global `CometChatOfflineStyle`. Each property defaults to the theme's existing error or secondary-text tokens, so nothing changes until you set one.
+
+| Property | Type | Default | Applies to |
+| --- | --- | --- | --- |
+| `retryTextColor` | `UIColor` | `CometChatTheme.errorColor` | "Not sent. Tap to retry" |
+| `retryTextFont` | `UIFont` | `CometChatTypography.Caption1.medium` | "Not sent. Tap to retry" |
+| `failedIconTint` | `UIColor?` | `nil` (the receipt style's error tint) | Failed status icon of an unsent message |
+| `notSentYetTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Not sent yet", where shown as text |
+| `notSentYetTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Not sent yet", where shown as text |
+| `mediaPlaceholderTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Available when online" media placeholder |
+| `mediaPlaceholderTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Available when online" media placeholder |
+| `footerTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Connect to load more" rows |
+| `footerTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Connect to load more" rows |
+| `jumpToLatestTextColor` | `UIColor` | `CometChatTheme.white` | "Jump to latest" pill text |
+| `jumpToLatestTextFont` | `UIFont` | `CometChatTypography.Caption1.medium` | "Jump to latest" pill text |
+| `jumpToLatestBackgroundColor` | `UIColor` | `CometChatTheme.primaryColor` | "Jump to latest" pill background |
+
+```swift lines
+import UIKit
+import CometChatUIKitSwift
+
+var offlineStyle = CometChatOfflineStyle()
+offlineStyle.retryTextColor = .systemRed
+offlineStyle.footerTextColor = .systemGray
+offlineStyle.jumpToLatestTextColor = .white
+offlineStyle.jumpToLatestBackgroundColor = .systemIndigo
+offlineStyle.jumpToLatestTextFont = .systemFont(ofSize: 13, weight: .semibold)
+
+CometChatMessageList.offlineStyle = offlineStyle
+```
+
+### Hide offline notices
+
+| Property | Component | Default | Hides |
+| --- | --- | --- | --- |
+| `hideOfflineNotices` | `CometChatMessageList` | `false` | The offline notices (a removed unsent message, a full queue, unsent messages that couldn't be recovered), the "Connect to load more" rows and the "Jump to latest" pill |
+| `hideOfflineNotices` | `CometChatConversations` | `false` | Notices about the whole cache, such as unsent messages that couldn't be recovered |
+
+```swift
+let messageList = CometChatMessageList()
+messageList.hideOfflineNotices = true
+
+let conversations = CometChatConversations()
+conversations.hideOfflineNotices = true
+```
+
+### Your own empty and error views
+
+- If you set a custom error view (`errorStateView` on a list, or `set(errorView:)` on the message list), it shows instead of the UI Kit's **Connect to load …** state.
+- If you set `hideErrorView = true`, no offline state shows.
+- If you set a custom `emptyStateView`, it shows instead of **Connect to search**. `disableEmptyState = true` hides it.
+
+## With offline support turned off
+
+Apps that don't turn on offline support keep today's behaviour, with these exceptions in UI Kit 5.3.0:
+
+- **Higher Chat SDK minimum.** The UI Kit needs Chat SDK 4.2.1 or later, whether or not offline is on. An exact or up-to-next-minor pin on 4.1.x stops package resolution until you update it.
+- **New accessibility identifiers.** `accessibilityIdentifier` is now set on message rows and their menu, notices, list footers, the composer, attachment tray tiles, conversation rows, and the empty and error views. This applies to release builds too. They hold no message text and don't change what VoiceOver reads. A conversation row's identifier includes the user's uid or the group's guid. If your UI tests or view snapshots assert on these identifiers, expect them to change.
+- **Group Members and Notification Feed refresh on reconnect.** Each reconnect now reloads the first page. A list on screen is never blanked.
+- **`MessageListViewModel.add(message:)` replaces a message that is already shown** with the same server id, instead of adding a second row.
+- **A failed reaction is rolled back correctly.** The reaction count, your own reaction and its position return to what they were.
+- **The failed-send event keeps your metadata.** `ccMessageSent` with `.error` now carries the message's `metaData` with `error: true` added, instead of replacing it.
+- **Paging after a jump skips unsent rows.** The older and newer requests use the oldest and newest message that has a server id.
+
+## Limitations and known issues
+
+- If a send acknowledgement is lost, the server can end up with one duplicate of the message.
+- After a quick reconnect, missed messages can take up to 15 seconds to appear.
+- After an app restart, the reason a message failed may be unknown. It's still offered Retry.
+- If a send gets no answer while connected, the chat can stop updating until the next reconnect.
+- Keyword search, message information, call logs and AI streamed replies need a connection.
+- Media downloaded for offline use is stored unencrypted on the device. The message cache itself can be encrypted. See [Encrypt the Cache](/sdk/ios/offline-encryption).
+- Depending on the SDK build, a queue-full or file-too-large refusal can first show as pending. The UI Kit shows these messages as failed either way and shows the notice once.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="SDK offline overview" icon="wifi-slash" href="/sdk/ios/offline-overview">
+    How the Chat SDK caches and syncs data
+  </Card>
+  <Card title="Configuration & API Reference" icon="sliders" href="/sdk/ios/offline-reference">
+    Every `OfflineConfig` option, listener and error code
+  </Card>
+  <Card title="Send While Offline" icon="paper-plane" href="/sdk/ios/offline-send">
+    The SDK's queue, retry and discard
+  </Card>
+  <Card title="Stay in Sync" icon="rotate" href="/sdk/ios/offline-sync">
+    Catch-up after reconnect and cache resets
+  </Card>
+  <Card title="Message List" icon="messages" href="/ui-kit/ios/message-list">
+    Message list properties and styling
+  </Card>
+  <Card title="Localize" icon="language" href="/ui-kit/ios/localize">
+    Override the offline texts
+  </Card>
+</CardGroup>
