@@ -1,0 +1,519 @@
+---
+title: "Offline Support"
+sidebarTitle: "Offline Support"
+description: "Show saved chats and messages without a connection, queue messages while offline, and send them on reconnect with the CometChat React Native UI Kit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `@cometchat/chat-uikit-react-native` 5.6.0 or later, with `@cometchat/chat-sdk-react-native` 4.2.0 or later |
+| Default | **Off.** Without the `offline` setting the UI Kit behaves as before |
+| Enable | `CometChatUIKit.init({ ...uiKitSettings, offline: { enabled: true } })` — `offline` takes `true`, an options object, or a `CometChat.OfflineConfig` |
+| `initFromSettings` | `CometChatUIKit.initFromSettings(settings, offline?)` — or put the value under `chatSDK.offline` in the settings |
+| Native peers | `@op-engineering/op-sqlite` 9.0.0+ (required for offline), `react-native-fs` (optional; media), `react-native-keychain` (encryption only). Rebuild the native app after installing |
+| Expo | Development build or `expo prebuild` only; Expo Go is not supported |
+| Runtime check | `CometChat.isOfflineEnabled()` from `@cometchat/chat-sdk-react-native` |
+| Props | `hideOfflineNotices` on `CometChatMessageList` and `CometChatConversations` (default `false`) |
+| Styles | `messageListStyles.offlineStyles` in the theme: `failedRowStyle`, `failedIconStyle`, `retryTextStyle`, `notSentYetTextStyle`, `mediaPlaceholderStyle`, `footerStyle`, `noticeStyle` |
+| Events | `OfflineMessageEvents.ccMessageSendStateChanged`, `OfflineMessageEvents.ccOfflineCacheReset` on `CometChatUIEventHandler.addMessageListener` |
+| Types | `UIKitOfflineSettings`, `MessageSendState`, `MessageSendStateChangedEvent`, `OfflineCacheResetEvent` |
+| Options reference | [React Native SDK: Offline Configuration & API Reference](/sdk/react-native/offline-reference) |
+
+</Accordion>
+
+With offline support turned on, the UI Kit keeps working when the network drops. Chats, messages and lists the user has already opened appear at once from the device, messages sent while offline are queued and go out when the connection returns, and the lists update in place when the server answers.
+
+The UI Kit builds on the [offline support in the React Native Chat SDK](/sdk/react-native/offline-overview). You turn it on once in the UI Kit settings; the components handle the rest.
+
+<Note>
+Offline support is available from React Native UI Kit **5.6.0** with React Native Chat SDK **4.2.0** or later. It is **off by default**.
+</Note>
+
+## Overview
+
+**Works offline**
+
+- Conversations, users, groups, group members, messages and threads the user has opened before appear at once from the device, then the server's page merges into them in place when it arrives.
+- New messages (text, media and custom messages) are queued on the device, survive an app restart, and are sent automatically when the connection returns.
+- A message that could not be sent shows **Not sent. Tap to retry**, with Retry and Delete.
+- Images, videos, audio and files the device has already saved are shown from the device.
+- Attachments staged in the composer survive leaving the chat and an app restart.
+- When the connection returns, everything that changed while the device was away (new messages, and edits, deletes and reactions made by others) syncs into the lists.
+
+**Needs a connection**
+
+- The first load of a chat, list or page that was never opened on this device.
+- Keyword search with no saved match, message information, call logs, calls and AI streamed replies.
+- Editing, deleting and reacting to messages that are already sent. These are not queued offline. See [Edits, deletes and reactions](#edits-deletes-and-reactions).
+- Media the device never downloaded.
+
+## Requirements
+
+| Requirement | Version |
+| --- | --- |
+| `@cometchat/chat-uikit-react-native` | 5.6.0 or later |
+| `@cometchat/chat-sdk-react-native` | 4.2.0 or later |
+
+The UI Kit's peer dependency on the Chat SDK stays `*`. The kit checks at runtime whether the installed SDK supports offline, so an app on an older SDK keeps working online only, and the `offline` setting is ignored.
+
+### Install the native dependencies
+
+Offline support stores data in a local database, which the Chat SDK opens through native modules that you install in your app:
+
+| Package | Needed for |
+| --- | --- |
+| `@op-engineering/op-sqlite` (9.0.0 or later) | The local database. **Required for offline support.** Without it the SDK runs online only. |
+| `react-native-fs` | Optional. Caching media on the device, and playable copies of cached audio and video in the UI Kit. Without it, the UI Kit uses the cached file as it is. |
+| `react-native-keychain` | Only for [encrypting the cache](/sdk/react-native/offline-encryption). |
+
+```bash
+npm install @op-engineering/op-sqlite react-native-fs
+```
+
+The SDK documents these packages in [Enable Offline Support](/sdk/react-native/offline-enable). Pick an `op-sqlite` release that supports your React Native version.
+
+### Rebuild the native app
+
+These packages are native modules, and the UI Kit itself also ships native code (5.6.0 adds native file-copy code so Download and Share can use a saved file). After you install or upgrade, rebuild the native app; a JavaScript reload is not enough.
+
+<Tabs>
+<Tab title="iOS">
+```bash
+cd ios && pod install && cd ..
+npx react-native run-ios
+```
+</Tab>
+<Tab title="Android">
+```bash
+npx react-native run-android
+```
+</Tab>
+</Tabs>
+
+### Android: compileSdk and media3
+
+The UI Kit's Android module plays voice notes with `androidx.media3` **1.8.0**, which needs **`compileSdkVersion` 35** or later. If your app must stay on `compileSdkVersion` 34, pin an older media3 release with the `RNVideo_media3Version` key (the same key `react-native-video` reads) in the `ext` block of your project-level `android/build.gradle`:
+
+```groovy android/build.gradle
+buildscript {
+    ext {
+        // keep your other ext values
+        RNVideo_media3Version = "1.4.1"
+    }
+}
+```
+
+### Expo
+
+The UI Kit and the offline database are native modules, so offline support runs in a [development build](https://docs.expo.dev/develop/development-builds/introduction/) or after `expo prebuild`, not in Expo Go. See [Expo Integration](/ui-kit/react-native/expo-integration).
+
+## Enable Offline Support
+
+Add the `offline` field to the `UIKitSettings` you pass to `CometChatUIKit.init()`. The UI Kit hands it to the Chat SDK's `AppSettingsBuilder.setOfflineConfig(...)` for you.
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { CometChatUIKit, UIKitSettings } from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const uiKitSettings: UIKitSettings = {
+  appId: "APP_ID",
+  authKey: "AUTH_KEY",
+  region: "REGION",
+  subscriptionType: CometChat.AppSettings.SUBSCRIPTION_TYPE_ALL_USERS as UIKitSettings["subscriptionType"],
+  offline: {
+    enabled: true,
+    mediaCaching: CometChat.MediaCachingMode.AUTO,
+  },
+};
+
+CometChatUIKit.init(uiKitSettings)
+  .then(() => {
+    console.log("CometChat UI Kit initialized with offline support.");
+  })
+  .catch((error) => {
+    console.error("CometChat UI Kit initialization failed:", error);
+  });
+```
+</Tab>
+<Tab title="JavaScript">
+```jsx
+import { CometChatUIKit } from "@cometchat/chat-uikit-react-native";
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const uiKitSettings = {
+  appId: "APP_ID",
+  authKey: "AUTH_KEY",
+  region: "REGION",
+  subscriptionType: CometChat.AppSettings.SUBSCRIPTION_TYPE_ALL_USERS,
+  offline: {
+    enabled: true,
+    mediaCaching: CometChat.MediaCachingMode.AUTO,
+  },
+};
+
+CometChatUIKit.init(uiKitSettings)
+  .then(() => {
+    console.log("CometChat UI Kit initialized with offline support.");
+  })
+  .catch((error) => {
+    console.error("CometChat UI Kit initialization failed:", error);
+  });
+```
+</Tab>
+</Tabs>
+
+`offline` accepts three forms:
+
+| Value | Result |
+| --- | --- |
+| `true` | Offline support with the SDK's default options. |
+| An options object (`UIKitOfflineSettings`) | The options you set, with defaults for the rest. Include `enabled: true`: without it, `enabled` is `false` and offline support stays off. Every option is listed in the [SDK's `OfflineConfig` options](/sdk/react-native/offline-reference#offlineconfig-options). |
+| A `CometChat.OfflineConfig` | Passed to the SDK as it is. Create it with `enabled: true`. |
+
+If you leave `offline` out, or set it to `false`, offline support stays off and the UI Kit works exactly as before.
+
+### With `initFromSettings`
+
+If you initialize with `CometChatUIKit.initFromSettings()`, pass the same value as its second argument, or put it under `chatSDK.offline` in the settings. A value passed as the argument replaces the one in the settings.
+
+```tsx
+CometChatUIKit.initFromSettings(settings, { enabled: true });
+```
+
+### Check that it is running
+
+The UI Kit never reads back the value you configured. It asks the SDK with `CometChat.isOfflineEnabled()` each time it needs to, because offline support can be inactive even when you enabled it: before anyone logs in, when the local database cannot open, or when it is turned off for your app remotely. Do the same in your own code.
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-react-native";
+
+const active: boolean = CometChat.isOfflineEnabled();
+```
+
+<Warning>
+Without `@op-engineering/op-sqlite`, or with a Chat SDK older than 4.2.0, offline support stays off and the UI Kit works online only. Check `CometChat.isOfflineEnabled()` after login to confirm it is running.
+</Warning>
+
+## How the Components Behave Offline
+
+Everything in this section applies only while offline support is running. With it off, every component behaves as before.
+
+### Lists
+
+The same rule applies to [Conversations](/ui-kit/react-native/conversations), [Users](/ui-kit/react-native/users), [Groups](/ui-kit/react-native/groups), [Group Members](/ui-kit/react-native/group-members) (banned members too), the [Message List](/ui-kit/react-native/message-list) and threads, [Search](/ui-kit/react-native/search), the reactions list, [Pinned Messages](/ui-kit/react-native/pinned-messages), [Saved Messages](/ui-kit/react-native/saved-messages) and the [Notification Feed](/ui-kit/react-native/notification-feed):
+
+- **Saved rows show at once.** The server's page then merges into them in place, with no flicker or reload.
+- **Offline with rows on screen:** a load that fails because there is no connection leaves the rows on screen, with no error view.
+- **Offline with nothing saved:** the list shows its offline state: an icon and **Connect to load chats** (or users, groups, members, messages, reactions, notifications), with no Retry button. If you passed your own `ErrorView`, it shows instead.
+- **Online, the server returns nothing:** the empty view (yours, if you passed one).
+- **Online, a real error:** the error view with Retry when nothing is on screen, as before; rows already on screen stay.
+- **On reconnect:** rows update in place. A list reloads once by itself only if it was showing the offline state or an offline search.
+
+### Search
+
+A keyword search offline shows the saved matches. With no saved match it shows **Connect to search**, with the second line **Search needs an internet connection.** If you passed your own empty view, it shows instead. When the connection returns, the search runs again once.
+
+Only a real keyword counts as a search. A list opened with only a filter (for example, online users only, a tags filter, or a request builder without a keyword) is a plain list, and offline with nothing saved it shows that list's **Connect to load …** text.
+
+On the [Search](/ui-kit/react-native/search) screen, with nothing saved, **Connect to search** shows when a keyword could not reach the server, or when neither the chats search nor the messages search could. A filter-only search where only one of them could not reach the server shows the plain empty state.
+
+### Message list and threads
+
+- A chat or thread opened before shows its saved messages at once.
+- At the older end of the saved history, the list shows a tappable **Connect to load more** row. After a jump to a message, the same row can also appear at the newer end. When the connection returns, the page behind each blocked edge loads once by itself, older pages first. Tapping or scrolling there works too.
+- A failed older page (a server error or no connection) never ends the list; only an empty server page does.
+- **Start from the first unread** (`startFromUnreadMessages`) and a jump to a message land on the right message before the list pages or follows new messages. After a jump to an older message, scrolling to the end (or "latest") loads the rest, so no message is skipped.
+- On reconnect the message and conversation lists use the SDK's catch-up instead of making their own requests. Pull-to-refresh on the conversation list asks the SDK to sync.
+
+### Sending messages
+
+- A message sent offline appears in the list straight away with a clock icon and **Not sent yet**, and is queued on the device, even if the app is closed. It is sent automatically when the connection returns. A queued message is not a failure.
+- A message that could not be sent shows an error icon and **Not sent. Tap to retry**. Failures come from the SDK's message status, so they survive an app restart.
+- Every unsent message (waiting, sending or failed) offers **Retry** and **Delete** in its menu, and nothing else, because the other actions need a message that reached the server. For a queued message, Retry asks the SDK to send that same message again rather than creating a new one, so it cannot duplicate it. A message that failed before it was queued is sent again as a new message. Delete removes it from the device for good.
+- If the message is being sent at that moment, Retry and Delete change nothing and the UI Kit shows **Sending… try again in a moment** for about four seconds.
+- When the device's outbox is full, the send is refused and the UI Kit shows **Too many messages waiting to send** once for that message. A file too large to queue shows **File too large to send offline**. See [Queue Limits](/sdk/react-native/offline-send#queue-limits) for the SDK's limits.
+- The conversation's row in [Conversations](/ui-kit/react-native/conversations) shows the same clock or error icon while its last message is waiting or failed.
+- If offline support is turned off for your app remotely while messages are waiting, those rows turn failed at the next connection change, with one notice. Retry then sends them as new messages.
+
+### Attachments and media
+
+- Attachments staged in the composer tray (both the [Message Composer](/ui-kit/react-native/message-composer) and the [Compact Message Composer](/ui-kit/react-native/compact-message-composer)) survive leaving the chat and an app restart. Files that finished uploading stay done; interrupted files come back failed with a retry button. Nothing uploads by itself.
+- Images, videos, audio and files come from the SDK's saved copy when it has one, with `mediaCaching` set to `AUTO` (the default). See [Media Caching](/sdk/react-native/offline-media-caching).
+- Media the device never downloaded shows **Available when online** while offline. Tapping it online asks the SDK to download and save it.
+- Download, "Download all" and Share in the media viewer use the saved file when there is one, without fetching it again. Offline with no saved copy, they show **Available when online**.
+
+### Edits, deletes and reactions
+
+Editing or deleting a sent message and adding or removing a reaction are not queued offline: they go to the server when the user acts and fail without a connection (see the [SDK's rules](/sdk/react-native/offline-send#edits-deletes-and-reactions-need-a-connection)). The UI Kit handles the failure for you:
+
+- An edit that fails offline keeps its text in edit mode, in both composers, so the user can send it again.
+- A reaction that fails is rolled back; the message shows what it showed before the tap.
+- A failed edit, delete or reaction shows the UI Kit's "Something went wrong" notice.
+
+Edits, deletes and reactions made by other users while the device was offline arrive with the catch-up when it reconnects.
+
+### Presence
+
+While the SDK is disconnected, nobody shows online: no "Online" subtitle, no green status dot and no typing text, in every list and header. Presence comes back when the connection returns.
+
+### Pinned, Saved, Reactions and Notifications
+
+[Pinned Messages](/ui-kit/react-native/pinned-messages), [Saved Messages](/ui-kit/react-native/saved-messages), the reactions list and the [Notification Feed](/ui-kit/react-native/notification-feed) follow the [list rule](#lists): saved rows first, and **Connect to load messages**, **Connect to load reactions** or **Connect to load notifications** when nothing is saved.
+
+### Group changes while offline
+
+If the user was kicked, banned or removed from a group while the device was offline, the conversation list drops that conversation when the catch-up arrives, as the message header and the groups list do.
+
+### Logout and user switch
+
+The SDK keeps one cache per user. On logout, a user switch or a cache reset, the UI Kit clears every list and composer tray, and the SDK deletes that user's cached data, cached media and queued messages. Logging in again as the same user keeps the cache. You don't need to clear anything yourself. See [One cache per user](/sdk/react-native/offline-overview#one-cache-per-user).
+
+## Offline States and Texts
+
+These texts appear only with offline support running. Each one has a localization key you can override (see [Change the texts](#change-the-texts)). They are translated in all 18 locales of the UI Kit.
+
+| Text | Key | Where it appears |
+| --- | --- | --- |
+| Connect to load chats | `OFFLINE_CONNECT_TO_LOAD_CHATS` | Conversations, offline with nothing saved |
+| Connect to load users | `OFFLINE_CONNECT_TO_LOAD_USERS` | Users, offline with nothing saved (also a filter-only list) |
+| Connect to load groups | `OFFLINE_CONNECT_TO_LOAD_GROUPS` | Groups, offline with nothing saved |
+| Connect to load members | `OFFLINE_CONNECT_TO_LOAD_MEMBERS` | Group Members and banned members, offline with nothing saved |
+| Connect to load messages | `OFFLINE_CONNECT_TO_LOAD_MESSAGES` | Message list, threads, Pinned and Saved, offline with nothing saved |
+| Connect to load reactions | `OFFLINE_CONNECT_TO_LOAD_REACTIONS` | Reactions list, offline with nothing saved |
+| Connect to load notifications | `OFFLINE_CONNECT_TO_LOAD_NOTIFICATIONS` | Notification Feed, offline with nothing saved |
+| Connect to search | `OFFLINE_CONNECT_TO_SEARCH`, `OFFLINE_CONNECT_TO_SEARCH_MESSAGES` | A keyword search offline with no saved match |
+| Search needs an internet connection. | `OFFLINE_CONNECT_TO_SEARCH_SUBTITLE` | Second line under **Connect to search** |
+| Connect to load more | `OFFLINE_CONNECT_TO_LOAD_MORE` | Tappable row at a blocked edge of the message list or a thread, and the footer of other lists |
+| Not sent yet | `OFFLINE_MESSAGE_NOT_SENT_YET` | Under an own message waiting to be sent |
+| Not sent. Tap to retry | `OFFLINE_MESSAGE_NOT_SENT_TAP_TO_RETRY` | Under an own message that failed |
+| Sending… try again in a moment | `OFFLINE_SEND_IN_FLIGHT` | Notice after Retry or Delete on a message being sent |
+| Too many messages waiting to send | `OFFLINE_QUEUE_FULL` | Notice when the outbox is full |
+| File too large to send offline | `OFFLINE_FILE_TOO_LARGE` | Notice when a file cannot be queued |
+| Available when online | `OFFLINE_MEDIA_AVAILABLE_WHEN_ONLINE` | Media the device never downloaded, and Download or Share without a saved copy |
+| 1 unsent message was removed | `OFFLINE_UNSENT_MESSAGE_REMOVED` | Notice, with **Copy** for a text message, when an unsent message was removed |
+| {count} message wasn't sent / {count} messages weren't sent | `OFFLINE_MESSAGES_NOT_SENT_ONE`, `OFFLINE_MESSAGES_NOT_SENT_OTHER` | Notice when queued messages failed |
+| {count} unsent message couldn't be recovered / {count} unsent messages couldn't be recovered | `OFFLINE_UNSENT_MESSAGES_LOST_ONE`, `OFFLINE_UNSENT_MESSAGES_LOST_OTHER` | Notice after a cache reset lost queued messages |
+| Some unsent messages may not have been sent | `OFFLINE_UNSENT_MESSAGES_MAYBE_LOST` | Notice after a cache reset when the SDK could not count the lost messages |
+
+Keys with a count have `_ONE` and `_OTHER` forms; `{count}` is replaced with the number.
+
+## Errors and Callbacks
+
+### When `onError` fires
+
+| Situation | What shows | `onError` |
+| --- | --- | --- |
+| Offline, rows on screen, a load fails | The rows stay | Not called |
+| Offline, nothing on screen | **Connect to load …** (or your `ErrorView`) | Called once for that load |
+| Offline keyword search, no saved match | **Connect to search** (or your empty view) | Not called |
+| Online, a real error, nothing on screen | The error view with Retry (or your `ErrorView`) | Called |
+| Online, a real error, rows on screen | The rows stay | Called once if the user or your app started the load (opening the list, `reload()`, pull-to-refresh, a keyword change, paging, a jump to a message). Not called for loads the UI Kit starts by itself (reconnect, catch-up pages, cache reset) |
+
+The reactions list, Pinned and Saved have no `onError` prop, so they show the state only.
+
+### `CometChatUIKit.send*` promises
+
+With offline support running, the promise returned by `CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage`:
+
+- **resolves** when the message reaches the server, also when it was queued first;
+- **rejects** on a final failure;
+- never rejects just because the message was queued;
+- **rejects once, quietly,** with the error code `ERROR_OFFLINE_MESSAGE_DISCARDED` when the user logs out or switches user while the send is waiting, or when a cache reset loses the queued message. There is no failed row, no notice, no `ccMessageSent` error event and no `onError`, and the composer stays usable.
+
+If your code awaits these methods, treat `ERROR_OFFLINE_MESSAGE_DISCARDED` as "the send ended with the session", not as a failure to show the user.
+
+```tsx
+import { CometChatUIKit } from "@cometchat/chat-uikit-react-native";
+
+try {
+  await CometChatUIKit.sendTextMessage(textMessage);
+} catch (error: any) {
+  if (error?.code === "ERROR_OFFLINE_MESSAGE_DISCARDED") {
+    // The session ended before the message was sent. Nothing to show.
+    return;
+  }
+  // A real failure.
+}
+```
+
+### Offline events
+
+The UI Kit emits two events on the existing message event bus. Both are new and **never emitted with offline support off**. `ccMessageSent` keeps its meaning.
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `ccMessageSendStateChanged` | `MessageSendStateChangedEvent`: `{ message, state, reason? }` | An own message's send state changed. `state` is a `MessageSendState`: `"sending"`, `"sent"`, `"failed"` or `"discarded"`. `reason` is the SDK's `MessageFailureReason` for `"failed"` and `"discarded"`. |
+| `ccOfflineCacheReset` | `OfflineCacheResetEvent`: `{ reason, pendingMessagesLost }` | The SDK rebuilt its offline cache. `reason` is the SDK's `OfflineCacheResetReason`; `pendingMessagesLost` is the number of unsent messages lost, or `null` when the SDK could not count them. |
+
+The event names are on `OfflineMessageEvents`, and the payload types are exported from the package.
+
+<Tabs>
+<Tab title="TypeScript">
+```tsx
+import { useEffect } from "react";
+import {
+  CometChatUIEventHandler,
+  OfflineMessageEvents,
+  MessageSendStateChangedEvent,
+  OfflineCacheResetEvent,
+} from "@cometchat/chat-uikit-react-native";
+
+const LISTENER_ID = "OFFLINE_EVENTS_LISTENER";
+
+useEffect(() => {
+  CometChatUIEventHandler.addMessageListener(LISTENER_ID, {
+    [OfflineMessageEvents.ccMessageSendStateChanged]: ({ message, state, reason }: MessageSendStateChangedEvent) => {
+      console.log("Send state:", state, reason);
+    },
+    [OfflineMessageEvents.ccOfflineCacheReset]: ({ reason, pendingMessagesLost }: OfflineCacheResetEvent) => {
+      console.log("Offline cache reset:", reason, pendingMessagesLost);
+    },
+  });
+  return () => CometChatUIEventHandler.removeMessageListener(LISTENER_ID);
+}, []);
+```
+</Tab>
+<Tab title="JavaScript">
+```jsx
+import { useEffect } from "react";
+import {
+  CometChatUIEventHandler,
+  OfflineMessageEvents,
+} from "@cometchat/chat-uikit-react-native";
+
+const LISTENER_ID = "OFFLINE_EVENTS_LISTENER";
+
+useEffect(() => {
+  CometChatUIEventHandler.addMessageListener(LISTENER_ID, {
+    [OfflineMessageEvents.ccMessageSendStateChanged]: ({ message, state, reason }) => {
+      console.log("Send state:", state, reason);
+    },
+    [OfflineMessageEvents.ccOfflineCacheReset]: ({ reason, pendingMessagesLost }) => {
+      console.log("Offline cache reset:", reason, pendingMessagesLost);
+    },
+  });
+  return () => CometChatUIEventHandler.removeMessageListener(LISTENER_ID);
+}, []);
+```
+</Tab>
+</Tabs>
+
+For the SDK's own listeners (sync progress, the outbox, cache resets), see [Stay in Sync](/sdk/react-native/offline-sync) and [Send While Offline](/sdk/react-native/offline-send).
+
+## Customization
+
+### Hide the offline notices
+
+`CometChatMessageList` and `CometChatConversations` take `hideOfflineNotices` (default `false`). It hides the one-line notices: an unsent message removed, the outbox full, messages not sent, and the cache rebuilt or unsent messages lost. It has no effect with offline support off. The **Not sent** rows, the offline states and **Connect to load more** still show.
+
+```tsx
+<CometChatMessageList user={user} hideOfflineNotices={true} />
+<CometChatConversations hideOfflineNotices={true} />
+```
+
+### Your own error and empty views
+
+If you pass your own `ErrorView` to a list, it shows instead of the UI Kit's **Connect to load …** state. If you pass your own `EmptyView`, it shows instead of **Connect to search**.
+
+### Style the offline states
+
+Set `messageListStyles.offlineStyles` in your theme. Everything is optional: anything you leave out uses the theme's existing error and date styles. These styles are used by the message list, the conversation list (its notice) and the media bubbles.
+
+| Property | Type | Styles |
+| --- | --- | --- |
+| `failedRowStyle` | `ViewStyle` | The tappable **Not sent. Tap to retry** row of a failed message (no tint by default) |
+| `failedIconStyle` | `ImageStyle` | The error icon of a failed message |
+| `retryTextStyle` | `TextStyle` | The **Not sent. Tap to retry** text |
+| `notSentYetTextStyle` | `TextStyle` | The **Not sent yet** text |
+| `mediaPlaceholderStyle` | `{ containerStyle?: ViewStyle; textStyle?: TextStyle }` | The **Available when online** placeholder for media |
+| `footerStyle` | `{ containerStyle?: ViewStyle; textStyle?: TextStyle }` | The **Connect to load more** row and list footer |
+| `noticeStyle` | `{ containerStyle?: ViewStyle; textStyle?: TextStyle; actionTextStyle?: TextStyle }` | The one-line notices and their **Copy** action |
+
+```tsx
+import { CometChatThemeProvider } from "@cometchat/chat-uikit-react-native";
+
+<CometChatThemeProvider
+  theme={{
+    light: {
+      messageListStyles: {
+        offlineStyles: {
+          retryTextStyle: { color: "#D92D20" },
+          footerStyle: { textStyle: { color: "#6852D6" } },
+          noticeStyle: { containerStyle: { borderRadius: 8 } },
+        },
+      },
+    },
+  }}
+>
+  {/* your app */}
+</CometChatThemeProvider>
+```
+
+See [Theming](/ui-kit/react-native/theme) for how theme values merge with the defaults.
+
+### Change the texts
+
+Override any key from the [table above](#offline-states-and-texts) with `CometChatI18nProvider`. See [Localization](/ui-kit/react-native/localize) for how keys and language codes resolve.
+
+```tsx
+import { CometChatI18nProvider } from "@cometchat/chat-uikit-react-native";
+
+<CometChatI18nProvider
+  translations={{
+    en: {
+      OFFLINE_CONNECT_TO_LOAD_CHATS: "You're offline. Connect to see your chats.",
+      OFFLINE_MESSAGE_NOT_SENT_TAP_TO_RETRY: "Couldn't send. Tap to try again",
+    },
+  }}
+>
+  {/* your app */}
+</CometChatI18nProvider>
+```
+
+## With Offline Support Turned Off
+
+If you don't set `offline`, none of the behavior on this page runs: no offline states, no queued sends, no new events, and no new request, timer, connectivity check, file or storage. Upgrading to 5.6.0 still changes a few things for every app:
+
+- **Retry on a failed text or custom message works.** It used to do nothing. It now sends again through the same `CometChatUIKit.send*` path and emits `ccMessageSent` (in progress, then success or error) again.
+- **A message rejected by moderation keeps its error icon and no longer offers Retry.**
+- **A failed reaction is rolled back**, so the message shows what it showed before the tap.
+- **Edits always update the right message.** Two messages without a `muid` could match each other before.
+- **Reconnect catch-up pages forward.** A full page is followed by the next one instead of fetching the same page again.
+- **Lists reload with your current request builder on reconnect,** not the one from their first render.
+- **Automation identifiers:** the composer input has the `testID` `cc-composer-input` and the send button `CometChatComposer.send`. View-snapshot tests that include them may change.
+
+## Limitations and Known Issues
+
+- The cache holds only what the user loaded while online, plus what the catch-up brings in on reconnect. A user who has never been online on this device has nothing to show offline.
+- Keyword search with no saved match, message information, call logs, calls and AI streamed replies need a connection.
+- Edits, deletes and reactions on sent messages are not queued offline.
+- If the acknowledgement of a send is lost, the server can occasionally end up with one duplicate of that message.
+- After a quick reconnect, missed messages can take up to about 10 seconds to appear.
+- After an app restart, the reason a message failed may be unknown; it is still offered Retry.
+- A chat can stop receiving updates while online if a send got no answer while connected; it resumes at the next reconnect.
+- With `encryption: true` and `PLAINTEXT_FALLBACK` on a device without a secure key store, the SDK resets the cache with `ENCRYPTION_CHANGED` on every launch. Install `react-native-keychain`. The UI Kit shows a notice only when queued messages were lost. See [Encrypt the Cache](/sdk/react-native/offline-encryption).
+- A conversation started offline can be removed by the SDK and its queued messages discarded; the UI Kit shows a notice with **Copy** for the text.
+- On Android, a file the SDK saved but the UI Kit never downloaded may not open offline; the UI Kit shows **Available when online**. iOS opens it. With `enableMultipleAttachments={false}`, the older single-file bubble opens files only when online, on both platforms.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SDK Offline Support" icon="database" href="/sdk/react-native/offline-overview">
+    How caching, the send outbox and catch-up work in the Chat SDK
+  </Card>
+  <Card title="Configuration & API Reference" icon="sliders" href="/sdk/react-native/offline-reference">
+    Every OfflineConfig option, method, listener and error code
+  </Card>
+  <Card title="Send While Offline" icon="paper-plane" href="/sdk/react-native/offline-send">
+    The outbox, retry and discard, and queue limits
+  </Card>
+  <Card title="Core Features" icon="comments" href="/ui-kit/react-native/core-features">
+    See how the components power each chat feature
+  </Card>
+</CardGroup>
