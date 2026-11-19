@@ -1,7 +1,7 @@
 ---
 title: "Offline Support"
 sidebarTitle: "Offline Support"
-description: "Turn on offline support in the CometChat iOS UI Kit so saved chats open without a connection, sends queue until reconnect, and every list shows clear offline states."
+description: "Turn on offline support in the CometChat iOS UI Kit so saved chats open without a connection, messages queue until reconnect, and every list shows clear offline states."
 ---
 
 <Accordion title="AI Integration Quick Reference">
@@ -20,7 +20,7 @@ description: "Turn on offline support in the CometChat iOS UI Kit so saved chats
 
 </Accordion>
 
-With offline support turned on, the iOS UI Kit reads from the Chat SDK's on-device cache. Chats the user has opened before appear at once, even with no connection. Messages sent while offline wait in a queue and go out when the connection returns. Every list shows a clear state when it has nothing saved and can't reach the server.
+With offline support turned on, the iOS UI Kit reads from the Chat SDK's on-device cache. Chats the user has opened before appear at once, even with no connection. Messages sent while offline wait in a queue and go out when the connection returns. Files picked in the attachment tray are the exception: they upload as soon as they're picked, so they need a connection. Every list shows a clear state when it has nothing saved and can't reach the server.
 
 The UI Kit builds on the Chat SDK's offline support. This page covers what the UI Kit adds on top. For cache settings, encryption, media caching and sync, see the [iOS SDK offline docs](/sdk/ios/offline-overview).
 
@@ -29,14 +29,16 @@ The UI Kit builds on the Chat SDK's offline support. This page covers what the U
 **Works offline:**
 - Conversations, users, groups and group members you have loaded before show at once from the cache.
 - Saved message history, including threads, opens without a connection.
-- New messages, including media, are queued and sent automatically on reconnect. A queued message shows a clock until it is sent.
+- New text messages, voice notes and messages sent with the `CometChatUIKit` send methods are queued and sent automatically on reconnect. A queued message shows a clock and **Not sent yet** until it is sent.
 - Images, video, audio and files that are on the device open from the saved copy.
+- Avatars the user has seen are kept on the device (up to 250 MB), so lists and headers show them offline.
 - After a reconnect, the SDK's catch-up brings in what changed while you were away, including a kick, ban or leave in a group.
 
 **Needs a connection:**
 - The first load of any chat or list that was never opened before.
 - Keyword search with no saved match.
-- Editing or deleting a sent message, and adding or removing a reaction. These aren't queued. They report an error when there is no connection, and a failed reaction is rolled back.
+- Uploading a photo, video, audio file or document picked in the attachment tray (`enableMultipleAttachments`, on by default). The message can be sent once its files have uploaded.
+- Editing or deleting a sent message, and adding or removing a reaction. These aren't queued. When one fails, the UI Kit shows the notice **No Internet Connection. Please try again later.** (or **Something went wrong, please try again.** for any other error) and the message keeps what it had. A failed reaction is rolled back.
 - Message information, call logs, calls and AI streamed replies.
 - Media that has no copy on the device.
 
@@ -143,31 +145,34 @@ A **keyword** search with no saved match while offline shows **Connect to search
 - Saved history shows at once. Older and newer pages come from the cache first, then from the server.
 - A chat that was never saved, opened offline, shows **Connect to load messages** and calls `onError`. It loads once by itself when the connection returns.
 - When the list reaches the end of the saved messages with no connection, it shows a tappable **Connect to load more** row at that edge: older messages at the top, newer ones at the bottom. Tap it to try again. On reconnect each blocked edge loads once by itself, older first. Scrolling loads older messages again once the connection is back.
-- Jumping to a message and starting from the first unread anchor on that message first. Paging and live messages don't scroll the list away until it has settled, for at most 6 seconds. If the target isn't saved and the server can't be reached, the chat stays on its newest page.
+- Jumping to a message, or starting from the first unread message, shows the list around that message first. Paging and live messages don't scroll the list away until it has settled, for at most 6 seconds. If the target isn't saved and the server can't be reached, the chat stays on its newest page.
 - When more messages arrive than one refresh can bridge, a **Jump to latest** pill appears. Your reading position stays until you tap it.
 - Images, video, audio and files show the on-device copy first. With no copy and no connection, the bubble shows a placeholder with the file name, size and **Available when online**. It redraws as the normal bubble when the connection returns. Tapping it while connected asks the SDK to download the file.
 
 ### Composer and unsent messages
 
-- A message sent while offline appears at once with a clock. It goes out automatically on reconnect. Media attachments queue the same way.
+- A text message or voice note sent while offline appears at once with a clock and **Not sent yet** under the bubble (unless the bubble already has a bottom view). It goes out automatically on reconnect.
+- Photos, videos, audio files and documents picked in the attachment tray are **not** queued. Each file starts uploading as soon as it's picked, and uploading needs a connection, so the message can't be sent until its files have uploaded. A tile whose upload failed shows a retry control: tap it to upload that file again once you're back online. With offline support on, the files staged in a chat's tray are kept on the device for that chat, so they come back when the chat is opened again. With `enableMultipleAttachments = false`, a picked file is sent as a single media message, and that message is queued like a text message.
 - An unsent message (pending, sending or failed) offers only **Retry** and **Delete** in its long-press menu and its VoiceOver actions. It offers no Copy, Reply, React or Edit until it has been sent.
-- A failed message shows **Not sent. Tap to retry** under the bubble. Tapping that line or the failed icon retries it. Every failed message can be retried, whatever the reason.
+- A failed message shows **Not sent. Tap to retry** under the bubble. Tapping that line or the status icon retries it, and VoiceOver reads the hint "Retry" on both. Every failed message can be retried, whatever the reason. Tapping the clock of a queued message retries it too; a message the SDK is sending at that moment keeps a plain clock.
 - **Retry** asks the SDK to retry the queued message, so it never creates a duplicate. A message the SDK never queued (for example, refused because the queue was full or the file was too large) is sent again as a new send.
 - **Delete** removes the unsent message. If it was already sent in the meantime, the sent copy is deleted instead.
+- If the SDK no longer holds the unsent message (for example, it was removed after you left the group), Retry and Delete remove it from the list.
 - If the message is being sent at that moment, Retry and Delete change nothing and the list shows **Sending… try again in a moment** for 4 seconds.
 - A full queue shows **Too many messages waiting to send**. A file that is too big for the offline media cache shows **File too large to send offline**. Each notice shows once per message.
+- **Editing** a message needs a connection. If the edit fails, the message keeps its old text, the composer's `onError` fires, and the UI Kit shows **No Internet Connection. Please try again later.** (or **Something went wrong, please try again.**). `CometChatMessageComposer` keeps the edited text and the edit banner so you can try again. `CometChatCompactMessageComposer` leaves edit mode as soon as you tap Send, so the next message you type is a new message, not another edit.
 
 ### Presence
 
-While the SDK isn't connected, nobody shows as online: there's no online dot in any list and no "Online" or last-seen subtitle in the message header. Presence returns when the UI Kit fetches users again after reconnecting.
+While the SDK isn't connected (including while it is still connecting), nobody shows as online: there's no online dot in any list and no "Online" or last-seen subtitle in the message header. Presence shows again once the SDK is connected. The users list and the message header also fetch the user again after reconnecting.
 
 ### Pinned, Saved, Reactions and Notifications
 
-`CometChatPinnedMessages`, `CometChatSavedMessages`, the reaction list and `CometChatNotificationFeed` follow the same rules as the other lists. Saved rows show first. With nothing saved and no connection, they show **Connect to load messages**, **Connect to load reactions** or **Connect to load notifications**.
+`CometChatPinnedMessages`, `CometChatSavedMessages`, the reaction list and `CometChatNotificationFeed` follow the same rules as the other lists. Saved rows show first. With nothing saved and no connection, they show **Connect to load messages**, **Connect to load reactions** or **Connect to load notifications**. The reaction list keeps its tabs visible and shows **Connect to load reactions** below them.
 
 ### Logout and user switch
 
-Cached data belongs to the logged-in user. On logout or a user switch, the UI Kit clears every list on screen, search results, the notification feed, the pinned and saved panels and the composer's upload tray before the next user's first frame. Any message still waiting to be sent is answered with `ERROR_OFFLINE_MESSAGE_DISCARDED`. See [Send completions](#send-completions).
+Cached data belongs to the logged-in user. The Chat SDK deletes the user's offline cache on logout and when a different user logs in, and the UI Kit deletes the avatars it saved on the device. On logout or a user switch, the UI Kit also clears every list on screen, search results, the notification feed, the pinned and saved panels and the composer's upload tray before the next user's first frame. Any message still waiting to be sent is answered with `ERROR_OFFLINE_MESSAGE_DISCARDED`. See [Send completions](#send-completions).
 
 ## Offline states and texts
 
@@ -186,16 +191,16 @@ Override any of these texts by defining the same key in your app's `Localizable.
 | Connect to search | `CONNECT_TO_SEARCH_MESSAGES` | `CometChatSearch` |
 | Search needs an internet connection. | `CONNECT_TO_SEARCH_SUBTITLE` | Second line under "Connect to search" |
 | Connect to load more | `CONNECT_TO_LOAD_MORE` | Message list and threads, at a blocked edge |
-| Not sent yet | `MESSAGE_NOT_SENT_YET` | VoiceOver label of a queued message's clock |
-| Not sent. Tap to retry | `MESSAGE_NOT_SENT_TAP_TO_RETRY` | Under a failed message |
+| Not sent yet | `MESSAGE_NOT_SENT_YET` | Under a queued or sending message, and the VoiceOver label of its clock |
+| Not sent. Tap to retry | `MESSAGE_NOT_SENT_TAP_TO_RETRY` | Under a failed message, and the VoiceOver label of its status icon |
 | Sending… try again in a moment | `SEND_IN_FLIGHT` | Retry or Delete on a message being sent |
 | Available when online | `MEDIA_AVAILABLE_WHEN_ONLINE` | Media placeholder |
 | Jump to latest | `JUMP_TO_LATEST` | Message list pill |
 | Too many messages waiting to send | `OFFLINE_QUEUE_FULL` | Notice when the queue is full |
 | File too large to send offline | `OFFLINE_FILE_TOO_LARGE` | Notice when media doesn't fit the cache |
-| 1 unsent message was removed | `UNSENT_MESSAGE_REMOVED` | Notice |
-| 1 message wasn't sent / %d messages weren't sent | `MESSAGES_NOT_SENT_ONE` / `MESSAGES_NOT_SENT_OTHER` | Notice |
-| 1 unsent message couldn't be recovered / %d unsent messages couldn't be recovered | `UNSENT_MESSAGES_LOST_ONE` / `UNSENT_MESSAGES_LOST_OTHER` | Notice after the SDK resets its cache |
+| 1 unsent message was removed | `UNSENT_MESSAGE_REMOVED` | Notice when the SDK removes a queued message, for example when a full queue drops its oldest message |
+| 1 message wasn't sent / %d messages weren't sent | `MESSAGES_NOT_SENT_ONE` / `MESSAGES_NOT_SENT_OTHER` | Message list notice when offline support turns off during a session while unsent messages are shown. They turn failed and can be retried |
+| 1 unsent message couldn't be recovered / %d unsent messages couldn't be recovered | `UNSENT_MESSAGES_LOST_ONE` / `UNSENT_MESSAGES_LOST_OTHER` | Message list and conversations notice after the SDK resets its cache |
 | Some unsent messages may not have been sent | `UNSENT_MESSAGES_MAYBE_LOST` | Notice after a cache reset with an unknown count |
 
 ## Errors and callbacks
@@ -243,7 +248,7 @@ The UI Kit's own senders (the composers, stickers and smart replies) handle this
 
 ### Offline events
 
-`CometChatMessageEventListener` has two events for offline support. Both have empty default bodies, so you implement only the ones you need. Neither fires while offline support is off.
+`CometChatMessageEventListener` has two events for offline support. Both have empty default bodies, so you implement only the ones you need. An app that never turns offline support on never receives them.
 
 | Event | Fires when |
 | --- | --- |
@@ -290,8 +295,8 @@ For the SDK's own reasons and error codes, see the [Configuration & API Referenc
 | `retryTextColor` | `UIColor` | `CometChatTheme.errorColor` | "Not sent. Tap to retry" |
 | `retryTextFont` | `UIFont` | `CometChatTypography.Caption1.medium` | "Not sent. Tap to retry" |
 | `failedIconTint` | `UIColor?` | `nil` (the receipt style's error tint) | Failed status icon of an unsent message |
-| `notSentYetTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Not sent yet", where shown as text |
-| `notSentYetTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Not sent yet", where shown as text |
+| `notSentYetTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Not sent yet" under a queued or sending message |
+| `notSentYetTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Not sent yet" under a queued or sending message |
 | `mediaPlaceholderTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Available when online" media placeholder |
 | `mediaPlaceholderTextFont` | `UIFont` | `CometChatTypography.Caption1.regular` | "Available when online" media placeholder |
 | `footerTextColor` | `UIColor` | `CometChatTheme.textColorSecondary` | "Connect to load more" rows |
@@ -346,16 +351,16 @@ Apps that don't turn on offline support keep today's behaviour, with these excep
 - **A failed reaction is rolled back correctly.** The reaction count, your own reaction and its position return to what they were.
 - **The failed-send event keeps your metadata.** `ccMessageSent` with `.error` now carries the message's `metaData` with `error: true` added, instead of replacing it.
 - **Paging after a jump skips unsent rows.** The older and newer requests use the oldest and newest message that has a server id.
+- **Media links that name a file on the device are used only for your own messages.** A `file://` link or an absolute path in another user's message is no longer opened, shown or shared. Image and file bubbles now keep their downloads in `Documents/cc_media/`, so files saved earlier in the app's Documents folder are downloaded again.
 
 ## Limitations and known issues
 
 - If a send acknowledgement is lost, the server can end up with one duplicate of the message.
-- After a quick reconnect, missed messages can take up to 15 seconds to appear.
+- After a quick reconnect, missed messages can take up to about 10 seconds to appear, because the Chat SDK waits at least 10 seconds between two catch-up syncs.
 - After an app restart, the reason a message failed may be unknown. It's still offered Retry.
 - If a send gets no answer while connected, the chat can stop updating until the next reconnect.
 - Keyword search, message information, call logs and AI streamed replies need a connection.
 - Media downloaded for offline use is stored unencrypted on the device. The message cache itself can be encrypted. See [Encrypt the Cache](/sdk/ios/offline-encryption).
-- Depending on the SDK build, a queue-full or file-too-large refusal can first show as pending. The UI Kit shows these messages as failed either way and shows the notice once.
 
 ## Next steps
 
