@@ -324,12 +324,12 @@ The reactions list, Pinned and Saved have no `onError` prop, so they show the st
 With offline support running, the promise returned by `CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage`:
 
 - **resolves** when the message reaches the server, also when it was queued first;
-- **rejects** on a final failure;
+- **rejects** on a final failure, with the SDK's error as it is: `error.code`, and `error.reason` with the failure reason when there is one. For example, a message evicted because the outbox overflowed rejects with `ERROR_PENDING_QUEUE_LIMIT` and the reason `QUEUE_OVERFLOW`;
 - never rejects just because the message was queued;
-- **rejects with the error code `DISCARDED`** when the SDK drops a queued message on its own (for example its conversation was purged, or the outbox overflowed) or the user deletes the unsent row; the error's `reason` is `DISCARDED` for a user delete, and the SDK's failure reason (for example `QUEUE_OVERFLOW`) for an SDK drop;
-- **rejects once, quietly,** with the error code `ERROR_OFFLINE_MESSAGE_DISCARDED` when the user logs out or switches user while the send is waiting, or when a cache reset loses the queued message. There is no failed row, no notice, no `ccMessageSent` error event and no `onError`, and the composer stays usable.
+- **rejects with `ERROR_OFFLINE_MESSAGE_DISCARDED`** when the user logs out or switches user while the send is waiting, when a cache reset loses the queued message, or when the message's conversation was removed from the device. For a session end or a cache reset there is no failed row, no notice, no `ccMessageSent` error event and no `onError`, and the composer stays usable;
+- **rejects with the error code `DISCARDED`** when the user deletes the unsent row; the error's `reason` is `DISCARDED`.
 
-If your code awaits these methods, treat `ERROR_OFFLINE_MESSAGE_DISCARDED` as "the send ended with the session", not as a failure to show the user. `DISCARDED` means the queued message is gone and was never sent.
+If your code awaits these methods, treat `ERROR_OFFLINE_MESSAGE_DISCARDED` and `DISCARDED` as "the message was never sent and there is nothing to show", not as a failure to show the user. Any other code is a real failure.
 
 ```tsx
 import { CometChatUIKit } from "@cometchat/chat-uikit-react-native";
@@ -337,12 +337,9 @@ import { CometChatUIKit } from "@cometchat/chat-uikit-react-native";
 try {
   await CometChatUIKit.sendTextMessage(textMessage);
 } catch (error: any) {
-  if (error?.code === "ERROR_OFFLINE_MESSAGE_DISCARDED") {
-    // The session ended before the message was sent. Nothing to show.
-    return;
-  }
-  if (error?.code === "DISCARDED") {
-    // The queued message was dropped and never sent. `error.reason` says why.
+  if (error?.code === "ERROR_OFFLINE_MESSAGE_DISCARDED" || error?.code === "DISCARDED") {
+    // The message was never sent (session ended, cache reset, conversation removed, or the user
+    // deleted it). Nothing to show.
     return;
   }
   // A real failure.
