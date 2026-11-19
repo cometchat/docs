@@ -274,7 +274,7 @@ If the user was kicked, banned or removed from a group while the device was offl
 
 ### Logout and user switch
 
-The SDK keeps one cache per user. On logout, a user switch or a cache reset, the UI Kit clears every list and composer tray. On logout and a user switch, the SDK also deletes that user's cached data, cached media and queued messages. Restarting the app while the same user stays logged in keeps the cache. You don't need to clear anything yourself. A `CometChatUIKit.send*` call still waiting at that moment is rejected with `ERROR_OFFLINE_MESSAGE_DISCARDED`; see [Errors and Callbacks](#errors-and-callbacks) and [`CometChatUIKit.send*` promises](#cometchatuikitsend-promises). See [One cache per user](/sdk/react-native/offline-overview#one-cache-per-user).
+The SDK keeps one cache per user. On logout, a user switch or a cache reset, the UI Kit clears every list and composer tray. On logout and a user switch, the SDK also deletes that user's cached data, cached media and queued messages. Restarting the app while the same user stays logged in keeps the cache. You don't need to clear anything yourself. On logout and a user switch, a `CometChatUIKit.send*` call still waiting is rejected quietly with `ERROR_OFFLINE_MESSAGE_DISCARDED`; for a cache reset, see [`CometChatUIKit.send*` promises](#cometchatuikitsend-promises). See [One cache per user](/sdk/react-native/offline-overview#one-cache-per-user).
 
 ## Offline States and Texts
 
@@ -324,10 +324,10 @@ The reactions list, Pinned and Saved have no `onError` prop, so they show the st
 With offline support running, the promise returned by `CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage`:
 
 - **resolves** when the message reaches the server, also when it was queued first;
-- **rejects** on a final failure, with the SDK's error as it is: `error.code`, and `error.reason` with the failure reason when there is one. For example, a message evicted because the outbox overflowed rejects with `ERROR_PENDING_QUEUE_LIMIT` and the reason `QUEUE_OVERFLOW`;
+- **rejects** on a final failure, with the SDK's error as it is: `error.code`, and `error.reason` with the failure reason when there is one. For example, a message refused because the outbox is full rejects with `ERROR_PENDING_QUEUE_LIMIT` and the reason `QUEUE_FULL`;
 - never rejects just because the message was queued;
-- **rejects with `ERROR_OFFLINE_MESSAGE_DISCARDED`** when the user logs out or switches user while the send is waiting, when a cache reset loses the queued message, or when the message's conversation was removed from the device. For a session end there is no failed row, no notice, no `ccMessageSent` error event and no `onError`, and the composer stays usable. For a cache reset, the UI Kit first handles the lost message like an unsent message that was removed: the row goes, `ccMessageSent` fires with the `error` status, `ccMessageSendStateChanged` fires with `"discarded"` and the "unsent message was removed" notice shows. The reset then adds its own notice, except for `ENCRYPTION_CHANGED`. `onError` is not called in either case;
-- **rejects with the error code `DISCARDED`** when the user deletes the unsent row; the error's `reason` is `DISCARDED`.
+- **rejects with the error code `DISCARDED`** when a message that was already queued is dropped: the user deletes the unsent row, an outbox overflow evicts it, its conversation is removed from the device, or a cache reset loses it. The error's `reason` is `QUEUE_OVERFLOW` for an eviction and `DISCARDED` otherwise. For the cases the SDK drives (eviction, conversation removal, cache reset), the UI Kit also handles the message like an unsent message that was removed: the row goes, `ccMessageSent` fires with the `error` status, `ccMessageSendStateChanged` fires with `"discarded"` and the "unsent message was removed" notice shows. A cache reset then adds its own notice when it lost messages, except for `ENCRYPTION_CHANGED`. `onError` is not called;
+- **rejects with `ERROR_OFFLINE_MESSAGE_DISCARDED`** when the user logs out or switches user while the send is waiting. There is no failed row, no notice, no `ccMessageSent` error event and no `onError`, and the composer stays usable. A cache reset that hits a send the SDK had not queued yet gives the same code.
 
 If your code awaits these methods, treat `ERROR_OFFLINE_MESSAGE_DISCARDED` and `DISCARDED` as "the message was never sent and there is nothing to show", not as a failure to show the user. Any other code is a real failure.
 
@@ -338,8 +338,7 @@ try {
   await CometChatUIKit.sendTextMessage(textMessage);
 } catch (error: any) {
   if (error?.code === "ERROR_OFFLINE_MESSAGE_DISCARDED" || error?.code === "DISCARDED") {
-    // The message was never sent (session ended, cache reset, conversation removed, or the user
-    // deleted it). Nothing to show.
+    // The message was never sent (logged out, switched user, or a queued message was dropped). Nothing to show.
     return;
   }
   // A real failure.
