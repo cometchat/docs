@@ -36,7 +36,7 @@ Offline support is available from React Native UI Kit **5.6.0** with React Nativ
 **Works offline**
 
 - Conversations, users, groups, group members, messages and threads the user has opened before appear at once from the device, then the server's page merges into them in place when it arrives.
-- New messages (text, media and custom messages) are queued on the device, survive an app restart, and are sent automatically when the connection returns.
+- New messages (text and custom messages, voice notes, and media messages whose files have already uploaded) are queued on the device, survive an app restart, and are sent automatically when the connection returns.
 - A message that could not be sent shows **Not sent. Tap to retry**, with Retry and Delete.
 - Images, videos, audio and files the device has already saved are shown from the device.
 - Attachments staged in the composer survive leaving the chat and an app restart.
@@ -47,6 +47,7 @@ Offline support is available from React Native UI Kit **5.6.0** with React Nativ
 - The first load of a chat, list or page that was never opened on this device.
 - Keyword search with no saved match, message information, call logs, calls and AI streamed replies.
 - Editing, deleting and reacting to messages that are already sent. These are not queued offline. See [Edits, deletes and reactions](#edits-deletes-and-reactions).
+- Uploading files picked in the composer tray. A file picked while offline is not queued; see [Attachments and media](#attachments-and-media).
 - Media the device never downloaded.
 
 ## Requirements
@@ -56,7 +57,7 @@ Offline support is available from React Native UI Kit **5.6.0** with React Nativ
 | `@cometchat/chat-uikit-react-native` | 5.6.0 or later |
 | `@cometchat/chat-sdk-react-native` | 4.2.0 or later |
 
-The UI Kit's peer dependency on the Chat SDK stays `*`. The kit checks at runtime whether the installed SDK supports offline, so an app on an older SDK keeps working online only, and the `offline` setting is ignored.
+The UI Kit's peer dependency on the Chat SDK stays `*`. The kit checks at runtime whether the installed SDK supports offline, so an app on an older SDK keeps working online only, and the `offline` setting is ignored. Use the latest Chat SDK release, which includes the newest offline fixes.
 
 ### Install the native dependencies
 
@@ -65,7 +66,7 @@ Offline support stores data in a local database, which the Chat SDK opens throug
 | Package | Needed for |
 | --- | --- |
 | `@op-engineering/op-sqlite` (9.0.0 or later) | The local database. **Required for offline support.** Without it the SDK runs online only. |
-| `react-native-fs` | Optional. Caching media on the device, and playable copies of cached audio and video in the UI Kit. Without it, the UI Kit uses the cached file as it is. |
+| `react-native-fs` | Optional. Caching media on the device, the SDK's copy of media queued offline, and playable copies of cached audio and video in the UI Kit. Without it, the UI Kit uses the cached file as it is. |
 | `react-native-keychain` | Only for [encrypting the cache](/sdk/react-native/offline-encryption). |
 
 ```bash
@@ -228,12 +229,13 @@ On the [Search](/ui-kit/react-native/search) screen, with nothing saved, **Conne
 - A failed older page (a server error or no connection) never ends the list; only an empty server page does.
 - **Start from the first unread** (`startFromUnreadMessages`) and a jump to a message land on the right message before the list pages or follows new messages. After a jump to an older message, scrolling to the end (or "latest") loads the rest, so no message is skipped.
 - On reconnect the message and conversation lists use the SDK's catch-up instead of making their own requests. Pull-to-refresh on the conversation list asks the SDK to sync.
+- The [thread header](/ui-kit/react-native/threaded-messages-header) counts the user's own reply once, when it is queued, and takes it back if the reply is removed before it was sent.
 
 ### Sending messages
 
 - A message sent offline appears in the list straight away with a clock icon and **Not sent yet**, and is queued on the device, even if the app is closed. It is sent automatically when the connection returns. A queued message is not a failure.
 - A message that could not be sent shows an error icon and **Not sent. Tap to retry**. Failures come from the SDK's message status, so they survive an app restart.
-- Every unsent message (waiting, sending or failed) offers **Retry** and **Delete** in its menu, and nothing else, because the other actions need a message that reached the server. For a queued message, Retry asks the SDK to send that same message again rather than creating a new one, so it cannot duplicate it. A message that failed before it was queued is sent again as a new message. Delete removes it from the device for good.
+- Every unsent message (waiting, sending or failed) offers **Retry** and **Delete** in its menu, and nothing else, because the other actions need a message that reached the server. For a queued message, Retry asks the SDK to send that same message again rather than creating a new one, so it cannot duplicate it. A message that failed before it was queued is sent again as a new message. If the SDK no longer holds the message (for example, its chat was removed from the device after the send failed), Retry removes the row, because there is nothing left to send. Delete removes it from the device for good.
 - If the message is being sent at that moment, Retry and Delete change nothing and the UI Kit shows **Sending… try again in a moment** for about four seconds.
 - When the device's outbox is full, the send is refused and the UI Kit shows **Too many messages waiting to send** once for that message. A file too large to queue shows **File too large to send offline**. See [Queue Limits](/sdk/react-native/offline-send#queue-limits) for the SDK's limits.
 - The conversation's row in [Conversations](/ui-kit/react-native/conversations) shows the same clock or error icon while its last message is waiting or failed.
@@ -242,15 +244,17 @@ On the [Search](/ui-kit/react-native/search) screen, with nothing saved, **Conne
 ### Attachments and media
 
 - Attachments staged in the composer tray (both the [Message Composer](/ui-kit/react-native/message-composer) and the [Compact Message Composer](/ui-kit/react-native/compact-message-composer)) survive leaving the chat and an app restart. Files that finished uploading stay done; interrupted files come back failed with a retry button. Nothing uploads by itself.
+- A file picked in the tray uploads right away, which needs a connection. Picked while offline, its upload fails and the tile shows a retry button; the file is not queued and nothing is sent. Retry it once the connection returns, then send. A voice note, and a file sent with `enableMultipleAttachments={false}`, go out as a message straight away, so the SDK queues them like any other message (see [Send While Offline](/sdk/react-native/offline-send)).
 - Images, videos, audio and files come from the SDK's saved copy when it has one, with `mediaCaching` set to `AUTO` (the default). See [Media Caching](/sdk/react-native/offline-media-caching).
 - Media the device never downloaded shows **Available when online** while offline. Tapping it online asks the SDK to download and save it.
 - Download, "Download all" and Share in the media viewer use the saved file when there is one, without fetching it again. Offline with no saved copy, they show **Available when online**.
+- Download and Share copy a file that is already on the device only from the Chat SDK's offline media folder. Any other local file a message points to is refused and nothing is copied.
 
 ### Edits, deletes and reactions
 
 Editing or deleting a sent message and adding or removing a reaction are not queued offline: they go to the server when the user acts and fail without a connection (see the [SDK's rules](/sdk/react-native/offline-send#edits-deletes-and-reactions-need-a-connection)). The UI Kit handles the failure for you:
 
-- An edit that fails offline leaves the message with its old text. The composer clears and leaves edit mode when the edit is sent, as it does online.
+- An edit that fails offline leaves the message with its old text. The composer clears and leaves edit mode when the edit is sent, as it does online, and the edited text is not put back. The error goes to the composer's `onError`.
 - A reaction that fails is rolled back; the message shows what it showed before the tap.
 - A failed edit, delete or reaction shows the UI Kit's "Something went wrong" notice.
 
@@ -270,7 +274,7 @@ If the user was kicked, banned or removed from a group while the device was offl
 
 ### Logout and user switch
 
-The SDK keeps one cache per user. On logout, a user switch or a cache reset, the UI Kit clears every list and composer tray, and the SDK deletes that user's cached data, cached media and queued messages. Logging in again as the same user keeps the cache. You don't need to clear anything yourself. See [One cache per user](/sdk/react-native/offline-overview#one-cache-per-user).
+The SDK keeps one cache per user. On logout, a user switch or a cache reset, the UI Kit clears every list and composer tray. On logout and a user switch, the SDK also deletes that user's cached data, cached media and queued messages. Restarting the app while the same user stays logged in keeps the cache. You don't need to clear anything yourself. A `CometChatUIKit.send*` call still waiting at that moment is settled quietly; see [Errors and Callbacks](#errors-and-callbacks). See [One cache per user](/sdk/react-native/offline-overview#one-cache-per-user).
 
 ## Offline States and Texts
 
@@ -295,8 +299,8 @@ These texts appear only with offline support running. Each one has a localizatio
 | File too large to send offline | `OFFLINE_FILE_TOO_LARGE` | Notice when a file cannot be queued |
 | Available when online | `OFFLINE_MEDIA_AVAILABLE_WHEN_ONLINE` | Media the device never downloaded, and Download or Share without a saved copy |
 | 1 unsent message was removed | `OFFLINE_UNSENT_MESSAGE_REMOVED` | Notice, with **Copy** for a text message, when an unsent message was removed |
-| {count} message wasn't sent / {count} messages weren't sent | `OFFLINE_MESSAGES_NOT_SENT_ONE`, `OFFLINE_MESSAGES_NOT_SENT_OTHER` | Notice when queued messages failed |
-| {count} unsent message couldn't be recovered / {count} unsent messages couldn't be recovered | `OFFLINE_UNSENT_MESSAGES_LOST_ONE`, `OFFLINE_UNSENT_MESSAGES_LOST_OTHER` | Notice after a cache reset lost queued messages |
+| \{count\} message wasn't sent / \{count\} messages weren't sent | `OFFLINE_MESSAGES_NOT_SENT_ONE`, `OFFLINE_MESSAGES_NOT_SENT_OTHER` | Notice when queued messages failed |
+| \{count\} unsent message couldn't be recovered / \{count\} unsent messages couldn't be recovered | `OFFLINE_UNSENT_MESSAGES_LOST_ONE`, `OFFLINE_UNSENT_MESSAGES_LOST_OTHER` | Notice after a cache reset lost queued messages |
 | Some unsent messages may not have been sent | `OFFLINE_UNSENT_MESSAGES_MAYBE_LOST` | Notice after a cache reset when the SDK could not count the lost messages |
 
 Keys with a count have `_ONE` and `_OTHER` forms; `{count}` is replaced with the number.
@@ -484,6 +488,7 @@ If you don't set `offline`, none of the behavior on this page runs: no offline s
 - **Edits always update the right message.** Two messages without a `muid` could match each other before.
 - **Reconnect catch-up pages forward.** A full page is followed by the next one instead of fetching the same page again.
 - **Lists reload with your current request builder on reconnect,** not the one from their first render.
+- **Download and Share copy a local file only from the Chat SDK's offline media folder.** When a message's attachment points to any other file on the device, nothing is copied (on Android the UI Kit shows **File download failed.**).
 - **Automation identifiers:** the composer input has the `testID` `cc-composer-input` and the send button `CometChatComposer.send`. View-snapshot tests that include them may change.
 
 ## Limitations and Known Issues
