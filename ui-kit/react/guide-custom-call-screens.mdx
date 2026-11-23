@@ -1,0 +1,215 @@
+---
+title: "Custom Call Screens"
+sidebarTitle: "Custom Call Screens"
+description: "Draw your own call buttons and call screens while the UI Kit still places, rings, answers and ends calls through the Calls SDK."
+---
+
+## Goal
+
+By the end of this guide your app draws its own call buttons and call screens, while the UI Kit still places, rings, answers and ends the calls. Use it when `CometChatCallButtons` and the screens it opens don't fit your design.
+
+## Prerequisites
+
+- Calling set up as in [Calling Integration](/ui-kit/react/calling-integration), with the Calls SDK 5.1.1 or later
+- `CometChatIncomingCall` rendered once at the root of your app
+- [How calls ring](/ui-kit/react/call-features#how-calls-ring): 1:1 calls ring through the Calls SDK, and group calls send a meeting message
+
+## Components Used
+
+| Component / API | Purpose |
+|:----------------|:--------|
+| `useCometChatCallButtons` | Places and cancels calls the way `CometChatCallButtons` does, and says which screen to show |
+| `CometChatOutgoingCall` | The outgoing call screen: "Outgoing Call", then "Ringing..." |
+| `CometChatOngoingCall` | Joins the call and draws it |
+| `useOngoingCall` | Joins the call into an element of your own, for a call screen you draw yourself |
+| `CometChatIncomingCall` with `onAccept` | Hands a call the user answers to your app |
+
+## Step 1: Place calls with `useCometChatCallButtons`
+
+`useCometChatCallButtons` does what `CometChatCallButtons` does, without drawing anything. Pass a `user` for a 1:1 call, which rings through the Calls SDK, or a `group` for a group call, which sends a meeting message.
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { useCometChatCallButtons } from "@cometchat/chat-uikit-react";
+
+function MyCallButtons({ user }: { user: CometChat.User }) {
+  const { callButtonsDisabled, initiateAudioCall, initiateVideoCall } = useCometChatCallButtons({
+    user,
+    callSettingsBuilder: { layout: "SIDEBAR" },
+  });
+
+  return (
+    <div>
+      <button disabled={callButtonsDisabled} onClick={initiateAudioCall}>Voice call</button>
+      <button disabled={callButtonsDisabled} onClick={initiateVideoCall}>Video call</button>
+    </div>
+  );
+}
+```
+
+### Options
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `user` | `CometChat.User` | The user to call. Pass either `user` or `group` |
+| `group` | `CometChat.Group` | The group to call |
+| `callSettingsBuilder` | `SessionSettings` | Settings for a 1:1 call, laid over the kit's defaults when the call is placed; `sessionType` comes from the call's type. Falls back to `GlobalConfig.callSettingsBuilder`. A group call uses the `callSettings` of your `CometChatOngoingCall` instead |
+| `onError` | `((error: CometChat.CometChatException) => void) \| null` | Called when placing or cancelling a call fails |
+
+### Returns
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `initiateAudioCall`, `initiateVideoCall` | `() => Promise<void>` | Place a voice or video call |
+| `cancelOutgoingCall` | `() => Promise<void>` | Cancel the call while it rings |
+| `resetCallState` | `() => void` | Clear the call once its screen closes |
+| `callButtonsDisabled` | `boolean` | `true` while a call is being placed or runs, or an incoming call rings. Disable your buttons with it |
+| `showOutgoingCallScreen` | `boolean` | Show the outgoing call screen |
+| `showOngoingCall` | `boolean` | Show the ongoing call |
+| `activeCall` | `CometChat.Call \| null` | The call this hook placed |
+| `callSessionId` | `string` | The call's session ID, for `CometChatOngoingCall` |
+| `isDirectCalling` | `boolean` | `true` for a group call |
+| `isGroupAudioCall` | `boolean` | `true` for a group voice call |
+
+The app has one call at a time. A call placed from another button or hook shows here only as `callButtonsDisabled`; the other fields describe the call this hook placed.
+
+## Step 2: Show the outgoing call screen
+
+While `showOutgoingCallScreen` is `true`, show `CometChatOutgoingCall` and cancel with `cancelOutgoingCall`:
+
+```tsx
+{showOutgoingCallScreen && activeCall && (
+  <CometChatOutgoingCall call={activeCall} onCallCanceled={cancelOutgoingCall} />
+)}
+```
+
+The screen reads "Outgoing Call", then "Ringing..." once the callee's device rings. Its title, subtitle, avatar and button can be replaced; see [Outgoing Call](/ui-kit/react/components/outgoing-call). When the callee answers, `showOutgoingCallScreen` turns `false` and `showOngoingCall` turns `true`. When the call is declined, busy, cancelled or not answered, both are `false`.
+
+## Step 3: Show the ongoing call
+
+While `showOngoingCall` is `true`, join the call with `CometChatOngoingCall`:
+
+```tsx
+{showOngoingCall && callSessionId && (
+  <CometChatOngoingCall
+    sessionID={callSessionId}
+    isAudioOnly={isGroupAudioCall || activeCall?.getType() === CometChat.CALL_TYPE.AUDIO}
+    isDirectCalling={isDirectCalling}
+    onCallEnded={resetCallState}
+  />
+)}
+```
+
+For a 1:1 call, `CometChatOngoingCall` joins the session the Calls SDK prepared while the call rang, so the call starts at once. That session's settings were fixed when the call was placed, so `callSettings` passed here don't apply to it; set them on the hook instead. A group call joins with the `callSettings` passed here.
+
+To draw the call screen around the call yourself, join it with `useOngoingCall` instead. It renders the call into an element you give it, and joins a prepared session the same way:
+
+```tsx
+import { useEffect, useRef } from "react";
+import { useOngoingCall } from "@cometchat/chat-uikit-react";
+
+function MyCallScreen({ sessionId, onEnded }: { sessionId: string; onEnded: () => void }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const { startCall, endCall, isCallActive } = useOngoingCall({ sessionId, onCallEnded: onEnded });
+
+  useEffect(() => {
+    if (frame.current) void startCall(frame.current);
+  }, [startCall]);
+
+  return (
+    <div>
+      <div ref={frame} style={{ height: 480 }} />
+      <button disabled={!isCallActive} onClick={() => void endCall()}>
+        End call
+      </button>
+    </div>
+  );
+}
+```
+
+`useOngoingCall` takes `sessionId`, `isAudioOnly`, `isDirectCalling`, `onCallEnded` and `onError`, and returns `startCall(element)`, `endCall()` (ends the call), `endSession()` (only leaves the session here) and `isCallActive`.
+
+## Step 4: Answer calls in your own screen
+
+`CometChatIncomingCall` answers calls and opens its own call screen. To open yours instead, pass `onAccept`. The kit then stops ringing and hands your app the session it prepared while the call rang:
+
+```tsx
+import { useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatIncomingCall, CometChatOngoingCall } from "@cometchat/chat-uikit-react";
+
+function IncomingCalls() {
+  const [call, setCall] = useState<CometChat.Call | null>(null);
+
+  return (
+    <>
+      <CometChatIncomingCall onAccept={setCall} />
+      {call && (
+        <CometChatOngoingCall
+          sessionID={call.getSessionId()}
+          isAudioOnly={call.getType() === CometChat.CALL_TYPE.AUDIO}
+          onCallEnded={() => setCall(null)}
+        />
+      )}
+    </>
+  );
+}
+```
+
+Leave `onDecline` unset so the kit still declines the call; see [Incoming Call](/ui-kit/react/components/incoming-call#ondecline). To change only how the card looks, use its view props (`itemView`, `titleView` and the rest) and keep the kit's answer.
+
+## Complete Example
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import {
+  CometChatOngoingCall,
+  CometChatOutgoingCall,
+  useCometChatCallButtons,
+} from "@cometchat/chat-uikit-react";
+
+export function MyCallButtons({ user }: { user: CometChat.User }) {
+  const {
+    activeCall,
+    callButtonsDisabled,
+    showOutgoingCallScreen,
+    showOngoingCall,
+    callSessionId,
+    isDirectCalling,
+    isGroupAudioCall,
+    initiateAudioCall,
+    initiateVideoCall,
+    cancelOutgoingCall,
+    resetCallState,
+  } = useCometChatCallButtons({ user, callSettingsBuilder: { layout: "SIDEBAR" } });
+
+  return (
+    <>
+      <button disabled={callButtonsDisabled} onClick={initiateAudioCall}>Voice call</button>
+      <button disabled={callButtonsDisabled} onClick={initiateVideoCall}>Video call</button>
+
+      {showOutgoingCallScreen && activeCall && (
+        <CometChatOutgoingCall call={activeCall} onCallCanceled={cancelOutgoingCall} />
+      )}
+
+      {showOngoingCall && callSessionId && (
+        <CometChatOngoingCall
+          sessionID={callSessionId}
+          isAudioOnly={isGroupAudioCall || activeCall?.getType() === CometChat.CALL_TYPE.AUDIO}
+          isDirectCalling={isDirectCalling}
+          onCallEnded={resetCallState}
+        />
+      )}
+    </>
+  );
+}
+```
+
+Render `MyCallButtons` where your chat header is, and `IncomingCalls` from Step 4 once at the root of your app.
+
+## Next Steps
+
+- [Call Buttons](/ui-kit/react/components/call-buttons) — the ready-made buttons this hook drives
+- [Outgoing Call](/ui-kit/react/components/outgoing-call) — customize the outgoing call screen
+- [Incoming Call](/ui-kit/react/components/incoming-call) — customize the incoming call card
+- [Calling Integration](/ui-kit/react/calling-integration) — call settings and setup
