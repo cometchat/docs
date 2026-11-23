@@ -1,0 +1,439 @@
+---
+title: "Offline Support"
+sidebarTitle: "Offline Support"
+description: "Turn on offline support in the CometChat Android UI Kit so saved chats open without a connection, messages queue until reconnect, and every list shows clear offline states."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Default | Off. Nothing changes until you pass an `OfflineConfig` with `enabled(true)` |
+| Enable | `UIKitSettings.UIKitSettingsBuilder().setOfflineConfig(OfflineConfig.Builder().enabled(true).build())` before `build()`, then `CometChatUIKit.init()` |
+| Kits | Both: `com.cometchat:chatuikit-kotlin-android` and `com.cometchat:chatuikit-compose-android`, 6.3.0 or later |
+| Chat SDK | `com.cometchat:chat-sdk-android` 5.1.2 (brought in by the UI Kit) |
+| Encryption | Optional: `encryption(true)` on `OfflineConfig`, and your app adds `net.zetetic:sqlcipher-android:4.13.0` |
+| `OfflineConfig` options | [Android SDK offline reference](/sdk/android/v5/offline-reference) |
+| Hide notices | Kotlin: `setHideOfflineNotices(true)` on `CometChatMessageList` and `CometChatConversations`. Compose: `hideOfflineNotices = true` |
+| Style | Kotlin: `CometChatMessageList.setOfflineRowStyle(...)`. Compose: `CometChatMessageList(offlineRowStyle = ...)` |
+| Events | `CometChatEvents.offlineEvents`: `CometChatOfflineEvent.MessageSendStateChanged`, `CometChatOfflineEvent.OfflineCacheReset` |
+| Discarded send | `CometChatUIKit.sendTextMessage` / `sendMediaMessage` / `sendCustomMessage` call `onError` with `ERROR_OFFLINE_MESSAGE_DISCARDED` on logout, user switch or cache reset |
+
+</Accordion>
+
+With offline support turned on, the Android UI Kit reads from the Chat SDK's on-device cache. Chats the user has opened before appear at once, even with no connection. Text messages and voice notes sent while offline wait in a queue and go out when the connection returns. Every list shows a clear state when it has nothing saved and can't reach the server.
+
+Both kits get the same behaviour: Kotlin (XML Views) and Jetpack Compose. Where the API differs, this page shows a tab for each. The UI Kit builds on the Chat SDK's offline support, and this page covers what the UI Kit adds on top. For cache settings, encryption, media caching and sync, see the [Android SDK offline docs](/sdk/android/v5/offline-overview).
+
+## Overview
+
+**Works offline:**
+- Conversations, users, groups and group members you have loaded before show at once from the cache.
+- Saved message history, including threads, opens without a connection.
+- New text messages and voice notes are queued and sent automatically on reconnect. So are messages sent with `CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage`. A queued message shows a clock and **Not sent yet** until it is sent.
+- Images, videos, audio and files that are on the device open from the saved copy.
+- After a reconnect, the Chat SDK's catch-up brings in what changed while the user was away.
+
+**Needs a connection:**
+- The first load of any chat or list that was never opened before.
+- Keyword search with no saved match.
+- Uploading photos, videos, audio files or documents picked in the composer's attachment tray (`enableMultipleAttachments`, on by default). The message can be sent once its files have uploaded.
+- Editing or deleting a sent message, adding or removing a reaction, and pinning or saving a message. These aren't queued.
+- Message information, call logs, calls and AI Assistant chat history.
+- Media that has no copy on the device.
+
+## Requirements
+
+| Requirement | Version |
+| --- | --- |
+| CometChat Android UI Kit (`chatuikit-kotlin-android` or `chatuikit-compose-android`) | 6.3.0 or later |
+| CometChat Android Chat SDK (`chat-sdk-android`) | 5.1.2, brought in by the UI Kit |
+| SQLCipher (`net.zetetic:sqlcipher-android`) | 4.13.0, only if you turn on encryption |
+| Android | `minSdk` 28 |
+
+UI Kit 6.3.0 is the first version with offline support. It brings in Chat SDK 5.1.2, so don't add `chat-sdk-android` yourself. Add the kit you use:
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.cometchat:chatuikit-kotlin-android:6.3.0")
+}
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("com.cometchat:chatuikit-compose-android:6.3.0")
+}
+```
+
+</Tab>
+</Tabs>
+
+To encrypt the cache, also add the SQLCipher engine. The Chat SDK and the UI Kit don't bundle it:
+
+```kotlin build.gradle.kts
+dependencies {
+    implementation("net.zetetic:sqlcipher-android:4.13.0")
+}
+```
+
+<Warning>
+If you call `encryption(true)` without adding SQLCipher, the cache doesn't open and the app works online only (the default `encryptionFailureBehavior`). See [Encrypt the Cache](/sdk/android/v5/offline-encryption).
+</Warning>
+
+## Enable offline support
+
+Offline support is **off by default**. Turn it on by passing an `OfflineConfig` to `setOfflineConfig()` on the `UIKitSettings` builder, before you call `build()` and `CometChatUIKit.init()`. The UI Kit passes the config straight to the Chat SDK and stores nothing of its own. The code is the same for both kits.
+
+```kotlin lines
+import com.cometchat.chat.core.CometChat
+import com.cometchat.chat.core.OfflineConfig
+import com.cometchat.chat.exceptions.CometChatException
+import com.cometchat.uikit.core.CometChatUIKit
+import com.cometchat.uikit.core.UIKitSettings
+
+// Offline support is off unless the config has enabled(true).
+val offlineConfig = OfflineConfig.Builder()
+    .enabled(true)
+    // .encryption(true)   // needs net.zetetic:sqlcipher-android in your app
+    .build()
+
+val uiKitSettings = UIKitSettings.UIKitSettingsBuilder()
+    .setRegion("REGION")       // Replace with your App Region
+    .setAppId("APP_ID")        // Replace with your App ID
+    .setAuthKey("AUTH_KEY")    // Replace with your Auth Key (dev only)
+    .subscribePresenceForAllUsers()
+    .setOfflineConfig(offlineConfig)
+    .build()
+
+CometChatUIKit.init(context, uiKitSettings, object : CometChat.CallbackListener<String>() {
+    override fun onSuccess(s: String) {
+        // Log in, then show the UI Kit screens as usual.
+    }
+
+    override fun onError(e: CometChatException?) {
+        Log.e(TAG, "Initialization failed: ${e?.message}")
+    }
+})
+```
+
+`OfflineConfig` has more options, such as cache size, retention, the pending-message limit, encryption and media caching. Set only the ones you need. Every option is described in the [Configuration & API Reference](/sdk/android/v5/offline-reference#offlineconfig-options).
+
+<Note>
+Offline support is active only while a user is logged in. Call `CometChat.isOfflineEnabled()` at the moment you need to know. See [Enable Offline Support](/sdk/android/v5/offline-enable).
+</Note>
+
+When the user is already logged in, `CometChatUIKit.login()` with the same UID answers at once from the saved session, without a network call. So an app that calls `login()` on every launch still opens offline after a restart.
+
+## How the components behave offline
+
+### Lists: Conversations, Users, Groups and Group Members
+
+- Saved rows show first. The server page then loads and updates the list in place.
+- Rows already on screen stay when a load can't reach the server. A failure caused by having no connection shows no error view.
+- With nothing saved and no connection, the list shows **Connect to load chats** (or users, groups, members). This state has no Retry button. The list loads by itself when the connection returns.
+- A list opened with a filter but no keyword, such as online users, behaves like a plain list and shows **Connect to load …**.
+- Only an empty page from the server ends paging.
+- In the conversation list, a chat whose last message is your own unsent message shows a clock, or a failed icon once sending failed.
+
+### Search
+
+A **keyword** search in a list with no saved match while offline shows **Connect to search** with a second line, **Search needs an internet connection.** It doesn't call `onError`. When the connection returns, the search runs again.
+
+`CometChatSearch` shows the same **Connect to search** state when its search can't reach the server and nothing saved matches. A search showing that state runs again when the connection returns.
+
+Mention suggestions in the composer show saved users or members first. Typing a name after the `@` needs a connection.
+
+### Message list and threads
+
+- Saved history shows at once. Older and newer pages come from the cache first, then from the server.
+- A chat that was never saved, opened offline, shows **Connect to load messages** and calls `onError`. It loads by itself when the connection returns.
+- When the list reaches the end of the saved messages with no connection, it shows **Connect to load more** at that edge. Tap it to try again. On reconnect, each blocked edge loads once by itself, older first.
+- Jumping to a message, or starting from the first unread message, opens the list around that message from the cache when the device is offline.
+- When a refresh after reconnecting brings newer messages while the user is scrolled up, a **Jump to latest** pill appears. The reading position stays until the user taps it or scrolls to the bottom.
+- Images, videos, audio and files show the on-device copy first. With no copy and no connection, the bubble shows a placeholder with the file name, size and **Media will be available when back online**. It shows the media again when the connection returns. Tapping the placeholder while connected downloads the file.
+
+### Composer and unsent messages
+
+- A text message or voice note sent while offline appears at once with a clock and **Not sent yet** under the bubble. It goes out automatically on reconnect.
+- Photos, videos, audio files and documents picked in the attachment tray are **not** queued. Each file starts uploading as soon as it's picked, and uploading needs a connection, so the message can't be sent until its files have uploaded. A tile whose upload failed shows a retry control: tap it to upload that file again once you're back online. With offline support on, the files staged in a chat's tray are kept for that chat, so they come back when the chat is opened again. With `enableMultipleAttachments` set to `false`, a picked file is sent as a single media message instead, and is queued like a voice note.
+- An unsent message (waiting or failed) offers only **Retry**, **Delete** and, for text, **Copy** in its long-press menu. It offers no Reply, React, Edit, Pin, Save or Message info until it has been sent. The visibility settings you use for message options still apply.
+- A failed message shows **Not sent. Tap to retry** under the bubble in red. Tap that line to retry. In the Kotlin kit the failed status icon retries too; in Jetpack Compose, tapping the failed message retries it. Screen readers announce the action as "Retry".
+- **Retry** asks the Chat SDK to send the queued message again. A message that failed before it was queued is sent again as a new send. While a retry waits for the connection, the message shows **Not sent yet** again.
+- **Delete** removes the unsent message from the device.
+- If the message is no longer waiting to be sent (for example, it was removed after you left the group), Retry and Delete remove it from the list.
+- If the message is being sent at that moment, Retry and Delete change nothing and the list shows **Sending… try again in a moment**.
+- A full queue shows **Too many messages waiting to send**. A file that is too big for the offline media cache shows **File too large to send offline**. A queued message that the Chat SDK removes shows **1 unsent message was removed**.
+
+### Presence
+
+While the Chat SDK isn't connected, nobody shows as online: there's no online dot in the conversations, users or group members lists, and no "Online" subtitle in the message header. Presence shows again once the SDK is connected.
+
+### Pinned, Saved, Reactions and Notifications
+
+`CometChatPinnedMessages`, `CometChatSavedMessages`, the reaction list and `CometChatNotificationFeed` follow the same rules as the other lists. Rows cached on the device show first. With nothing saved and no connection, they show **Connect to load messages**, **Connect to load reactions** or **Connect to load notifications**. The reaction list keeps its tabs visible and shows **Connect to load reactions** below them. The pinned, saved and notification screens load by themselves when the connection returns.
+
+### Logout and user switch
+
+Cached data belongs to the logged-in user. The Chat SDK deletes the user's offline cache on logout and when a different user logs in. On logout or a user switch, the UI Kit also clears every list on screen before the next user's first frame. Any message still waiting to be sent is discarded, and a pending `CometChatUIKit` send answers with `ERROR_OFFLINE_MESSAGE_DISCARDED`. See [Send completions](#send-completions).
+
+## Offline states and texts
+
+Override any of these texts by adding the same key to your app's `res/values/strings.xml`, as described in [Localize](/ui-kit/android/localize#override-ui-kit-labels). Both kits read the same string resources, and every language the UI Kit ships includes them.
+
+| Text | Key | Where it appears |
+| --- | --- | --- |
+| Connect to load chats | `cometchat_connect_to_load_chats` | `CometChatConversations` with nothing saved, offline |
+| Connect to load users | `cometchat_connect_to_load_users` | `CometChatUsers` |
+| Connect to load groups | `cometchat_connect_to_load_groups` | `CometChatGroups` |
+| Connect to load members | `cometchat_connect_to_load_members` | `CometChatGroupMembers` |
+| Connect to load messages | `cometchat_connect_to_load_messages` | `CometChatMessageList`, `CometChatPinnedMessages`, `CometChatSavedMessages` |
+| Connect to load reactions | `cometchat_connect_to_load_reactions` | Reaction list |
+| Connect to load notifications | `cometchat_connect_to_load_notifications` | `CometChatNotificationFeed` |
+| Connect to search | `cometchat_connect_to_search` | Keyword search in a list, offline, no saved match |
+| Search needs an internet connection. | `cometchat_connect_to_search_subtitle` | Second line under "Connect to search" in a list |
+| Connect to search | `cometchat_connect_to_search_messages` | `CometChatSearch` |
+| Search needs an internet connection. | `cometchat_connect_to_search_messages_subtitle` | Second line under "Connect to search" in `CometChatSearch` |
+| Connect to load more | `cometchat_connect_to_load_more` | Message list and threads, at a blocked edge |
+| Jump to latest | `cometchat_jump_to_latest` | Message list pill |
+| Media will be available when back online | `cometchat_media_available_when_online` | Media placeholder |
+| Not sent yet | `cometchat_message_not_sent_yet` | Under a queued or sending message |
+| Not sent. Tap to retry | `cometchat_message_not_sent_tap_to_retry` | Under a failed message |
+| Retry | `cometchat_offline_retry` | Long-press option on an unsent message |
+| Sending… try again in a moment | `cometchat_sending_try_again` | Notice: Retry or Delete on a message being sent |
+| Too many messages waiting to send | `cometchat_queue_full` | Notice: the queue is full |
+| File too large to send offline | `cometchat_file_too_large_offline` | Notice: the file doesn't fit the offline media cache |
+| 1 unsent message was removed | `cometchat_unsent_message_removed` | Notice: the Chat SDK removed a queued message |
+| %d message was not sent / %d messages were not sent | `cometchat_messages_not_sent` (plurals) | Notice: unsent messages on screen were marked as not sent. They show **Not sent. Tap to retry** and can be retried |
+| %d unsent message was lost / %d unsent messages were lost | `cometchat_unsent_messages_lost` (plurals) | Notice: unsent messages were removed when the Chat SDK reset its cache. Send them again if needed |
+| Unsent messages may have been lost | `cometchat_unsent_messages_maybe_lost` | Notice: some unsent messages may not have been sent. Check the chat and send them again if needed |
+
+Notices show as a short toast, once each.
+
+## Errors and callbacks
+
+### When `onError` fires
+
+With offline support on, every list follows the same rules:
+
+- **Rows on screen, no connection:** the rows stay. No error view, no `onError`.
+- **Rows on screen, any other error:** the rows stay. `onError` fires once if the user or your app started the load: opening the screen, a refresh, a new keyword or a jump. A reload the UI Kit starts itself after a reconnect or a cache reset stays quiet.
+- **Nothing on screen, no connection:** the **Connect to load …** state shows, and `onError` fires once.
+- **Nothing on screen, any other error:** the error view with Retry shows, and `onError` fires.
+- **Keyword search offline with nothing saved:** **Connect to search** shows, with no `onError`.
+- **Empty server answer:** the normal empty view.
+
+### Send completions
+
+`CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage` answer each send once:
+
+- `onSuccess` fires when the server accepts the message.
+- `onError` fires when sending fails for good.
+- A send that is only queued (offline) calls neither. It answers when the message is sent or fails.
+- If the user logs out, switches user, or the offline cache is reset before the message was sent, `onError` fires once with the error code `ERROR_OFFLINE_MESSAGE_DISCARDED`. Don't show an error for it: the message row going away is the only visible signal.
+
+```kotlin lines
+import com.cometchat.chat.core.CometChat
+import com.cometchat.chat.exceptions.CometChatException
+import com.cometchat.chat.models.TextMessage
+import com.cometchat.uikit.core.CometChatUIKit
+
+CometChatUIKit.sendTextMessage(textMessage, object : CometChat.CallbackListener<TextMessage>() {
+    override fun onSuccess(sent: TextMessage) {
+        Log.d(TAG, "Sent: ${sent.id}")
+    }
+
+    override fun onError(e: CometChatException?) {
+        if (e?.code == "ERROR_OFFLINE_MESSAGE_DISCARDED") {
+            // Logout, user switch or cache reset before it was sent. Don't show an error.
+            return
+        }
+        Log.e(TAG, "Send failed: ${e?.message}")
+    }
+})
+```
+
+The UI Kit's own senders (the composer, stickers and smart replies) handle this case themselves and show no error. The `MessageSent` event on `CometChatEvents.messageEvents` keeps its meaning: `IN_PROGRESS` once when the message is queued, `SUCCESS` when it is sent, and `ERROR` when it fails for good.
+
+### Pin and save
+
+Pinning, unpinning, saving and unsaving need a connection. On the device that made the change, the UI Kit updates the message, the Pinned and Saved screens and the `MessagePinned` / `MessageUnpinned` / `MessageSaved` / `MessageUnsaved` events when the call succeeds (its `onSuccess`). With Chat SDK 5.1.2, which this UI Kit brings in, the SDK sends no listener event back to that device. See [Pin & Save Messages](/ui-kit/android/guide-pin-and-save-messages#live-updates).
+
+### Offline events
+
+`CometChatEvents.offlineEvents` is a flow of `CometChatOfflineEvent`. It never emits while offline support is off.
+
+| Event | Fires when |
+| --- | --- |
+| `CometChatOfflineEvent.MessageSendStateChanged(message, state, reason)` | One of your own messages moves to a new `MessageSendState`: `SENDING`, `SENT` or `FAILED`. `reason` is the Chat SDK's `MessageFailureReason` when `state` is `FAILED`, otherwise `null`. Fires once per change. |
+| `CometChatOfflineEvent.OfflineCacheReset(reason, pendingMessagesLost)` | The Chat SDK reset its on-device cache. `pendingMessagesLost` is `-1` (`OfflineCacheResetListener.PENDING_COUNT_UNKNOWN`) when the SDK can't tell how many unsent messages were lost. |
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+import com.cometchat.uikit.core.events.CometChatEvents
+import com.cometchat.uikit.core.events.CometChatOfflineEvent
+
+// In an Activity or Fragment
+lifecycleScope.launch {
+    CometChatEvents.offlineEvents.collect { event ->
+        when (event) {
+            is CometChatOfflineEvent.MessageSendStateChanged ->
+                Log.d(TAG, "Message ${event.message.muid} is now ${event.state}")
+            is CometChatOfflineEvent.OfflineCacheReset ->
+                Log.d(TAG, "Offline cache reset, unsent messages lost: ${event.pendingMessagesLost}")
+        }
+    }
+}
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+import com.cometchat.uikit.core.events.CometChatEvents
+import com.cometchat.uikit.core.events.CometChatOfflineEvent
+
+@Composable
+fun OfflineEventsHandler() {
+    LaunchedEffect(Unit) {
+        CometChatEvents.offlineEvents.collect { event ->
+            when (event) {
+                is CometChatOfflineEvent.MessageSendStateChanged ->
+                    Log.d(TAG, "Message ${event.message.muid} is now ${event.state}")
+                is CometChatOfflineEvent.OfflineCacheReset ->
+                    Log.d(TAG, "Offline cache reset, unsent messages lost: ${event.pendingMessagesLost}")
+            }
+        }
+    }
+}
+```
+
+</Tab>
+</Tabs>
+
+For the Chat SDK's own reasons and error codes, see the [Configuration & API Reference](/sdk/android/v5/offline-reference#error-codes).
+
+## Customization
+
+### Unsent message caption style
+
+`CometChatOfflineRowStyle` styles the **Not sent yet** and **Not sent. Tap to retry** lines under unsent messages. By default they use the theme's caption text, secondary text colour and error colour.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+| Property | Type | Default |
+| --- | --- | --- |
+| `textAppearance` | `@StyleRes Int` | Theme attribute `cometchatOfflineNotSentTextAppearance` (caption 1 regular) |
+| `notSentTextColor` | `@ColorInt Int` | Theme secondary text colour |
+| `failedTextColor` | `@ColorInt Int` | Theme attribute `cometchatOfflineFailedMessageTint` (error colour) |
+
+```kotlin lines
+import com.cometchat.uikit.kotlin.presentation.messagelist.style.CometChatOfflineRowStyle
+
+messageList.setOfflineRowStyle(
+    CometChatOfflineRowStyle.default(context).copy(
+        notSentTextColor = Color.GRAY,
+        failedTextColor = Color.RED
+    )
+)
+```
+
+You can also set `cometchatOfflineNotSentTextAppearance` and `cometchatOfflineFailedMessageTint` in your app theme.
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+| Property | Type | Default |
+| --- | --- | --- |
+| `textStyle` | `TextStyle` | `CometChatTheme.typography.caption1Regular` |
+| `notSentTextColor` | `Color` | `CometChatTheme.colorScheme.textColorSecondary` |
+| `failedTextColor` | `Color` | `CometChatTheme.colorScheme.errorColor` |
+
+```kotlin lines
+import com.cometchat.uikit.compose.presentation.messagelist.style.CometChatOfflineRowStyle
+
+CometChatMessageList(
+    user = user,
+    offlineRowStyle = CometChatOfflineRowStyle.default(
+        notSentTextColor = Color.Gray,
+        failedTextColor = Color.Red
+    )
+)
+```
+
+</Tab>
+</Tabs>
+
+### Hide offline notices
+
+Hides the offline notice toasts, such as **Too many messages waiting to send** or **Unsent messages may have been lost**. A hidden list doesn't take the notice, so another list that shows notices can show it. The **Connect to load more** row and the **Jump to latest** pill still show. Default `false`.
+
+<Tabs>
+<Tab title="Kotlin (XML Views)">
+
+```kotlin lines
+messageList.setHideOfflineNotices(true)
+conversations.setHideOfflineNotices(true)
+```
+
+</Tab>
+<Tab title="Jetpack Compose">
+
+```kotlin lines
+CometChatMessageList(user = user, hideOfflineNotices = true)
+CometChatConversations(hideOfflineNotices = true)
+```
+
+</Tab>
+</Tabs>
+
+### Your own empty and error views
+
+- If you set a custom error view (`setErrorView` / `errorView`), it shows instead of the UI Kit's **Connect to load …** state.
+- If you hide the error state (`setHideErrorState(true)` / `hideErrorState = true`), no offline state shows.
+- If you set a custom empty view (`setEmptyView` / `emptyView`), it shows instead of **Connect to search**. Hiding the empty state hides it.
+
+## With offline support turned off
+
+Apps that don't turn on offline support keep today's behaviour, with these exceptions in UI Kit 6.3.0:
+
+- **Chat SDK 5.1.2.** The UI Kit brings in Chat SDK 5.1.2, whether or not offline is on. If your unit tests stub `fetchNext(any())` or `fetchPrevious(any())` on SDK request classes such as `ConversationsRequest`, give the matcher a type: the SDK now has a second overload of these methods.
+- **Kotlin reaction list error state.** A reaction list that fails to load now shows its error text, or your custom error view, below the tabs instead of an empty sheet. Jetpack Compose already did this.
+
+## Limitations and known issues
+
+- Keyword search, message information, call logs and AI Assistant chat history need a connection.
+- Edits, deletes, reactions, pins and saves aren't queued. They need a connection when the user makes them.
+- Files picked in the attachment tray need a connection to upload.
+- Media downloaded for offline use is stored unencrypted on the device. The message cache itself can be encrypted. See [Encrypt the Cache](/sdk/android/v5/offline-encryption).
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="SDK offline overview" icon="wifi-slash" href="/sdk/android/v5/offline-overview">
+    How the Chat SDK caches and syncs data
+  </Card>
+  <Card title="Configuration & API Reference" icon="sliders" href="/sdk/android/v5/offline-reference">
+    Every `OfflineConfig` option, listener and error code
+  </Card>
+  <Card title="Send While Offline" icon="paper-plane" href="/sdk/android/v5/offline-send">
+    The SDK's queue, retry and discard
+  </Card>
+  <Card title="Stay in Sync" icon="rotate" href="/sdk/android/v5/offline-sync">
+    Catch-up after reconnect and cache resets
+  </Card>
+  <Card title="Message List" icon="messages" href="/ui-kit/android/message-list">
+    Message list properties and styling
+  </Card>
+  <Card title="Localize" icon="language" href="/ui-kit/android/localize">
+    Override the offline texts
+  </Card>
+</CardGroup>
