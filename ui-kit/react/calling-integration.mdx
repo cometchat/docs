@@ -15,23 +15,28 @@ By the end of this guide you will have voice and video calling working in your R
 
 ## Step 1: Install the Calls SDK
 
-The calling feature requires the optional `@cometchat/calls-sdk-javascript` peer dependency:
+The calling feature requires the optional `@cometchat/calls-sdk-javascript` peer dependency, 5.1.1 or later:
 
+{/* TODO(release): the first Calls SDK release with the fix the UI Kit needs. */}
 <CodeGroup>
 
 ```bash npm
-npm install @cometchat/calls-sdk-javascript
+npm install @cometchat/calls-sdk-javascript@^5.1.1
 ```
 
 ```bash yarn
-yarn add @cometchat/calls-sdk-javascript
+yarn add @cometchat/calls-sdk-javascript@^5.1.1
 ```
 
 ```bash pnpm
-pnpm add @cometchat/calls-sdk-javascript
+pnpm add @cometchat/calls-sdk-javascript@^5.1.1
 ```
 
 </CodeGroup>
+
+<Note>
+1:1 calls ring through the Calls SDK 5.1 ringing flow, so they need 5.1.1 or later. On 5.0.x, every 1:1 call fails with the error `CALLS_SDK_UNAVAILABLE`. See [How calls ring](/ui-kit/react/call-features#how-calls-ring).
+</Note>
 
 This package provides the WebRTC layer for voice and video calls. It is loaded lazily by the UI Kit — no additional bundle cost until calling is actually used.
 
@@ -70,6 +75,20 @@ The Calls SDK uses the same `appId` and `region` from your `UIKitSettings` — n
 <Note>
 The `config` prop on `CometChatProvider` accepts a `CometChatGlobalConfig` object for UI/behavior flags (`hideReceipts`, `hideUserStatus`, `disableSoundForCalls`, `customSoundForCalls`, `callSettingsBuilder`). It does **not** take a separate calling app ID or region.
 </Note>
+
+### Settings for 1:1 calls
+
+A 1:1 call's session is set up when the call is placed, on the caller's side, and when it starts ringing, on the callee's. At that moment the kit lays `callSettingsBuilder` over its own defaults, so set only what you want to change:
+
+```tsx
+<CometChatProvider config={{ callSettingsBuilder: { layout: "SIDEBAR", startVideoPaused: true } }}>
+  {/* your app */}
+</CometChatProvider>
+```
+
+- `sessionType` comes from the button pressed (voice or video), and `isPeerCall` is always on, so a hang-up ends the call for both people.
+- Settings given later, for example to your own `CometChatOngoingCall`, don't reach a call that is already set up.
+- Group calls are unchanged: their settings replace the defaults.
 
 ## Step 4: Add Call Buttons via CometChatMessageHeader
 
@@ -116,7 +135,7 @@ With the setup complete, test a voice call:
 
 1. Open your app with two different users in separate browser tabs
 2. Click the **voice call** button (phone icon) in the chat header
-3. The caller sees the `CometChatOutgoingCall` screen with a "Calling..." indicator
+3. The caller sees the `CometChatOutgoingCall` screen. It reads "Outgoing Call", then "Ringing..." once the receiver's device rings
 4. The receiver sees the `CometChatIncomingCall` overlay with accept/reject buttons
 5. Once accepted, both users enter the `CometChatOngoingCall` view with live audio
 
@@ -223,14 +242,34 @@ export default function App() {
 }
 ```
 
-`CometChatIncomingCall` listens for incoming call events and displays an accept/reject overlay. When the user accepts, it transitions to the `CometChatOngoingCall` screen internally. You can customize its behavior with callbacks:
+`CometChatIncomingCall` listens for incoming call events and displays an accept/reject overlay. When the user accepts, the kit answers the call and opens the `CometChatOngoingCall` screen; when the user declines, the kit declines the call. Leave `onAccept` and `onDecline` unset for that. To run your own code when the user answers or declines, listen for the `ui:call/accepted` and `ui:call/rejected` events instead; see [Events](/ui-kit/react/event-system#call-actions).
+
+Pass `onAccept` only to draw the call screen yourself. The kit then stops ringing and hands your app the session it prepared while the call rang. Join it with `CometChatOngoingCall`:
 
 ```tsx
-<CometChatIncomingCall
-  onAccept={(call) => console.log("Call accepted:", call)}
-  onDecline={(call) => console.log("Call declined:", call)}
-/>
+import { useState } from "react";
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatIncomingCall, CometChatOngoingCall } from "@cometchat/chat-uikit-react";
+
+function Calls() {
+  const [call, setCall] = useState<CometChat.Call | null>(null);
+
+  return (
+    <>
+      <CometChatIncomingCall onAccept={setCall} />
+      {call && (
+        <CometChatOngoingCall
+          sessionID={call.getSessionId()}
+          isAudioOnly={call.getType() === CometChat.CALL_TYPE.AUDIO}
+          onCallEnded={() => setCall(null)}
+        />
+      )}
+    </>
+  );
+}
 ```
+
+The call's settings were fixed when it started ringing (see Step 3), so `callSettings` passed to this `CometChatOngoingCall` don't apply. Pass `onDecline` only if your app declines the call itself: the kit then just stops ringing and leaves the session it prepared, which ends a 1:1 call for the caller as unanswered.
 
 `CometChatOutgoingCall` is rendered automatically by the `CometChatCallButtons` component when the user initiates a call — you do not need to place it manually.
 
@@ -238,7 +277,7 @@ export default function App() {
 
 | Step | Action |
 |------|--------|
-| 1 | Install `@cometchat/calls-sdk-javascript` |
+| 1 | Install `@cometchat/calls-sdk-javascript` 5.1.1 or later |
 | 2 | Set `.setCallingEnabled(true)` on `UIKitSettingsBuilder` |
 | 3 | (Optional) Configure call behavior via `config` prop on `CometChatProvider` |
 | 4 | Call buttons appear in `CometChatMessageHeader` automatically |
