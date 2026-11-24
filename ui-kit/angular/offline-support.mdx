@@ -19,7 +19,7 @@ description: "Show cached chats and messages without a network and queue message
 | Service signals | `connectToSearch`, `searchFailed`, `reconnectSearchError$` on `SearchConversationsService` and `SearchMessagesService` |
 | Component method | `CometChatMessageListComponent.retryOfflineRead()` |
 | Option ids | `CometChatUIKitConstants.MessageOption.retryMessage`, `CometChatUIKitConstants.MessageOption.discardMessage` |
-| Quiet rejection | `CometChatUIKit.sendTextMessage()` / `sendCustomMessage()` for a queued message rejects with code `ERROR_OFFLINE_MESSAGE_DISCARDED` on logout or cache reset |
+| Quiet rejection | `CometChatUIKit.sendTextMessage()` / `sendMediaMessage()` / `sendCustomMessage()` for a queued message rejects with code `ERROR_OFFLINE_MESSAGE_DISCARDED` when the message is removed before it sends: logout, user switch, cache reset, the user's **Delete**, or the outbox discarding it |
 
 </Accordion>
 
@@ -30,7 +30,7 @@ With offline support on, the UI Kit keeps working when the network drops. The [J
 **Works offline:**
 
 - Conversations, users, groups, group members, messages, threads, reactions, the notification feed, and pinned and saved messages that the user has already loaded appear at once from the device.
-- Text messages can be sent. They are queued and go out by themselves when the connection returns.
+- Text, media and custom messages can be sent. They are queued and go out by themselves when the connection returns. Photos, videos, audio files and documents picked in the composer are queued the same way; a file larger than the offline media budget is not queued and shows **File too large to send offline**.
 - Unsent messages can be retried or deleted.
 - Media the SDK has saved on the device plays and opens from the device.
 
@@ -48,7 +48,7 @@ With offline support on, the UI Kit keeps working when the network drops. The [J
 | Angular UI Kit | `@cometchat/chat-uikit-angular` **5.3.0** or later (v5 only) |
 | Chat SDK | `@cometchat/chat-sdk-javascript` **4.3.1** or later |
 
-The UI Kit's peer dependency on the Chat SDK stays `^4.2.0`, so upgrading the UI Kit does not force an SDK upgrade. With SDK 4.2.x, `setOfflineConfig()` is ignored and the UI Kit works online only. Install SDK 4.3.1 or later to use offline support:
+The UI Kit's peer dependency on the Chat SDK stays `^4.2.0`, so upgrading the UI Kit does not force an SDK upgrade, and **npm does not enforce the 4.3.1 requirement**. With SDK 4.2.x or 4.3.0, `setOfflineConfig()` is ignored and the UI Kit works online only, with no error and no warning. The SDK's own offline support ships in 4.3.0, so the SDK pages name 4.3.0 as their minimum; the UI Kit additionally needs the `SCHEMA_RESET` cache-reset reason, which first ships in 4.3.1. If offline support appears to do nothing, check `npm ls @cometchat/chat-sdk-javascript`, or call `CometChat.isOfflineEnabled()` after login. Install SDK 4.3.1 or later to use offline support:
 
 ```bash
 npm install @cometchat/chat-uikit-angular@^5.3.0 @cometchat/chat-sdk-javascript@^4.3.1
@@ -107,14 +107,14 @@ Whether offline support is running can change after init: it is off before anyon
 This applies to [Conversations](/ui-kit/angular/components/cometchat-conversations), [Users](/ui-kit/angular/components/cometchat-users), [Groups](/ui-kit/angular/components/cometchat-groups), [Group Members](/ui-kit/angular/components/cometchat-group-members), [Reaction List](/ui-kit/angular/components/cometchat-reaction-list), [Notification Feed](/ui-kit/angular/components/notification-feed), [Pinned Messages](/ui-kit/angular/components/cometchat-pinned-messages) and [Saved Messages](/ui-kit/angular/components/cometchat-saved-messages).
 
 - **Saved rows first.** The list paints the rows saved on the device straight away, then merges in the server page when it arrives.
-- **Offline with nothing saved.** The list shows its offline state: an icon and **Connect to load chats** (or users, groups, members, reactions, notifications, messages), with no Retry button. It loads once by itself when the connection is back.
+- **Offline with nothing saved.** The list shows its offline state: an icon and **Connect to load chats** (or users, groups, members, reactions, notifications, messages), with no Retry button. It loads once by itself when the connection comes back after a drop the SDK reported. If the app started with no connection at all, only the Message List loads by itself; these lists load the next time they are opened.
 - **Rows on screen stay.** If a load fails while rows are showing, the rows stay and nothing is drawn over them.
 - **Reaction counts.** Offline with no reactions loaded, the Reaction List shows **Connect to load reactions** and keeps its tabs, with the counts the message already carries.
-- **Reconnect.** The SDK catches every list up. The components make no refresh fetch of their own, apart from the one-time reads above, and messages that arrived meanwhile appear without a sound and without extra unread counts.
+- **Reconnect.** The SDK catches every list up. The Message List and Conversations make no refresh fetch of their own, apart from the one-time reads above. Users, Groups and Group Members quietly re-read their first page, as they do with offline support off. Messages that arrived meanwhile appear without a sound and without extra unread counts.
 
 ### Search
 
-- **Keyword search.** A search with a keyword that cannot reach the server, and has no saved match, shows **Connect to search** with a second line, **Search needs an internet connection.** It runs again once by itself when the connection is back.
+- **Keyword search.** A search with a keyword that cannot reach the server, and has no saved match, shows **Connect to search** with a second line, **Search needs an internet connection.** It runs again once by itself when the connection comes back after a drop the SDK reported; after a start with no connection at all, run the search again.
 - **Filters only.** A list opened with a filter and no keyword (online users, tags, a request builder with no search term) is a plain list, not a search. Offline with nothing saved, it shows that list's **Connect to load …** text.
 - **The [Search](/ui-kit/angular/components/cometchat-search) component** searches conversations and messages together:
   - It shows **Connect to search** only when every failed request was a not-connected one.
@@ -197,6 +197,7 @@ These are the texts the components show in their offline states. Each one is a l
 | `{{count}}` message wasn't sent | Message List notice | `message_list_messages_not_sent_one`, `message_list_messages_not_sent_other` |
 | `{{count}}` unsent message couldn't be recovered | Cache reset notice | `message_list_unsent_messages_lost_one`, `message_list_unsent_messages_lost_other` |
 | Some unsent messages may not have been sent | Cache reset notice | `message_list_unsent_messages_maybe_lost` |
+| File too large to send offline | Message List notice, when a picked file exceeds the offline media budget | `message_list_file_too_large_offline` |
 
 The counted notices use plural keys: `_one` and `_other`, plus `_few` and `_many` in languages that need them. The UI Kit picks the form for the current language and falls back to `_other`, replacing `{{count}}` with the number.
 
@@ -235,12 +236,12 @@ The Search component reports through its `(searchError)` output instead. With bo
 
 ### Send promises
 
-`CometChatUIKit.sendTextMessage()` and `sendCustomMessage()` behave as follows when offline support is on:
+`CometChatUIKit.sendTextMessage()`, `sendMediaMessage()` and `sendCustomMessage()` behave as follows when offline support is on:
 
 - They resolve when the message is sent.
 - They reject on a final failure.
 - They never reject only because the message was queued.
-- When the user logs out or switches user before a queued message is sent, or the offline cache resets and loses unsent messages, the promise rejects once, quietly, with the code `ERROR_OFFLINE_MESSAGE_DISCARDED`. The components show no error for it. Treat it as "dropped", not as a failure to report.
+- Any removal of the message before it is sent rejects the promise once, quietly, with the code `ERROR_OFFLINE_MESSAGE_DISCARDED`: a logout or user switch, a cache reset that lost (or may have lost) unsent messages, the user's own **Delete**, and the outbox discarding the message (for example under a drop-oldest overflow policy). The reason behind the removal is never the rejection's code. The components show no error for it. Treat it as "dropped", not as a failure to report.
 
 ```typescript
 import { CometChat } from "@cometchat/chat-sdk-javascript";
@@ -308,7 +309,7 @@ export class OfflineLogComponent implements OnInit {
 
 | Member | Type | Meaning |
 | --- | --- | --- |
-| `connectToSearch` | `WritableSignal<boolean>` | `true` when a keyword search could not reach the server and nothing saved matches. `fetchState` is `empty`, `search()` does not reject, and the search runs once more by itself when the connection is back. |
+| `connectToSearch` | `WritableSignal<boolean>` | `true` when a keyword search could not reach the server and nothing saved matches. `fetchState` is `empty`, `search()` does not reject, and the search runs once more by itself when the connection comes back after a drop the SDK reported. |
 | `searchFailed` | `WritableSignal<boolean>` | `true` when a search inside the Search component failed with a real error and nothing is shown. `fetchState` is `empty` and the Search component decides, once both scopes answer, whether to show the error view or the empty state. Always `false` when you use the service outside the Search component. |
 | `reconnectSearchError$` | `Subject<CometChat.CometChatException>` | Emits when the search the service re-ran by itself on reconnect fails. A search you start rejects to you instead. |
 
@@ -345,7 +346,7 @@ export class ConversationSearchComponent {
 
 | Component | Notices it hides |
 | --- | --- |
-| `cometchat-message-list` | All of its offline notices, including a message removed, messages not sent, the outbox full, **Sending… try again in a moment**, and a cache reset (the message list shows cache reset notices only when no `cometchat-conversations` is on screen) |
+| `cometchat-message-list` | All of its offline notices, including a message removed, messages not sent, the outbox full, a file too large to send offline, **Sending… try again in a moment**, and a cache reset (the message list shows cache reset notices only when no `cometchat-conversations` is on screen) |
 | `cometchat-conversations` | The notice shown when the offline cache was reset and unsent messages were, or may have been, lost |
 
 ```html
@@ -442,15 +443,18 @@ Apps that don't turn offline support on keep today's behavior: no cache, no outb
 - **Test identifiers.** Message rows, the message menu, conversation rows, notices, the list footer, the composer input, attachment tray tiles, and the empty and error views carry `data-testid` and `data-cc-*` attributes. They hold no message text and are not read by screen readers, but DOM snapshot tests may change.
 - **Bundle size.** Chat SDK 4.3 adds about 0.54 MB to an app's initial bundle, and UI Kit 5.3.0 about 0.12 MB, whether offline support is on or off.
 - **Reconnect.** As in 5.2.x, the message list makes no fetch of its own on reconnect. Messages missed during a drop appear when the chat is reopened.
+- **Browser connectivity events.** UI Kit 5.3.0 also treats the browser's `online` and `offline` events as connection changes. After a drop the SDK did not report, Conversations, Users, Groups and Group Members each re-read their first page once when the connection returns. Nothing is re-read while the SDK reports its socket as connected, and a drop before the first connect is ignored.
 
 ## Limitations
 
 - The cache holds only what the user has loaded while online, plus what syncs on reconnect. A user who has never used the app online has nothing to show offline.
 - Keyword search, message information, calls and AI agent streamed replies need a connection.
-- Chat SDK 4.3.1 does not save a page of thread replies for offline use, so a thread opened online may have little or nothing to show offline. Later SDK versions save thread replies like the rest of the chat.
+- Chat SDK 4.3.1 does not save a page of thread replies for offline use, so a thread opened online may have little or nothing to show offline.
 - After a quick reconnect, missed messages can take up to about 10 seconds to appear.
 - After a restart, the reason a message failed may be unknown. It is still offered Retry.
 - If a send got no answer while the device was connected, that chat can stall until the next reconnect.
+- A send whose acknowledgement is lost can leave one duplicate copy of the message on the server.
+- After a reconnect the SDK does not report, a queued message can stay on **Not sent yet** until the page is reloaded.
 - With the app open in several tabs, rebuilding the cache in one tab can drop another tab's unsent messages. That tab's rows update to match.
 - The browser cache encrypts message content but not lookup metadata, and downloaded media is stored unencrypted. See [What is and isn't encrypted](/sdk/javascript/offline-encryption#what-is-and-isnt-encrypted).
 
