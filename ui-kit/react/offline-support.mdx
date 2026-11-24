@@ -31,6 +31,7 @@ The UI Kit builds on [offline support in the JavaScript SDK](/sdk/javascript/off
 - Conversations, users, groups, group members, messages, reactions, notifications, and pinned and saved messages the user has already loaded appear straight away from the cache.
 - Text messages, stickers and custom messages the user sends are queued and sent automatically on reconnect.
 - Media that was downloaded while online is shown from the device.
+- Attachments (images, video, audio, files and voice notes) picked while offline are queued with the message and uploaded on reconnect, as long as the file fits in the media cache budget. A file that does not fit is refused at once with "File too large to send offline".
 - When the connection returns, the SDK catches up on what was missed and the lists update in place.
 
 **Needs a connection**
@@ -39,7 +40,6 @@ The UI Kit builds on [offline support in the JavaScript SDK](/sdk/javascript/off
 - Keyword search with no saved match, and keyword search in the Search component.
 - Edits, deletes, reactions and other actions on messages that are already sent. They are not queued. (Retry and Delete on a message that is not sent yet work offline.)
 - Calls, call logs, message information and AI features such as streamed replies.
-- Attachments (images, video, audio, files and voice notes) picked while offline are not guaranteed to send, so don't rely on them being queued. Send them when connected.
 
 ## Requirements
 
@@ -235,7 +235,7 @@ localize?.addTranslation({
 
 - Queueing a message does not reject the promise. It resolves when the message is sent, and rejects once if the message fails or is removed before it is sent. A later **Retry** does not answer the same promise again.
 - Any removal of the message before it is sent rejects the promise with an error whose `code` is `ERROR_OFFLINE_MESSAGE_DISCARDED`. That covers a logout or user switch, a cache reset that lost (or may have lost) unsent messages, the user's own **Delete**, and the outbox discarding the message or dropping it on overflow. The reason behind the removal is never the rejection's `code`, so check `err.code === "ERROR_OFFLINE_MESSAGE_DISCARDED"` to tell a removal from a failure. The error carries the removed message as `sentMessage`.
-- A send that *fails* rejects with the SDK's own error, or with an `Error` whose `code` is the failure reason.
+- A send that *fails* rejects with the SDK's own error, or with an `Error` whose `code` is the failure reason. A send that is **refused** before it is queued also rejects: with the code `ERROR_PENDING_QUEUE_LIMIT` when the outbox is already full (`details.maxPendingMessages` holds the cap), or `BYTE_OVERFLOW` when a media file does not fit in the media cache budget.
 - The UI Kit shows nothing for an `ERROR_OFFLINE_MESSAGE_DISCARDED` rejection: no error toast, no `onError`, and the composer does not lock. Only your own `.catch` hears of it.
 
 ```tsx
@@ -357,11 +357,11 @@ Each variable falls back to the UI Kit's current theme value, so set only what y
 
 ## With Offline Support Turned Off
 
-Apps that don't call `setOfflineConfig()` get no offline UI, no offline events and no change to how sends work. A few fixes in the same release do change what every app sees:
+Apps that don't call `setOfflineConfig()` get no offline UI, no offline events and no change to how sends work. A few behaviour changes in the same release apply to every app:
 
-- A message list that is empty when the connection returns now loads again and shows its empty state, instead of staying blank.
-- A reconnect while the newest message is still unsent now fetches the messages missed during the outage.
-- Paging past a conversation that just received a message no longer shows it twice.
+- A message list that is empty when the connection returns loads again and shows its empty state.
+- On reconnect, a list whose newest message is still unsent fetches the messages missed during the outage.
+- Paging past a conversation that just received a message shows it once.
 - A `messagesRequestBuilder` you pass to `CometChatMessageList` or `CometChatSavedMessages` is no longer modified.
 - Saved Messages rows are no longer announced to screen readers as selectable options.
 - Message rows, conversation rows, notices, the composer input and the empty and error views carry new `data-cc` attributes for test automation. Existing `data-testid` and `data-message-id` attributes are kept, but DOM snapshot tests may change.
@@ -369,10 +369,7 @@ Apps that don't call `setOfflineConfig()` get no offline UI, no offline events a
 ## Limitations
 
 - **Only what was loaded online is saved.** A user who has never opened a chat or list while online has nothing to show offline.
-- **Thread replies opened online are not saved for offline.** Replies sent or received on this device are saved.
 - **Edits, deletes and reactions are not queued.** They need a connection when the user makes them.
-- **Missed messages can take up to about 10 seconds** to appear after a quick reconnect.
-- **After a page reload, a failed message's reason may be unknown.** It is still offered Retry.
 - **Need a connection:** keyword search, message information, call logs and AI streamed replies. Call logs have no saved copy and keep their own error view.
 - **Encryption in the browser** covers the cached content but not its lookup metadata, and downloaded media is stored unencrypted. See [Encrypt the Cache](/sdk/javascript/offline-encryption).
 
