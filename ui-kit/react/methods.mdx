@@ -91,6 +91,26 @@ When using `sessionStorage`, configure it in your `UIKitSettingsBuilder` before 
 Session storage is cleared when the browser tab is closed. Use this mode if you want users to re-authenticate on every new tab/session.
 </Note>
 
+### Enabling Offline Support
+
+Offline support is off by default. To show saved chats and messages without a network and queue messages sent while offline, call `setOfflineConfig()` on the `UIKitSettingsBuilder` with `enabled: true`. It needs `@cometchat/chat-uikit-react` 7.3.0 and `@cometchat/chat-sdk-javascript` 4.3.1 or later; on an older SDK the setting has no effect.
+
+```tsx
+import { CometChatUIKit, UIKitSettingsBuilder } from "@cometchat/chat-uikit-react";
+
+const settings = new UIKitSettingsBuilder()
+  .setAppId("APP_ID")
+  .setRegion("REGION")
+  .setAuthKey("AUTH_KEY")
+  .subscribePresenceForAllUsers()
+  .setOfflineConfig({ enabled: true })
+  .build();
+
+await CometChatUIKit.init(settings);
+```
+
+The config is passed to the SDK's `AppSettingsBuilder.setOfflineConfig()` unchanged; its type is `CometChatOfflineConfig`. `CometChatUIKit.getSettings()?.getOfflineConfig()` returns what you passed, not whether offline support is running; call `CometChat.isOfflineEnabled()` for that. See [Offline Support](/ui-kit/react/offline-support) for the options, the offline states and how each component behaves.
+
 ---
 
 ## Authentication
@@ -140,6 +160,30 @@ With calling enabled, a call in this tab ends first, while the Calls SDK still k
 The logout waits at most 3 seconds for this, then logs out of the Chat SDK, then the Calls SDK.
 
 **Returns:** `Promise<void>`
+
+With [offline support](/ui-kit/react/offline-support) on, logging out also deletes the user's cached data and unsent messages from the device.
+
+#### Logging out without a connection
+
+When the server can't be reached, `logout()` still ends the session on the device, then rejects. A rejection alone doesn't mean the user is still logged in, so check the SDK before deciding where to go:
+
+```tsx
+import { CometChat } from "@cometchat/chat-sdk-javascript";
+import { CometChatUIKit } from "@cometchat/chat-uikit-react";
+
+async function signOut(showSignIn: () => void) {
+  try {
+    await CometChatUIKit.logout();
+  } catch (error) {
+    const user = await CometChat.getLoggedinUser().catch(() => null);
+    if (user) {
+      console.error("Logout failed", error);
+      return;
+    }
+  }
+  showSignIn();
+}
+```
 
 ---
 
@@ -235,19 +279,11 @@ Get conversation update settings fetched from the dashboard.
 
 ## Message Sending
 
-<Warning>
-These methods are low-level utilities. They send messages via the SDK but do **not** publish `ui:message/sent` events. This means:
-- The message won't appear in `CometChatMessageList` automatically
-- The `CometChatConversations` list won't update
+<Note>
+While a `CometChatProvider` is mounted, these methods publish `ui:message/sent` (in progress, then success or error), so a mounted `CometChatMessageList` and `CometChatConversations` show the message without any extra code. Don't publish `ui:message/sent` again yourself for the same send.
+</Note>
 
-For messages to appear in the UI, use the `CometChatMessageComposer` component, or manually publish the event after sending:
-
-```tsx
-const publish = usePublishEvent();
-const msg = await CometChatUIKit.sendTextMessage(message);
-publish({ type: "ui:message/sent", message: msg, status: CometChatMessageStatus.success });
-```
-</Warning>
+With [offline support](/ui-kit/react/offline-support) on, the returned Promise resolves when the message is actually sent. A message the SDK queues while offline does not reject it. Any removal of the message before it is sent rejects the Promise with the code `ERROR_OFFLINE_MESSAGE_DISCARDED`: a logout, a user switch, a cache reset that lost (or may have lost) unsent messages, the user's own **Delete**, or the outbox discarding it. The reason behind the removal is never the rejection's `code`. See [Send promises](/ui-kit/react/offline-support#send-promises).
 
 ### `CometChatUIKit.sendTextMessage(message)`
 
