@@ -108,9 +108,10 @@ Full guide: https://www.cometchat.com/docs/mcp-server
   https://www.cometchat.com/docs/_llms/chat-and-messaging/ui-kits/react.txt
 - Every page is available as Markdown: add `.md` to its URL, for example
   https://www.cometchat.com/docs/ui-kit/react/overview.md
-- A path that doesn't exist does not return 404. It redirects to the docs home page,
-  with HTTP 200. If the Markdown you get has the heading `# Home` instead of the page you
-  asked for, the path is wrong: look it up in the index rather than guessing.
+- A path that doesn't exist returns HTTP 404 with a "Page not found" page. (The site
+  used to redirect such paths to the docs home with HTTP 200, so a cached response may
+  still show the heading `# Home`.) Either way the path is wrong: look it up in the
+  index rather than guessing.
 - Versions: a path with a version segment (`/v4/`, `/v5/`, `/v6/`) is that older or
   specific version, and the start-here paths below are the current ones. The Android
   Chat SDK is the exception: its current version (v5) is under `/sdk/android/v5/`, and
