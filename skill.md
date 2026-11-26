@@ -102,9 +102,21 @@ Full guide: https://www.cometchat.com/docs/mcp-server
 
 ## 3. Without skills or MCP: read the docs directly
 
-- Index of every page: https://www.cometchat.com/docs/llms.txt
+- Find a page's path in the index: https://www.cometchat.com/docs/llms.txt. It lists
+  the main pages directly and links a per-product index for everything else (the SDK
+  and UI Kit pages are there), for example
+  https://www.cometchat.com/docs/_llms/chat-and-messaging/ui-kits/react.txt
 - Every page is available as Markdown: add `.md` to its URL, for example
   https://www.cometchat.com/docs/ui-kit/react/overview.md
+- A path that doesn't exist does not return 404. It redirects to the docs home page,
+  with HTTP 200. If the Markdown you get has the heading `# Home` instead of the page you
+  asked for, the path is wrong: look it up in the index rather than guessing.
+- Versions: a path with a version segment (`/v4/`, `/v5/`, `/v6/`) is that older or
+  specific version, and the start-here paths below are the current ones. The Android
+  Chat SDK is the exception: its current version (v5) is under `/sdk/android/v5/`, and
+  `/sdk/android/<page>` without it is the previous major version (v4).
+- Plans and prices: https://www.cometchat.com/pricing.md (Markdown, written for agents).
+  Read it instead of quoting prices or plan limits from memory.
 
 Start from the overview for the user's platform:
 
