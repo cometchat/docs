@@ -39,6 +39,10 @@ The installer detects the platform, installs that platform's skills for Claude C
 and connects the CometChat MCP server (`--no-mcp` skips that). For another agent, pass
 `--ide`: `cursor`, `codex`, `copilot`, `windsurf`, `gemini`, `kiro`, `cline`,
 `continue`, `antigravity`, `replit` or `aider`, or `--ide all`.
+For an agent not in that list (OpenCode, Amp, Roo Code and others), install the pack with
+the skills CLI (Node.js 22.20+) and connect the MCP server in step 2:
+`npx skills add cometchat/cometchat-skills -a <agent>`. The `-a` values are listed at
+https://www.cometchat.com/docs/agent-skills#more-agents-through-the-skills-cli
 
 Then reload the skills (restart the agent if it doesn't pick them up) and follow the
 `cometchat` skill. It plans the work with the user, shows which files it will create or
