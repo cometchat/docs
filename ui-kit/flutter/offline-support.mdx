@@ -1,0 +1,394 @@
+---
+title: "Offline Support"
+sidebarTitle: "Offline Support"
+description: "Show saved chats and messages without a connection, queue messages while offline, and send them on reconnect with the CometChat Flutter UI Kit."
+---
+
+<Accordion title="AI Integration Quick Reference">
+
+| Field | Value |
+| --- | --- |
+| Package | `cometchat_chat_uikit` 6.4.0 or later, with `cometchat_sdk` 5.1.2 or later |
+| Default | **Off.** Without an `OfflineConfig` the UI Kit behaves as before |
+| Enable | `UIKitSettingsBuilder()..offlineConfig = OfflineConfig(enabled: true)`, then `CometChatUIKit.init(uiKitSettings: ...)` |
+| Settings file | `CometChatUIKit.initFromSettings(offlineConfig: OfflineConfig(enabled: true))` |
+| Runtime check | `CometChat.isOfflineEnabled()` |
+| Props | `hideOfflineNotices` on `CometChatConversations` and `CometChatMessageList` (default `false`) |
+| Styles | `CometChatMessageListStyle`: `notSentTextStyle`, `failedIconColor` |
+| Events | `ccMessageSendStateChanged`, `ccOfflineCacheReset` on `CometChatMessageEventListener` |
+| Types | `CometChatMessageSendState` (`sending`, `sent`, `failed`), `sendStateOf(message)` |
+| Breaking | Apps that `implements Translations` must add 22 new strings. See [New strings](#new-strings) |
+| Options reference | [Flutter SDK: Offline Configuration & API Reference](/sdk/flutter/offline-reference) |
+
+</Accordion>
+
+With offline support turned on, the UI Kit keeps working when the network drops. Chats, messages and lists the user has already opened appear at once from the device, messages sent while offline are queued and go out when the connection returns, and the lists update in place when the server answers.
+
+The UI Kit builds on the [offline support in the Flutter Chat SDK](/sdk/flutter/offline-overview). You turn it on once in the UI Kit settings; the components handle the rest.
+
+<Note>
+Offline support is available from Flutter UI Kit **6.4.0** with Flutter Chat SDK **5.1.2** or later. It is **off by default**.
+</Note>
+
+## Overview
+
+**Works offline**
+
+- Conversations, users, groups, group members, messages, threads, reactions, pinned and saved messages and the notification feed that the user has opened before appear at once from the device. The server's page then merges into them in place.
+- New text, media and custom messages and voice notes are queued on the device, survive an app restart, and are sent automatically when the connection returns.
+- A message that could not be sent shows **Not sent. Tap to retry**, with Retry and Delete.
+- Images, videos and files the device has already saved are shown from the device, also in the media viewer.
+- An attachment tray that was not sent comes back when the chat is opened again.
+- When the connection returns, everything that changed while the device was away syncs into the lists.
+
+**Needs a connection**
+
+- The first load of a chat, list or page that was never opened on this device.
+- A keyword search with no saved match, and mention suggestions for a typed name.
+- Editing, deleting and reacting to messages that are already sent. These are not queued offline. See [Edits, deletes and reactions](#edits-deletes-and-reactions).
+- Uploading files picked into the composer tray.
+- Media the device never downloaded.
+
+## Requirements
+
+| Requirement | Version |
+| --- | --- |
+| `cometchat_chat_uikit` | 6.4.0 or later |
+| `cometchat_sdk` | 5.1.2 or later. UI Kit 6.4.0 requires it, so `flutter pub get` brings it in |
+| Dart / Flutter | Dart 3.10.8 or later, Flutter 3.38.9 or later. The UI Kit needs a later patch release than the Chat SDK alone (Dart 3.10.0, Flutter 3.38.0) |
+
+```yaml pubspec.yaml
+dependencies:
+  cometchat_chat_uikit: ^6.4.0
+```
+
+On Flutter web, run `dart run cometchat_sdk:setup_web` from your app's root after `flutter pub get`, so the offline database's WebAssembly files are in `web/`. See [Enable Offline Support](/sdk/flutter/offline-enable).
+
+To [encrypt the cache](/sdk/flutter/offline-encryption), add the cipher engine's `hooks:` stanza to your app's `pubspec.yaml`. On Flutter web, also copy `sqlite3mc.wasm` from the Chat SDK package into your app's `web/` folder. The SDK page has both steps.
+
+## Enable Offline Support
+
+Set `offlineConfig` on the `UIKitSettingsBuilder` you pass to `CometChatUIKit.init()`. The UI Kit hands it to the Chat SDK's `AppSettingsBuilder.setOfflineConfig(...)` for you.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';
+
+UIKitSettings uiKitSettings = (UIKitSettingsBuilder()
+  ..subscriptionType = CometChatSubscriptionType.allUsers
+  ..autoEstablishSocketConnection = true
+  ..region = "REGION"
+  ..appId = "APP_ID"
+  ..authKey = "AUTH_KEY"
+  ..offlineConfig = const OfflineConfig(
+    enabled: true,
+    mediaCaching: MediaCachingMode.auto,
+  )
+).build();
+
+CometChatUIKit.init(
+  uiKitSettings: uiKitSettings,
+  onSuccess: (successMessage) {
+    debugPrint("CometChat UI Kit initialized with offline support.");
+  },
+  onError: (error) {
+    debugPrint("CometChat UI Kit initialization failed: $error");
+  },
+);
+```
+</Tab>
+</Tabs>
+
+`OfflineConfig` comes from the Chat SDK, which the UI Kit re-exports. Pass `enabled: true`; every other option has a default. All options are listed in the [SDK's `OfflineConfig` options](/sdk/flutter/offline-reference#offlineconfig-options).
+
+If you leave `offlineConfig` out, offline support stays off and the UI Kit works exactly as before.
+
+If you initialize from `cometchat-settings.json` with `CometChatUIKit.initFromSettings()`, pass the same config as its `offlineConfig` argument.
+
+### Check that it is running
+
+The UI Kit never reads back the config you set. It asks the SDK with `CometChat.isOfflineEnabled()` each time it needs to, because offline support can be inactive even when you enabled it: before anyone logs in, or when the local database cannot open. Do the same in your own code.
+
+```dart
+final bool active = CometChat.isOfflineEnabled();
+```
+
+## How the Components Behave Offline
+
+Everything in this section applies only while offline support is running. With it off, every component behaves as before.
+
+### Lists
+
+The same rule applies to [Conversations](/ui-kit/flutter/conversations), [Users](/ui-kit/flutter/users), [Groups](/ui-kit/flutter/groups), [Group Members](/ui-kit/flutter/group-members) (banned members too), the [Message List](/ui-kit/flutter/message-list) and threads, [Search](/ui-kit/flutter/search), the reactions list, [Pinned Messages](/ui-kit/flutter/pinned-messages), [Saved Messages](/ui-kit/flutter/saved-messages) and the [Notification Feed](/ui-kit/flutter/notification-feed):
+
+- **Saved rows show at once.** The server's page then replaces them in place.
+- **Offline with rows on screen:** a load that fails because there is no connection leaves the rows on screen, with no error view.
+- **Offline with nothing saved:** the list shows its offline state: an icon and **Connect to load chats** (or users, groups, members, messages, reactions, notifications), with no Retry button. If you passed your own `errorStateView`, it shows instead. On Conversations, Groups and Group Members, `hideError` hides your error view, and the offline state shows.
+- **Online, the server returns nothing:** the empty view (yours, if you passed one).
+- **Online, a real error:** the error view when nothing is on screen, as before; rows already on screen stay.
+- **On reconnect:** a list showing its offline state loads again once by itself. A page of the conversation list that could not load while offline loads once.
+
+### Search
+
+A keyword search offline shows the saved matches. With no saved match it shows **Connect to search**, with the second line **Search needs an internet connection.** When the connection returns, the search runs again once.
+
+Only a real keyword counts as a search. A list opened with only a filter (for example, a tags filter, or a request builder without a keyword) is a plain list, and offline with nothing saved it shows that list's **Connect to load …** text. On the [Search](/ui-kit/flutter/search) screen, a filter-only search shows **Connect to load chats** or **Connect to load messages**.
+
+Mention suggestions with no typed name show the saved users or members. A typed name needs a connection; offline it shows no suggestions and no error.
+
+### Message list and threads
+
+- A chat or thread opened before shows its saved messages at once. Reopening a chat shows its newest messages with no gaps.
+- At the older end of the saved history, the list shows a tappable **Connect to load more** chip. Scrolling there while offline does not retry the server. When the connection returns, the page behind it loads once by itself.
+- After a jump to an older message, a **Jump to latest** chip shows while newer messages exist below and the user is scrolled away from the bottom.
+- **Start from the first unread** (`startFromUnreadMessages`) and a jump to a message work from the saved messages.
+- The [thread header](/ui-kit/flutter/threaded-messages-header) counts the user's own reply once, when it is queued, and takes it back if the reply is removed before it was sent.
+
+### Sending messages
+
+- A message sent offline appears in the list straight away with a clock icon and **Not sent yet**, and is queued on the device, even if the app is closed. It is sent automatically when the connection returns. A queued message is not a failure.
+- A message that could not be sent shows an error icon and **Not sent. Tap to retry**. Tapping the row retries it.
+- Every unsent message (waiting or failed) offers **Retry**, **Delete** and, for text, **Copy** in its menu, and nothing else, because the other actions need a message that reached the server. For a queued message, Retry asks the SDK to send that same message again. A message the SDK refused before queuing it is sent again as a new message. Delete removes it from the device.
+- If the message is being sent at that moment, Retry and Delete change nothing and the UI Kit shows **Sending… try again in a moment**.
+- When the device's outbox is full, the send is refused, the row shows as failed and the UI Kit shows **Too many messages waiting to send**. A file too large to queue shows **File too large to send offline**. See [Queue Limits](/sdk/flutter/offline-send#queue-limits) for the SDK's limits.
+- If the SDK removes a queued message before it could be sent, its row goes and the UI Kit shows **Unsent message removed**, with **Copy** for a text message.
+- The conversation's row in [Conversations](/ui-kit/flutter/conversations) shows the same clock or error icon while its last message is waiting or failed.
+
+### Attachments and media
+
+- An attachment tray that was not sent is restored when the chat or thread is opened again, also after an app restart. Files that finished uploading stay ready to send; interrupted files come back failed with a retry button. Nothing uploads by itself. A tray that already holds files is never replaced.
+- A file whose saved copy is gone shows **File not saved. Add it again**. Remove it and pick the file again.
+- A file picked into the tray starts uploading right away, which needs a connection. Retry its tile once the connection returns, then send. A voice note is sent as a message straight away, so it is queued like any other message.
+- Images, videos and files come from the SDK's saved copy when it has one, with `mediaCaching` set to `auto` (the default). This covers the bubbles, the media viewer and its Download, and media in search results. See [Media Caching](/sdk/flutter/offline-media-caching).
+- Media the device never downloaded shows a placeholder with the file's name, its size and **Available when online**. It loads when the file is downloaded.
+
+### Edits, deletes and reactions
+
+Editing or deleting a sent message and adding or removing a reaction are not queued offline: they go to the server when the user acts and fail without a connection (see the [SDK's rules](/sdk/flutter/offline-send#edits-deletes-and-reactions-need-a-connection)). The UI Kit handles the failure as it does any failed action online. An edit that fails leaves the message with its original text, and the error goes to the composer's `onError`.
+
+Edits, deletes and reactions made by other users while the device was offline arrive with the catch-up when it reconnects.
+
+### Presence
+
+While the SDK is not connected, the message header, the users list, the conversation list and the group members list show no "Online" subtitle and no online dot. Presence comes back when the connection returns.
+
+### Group changes while offline
+
+If the user was kicked, banned or removed from a group while the device was offline, the UI Kit handles it as it handles the live event when the catch-up arrives.
+
+### Logout and user switch
+
+The SDK keeps one cache per user. On logout, a login as a different user or a cache reset, the UI Kit clears every list and panel before the next frame. On logout and a user switch, the SDK also deletes that user's cached data, cached media and queued messages. Restarting the app while the same user stays logged in keeps the cache. You don't need to clear anything yourself. After a cache reset, each list loads again once from the first page. See [One cache per user](/sdk/flutter/offline-overview#one-cache-per-user).
+
+## Offline States and Texts
+
+These texts appear only with offline support running. Each one is a getter on `Translations` (also named `CometChatLocalizations`) that you can override (see [Change the texts](#change-the-texts)). They are translated in every built-in language of the UI Kit.
+
+| Text | Getter | Where it appears |
+| --- | --- | --- |
+| Connect to load chats | `connectToLoadChats` | Conversations, and Search with only filters, offline with nothing saved |
+| Connect to load users | `connectToLoadUsers` | Users, offline with nothing saved (also a filter-only list) |
+| Connect to load groups | `connectToLoadGroups` | Groups, offline with nothing saved |
+| Connect to load members | `connectToLoadMembers` | Group Members and banned members, offline with nothing saved |
+| Connect to load messages | `connectToLoadMessages` | Message list, threads, Pinned, Saved, and Search with only filters, offline with nothing saved |
+| Connect to load reactions | `connectToLoadReactions` | Reactions list, offline with nothing saved |
+| Connect to load notifications | `connectToLoadNotifications` | Notification Feed, offline with nothing saved |
+| Connect to search | `connectToSearch` | A keyword search offline with no saved match |
+| Search needs an internet connection. | `connectToSearchSubtitle` | Second line under **Connect to search** |
+| Connect to load more | `connectToLoadMore` | Chip at the older end of the saved history in the message list or a thread |
+| Jump to latest | `jumpToLatest` | Chip when newer messages exist below |
+| Not sent yet | `messageNotSentYet` | Under an own message waiting to be sent |
+| Not sent. Tap to retry | `messageNotSentTapToRetry` | Under an own message that failed |
+| Sending… try again in a moment | `sendingTryAgain` | Notice after Retry or Delete on a message being sent |
+| Too many messages waiting to send | `queueFull` | Notice when the outbox is full |
+| File too large to send offline | `fileTooLargeOffline` | Notice when a file cannot be queued |
+| Available when online | `mediaAvailableWhenOnline` | Media the device never downloaded |
+| File not saved. Add it again | `fileNotSaved` | A restored tray file whose saved copy is gone |
+| Unsent message removed | `unsentMessageRemoved` | Notice, with **Copy** for a text message, when the SDK removed a queued message |
+| 1 message wasn't sent / \{n\} messages weren't sent | `messagesNotSent(int n)` | Notice when messages waiting to send turned failed. They show **Not sent. Tap to retry** |
+| 1 unsent message couldn't be recovered / \{n\} unsent messages couldn't be recovered | `unsentMessagesLost(int n)` | Notice when queued messages were lost. Send them again |
+| Some unsent messages may not have been sent | `unsentMessagesMaybeLost` | Notice when some queued messages may not have gone out. Check the chat and send again any message that is missing |
+
+The notices show as a snackbar from `CometChatMessageList` or `CometChatConversations`, unless you [hide them](#hide-the-offline-notices).
+
+### New strings
+
+The 22 getters above are new in 6.4.0. They have English defaults, so an app that `extends Translations` (or a language class such as `TranslationsEn`) needs no change.
+
+<Warning>
+**Breaking for apps that `implements Translations` or `CometChatLocalizations`.** Add all 22 getters, or the app no longer compiles: `messageNotSentYet`, `messageNotSentTapToRetry`, `unsentMessageRemoved`, `messagesNotSent(int n)`, `unsentMessagesLost(int n)`, `unsentMessagesMaybeLost`, `queueFull`, `fileTooLargeOffline`, `connectToLoadMore`, `connectToSearch`, `connectToSearchSubtitle`, `connectToLoadUsers`, `connectToLoadGroups`, `connectToLoadMembers`, `connectToLoadChats`, `connectToLoadMessages`, `connectToLoadReactions`, `connectToLoadNotifications`, `mediaAvailableWhenOnline`, `jumpToLatest`, `sendingTryAgain` and `fileNotSaved`.
+</Warning>
+
+## Errors and Callbacks
+
+### When `onError` fires
+
+| Situation | What shows | `onError` |
+| --- | --- | --- |
+| Offline, rows on screen, a load fails | The rows stay | Not called |
+| Offline, nothing on screen | **Connect to load …** (or your `errorStateView`) | Called once for that load |
+| Offline keyword search, no saved match | **Connect to search** | Not called |
+| Online, a real error, nothing on screen | The error view (or your `errorStateView`) | Called |
+| Online, a real error, rows on screen | The rows stay | Called if the user or your app started the load |
+
+### Send method futures
+
+With offline support running, `CometChatUIKit.sendTextMessage`, `sendMediaMessage` and `sendCustomMessage`:
+
+- **complete with the sent message** and call `onSuccess` when the message reaches the server, also when it was queued first;
+- **stay pending** while the message is queued, and never call `onError` just because it was queued;
+- **complete with `null`** and call `onError` on a final failure;
+- **complete with `null`** and call `onError` when a queued message is removed before it could be sent, for example with `ERROR_OFFLINE_MESSAGE_DISCARDED`. When the user deletes the unsent row, `onError` is not called;
+- **complete with `null` without calling `onError`** when the user logs out or switches user while the send is waiting.
+
+If your code awaits these methods, treat `null` as "not sent": the row in the message list already shows what happened.
+
+Send through these `CometChatUIKit` methods to get the offline states. A message your code sends with `CometChat.sendMessage`, `sendMediaMessage` or `sendCustomMessage` directly is still queued by the SDK and sent when the connection returns, and `ccMessageSendStateChanged` reports its state, but the open message list adds no row for it and shows no **Not sent yet** or **Not sent. Tap to retry** line.
+
+### Pin and save
+
+Since Chat SDK 5.1.2, the device that pins, unpins, saves or unsaves a message gets no `onMessagePinned` or `onMessageSaved` callback for its own action. The UI Kit updates the message from the call's `onSuccess` result and emits `ccMessagePinned`, `ccMessageUnpinned`, `ccMessageSaved` or `ccMessageUnsaved`. If you call these SDK methods yourself, update your UI from `onSuccess` too. Pins and saves made by other users and on the user's other devices still arrive through the listeners. See [Pin and Save Messages](/ui-kit/flutter/guide-pin-and-save-messages).
+
+Conversation pins work the same way: the device that pins or unpins a conversation gets no `onConversationPinned` or `onConversationUnpinned` callback, and [Conversations](/ui-kit/flutter/conversations) updates the row from the call's `onSuccess` result. Pins made on the user's other devices still arrive through `ConversationListener`.
+
+### Offline events
+
+The UI Kit emits two events on `CometChatMessageEvents`. Both are new and **never emitted with offline support off**. They are default no-ops on `CometChatMessageEventListener`, so existing listeners keep compiling. `ccMessageSent` keeps its meaning.
+
+| Event | Arguments | When |
+| --- | --- | --- |
+| `ccMessageSendStateChanged` | `(BaseMessage message, CometChatMessageSendState state, MessageFailureReason? reason)` | An own message's send state changed: `sending`, `sent` or `failed`, once per change. `reason` is set only for `failed`; a message the SDK removed before it was sent arrives as `failed` with a removal reason such as `discarded`. A message the user deletes emits nothing. |
+| `ccOfflineCacheReset` | `(OfflineCacheResetReason reason, int? pendingMessagesLost)` | The SDK rebuilt its offline cache. `pendingMessagesLost` is the number of unsent messages lost, or `null` when the SDK could not count them. |
+
+`sendStateOf(message)` returns the `CometChatMessageSendState` of any message, from its status.
+
+<Tabs>
+<Tab title="Dart">
+```dart
+import 'package:cometchat_chat_uikit/cometchat_chat_uikit.dart';
+import 'package:flutter/material.dart';
+
+class _ChatScreenState extends State<ChatScreen>
+    with CometChatMessageEventListener {
+  static const _listenerId = "offline_events_listener";
+
+  @override
+  void initState() {
+    super.initState();
+    CometChatMessageEvents.addMessagesListener(_listenerId, this);
+  }
+
+  @override
+  void dispose() {
+    CometChatMessageEvents.removeMessagesListener(_listenerId);
+    super.dispose();
+  }
+
+  @override
+  void ccMessageSendStateChanged(
+    BaseMessage message,
+    CometChatMessageSendState state,
+    MessageFailureReason? reason,
+  ) {
+    debugPrint("Send state: $state $reason");
+  }
+
+  @override
+  void ccOfflineCacheReset(
+    OfflineCacheResetReason reason,
+    int? pendingMessagesLost,
+  ) {
+    debugPrint("Offline cache reset: $reason $pendingMessagesLost");
+  }
+
+  @override
+  Widget build(BuildContext context) => const Placeholder();
+}
+```
+</Tab>
+</Tabs>
+
+For the SDK's own listeners (sync progress, the outbox, cache resets), see [Stay in Sync](/sdk/flutter/offline-sync) and [Send While Offline](/sdk/flutter/offline-send).
+
+## Customization
+
+### Hide the offline notices
+
+`CometChatMessageList` and `CometChatConversations` take `hideOfflineNotices` (default `false`). It hides the offline snackbar notices that list would show: the outbox full, a file too large to send offline, **Sending… try again in a moment**, an unsent message removed, messages not sent, and unsent messages lost. It has no effect with offline support off. The **Not sent** rows, the offline states, **Connect to load more** and **Available when online** still show.
+
+```dart
+CometChatMessageList(user: user, hideOfflineNotices: true)
+CometChatConversations(hideOfflineNotices: true)
+```
+
+### Your own error and empty views
+
+If you pass your own `errorStateView` to a list, it shows instead of the UI Kit's **Connect to load …** state. On Conversations, Groups and Group Members, `hideError` hides your error view, and the UI Kit's offline state shows instead.
+
+### Style the unsent messages
+
+Set these on `CometChatMessageListStyle`. Both are optional; anything you leave out uses the theme's existing colors.
+
+| Property | Type | Styles |
+| --- | --- | --- |
+| `notSentTextStyle` | `TextStyle?` | The **Not sent yet** and **Not sent. Tap to retry** line |
+| `failedIconColor` | `Color?` | The text color of the **Not sent. Tap to retry** line. Despite its name, it colors the text only; the line has no icon. Defaults to the theme's error color |
+
+```dart
+CometChatMessageList(
+  user: user,
+  style: CometChatMessageListStyle(
+    notSentTextStyle: const TextStyle(fontSize: 12),
+    failedIconColor: const Color(0xFFD92D20),
+  ),
+)
+```
+
+### Change the texts
+
+Override any getter from the [table above](#offline-states-and-texts) in a class that extends the language's translations, as described in [Localize](/ui-kit/flutter/localize#customizing-ui-kit-translations-for-a-specific-language).
+
+```dart
+class CustomEN extends cc.TranslationsEn {
+  @override
+  String get connectToLoadChats => "You're offline. Connect to see your chats.";
+
+  @override
+  String get messageNotSentTapToRetry => "Couldn't send. Tap to try again";
+}
+```
+
+## With Offline Support Turned Off
+
+If you don't set `offlineConfig`, none of the behavior on this page runs: no offline states, no queued sends and no new events. Upgrading to 6.4.0 still changes two things for every app:
+
+- **Pinning, unpinning, saving or unsaving your own message, and pinning or unpinning a conversation, updates the UI as soon as the action succeeds**, from the call's result. See [Pin and save](#pin-and-save).
+- **A failed edit returns the message to its original text, with no error mark.** The composer's `onError` still fires; `ccMessageSent` is no longer emitted with an error status for the failed edit.
+
+## Limitations and Known Issues
+
+- The cache holds only what the user loaded while online, plus what the catch-up brings in on reconnect. A user who has never been online on this device has nothing to show offline.
+- A keyword search with no saved match, and mention suggestions for a typed name, need a connection.
+- Edits, deletes and reactions on sent messages are not queued offline.
+- Files picked into the composer tray upload only with a connection.
+- Encrypting the cache covers the message database. Downloaded media files are stored unencrypted. See [Encrypt the Cache](/sdk/flutter/offline-encryption).
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SDK Offline Support" icon="database" href="/sdk/flutter/offline-overview">
+    How caching, the send outbox and catch-up work in the Chat SDK
+  </Card>
+  <Card title="Configuration & API Reference" icon="sliders" href="/sdk/flutter/offline-reference">
+    Every OfflineConfig option, method, listener and error code
+  </Card>
+  <Card title="Send While Offline" icon="paper-plane" href="/sdk/flutter/offline-send">
+    The outbox, retry and discard, and queue limits
+  </Card>
+  <Card title="Core Features" icon="comments" href="/ui-kit/flutter/core-features">
+    See how the components power each chat feature
+  </Card>
+</CardGroup>
