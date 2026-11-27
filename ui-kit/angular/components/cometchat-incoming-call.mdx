@@ -3,6 +3,7 @@ title: "Incoming Call"
 description: "A standalone Angular component that displays an incoming call notification with accept and decline actions"
 ---
 
+
 <Accordion title="AI Integration Quick Reference">
 
 | Field | Value |
@@ -15,8 +16,8 @@ description: "A standalone Angular component that displays an incoming call noti
 | Standalone | Add `CometChatIncomingCallComponent` to the consuming component's `imports: []` or it renders **nothing**, silently |
 | Primary output | `(callAccepted)` — emits the accepted call |
 | Prerequisites | `CometChatUIKit.initFromSettings()` resolved **and** `login()` complete before render — see [Integration](/ui-kit/angular/integration) |
-| Stitching | Mount at **app root**, not inside the chat route, or calls stop ringing on every other route. Requires `@cometchat/calls-sdk-javascript` and calling enabled in the dashboard. |
-| Automatic behaviour | Ringing, decline and the ongoing-call handoff are internal |
+| Stitching | Mount at **app root**, not inside the chat route, or calls stop ringing on every other route. Put [`<cometchat-call-host>`](/ui-kit/angular/components/cometchat-call-host) next to it. Requires `@cometchat/calls-sdk-javascript` 5.1.1 or later and calling enabled in the dashboard. |
+| Automatic behaviour | Ringing through the Calls SDK, decline, the busy reply and the ongoing-call handoff are internal. See [How calls ring](/ui-kit/angular/call-features#how-calls-ring) |
 | Sizing | Fills its container — an ancestor without a resolved height collapses it to 0px |
 | Full props | See [Properties](#properties) |
 | Events | See [Events](#events) |
@@ -27,7 +28,9 @@ description: "A standalone Angular component that displays an incoming call noti
 
 ## Overview
 
-The CometChatIncomingCall component renders an incoming call notification card when a user receives a voice or video call. It displays the caller's name, avatar, and call type icon using a `CometChatListItem`, along with Accept and Decline buttons. After accepting, it automatically renders the ongoing call screen.
+The CometChatIncomingCall component renders an incoming call notification card when a user receives a voice or video call. It displays the caller's name, avatar, and call type icon using a `CometChatListItem`, along with Accept and Decline buttons. After accepting, the ongoing call screen opens: the [call host](/ui-kit/angular/components/cometchat-call-host) draws it, or the card itself when no call host is mounted.
+
+A 1:1 call rings through the Calls SDK. While the card rings, the kit prepares the call's session, so Accept joins at once. A tab that is already in a call, placing one or showing an incoming call answers a new 1:1 call busy, and the card never shows it. See [How calls ring](/ui-kit/angular/call-features#how-calls-ring).
 
 ### Key Features
 
@@ -94,9 +97,9 @@ export class IncomingCallDemoComponent {
 | `call` | `CometChat.Call \| null` | `null` | The incoming call object. Overrides service state when provided. |
 | `disableSoundForCalls` | `boolean` | `false` | Disables the incoming call ringtone when `true`. Supports global config override. |
 | `customSoundForCalls` | `string` | `''` | Custom sound URL for the incoming call ringtone. Supports global config override. |
-| `onAccept` | `((call: CometChat.Call) => void) \| null` | `null` | Custom accept handler. Overrides default SDK `CometChat.acceptCall()`. |
-| `onDecline` | `((call: CometChat.Call) => void) \| null` | `null` | Custom decline handler. Overrides default SDK `CometChat.rejectCall()`. |
-| `onError` | `((error: CometChat.CometChatException) => void) \| null` | `null` | Error callback invoked for any error during sound, accept, or decline. |
+| `onAccept` | `((call: CometChat.Call) => void) \| null` | `null` | Custom accept handler, called instead of the kit's answer. See [Custom Accept and Decline](#custom-accept-and-decline). |
+| `onDecline` | `((call: CometChat.Call) => void) \| null` | `null` | Custom decline handler, called instead of the kit's decline. See [Custom Accept and Decline](#custom-accept-and-decline). |
+| `onError` | `((error: CometChat.CometChatException) => void) \| null` | `null` | Error callback invoked for any error during sound, accept, or decline. Accepting a call that is no longer ringing (the caller just cancelled) reports `CALL_NOT_RINGING`, and nothing joins. |
 | `itemView` | `TemplateRef<{ $implicit: IncomingCallTemplateContext }> \| null` | `null` | Replaces the entire ListItem with a custom template. |
 | `titleView` | `TemplateRef<{ $implicit: IncomingCallTemplateContext }> \| null` | `null` | Replaces the default caller name title in the ListItem. |
 | `subtitleView` | `TemplateRef<{ $implicit: IncomingCallTemplateContext }> \| null` | `null` | Replaces the default call type icon and "Incoming Call" subtitle. |
@@ -111,7 +114,58 @@ export class IncomingCallDemoComponent {
 |-------|-------------|-------------|
 | `callAccepted` | `CometChat.Call` | Emitted when the user accepts the incoming call. |
 | `callDeclined` | `CometChat.Call` | Emitted when the user declines the incoming call. |
-| `error` | `CometChat.CometChatException` | Emitted on any error during sound playback, accept, or decline. |
+| `error` | `CometChat.CometChatException` | Emitted on any error during sound playback, accept, or decline, including `CALL_NOT_RINGING` when the call stopped ringing before Accept. |
+
+## Custom Accept and Decline
+
+`onAccept` and `onDecline` run instead of the kit's own answer and decline:
+
+- **`onAccept`, for a 1:1 call:** the kit stops ringing and keeps the session it prepared while the call rang. Your handler joins it with `CometChatCalls.getActiveSession()?.join(container)`; see [Join the session](/calls/javascript/ringing#join-the-session). The kit doesn't read the call's status before you join, so a call the caller has just cancelled can still be joined.
+- **`onDecline`, for a 1:1 call:** the kit still leaves the session it prepared. Nothing declines the call, but leaving the prepared session closes a 1:1 call's room, so the call ends for the caller and the user's other devices too, recorded as unanswered.
+- **For a call from an app on legacy ringing**, they replace `CometChat.acceptCall()` and `CometChat.rejectCall()`, as before.
+
+Either way, the card stays up until your app closes it with `IncomingCallService.setIncomingCall(null)`. Until then, later 1:1 calls are answered busy.
+
+```typescript expandable
+import { Component, ElementRef, ViewChild, inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { CometChatCalls } from '@cometchat/calls-sdk-javascript';
+import { CometChatIncomingCallComponent, IncomingCallService } from '@cometchat/chat-uikit-angular';
+
+@Component({
+  selector: 'app-custom-incoming-call',
+  standalone: true,
+  imports: [CometChatIncomingCallComponent],
+  template: `
+    <cometchat-incoming-call [onAccept]="accept"></cometchat-incoming-call>
+    <div #callContainer class="my-call-container" style="height: 100vh"></div>
+  `
+})
+export class CustomIncomingCallComponent {
+  @ViewChild('callContainer') callContainer!: ElementRef<HTMLElement>;
+  private incomingCallService = inject(IncomingCallService);
+
+  accept = (call: CometChat.Call): void => {
+    // Close the card, or later calls are answered busy.
+    this.incomingCallService.setIncomingCall(null);
+    // Join the session the kit prepared while the call rang.
+    void CometChatCalls.getActiveSession()?.join(this.callContainer.nativeElement);
+  };
+}
+```
+
+<Note>
+**Coming from 5.3 or earlier?** `onAccept` used to receive a call still to be answered, so apps answered it before joining:
+
+```typescript
+// Up to 5.3
+accept = (call: CometChat.Call): void => {
+  CometChat.acceptCall(call.getSessionId()).then((accepted) => this.startCall(accepted));
+};
+```
+
+From 5.4, joining the session the kit prepared answers the call. Remove the `CometChat.acceptCall` call and join the session, as in the example above. A call from an app still on legacy ringing arrives unanswered, as before.
+</Note>
 
 ## Customization
 
@@ -130,22 +184,31 @@ cometchat-incoming-call {
 ### Custom Templates
 
 ```html expandable
-<cometchat-incoming-call
-  [call]="incomingCall"
-  [subtitleView]="customSubtitle"
-  [acceptButtonView]="customAccept"
->
-  <ng-template #customSubtitle let-ctx>
-    <span>{{ ctx.callType === 'video' ? '📹 Video Call' : '📞 Audio Call' }}</span>
-  </ng-template>
-
+<cometchat-incoming-call [acceptButtonView]="customAccept">
   <ng-template #customAccept let-ctx>
-    <button class="my-accept-btn" (click)="acceptCall()">
+    <button class="my-accept-btn" (click)="acceptCall(ctx.call)">
       Accept {{ ctx.callerName }}'s call
     </button>
   </ng-template>
 </cometchat-incoming-call>
 ```
+
+A custom Accept or Decline button replaces the card's own, so its handler answers the call itself. Answer through `IncomingCallService`, which answers a 1:1 call on the Calls SDK as the card's own button does:
+
+```typescript
+import { inject } from '@angular/core';
+import { CometChat } from '@cometchat/chat-sdk-javascript';
+import { IncomingCallService } from '@cometchat/chat-uikit-angular';
+
+// In the component whose template holds the card:
+private incomingCallService = inject(IncomingCallService);
+
+acceptCall(call: CometChat.Call): void {
+  this.incomingCallService.acceptCall(call.getSessionId()).catch(error => console.error(error));
+}
+```
+
+`IncomingCallService.declineCall(sessionId)` declines the same way.
 
 ## Accessibility
 
@@ -174,4 +237,5 @@ cometchat-incoming-call {
 
 - [CometChatOngoingCall](/ui-kit/angular/components/cometchat-outgoing-call) — Rendered automatically after accepting a call
 - [CometChatCallButtons](/ui-kit/angular/components/cometchat-call-buttons) — Initiates outgoing calls
+- [CometChatCallHost](/ui-kit/angular/components/cometchat-call-host) — Draws the answered call's screen
 - [CometChatListItem](/ui-kit/angular/components/cometchat-user-item) — Used internally to render the caller information
