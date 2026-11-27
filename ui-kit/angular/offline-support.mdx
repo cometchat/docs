@@ -37,7 +37,7 @@ With offline support on, the UI Kit keeps working when the network drops. The [J
 **Needs a connection:**
 
 - The first load of anything the user has never opened while online.
-- A keyword search with no saved match.
+- A keyword search. A keyword is never matched against the saved data, so an offline keyword search finds nothing, however much the browser has saved.
 - Editing, deleting, reacting to, pinning or saving a sent message. These are not queued.
 - Message information, calls, and AI agent streamed replies.
 
@@ -108,18 +108,19 @@ This applies to [Conversations](/ui-kit/angular/components/cometchat-conversatio
 
 - **Saved rows first.** The list paints the rows saved on the device straight away, then merges in the server page when it arrives.
 - **Offline with nothing saved.** The list shows its offline state: an icon and **Connect to load chats** (or users, groups, members, reactions, notifications, messages), with no Retry button. It loads once by itself when the connection comes back after a drop the SDK reported. If the app started with no connection at all, only the Message List loads by itself; these lists load the next time they are opened.
-- **Rows on screen stay.** If a load fails while rows are showing, the rows stay and nothing is drawn over them.
+- **Rows on screen stay.** If a load fails while rows are showing, the rows stay and nothing is drawn over them. A new keyword search is the exception: it clears them.
 - **Reaction counts.** Offline with no reactions loaded, the Reaction List shows **Connect to load reactions** and keeps its tabs, with the counts the message already carries.
 - **Reconnect.** The SDK catches every list up. The Message List and Conversations make no refresh fetch of their own, apart from the one-time reads above. Users, Groups and Group Members quietly re-read their first page, as they do with offline support off. Messages that arrived meanwhile appear without a sound and without extra unread counts.
 
 ### Search
 
-- **Keyword search.** A search with a keyword that cannot reach the server, and has no saved match, shows **Connect to search** with a second line, **Search needs an internet connection.** It runs again once by itself when the connection comes back after a drop the SDK reported; after a start with no connection at all, run the search again.
+- **Keyword search.** A keyword search always needs a connection: the SDK never matches a keyword against the saved data, so offline a keyword search finds nothing, however much the browser has saved. A search with a keyword that cannot reach the server, with nothing already on screen, shows **Connect to search** with a second line, **Search needs an internet connection.** A new keyword search replaces what the list was showing, so rows from an earlier query never stand in for a search that could not run. Paging further into results already on screen keeps them. It runs again once by itself when the connection comes back after a drop the SDK reported; after a start with no connection at all, run the search again.
 - **Filters only.** A list opened with a filter and no keyword (online users, tags, a request builder with no search term) is a plain list, not a search. Offline with nothing saved, it shows that list's **Connect to load …** text.
 - **The [Search](/ui-kit/angular/components/cometchat-search) component** searches conversations and messages together:
   - It shows **Connect to search** only when every failed request was a not-connected one.
   - A search by filters alone is answered from the device. When nothing is saved, it shows the plain empty state (**No Results**), not **Connect to search**.
   - It waits for both scopes before it treats a failure as an error. See [Errors and Callbacks](#errors-and-callbacks).
+- **Mention suggestions.** Suggestions in the composer show saved users or members first. Typing a name after the `@` needs a connection; offline it shows no suggestions and no error.
 
 ### Message List and Threads
 
@@ -132,7 +133,7 @@ This applies to [Conversations](/ui-kit/angular/components/cometchat-conversatio
   - From messages already on screen (a quoted reply, a search result), the messages on screen stay until the target is found. If it cannot be read offline, nothing changes and nothing is reported.
   - If the target cannot be read for another reason, for example it was deleted, `(error)` fires once. The messages on screen stay, or an opening chat shows its newest page; with nothing to show, the error view shows.
 - **Start from unread.** With `startFromUnreadMessages`, the chat opens on its newest page from the device, then moves to the unread divider.
-- **Threads.** A thread view shows the same offline states as the main list. See [Limitations](#limitations) for what is saved for threads.
+- **Threads.** A thread view shows the same offline states as the main list.
 
 <Note>
 The message list's default request lets the SDK save each page for offline use. If you pass your own `messagesRequestBuilder` with extra filters, the request is sent exactly as you built it. The SDK may then not save its pages, so that chat has less to show offline. See [Cache-supported filters](/sdk/javascript/offline-reference#cache-supported-filters).
@@ -198,6 +199,7 @@ These are the texts the components show in their offline states. Each one is a l
 | `{{count}}` unsent message couldn't be recovered | Cache reset notice | `message_list_unsent_messages_lost_one`, `message_list_unsent_messages_lost_other` |
 | Some unsent messages may not have been sent | Cache reset notice | `message_list_unsent_messages_maybe_lost` |
 | File too large to send offline | Message List notice, when a picked file exceeds the offline media budget | `message_list_file_too_large_offline` |
+| Couldn't remove the message | Error toast when **Delete** on an unsent message fails | `message_list_option_delete_failed` |
 
 The counted notices use plural keys: `_one` and `_other`, plus `_few` and `_many` in languages that need them. The UI Kit picks the form for the current language and falls back to `_other`, replacing `{{count}}` with the number.
 
@@ -221,12 +223,16 @@ The list components' `(error)` output follows one rule while offline support is 
 | Situation | What shows | `(error)` |
 | --- | --- | --- |
 | Offline, nothing on screen | The offline state (**Connect to load …**), or your `errorView` if you passed one | Fires once |
-| Keyword search offline, no saved match | **Connect to search** | Does not fire |
+| Keyword search offline, nothing on screen | **Connect to search** | Does not fire |
 | Online, a real error, nothing on screen | The error view with Retry, or your `errorView`. Not reloaded by itself | Fires once |
-| Rows on screen, offline | Rows stay | Does not fire |
+| Rows on screen, offline | Rows stay, except a new keyword search, which clears them | Does not fire |
 | Rows on screen, online, a load the user or app started (opening, refresh, search, filter, paging, jump to a message, Retry) | Rows stay | Fires once |
 | Rows on screen, online, a load the UI Kit started (reconnect, sync, cache reset) | Rows stay | Does not fire |
 | The server answers with an empty list | The empty view, or your `emptyView` | Does not fire |
+
+<Note>
+`hideError` changes the third column on two components. On Conversations and the Message List it also stops `(error)` for a failed list load: nothing shows and nothing fires. On Users, Groups and Group Members it hides the view only, and `(error)` still fires as the table says. All five fall back to the global configuration's `hideError`, so it can be on without the component input being set.
+</Note>
 
 The Search component reports through its `(searchError)` output instead. With both scopes:
 
@@ -309,7 +315,7 @@ export class OfflineLogComponent implements OnInit {
 
 | Member | Type | Meaning |
 | --- | --- | --- |
-| `connectToSearch` | `WritableSignal<boolean>` | `true` when a keyword search could not reach the server and nothing saved matches. `fetchState` is `empty`, `search()` does not reject, and the search runs once more by itself when the connection comes back after a drop the SDK reported. |
+| `connectToSearch` | `WritableSignal<boolean>` | `true` when a keyword search could not reach the server and nothing is already on screen. `fetchState` is `empty`, `search()` does not reject, and the search runs once more by itself when the connection comes back after a drop the SDK reported. |
 | `searchFailed` | `WritableSignal<boolean>` | `true` when a search inside the Search component failed with a real error and nothing is shown. `fetchState` is `empty` and the Search component decides, once both scopes answer, whether to show the error view or the empty state. Always `false` when you use the service outside the Search component. |
 | `reconnectSearchError$` | `Subject<CometChat.CometChatException>` | Emits when the search the service re-ran by itself on reconnect fails. A search you start rejects to you instead. |
 
@@ -364,7 +370,7 @@ Your own views win over the built-in offline states:
 - An `emptyView` you pass to Conversations, Users, Groups or Group Members shows instead of **Connect to search**. It also shows when the server answers with an empty list, and in the Search component's plain empty state.
 - On Conversations, Users, Groups, Group Members and Message List, `hideError` hides **Connect to load …** along with the error view.
 
-### Your own "Connect to load more" control
+### Your own Connect to load more control
 
 The built-in **Connect to load more** row calls the message list's public `retryOfflineRead()` method, which reads the page behind the blocked edge. To trigger it from your own control, call it on a `viewChild` reference:
 
@@ -448,9 +454,9 @@ Apps that don't turn offline support on keep today's behavior: no cache, no outb
 ## Limitations
 
 - The cache holds only what the user has loaded while online, plus what syncs on reconnect. A user who has never used the app online has nothing to show offline.
-- Keyword search, message information, calls and AI agent streamed replies need a connection.
+- Keyword search, message information, calls and AI agent streamed replies need a connection. A keyword is never matched against the saved data, so an offline keyword search finds nothing, however much is saved.
 - Edits, deletes and reactions on sent messages are not queued offline. They need a connection when the user makes them.
-- The browser cache encrypts message content but not lookup metadata, and downloaded media is stored unencrypted. See [What gets encrypted](/sdk/javascript/offline-encryption#what-gets-encrypted).
+- Encrypting the browser cache is opt-in: `encryption` is off by default. With it on, it covers message content but not lookup metadata; downloaded media is stored unencrypted either way. See [What gets encrypted](/sdk/javascript/offline-encryption#what-gets-encrypted).
 
 ---
 
