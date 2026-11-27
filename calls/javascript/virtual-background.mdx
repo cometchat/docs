@@ -43,6 +43,10 @@ Remove any applied virtual background:
 CometChatCalls.clearVirtualBackground();
 ```
 
+<Note>
+The virtual background picker shows the background you set with `setVirtualBackgroundBlurLevel()`, `setVirtualBackgroundImage()`, or `clearVirtualBackground()`. If the background doesn't match any tile in the picker, such as an image that isn't in your `images` list, no tile is selected and the preview shows the applied background.
+</Note>
+
 ## Virtual Background Dialog
 
 ### Show Dialog
@@ -90,7 +94,7 @@ await CometChatCalls.joinSession(callToken, callSettings, container);
 | `assetsBaseUrl` | String | CometChat CDN | Folder (with a trailing slash) the SDK downloads virtual background assets from. Only set this when self-hosting the assets. |
 
 <Note>
-Custom image URLs must be served with CORS enabled. If an image can't be loaded cross-origin, the effect fails to apply and the user sees a "Virtual background could not be applied" message.
+Custom image URLs must be served with CORS enabled. If an image can't be loaded cross-origin, the background fails to apply. In the picker's preview, the user sees a "Virtual background could not be applied" message. On the user's camera during a call, the SDK pauses the video and fires [`onVirtualBackgroundFailed`](#handle-virtual-background-failures) with the reason `image`.
 </Note>
 
 ### Default Images
@@ -132,6 +136,49 @@ const virtualBackground: VirtualBackgroundConfig = {
 };
 ```
 
+The `VirtualBackgroundFailure` and `VirtualBackgroundFailureReason` types for the [`onVirtualBackgroundFailed`](#handle-virtual-background-failures) event are also exported (since v5.0.8).
+
+## Handle Virtual Background Failures
+
+*Available since v5.0.8*
+
+If the virtual background stops working during a call, the SDK never sends the user's camera without the background they chose. Instead, it:
+
+1. Pauses the local video if it's on. `onVideoPaused` fires, other participants see the video as paused, and the user sees a "Virtual background failed, so your video was paused" message.
+2. Resets the background to none.
+3. Fires the `onVirtualBackgroundFailed` event with the reason for the failure.
+
+This applies to both the default engine and the [V2 engine](#virtual-background-v2-engine).
+
+```typescript
+import { CometChatCalls } from "@cometchat/calls-sdk-javascript";
+import type { VirtualBackgroundFailure } from "@cometchat/calls-sdk-javascript";
+
+CometChatCalls.addEventListener(
+  "onVirtualBackgroundFailed",
+  ({ reason }: VirtualBackgroundFailure) => {
+    if (reason === "image") {
+      // The image couldn't be loaded. Fall back to blur instead.
+      CometChatCalls.setVirtualBackgroundBlurLevel(10);
+    }
+  }
+);
+```
+
+| Reason | Description |
+|--------|-------------|
+| `initialization` | The virtual background engine could not be loaded or started |
+| `inference` | Background segmentation kept failing while the background was applied |
+| `image` | The background image could not be loaded |
+
+### Retry After a Failure
+
+To retry, apply a background again with `setVirtualBackgroundBlurLevel()`, `setVirtualBackgroundImage()`, or the virtual background picker. You can do this from the event handler or later. Once the background is applied, the SDK resumes the video it paused, with the background on it.
+
+<Warning>
+Don't call `resumeVideo()` to retry. Because the background was reset to none, resuming the video sends the user's camera without a background.
+</Warning>
+
 ## Virtual Background V2 Engine
 
 The V2 engine runs background segmentation in a dedicated Web Worker and composites frames on the GPU. Compared to the default engine, it keeps the effect running smoothly when the tab is in the background, lowers main-thread CPU usage, and produces cleaner edges. The SDK picks the best backend for the device automatically: WebGPU or WebGL where a GPU is available, and a WebAssembly fallback otherwise.
@@ -146,7 +193,7 @@ const callSettings = {
 };
 ```
 
-If V2 fails to initialize (for example, when the worker script is blocked), the SDK logs the error and automatically falls back to the default engine for the rest of the page lifetime.
+If V2 fails to initialize (for example, when the worker script is blocked), the SDK logs the error and automatically falls back to the default engine for the rest of the page lifetime. If no engine can be loaded, the SDK pauses the local video and fires `onVirtualBackgroundFailed` with the reason `initialization`. See [Handle Virtual Background Failures](#handle-virtual-background-failures).
 
 ### Content Security Policy
 
